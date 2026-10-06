@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.8.0"
+	ExtensionBundleName="VibeCut Agent Connect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<!-- VibeCut Agent's link to Premiere Pro (PLAN.md, Phase 3), adapted from VibeCut's
+	     com.vibecut.connect. A hidden panel that starts with Premiere, takes one request file at a
+	     time from VibeCut Agent's host-bridge folder, runs it through a fixed function in host.jsx and
+	     writes the reply next to it. It never runs code from a request file. Installed from VibeCut
+	     Agent's Settings. XML comments here must not contain a double hyphen anywhere, or CEP silently
+	     drops the extension. Since Phase 5b the bundle also has a visible, dockable panel, VibeCut
+	     Agent B-roll (Window, Extensions): the B-roll Library inside Premiere, from which shots can be
+	     dragged into the Project panel or the timeline, as VibeCut's own B-roll panel does. -->
+	<ExtensionList>
+		<Extension Id="com.vibecutagent.connect.panel" Version="0.8.0" />
+		<Extension Id="com.vibecutagent.connect.broll" Version="0.8.0" />
+	</ExtensionList>
+	<ExecutionEnvironment>
+		<HostList>
+			<Host Name="PPRO" Version="[22,99.9]" />
+		</HostList>
+		<LocaleList>
+			<Locale Code="All" />
+		</LocaleList>
+		<RequiredRuntimeList>
+			<RequiredRuntime Name="CSXS" Version="11.0" />
+		</RequiredRuntimeList>
+	</ExecutionEnvironment>
+	<DispatchInfoList>
+		<Extension Id="com.vibecutagent.connect.panel">
+			<DispatchInfo>
+				<Resources>
+					<MainPath>./index.html</MainPath>
+					<ScriptPath>./host.jsx</ScriptPath>
+					<CEFCommandLine>
+						<Parameter>--enable-nodejs</Parameter>
+						<Parameter>--mixed-context</Parameter>
+					</CEFCommandLine>
+				</Resources>
+				<Lifecycle>
+					<AutoVisible>false</AutoVisible>
+					<StartOn>
+						<Event>com.adobe.csxs.events.ApplicationActivate</Event>
+					</StartOn>
+				</Lifecycle>
+				<UI>
+					<Type>Custom</Type>
+					<Geometry>
+						<Size>
+							<Height>1</Height>
+							<Width>1</Width>
+						</Size>
+					</Geometry>
+				</UI>
+			</DispatchInfo>
+		</Extension>
+		<Extension Id="com.vibecutagent.connect.broll">
+			<DispatchInfo>
+				<Resources>
+					<MainPath>./broll/index.html</MainPath>
+					<CEFCommandLine>
+						<Parameter>--enable-nodejs</Parameter>
+						<Parameter>--mixed-context</Parameter>
+					</CEFCommandLine>
+				</Resources>
+				<Lifecycle>
+					<AutoVisible>true</AutoVisible>
+				</Lifecycle>
+				<UI>
+					<Type>Panel</Type>
+					<Menu>VibeCut Agent B-roll</Menu>
+					<Geometry>
+						<Size>
+							<Height>640</Height>
+							<Width>360</Width>
+						</Size>
+						<MinSize>
+							<Height>300</Height>
+							<Width>260</Width>
+						</MinSize>
+					</Geometry>
+				</UI>
+			</DispatchInfo>
+		</Extension>
+	</DispatchInfoList>
+</ExtensionManifest>

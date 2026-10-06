@@ -1,0 +1,108 @@
+[project]
+name = "vibecut-agent"
+version = "0.1.0"
+description = "VibeCut Agent Python Sidecar"
+readme = "README.md"
+requires-python = ">=3.13"
+# Pinned to VibeCut's versions (rough-cut-studio and broll-analyzer), whose tests these modules carry.
+dependencies = [
+    # The chat agent: Gemini over plain HTTP, Claude through its SDK.
+    "requests==2.34.2",
+    "anthropic==1.11.0",
+    # The B-roll analyzer's base scoring (sharpness, exposure, stability).
+    "opencv-python-headless==5.0.0.93",
+    "numpy==2.4.6",
+    "Pillow==12.3.0",
+]
+
+[project.optional-dependencies]
+# Content-aware B-roll scoring (energy, brief relevance, text-to-clip matching): local SigLIP 2
+# inference. About 2 GB of wheels, plus model weights downloaded once from Hugging Face on first use.
+# Rust installs it only for a run that asks for it (sidecar.rs, `extras_for`).
+energy = [
+    "torch==2.13.0",
+    "torchvision==0.28.0",
+    "open_clip_torch==3.3.0",
+    "transformers==4.57.6",
+]
+# Local transcription (Phase 6b, the `transcribe` command): mlx-whisper on Apple Silicon. VibeCut's
+# interview-transcriber pins. Installed on first use; the Whisper model downloads once from Hugging Face.
+transcribe = [
+    "mlx-whisper==0.4.3",
+    "mlx==0.32.0",
+]
+# Telling speakers apart while transcribing: pyannote, with a Hugging Face token and its accepted
+# licences. Only for a run that asks for it (sidecar.rs, `extras_for`).
+diarize = [
+    "pyannote.audio==4.0.7",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+src = ["src-python", "tests"]
+line-length = 110
+
+[tool.ruff.lint.per-file-ignores]
+# Ported from VibeCut: its broad excepts are deliberate (one bad clip, or a missing optional model, must
+# never stop a folder's analysis) and each one records the failure on the clip's result.
+"src-python/vibecut_agent/broll/*" = ["BLE001", "S110", "S112", "PLW1510", "SIM102"]
+"src-python/vibecut_agent/transcribe/*" = ["BLE001", "S110", "S112", "PLW1510", "SIM102"]
+"src-python/vibecut_agent/nle/interchange/*" = ["BLE001", "S110", "S112", "PLW1510", "SIM102", "RUF007"]
+"tests/broll/*" = ["SIM115", "PLW1510", "RUF012", "RUF059"]
+"tests/nle/vibecut_*/*" = ["RUF059", "SIM115"]
+
+[tool.mypy]
+mypy_path = "src-python"
+strict = true
+
+# The B-roll analyzer is ported verbatim from VibeCut (tested there and here, 205 tests) and was never
+# written for strict mypy. Its bodies are still type-checked; only the annotation-coverage rules are off.
+[[tool.mypy.overrides]]
+module = [
+    "vibecut_agent.broll.*",
+    # The direct edits (Phase 4b), ported from VibeCut's host-premiere / host-resolve the same way.
+    "vibecut_agent.nle.premiere_edit",
+    "vibecut_agent.nle.premiere_effects",
+    "vibecut_agent.nle.premiere_timing",
+    "vibecut_agent.nle.resolve_edit",
+    "vibecut_agent.nle.resolve_effects",
+    "vibecut_agent.nle.resolve_timing",
+    "vibecut_agent.nle.resolve_reshape",
+    # The project calls (Phase 6a), from VibeCut's premiere_project/premiere_pool and resolve_project/resolve_pool.
+    "vibecut_agent.nle.premiere_project",
+    "vibecut_agent.nle.premiere_pool",
+    "vibecut_agent.nle.resolve_project",
+    "vibecut_agent.nle.resolve_pool",
+    # Phase 6b, from VibeCut: the rebuilds, rough-cut-studio's interchange writers, and the transcriber.
+    "vibecut_agent.nle.premiere_rebuild",
+    "vibecut_agent.nle.resolve_rebuild",
+    "vibecut_agent.nle.interchange.*",
+    "vibecut_agent.transcribe.*",
+]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+check_untyped_defs = true
+
+# torch, open_clip and transformers come from the optional `energy` extra and ship no stubs.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "open_clip", "transformers", "DaVinciResolveScript", "mlx_whisper", "mlx.*", "pyannote.*", "tqdm", "huggingface_hub.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src-python"]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

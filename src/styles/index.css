@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --color-athletic-blue: #002244;
+  --color-athletic-blue-light: #4a90d9;
+  --color-warm-grey: #99928a;
+  --color-cool-grey: #72808a;
+  --color-canvas: #0d1117;
+  --color-surface: #161b22;
+  --color-border: #30363d;
+  --color-profit: #00c853;
+  --color-loss: #ff5252;
+  --color-warning: #ffb300;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Fira Code", "JetBrains Mono", monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-warm-grey font-sans antialiased;
+    color-scheme: dark;
+    overflow: hidden;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-athletic-blue-light);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-athletic-blue);
+    color: #ffffff;
+  }
+}

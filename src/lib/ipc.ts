@@ -1,0 +1,169 @@
+/**
+ * The only module that talks to Tauri. Commands live in `src-tauri/src/commands.rs`; the `navigate`
+ * event comes from the tray (`src-tauri/src/tray.rs`).
+ */
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import type { DependencyInfo, HwAccel, KeyProvider, KeyStatus, StoragePaths, View } from "../types/system";
+import type {
+  SessionStatus,
+  SidecarCommand,
+  SidecarEventPayload,
+  SidecarExitPayload,
+  SidecarInfo,
+} from "../types/sidecar";
+import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
+
+export const NAVIGATE_EVENT = "navigate";
+export const SIDECAR_EVENT = "sidecar-event";
+export const SIDECAR_EXIT_EVENT = "sidecar-exit";
+export const SIDECAR_SESSION_EVENT = "sidecar-session";
+export const NLE_STATE_EVENT = "nle-state";
+export const KEEP_ON_TOP_EVENT = "keep-on-top";
+/** The agent session's job id (`SESSION_JOB_ID` in sidecar.rs). */
+export const SESSION_JOB_ID = "agent-session";
+
+export function takePendingView(): Promise<View | null> {
+  return invoke<View | null>("take_pending_view");
+}
+
+export function getKeyStatus(): Promise<KeyStatus> {
+  return invoke<KeyStatus>("llm_key_status");
+}
+
+/** Saves a provider's API key in the macOS Keychain. Rust checks it; the key is never sent back. */
+export function setApiKey(provider: KeyProvider, key: string): Promise<KeyStatus> {
+  return invoke<KeyStatus>("llm_key_set", { provider, key });
+}
+
+export function removeApiKey(provider: KeyProvider): Promise<KeyStatus> {
+  return invoke<KeyStatus>("llm_key_remove", { provider });
+}
+
+export function getDependencyStatus(): Promise<DependencyInfo[]> {
+  return invoke<DependencyInfo[]>("dependency_status");
+}
+
+export function getHardwareAcceleration(): Promise<HwAccel> {
+  return invoke<HwAccel>("hardware_acceleration");
+}
+
+export function getStoragePaths(): Promise<StoragePaths> {
+  return invoke<StoragePaths>("storage_paths");
+}
+
+export function getAppVersion(): Promise<string> {
+  return getVersion();
+}
+
+export function onNavigate(handler: (view: View) => void): Promise<UnlistenFn> {
+  return listen<View>(NAVIGATE_EVENT, (event) => handler(event.payload));
+}
+
+/**
+ * Starts a one-shot sidecar job. The caller picks the job id so it can be listening before the first
+ * event arrives. Rejects with a readable message if the job could not start.
+ */
+export function startSidecar(jobId: string, command: SidecarCommand, request: Record<string, unknown>): Promise<void> {
+  return invoke("sidecar_start", { jobId, command, request });
+}
+
+/** Writes one JSON line to a running interactive job, such as the agent session. */
+export function sendToSidecar(jobId: string, message: Record<string, unknown>): Promise<void> {
+  return invoke("sidecar_send", { jobId, message });
+}
+
+/** Asks a job to stop. Does nothing if it has already ended. */
+export function cancelSidecar(jobId: string): Promise<void> {
+  return invoke("sidecar_cancel", { jobId });
+}
+
+export function getSessionStatus(): Promise<SessionStatus> {
+  return invoke<SessionStatus>("sidecar_session_status");
+}
+
+export function restartSession(): Promise<void> {
+  return invoke("sidecar_session_restart");
+}
+
+export function getSidecarInfo(): Promise<SidecarInfo> {
+  return invoke<SidecarInfo>("sidecar_info");
+}
+
+export function onSidecarEvent(handler: (payload: SidecarEventPayload) => void): Promise<UnlistenFn> {
+  return listen<SidecarEventPayload>(SIDECAR_EVENT, (event) => handler(event.payload));
+}
+
+export function onSidecarExit(handler: (payload: SidecarExitPayload) => void): Promise<UnlistenFn> {
+  return listen<SidecarExitPayload>(SIDECAR_EXIT_EVENT, (event) => handler(event.payload));
+}
+
+export function onSessionStatus(handler: (status: SessionStatus) => void): Promise<UnlistenFn> {
+  return listen<SessionStatus>(SIDECAR_SESSION_EVENT, (event) => handler(event.payload));
+}
+
+/** Both editors' current state (Rust `nle_state`). */
+export function getNleState(): Promise<NleState[]> {
+  return invoke<NleState[]>("nle_state");
+}
+
+/** One read from an editor through its watcher: `status` or `read_timeline` ({ timeline }). */
+export function nleCall<T = unknown>(host: NleHost, command: string, args: Record<string, unknown> = {}): Promise<T> {
+  return invoke<T>("nle_call", { host, command, args });
+}
+
+/** Restarts an editor's watcher now, clearing any backoff. */
+export function nleReconnect(host: NleHost): Promise<void> {
+  return invoke("nle_reconnect", { host });
+}
+
+export function onNleState(handler: (state: NleState) => void): Promise<UnlistenFn> {
+  return listen<NleState>(NLE_STATE_EVENT, (event) => handler(event.payload));
+}
+
+export function getPremierePanelStatus(): Promise<PremierePanelStatus> {
+  return invoke<PremierePanelStatus>("premiere_panel_status");
+}
+
+/** Copies VibeCut Agent's panel into Adobe's CEP extensions folder (only on the user's request). */
+export function installPremierePanel(): Promise<PremierePanelStatus> {
+  return invoke<PremierePanelStatus>("premiere_panel_install");
+}
+
+export function uninstallPremierePanel(): Promise<PremierePanelStatus> {
+  return invoke<PremierePanelStatus>("premiere_panel_uninstall");
+}
+
+/** Asks the user for a folder; null if they cancelled. */
+export async function chooseFolder(title: string, defaultPath?: string): Promise<string | null> {
+  const picked = await openDialog({ directory: true, multiple: false, title, ...(defaultPath ? { defaultPath } : {}) });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Asks the user for one file with one of these extensions; null if they cancelled. */
+export async function chooseFile(title: string, extensions: string[], defaultPath?: string): Promise<string | null> {
+  const picked = await openDialog({ multiple: false, title, filters: [{ name: title, extensions }], ...(defaultPath ? { defaultPath } : {}) });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Shows a file in Finder. */
+export function revealInFinder(path: string): Promise<void> {
+  return revealItemInDir(path);
+}
+
+/** Whether the window stays on top of other apps, including a full-screen editor (window_mode.rs). */
+export function getKeepOnTop(): Promise<boolean> {
+  return invoke<boolean>("keep_on_top_status");
+}
+
+export function setKeepOnTop(on: boolean): Promise<boolean> {
+  return invoke<boolean>("set_keep_on_top", { on });
+}
+
+/** Every change, whichever control made it (the header, Settings or the tray). */
+export function onKeepOnTop(handler: (on: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>(KEEP_ON_TOP_EVENT, (event) => handler(event.payload));
+}

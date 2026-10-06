@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VibeCut Agent",
+  "version": "0.1.0",
+  "identifier": "com.cj.vibecutagent",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "VibeCut Agent",
+        "width": 440,
+        "height": 700,
+        "minWidth": 380,
+        "minHeight": 520,
+        "resizable": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../pyproject.toml": "python/pyproject.toml",
+      "../uv.lock": "python/uv.lock",
+      "../.python-version": "python/.python-version",
+      "../src-python/vibecut_agent/*.py": "python/src-python/vibecut_agent/",
+      "../src-python/vibecut_agent/nle/*.py": "python/src-python/vibecut_agent/nle/",
+      "../src-python/vibecut_agent/nle/interchange/*.py": "python/src-python/vibecut_agent/nle/interchange/",
+      "../src-python/vibecut_agent/transcribe/*.py": "python/src-python/vibecut_agent/transcribe/",
+      "../src-premiere-panel/CSXS/manifest.xml": "premiere-panel/CSXS/manifest.xml",
+      "../src-premiere-panel/index.html": "premiere-panel/index.html",
+      "../src-premiere-panel/bridge.js": "premiere-panel/bridge.js",
+      "../src-premiere-panel/host.jsx": "premiere-panel/host.jsx",
+      "../src-premiere-panel/broll/index.html": "premiere-panel/broll/index.html",
+      "../src-premiere-panel/broll/dist/panel.js": "premiere-panel/broll/dist/panel.js",
+      "../src-premiere-panel/broll/dist/panel.css": "premiere-panel/broll/dist/panel.css",
+      "../src-python/resolve_watch.py": "python/src-python/resolve_watch.py",
+      "../src-python/vibecut_agent/agent/*.py": "python/src-python/vibecut_agent/agent/",
+      "../src-python/vibecut_agent/broll/*.py": "python/src-python/vibecut_agent/broll/"
+    }
+  }
+}

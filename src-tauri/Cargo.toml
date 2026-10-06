@@ -1,0 +1,50 @@
+[package]
+name = "vibecut-agent"
+version = "0.1.0"
+description = "VibeCut Agent: a menu-bar AI editing assistant for Premiere Pro and DaVinci Resolve"
+authors = ["CJ Palanca"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name (cargo issue #8519 on Windows).
+name = "vibecut_agent_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dotenvy = "0.15"
+tauri-plugin-dialog = "2"
+keyring = { version = "3", features = ["apple-native"] }
+# Spyglass's index (Rough Cut Studio Suite - Blair Themed), read only (spyglass_archive.rs).
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Shrinks a keyframe into a small drag icon (spyglass.rs).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Waveform matching for audio sync (audiosync.rs, VibeCut's), as VibeCut pins it.
+rustfft = "6.4.1"
+
+# Lets the window into a full-screen editor's Space (window_mode.rs). Already in the tree through Tauri.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "NSWindow", "NSResponder", "NSView", "NSEvent", "NSImage", "NSPasteboard", "NSDragging",
+    "NSDraggingItem", "NSDraggingSession", "NSApplication", "NSGraphics", "NSGraphicsContext",
+] }
+# The Library's file drag (native_drag.rs), adapted from drag-rs: these are what it was built on.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSArray", "NSString", "NSURL", "NSGeometry"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
