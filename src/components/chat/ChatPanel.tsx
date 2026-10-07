@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type DragEvent } from "react";
 import { SquarePen, Undo2 } from "lucide-react";
 import { lastTurnEdits, newConversation, retryLastTurn, rewindBlockReason, startEditingLastMessage } from "../../lib/agent/controller";
 import { revertLastRequest } from "../../lib/agent/edits";
@@ -10,7 +10,8 @@ import type { AgentStatus } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
 import { StatusDot, type Tone } from "../common/StatusDot";
 import { ChatHistoryMenu } from "./ChatHistoryMenu";
-import { Composer } from "./Composer";
+import { Composer, attachImages } from "./Composer";
+import { imageFiles } from "../../lib/agent/attachments";
 import { DraftBar } from "./DraftBar";
 import { MessageList, type TurnActions } from "./MessageList";
 
@@ -38,6 +39,27 @@ export function ChatPanel() {
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
   const saveError = useChatHistoryStore((s) => s.saveError);
   const [reverting, setReverting] = useState(false);
+  // Images dragged over the chat (Phase 8g): an outline while over it, then into the composer.
+  const [dropping, setDropping] = useState(false);
+  const [dropProblem, setDropProblem] = useState<string | null>(null);
+  const takesFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  const onDragOver = (event: DragEvent) => {
+    if (!takesFiles(event) || status === "offline" || status === "error") return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropping(true);
+  };
+  const onDrop = (event: DragEvent) => {
+    setDropping(false);
+    if (!takesFiles(event)) return;
+    event.preventDefault();
+    const files = imageFiles(event.dataTransfer.files);
+    if (!files.length) {
+      setDropProblem("Only images can be dropped here");
+      return;
+    }
+    void attachImages(files).then(setDropProblem);
+  };
   // What Retry and Edit may do (rewindBlockReason) follows this, the status, the messages, the edit log
   // and outside calls, all read above.
   const lastTurn = useAgentStore((s) => s.lastTurn);
@@ -74,7 +96,17 @@ export function ChatPanel() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      onDragOver={onDragOver}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false);
+      }}
+      onDrop={onDrop}
+      className={`relative flex min-h-0 flex-1 flex-col ${dropping ? "outline-2 -outline-offset-2 outline-dashed outline-athletic-blue-light" : ""}`}
+    >
+      {dropping ? (
+        <p className="pointer-events-none absolute inset-x-0 top-1/2 z-10 text-center text-sm text-athletic-blue-light">Drop images to send them</p>
+      ) : null}
       <div className="flex items-center justify-between px-3 py-1.5 text-[11px]">
         <span className="flex items-center gap-1.5">
           <StatusDot tone={STATUS_TONE[status]} />
@@ -112,6 +144,14 @@ export function ChatPanel() {
         </span>
       </div>
       {saveError ? <p className="px-3 pb-1 text-[11px] text-warning">{saveError}</p> : null}
+      {dropProblem ? (
+        <p role="alert" className="flex items-center justify-between px-3 pb-1 text-[11px] text-warning">
+          {dropProblem}
+          <button type="button" onClick={() => setDropProblem(null)} className="text-cool-grey hover:text-white">
+            Dismiss
+          </button>
+        </p>
+      ) : null}
       {messages.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 text-center">
           <p className="text-sm text-white">No conversation yet</p>
@@ -121,7 +161,7 @@ export function ChatPanel() {
           </p>
         </div>
       ) : (
-        <MessageList messages={messages} activity={activity} turn={turn} />
+        <MessageList messages={messages} activity={activity} turn={turn} busy={running} />
       )}
       <DraftBar disabled={running} />
       <Composer />

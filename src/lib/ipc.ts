@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { DependencyInfo, HwAccel, KeyProvider, KeyStatus, StoragePaths, View } from "../types/system";
 import type {
   SessionStatus,
@@ -113,6 +113,21 @@ export function onSessionStatus(handler: (status: SessionStatus) => void): Promi
 /** Both editors' current state (Rust `nle_state`). */
 export function getNleState(): Promise<NleState[]> {
   return invoke<NleState[]>("nle_state");
+}
+
+/** Files an image sent with a message beside its chat (Phase 8g). `data` is base64. */
+export function saveChatAttachment(chatId: string, attachmentId: string, mime: string, data: string): Promise<void> {
+  return invoke("chat_attachment_save", { chatId, attachmentId, mime, data });
+}
+
+/** An image filed with `saveChatAttachment`. */
+export function loadChatAttachment(chatId: string, attachmentId: string): Promise<{ mime: string; data: string }> {
+  return invoke("chat_attachment_load", { chatId, attachmentId });
+}
+
+/** Opens an http(s) link from a reply in the default browser, never in the app's own window. */
+export function openExternal(url: string): Promise<void> {
+  return openUrl(url);
 }
 
 /** One read from an editor through its watcher: `status` or `read_timeline` ({ timeline }). */

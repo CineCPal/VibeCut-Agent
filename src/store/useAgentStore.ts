@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, LastTurn, StoryFirstPass } from "../types/agent";
+import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, LastTurn, PendingImage, StoryFirstPass } from "../types/agent";
 import { AI_CHOICES } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
@@ -18,6 +18,8 @@ export interface AgentState {
   /** Which model reads long footage first for the Story Editor (Phase 7e). */
   storyFirstPass: StoryFirstPass;
   draft: string;
+  /** Images in the composer, to go with the next message (Phase 8g). */
+  pendingImages: PendingImage[];
   /** The running `chat` sidecar job, and what it was started for ("<provider>:<host>"). */
   jobId: string | null;
   sessionKey: string | null;
@@ -46,6 +48,7 @@ export interface AgentState {
   setAiChoice: (choice: AiChoiceId) => void;
   setStoryFirstPass: (choice: StoryFirstPass) => void;
   setDraft: (draft: string) => void;
+  setPendingImages: (images: PendingImage[]) => void;
   setSession: (jobId: string, sessionKey: string) => void;
   /** The sidecar's job ended (or never started): the next message starts a new one. */
   endSession: () => void;
@@ -76,6 +79,7 @@ export const useAgentStore = create<AgentState>()(
       aiChoice: "gemini",
       storyFirstPass: "same",
       draft: "",
+      pendingImages: [],
       jobId: null,
       sessionKey: null,
       history: [],
@@ -108,6 +112,7 @@ export const useAgentStore = create<AgentState>()(
       },
       setStoryFirstPass: (storyFirstPass) => set({ storyFirstPass: storyFirstPass === "gemini" ? "gemini" : "same" }),
       setDraft: (draft) => set({ draft }),
+      setPendingImages: (pendingImages) => set({ pendingImages }),
       setSession: (jobId, sessionKey) => set({ jobId, sessionKey }),
       endSession: () => set({ jobId: null, sessionKey: null, activity: null }),
       finishTurn: (history, provider, usage) => set({ history, historyProvider: provider, usage, activity: null }),
@@ -131,7 +136,7 @@ export const useAgentStore = create<AgentState>()(
           };
         }),
       clear: () =>
-        set({ chatId: newId(), messages: [], draft: "", history: [], historyProvider: null, usage: null, activity: null, lastTurn: null, editingMessageId: null, customTitle: null, autoTitle: null }),
+        set({ chatId: newId(), messages: [], draft: "", pendingImages: [], history: [], historyProvider: null, usage: null, activity: null, lastTurn: null, editingMessageId: null, customTitle: null, autoTitle: null }),
       loadChat: (chat) =>
         set({
           chatId: chat.id,
@@ -139,6 +144,7 @@ export const useAgentStore = create<AgentState>()(
           history: chat.history,
           historyProvider: chat.provider,
           draft: "",
+          pendingImages: [],
           usage: null,
           activity: null,
           jobId: null,

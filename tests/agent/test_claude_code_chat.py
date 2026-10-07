@@ -129,6 +129,17 @@ def flag(argv: list[str], name: str) -> str:
     return argv[argv.index(name) + 1]
 
 
+def sent_blocks(seen: dict[str, Any]) -> list[dict[str, Any]]:
+    """The content blocks of the one stream-json user line Claude Code was given (Phase 8g)."""
+    lines = seen["stdin"].splitlines()
+    assert len(lines) == 1
+    line = json.loads(lines[0])
+    assert line["type"] == "user"
+    assert line["message"]["role"] == "user"
+    blocks: list[dict[str, Any]] = line["message"]["content"]
+    return blocks
+
+
 def test_a_turn_runs_claude_code_with_only_vibecuts_tools(fake: dict[str, Any]) -> None:
     outcome, events = run(fake, max_iterations=40)
     seen = recorded(fake)
@@ -148,7 +159,8 @@ def test_a_turn_runs_claude_code_with_only_vibecuts_tools(fake: dict[str, Any]) 
     server = json.loads(flag(argv, "--mcp-config"))["mcpServers"]["vibecut"]
     assert server["command"] == "/opt/homebrew/bin/uv"
     assert server["env"] == {"PYTHONPATH": "/r/src-python", "VIBECUT_MCP_CALLER": "job-7"}
-    assert seen["stdin"] == "mark the hook"
+    assert flag(argv, "--input-format") == "stream-json"
+    assert sent_blocks(seen) == [{"type": "text", "text": "mark the hook"}]
     assert seen["cwd"] == os.path.realpath(fake["setup"]["workDir"])
     assert seen["env"]["ANTHROPIC_API_KEY"] is None, "the subscription, never an API key"
     assert seen["env"]["CLAUDE_CONFIG_DIR"] == fake["setup"]["configDir"]
@@ -205,11 +217,22 @@ def test_a_session_claude_code_no_longer_has_starts_a_new_one(
     assert len(runs) == 2
     assert flag(runs[0], "--resume") == gone
     assert "--resume" not in runs[1]
-    assert recorded(fake)["stdin"] == claude_code_chat.SESSION_GONE_NOTE + "mark the hook"
+    assert sent_blocks(recorded(fake)) == [
+        {"type": "text", "text": claude_code_chat.SESSION_GONE_NOTE.strip()},
+        {"type": "text", "text": "mark the hook"},
+    ]
     assert outcome["text"] == "Marked the hook."
     assert outcome["history"] == [{"claudeCodeSession": SESSION}], "the new session replaces the lost one"
     details = [fields["detail"] for kind, fields in events if kind == "status"]
     assert claude_code_chat.SESSION_GONE_STATUS in details
+
+
+def test_images_go_ahead_of_the_text_as_image_blocks(fake: dict[str, Any]) -> None:
+    run(fake, images=[{"mime": "image/png", "data": "iVBORw0KGgo="}])
+    assert sent_blocks(recorded(fake)) == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+        {"type": "text", "text": "mark the hook"},
+    ]
 
 
 def test_only_a_missing_session_is_retried() -> None:

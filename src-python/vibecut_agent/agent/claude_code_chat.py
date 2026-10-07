@@ -35,6 +35,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from vibecut_agent.agent.attachments import claude_blocks
 from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE
 from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
 from vibecut_agent.agent.streaming import ReplyStream
@@ -101,6 +102,9 @@ def build_args(
     args = [
         setup["program"],
         "-p",
+        # The message arrives as one stream-json user line, so it can carry images (Phase 8g).
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -287,6 +291,17 @@ def _text_delta(event: dict[str, Any]) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+def user_line(images: list[dict[str, str]] | None, text: str, note: str = "") -> bytes:
+    """The turn's message as Claude Code reads it with ``--input-format stream-json``: one user line of
+    image and text blocks (checked live on 2.1.292, with ``--resume`` and ``--fork-session`` too). A
+    note (the lost-session one) goes first, as a text block of its own."""
+    blocks = claude_blocks(images, text)
+    if note:
+        blocks.insert(0, {"type": "text", "text": note.strip()})
+    line = {"type": "user", "message": {"role": "user", "content": blocks}}
+    return (json.dumps(line) + "\n").encode("utf-8")
+
+
 def run_chat_turn(
     setup: Any,
     model: str | None,
@@ -297,8 +312,10 @@ def run_chat_turn(
     should_abort: Callable[[], bool] = lambda: False,
     max_iterations: int = DEFAULT_MAX_STEPS,
     popen: Popen = subprocess.Popen,
+    images: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Runs one turn through Claude Code, end to end. Raises ChatError when it can't."""
+    """Runs one turn through Claude Code, end to end. Raises ChatError when it can't. ``images`` go
+    ahead of the text as image blocks in the stream-json user line (Phase 8g)."""
     setup = check_setup(setup)
     reply = ReplyStream(emit)
     if not user_message or not user_message.strip():
@@ -308,15 +325,15 @@ def run_chat_turn(
     os.makedirs(setup["workDir"], exist_ok=True)
     try:
         return _run_once(
-            setup, resolved_model, system_instruction, session, history, user_message,
-            reply, should_abort, max_iterations, popen,
+            setup, resolved_model, system_instruction, session, history,
+            user_line(images, user_message), reply, should_abort, max_iterations, popen,
         )
     except _SessionGone:
         reply.reset()
         reply.emit("status", detail=SESSION_GONE_STATUS)
         return _run_once(
-            setup, resolved_model, system_instruction, None, [], SESSION_GONE_NOTE + user_message,
-            reply, should_abort, max_iterations, popen,
+            setup, resolved_model, system_instruction, None, [],
+            user_line(images, user_message, note=SESSION_GONE_NOTE), reply, should_abort, max_iterations, popen,
         )
 
 
@@ -326,7 +343,7 @@ def _run_once(
     system_instruction: str,
     session: str | None,
     history: list[Any],
-    user_message: str,
+    user_message: bytes,
     stream: ReplyStream,
     should_abort: Callable[[], bool],
     max_iterations: int,
@@ -368,7 +385,7 @@ def _run_once(
     threading.Thread(target=pump_stderr, daemon=True).start()
     try:
         assert process.stdin is not None
-        process.stdin.write(user_message.encode("utf-8"))
+        process.stdin.write(user_message)
         process.stdin.close()
     except OSError:
         pass  # it died at once; reported below from its exit

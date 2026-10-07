@@ -19,6 +19,8 @@ export function describeError(error: unknown): string {
 
 /** The bracketed context put ahead of the user's words: the open timeline, then the project's pool. */
 export async function snapshotFor(host: NleHost | null, timeline: string | null): Promise<string> {
+  // Reply timecodes are placed on the timeline read here, and on nothing when none is (a draft isn't in the editor).
+  useNleStateStore.getState().setLastTimeline(null);
   if (!host) return snapshotHeader(null, null);
   // Another project in the editor starts the connection (made timelines, pool ids) over.
   useConnectionStore.getState().forProject(host, useNleStateStore.getState().hosts[host].project);
@@ -35,6 +37,7 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
   if (timeline) {
     try {
       view = await nleCall<HostTimeline>(host, "read_timeline", { timeline });
+      useNleStateStore.getState().setLastTimeline({ host, timeline, fps: view.fps, startTimecode: view.startTimecode });
     } catch (error) {
       problem = `"${timeline}" couldn't be read: ${describeError(error)}`;
     }

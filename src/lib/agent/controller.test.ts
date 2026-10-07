@@ -11,6 +11,8 @@ const ipc = vi.hoisted(() => ({
   sendToSidecar: vi.fn(),
   cancelSidecar: vi.fn(),
   nleCall: vi.fn(),
+  saveChatAttachment: vi.fn(async () => undefined),
+  loadChatAttachment: vi.fn(async () => ({ mime: "image/png", data: "QUJD" })),
   onSidecarEvent: vi.fn(async (h: (p: SidecarEventPayload) => void) => ((handlers.event = h), () => undefined)),
   onSidecarExit: vi.fn(async (h: (p: SidecarExitPayload) => void) => ((handlers.exit = h), () => undefined)),
 }));
@@ -27,8 +29,12 @@ import {
   startAgentService,
   startEditingLastMessage,
   stopTurn,
+  TOOL_DETAIL_CHARS,
+  toolDetail,
 } from "./controller";
 import { useEditLogStore } from "../../store/useEditLogStore";
+import { clearAttachmentCache } from "./attachments";
+import type { PendingImage } from "../../types/agent";
 import { useMcpStore } from "../../store/useMcpStore";
 import type { EditEntry } from "../../types/edits";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -71,6 +77,9 @@ describe("agent controller", () => {
     useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "" });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
     useMcpStore.setState({ outsideRunning: 0 });
+    ipc.saveChatAttachment.mockResolvedValue(undefined);
+    ipc.loadChatAttachment.mockResolvedValue({ mime: "image/png", data: "QUJD" });
+    clearAttachmentCache();
     startAgentService();
     await flush();
   });
@@ -114,6 +123,41 @@ describe("agent controller", () => {
     expect(agent()).toMatchObject({ status: "idle", history: [{ role: "user" }], historyProvider: "gemini", activity: null });
     expect(agent().messages.at(-1)).toMatchObject({ role: "assistant", text: "Marked the hook at 1 s." });
     expect(agent().usage?.steps).toBe(2);
+  });
+
+  it("shows each tool call as a card: running, then done or failed with its result (Phase 8f)", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    ipc.nleCall.mockImplementation(async (_host: string, command: string) => {
+      if (command === "read_timeline") return TIMELINE;
+      if (command === "add_markers") return new Promise((resolve) => (finish = resolve));
+      throw new Error(`unexpected ${command}`);
+    });
+    await sendUserMessage("mark the hook");
+    event({ type: "tool_calls", calls: [
+      { id: "t1", name: "add_markers", args: { markers: [{ time: 1, name: "Hook" }] } },
+      { id: "t2", name: "remove_everything", args: {} },
+    ] }); // prettier-ignore
+    await vi.waitFor(() => expect(agent().messages.at(-1)?.tool?.state).toBe("running"));
+    expect(agent().messages.at(-1)).toMatchObject({ role: "tool", text: "Running add_markers…", tool: { name: "add_markers" } });
+    expect(JSON.parse(agent().messages.at(-1)!.tool!.args)).toEqual({ markers: [{ time: 1, name: "Hook" }] });
+
+    finish({ added: [{ id: "f25", time: 1, name: "Hook" }], alreadyThere: [], refusedAt: [] });
+    await vi.waitFor(() => expect(ipc.sendToSidecar).toHaveBeenCalledTimes(2));
+    const [first, second] = agent().messages.filter((m) => m.role === "tool");
+    expect(first.tool).toMatchObject({ state: "done" });
+    expect(JSON.parse(first.tool!.result!)).toMatchObject({ added: [{ id: "f25" }] });
+    expect(second).toMatchObject({ text: "Unknown tool remove_everything", tool: { state: "failed" } });
+  });
+
+  it("adds no card for a call refused after Stop, and cuts long details", async () => {
+    await sendUserMessage("go");
+    await stopTurn();
+    event({ type: "tool_calls", calls: [{ id: "t1", name: "add_markers", args: {} }] });
+    await vi.waitFor(() => expect(ipc.sendToSidecar).toHaveBeenCalledWith(agent().jobId, expect.objectContaining({ type: "tool_result" })));
+    expect(agent().messages.filter((m) => m.role === "tool")).toEqual([]);
+    const long = toolDetail({ text: "x".repeat(TOOL_DETAIL_CHARS * 2) });
+    expect(long.length).toBeLessThan(TOOL_DETAIL_CHARS + 80);
+    expect(long).toMatch(/more characters not kept\)$/);
   });
 
   it("sends a follow-up to the same job with the history", async () => {
@@ -268,6 +312,57 @@ describe("agent controller", () => {
       event({ type: "error", message: "boom" });
       expect(assistants()[0]).toMatchObject({ text: "Partly", status: "done" });
       expect(agent().messages.at(-1)).toMatchObject({ role: "error", text: "boom" });
+    });
+  });
+
+  describe("images (Phase 8g)", () => {
+    const image = (id: string): PendingImage => ({ id, name: `${id}.png`, mime: "image/png", width: 4, height: 3, bytes: 3, data: "QUJD", dataUrl: "data:image/png;base64,QUJD" });
+
+    it("files the images beside the chat, then sends them with the message", async () => {
+      useAgentStore.setState({ chatId: "chat-1" });
+      expect(await sendUserMessage("", [image("i1")])).toBe(true);
+      expect(ipc.saveChatAttachment).toHaveBeenCalledWith("chat-1", "i1", "image/png", "QUJD");
+      expect(agent().messages[0]).toMatchObject({ role: "user", text: "(image)", attachments: [{ id: "i1", name: "i1.png", width: 4, height: 3, bytes: 3 }] });
+      expect(agent().messages[0].attachments![0]).not.toHaveProperty("data");
+      expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ attachments: [{ mime: "image/png", data: "QUJD" }] });
+
+      event({ type: "result", text: "A frame.", history: ["h1"] });
+      await sendUserMessage("and this?", [image("i2")]);
+      expect(ipc.sendToSidecar).toHaveBeenCalledWith(agent().jobId, expect.objectContaining({ type: "user_message", attachments: [{ mime: "image/png", data: "QUJD" }] }));
+      event({ type: "result", text: "Another.", history: ["h1", "h2"] });
+      await sendUserMessage("no image");
+      expect(ipc.sendToSidecar.mock.calls.at(-1)?.[1]).not.toHaveProperty("attachments");
+    });
+
+    it("sends nothing when the images can't be kept, and says so", async () => {
+      ipc.saveChatAttachment.mockRejectedValueOnce(new Error("disk full"));
+      expect(await sendUserMessage("look", [image("i1")])).toBe(false);
+      expect(agent().messages).toEqual([expect.objectContaining({ role: "error", text: "Couldn't keep the image to send: disk full" })]);
+      expect(agent().status).toBe("idle");
+      expect(ipc.startSidecar).not.toHaveBeenCalled();
+    });
+
+    it("retry sends the images again, read back from beside the chat", async () => {
+      useAgentStore.setState({ chatId: "chat-1" });
+      await sendUserMessage("what's this?", [image("i1")]);
+      event({ type: "result", text: "A frame.", history: ["h1"] });
+      clearAttachmentCache();
+      ipc.sendToSidecar.mockClear();
+      await retryLastTurn();
+      expect(ipc.loadChatAttachment).toHaveBeenCalledWith("chat-1", "i1");
+      expect(ipc.sendToSidecar).toHaveBeenCalledWith(agent().jobId, expect.objectContaining({ userMessage: expect.stringContaining("what's this?"), attachments: [{ mime: "image/png", data: "QUJD" }] }));
+      expect(agent().messages.filter((m) => m.role === "user")).toHaveLength(1);
+    });
+
+    it("editing puts the message's images back in the composer", async () => {
+      useAgentStore.setState({ chatId: "chat-1" });
+      await sendUserMessage("", [image("i1")]);
+      event({ type: "result", text: "A frame.", history: ["h1"] });
+      expect(startEditingLastMessage()).toBe(true);
+      expect(agent().draft).toBe("");
+      await vi.waitFor(() => expect(agent().pendingImages.map((i) => i.id)).toEqual(["i1"]));
+      cancelEditing();
+      expect(agent().pendingImages).toEqual([]);
     });
   });
 

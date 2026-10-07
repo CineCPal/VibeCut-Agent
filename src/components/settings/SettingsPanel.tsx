@@ -15,6 +15,7 @@ import { EditorsSection } from "./EditorsSection";
 import { LibrarySection } from "./LibrarySection";
 import { ClaudeCodeSection } from "./ClaudeCodeSection";
 import { OutsideControlSection } from "./OutsideControlSection";
+import { PromptsSection } from "./PromptsSection";
 import { Modal } from "../common/Modal";
 import { SidecarStatusRow } from "../common/SidecarStatusRow";
 import { Section } from "../common/Section";
@@ -114,6 +115,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           </span>
         </label>
       </Section>
+
+      <PromptsSection />
 
       <Section title="Window">
         <label className="flex items-start gap-2 text-xs text-white">

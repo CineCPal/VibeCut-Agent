@@ -168,6 +168,27 @@ describe("chat history (Phase 8a)", () => {
     expect(parsed?.messages[1]).toMatchObject({ text: "Half", status: "done" });
   });
 
+  it("keeps tool cards, shows one saved while running as done, and makes a malformed one a plain line (Phase 8f)", () => {
+    const tool = { name: "add_markers", args: "{}", state: "running" };
+    const parsed = parseSavedChat({
+      ...savedChat("x"),
+      messages: [msg("u", "user", "go"), { ...msg("t1", "tool", "Running add_markers…"), tool }, { ...msg("t2", "tool", "Old line"), tool: { name: 3 } }],
+    });
+    expect(parsed?.messages[1].tool).toEqual({ ...tool, state: "done" });
+    expect(parsed?.messages[2]).not.toHaveProperty("tool");
+    expect(parsed?.messages[2].text).toBe("Old line");
+  });
+
+  it("keeps a message's images and drops malformed ones (Phase 8g)", () => {
+    const good = { id: "i1", name: "a.png", mime: "image/png", width: 2, height: 2, bytes: 9 };
+    const parsed = parseSavedChat({
+      ...savedChat("x"),
+      messages: [{ ...msg("u", "user", "look"), attachments: [good, { id: "i2" }] }, { ...msg("v", "user", "again"), attachments: "nope" }],
+    });
+    expect(parsed?.messages[0].attachments).toEqual([good]);
+    expect(parsed?.messages[1]).not.toHaveProperty("attachments");
+  });
+
   it("saves the chat a moment after it changes, once, and keeps the list Rust answers", async () => {
     stop = startChatHistory();
     await settle();

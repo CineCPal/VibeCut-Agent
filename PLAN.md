@@ -1018,6 +1018,111 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
 - Retry and Edit, and "Revert & retry" on a scratch Resolve timeline.
 - Search, rename and a model name across a relaunch.
 
+## Phase 8e–8h: Formatted replies, tool cards, images, saved prompts (built 2026-10-06)
+
+**Why (the user, 2026-10-06):** after 8a–8d the chat still showed replies as plain text and each tool call as one line, took words only, and had nothing reusable. The user chose all four.
+
+### 8e: Formatted replies and timeline positions
+- **New deps:** `react-markdown` 10 and `remark-gfm` 4. Raw HTML stays text (react-markdown's default), so there's no sanitizer.
+- **`components/chat/Markdown.tsx`:** renders a finished assistant reply: lists, emphasis, code (a fenced block has its own Copy), and GFM tables (scroll sideways). The streaming reply stays plain text until it's done (8b's new key). User, tool, system and error messages stay plain.
+- **Links (`safeUrl`):**
+  - `http(s)` opens in the browser (`openExternal`, `@tauri-apps/plugin-opener`'s `openUrl`; `opener:default` allows it);
+  - `t:<seconds>` is a timeline position;
+  - anything else (`javascript:`, `file:`) renders as text;
+  - a Markdown image shows as its alt text.
+- **Timeline positions:**
+  - The prompt asks the agent to write them as `[1:23.4](t:83.4)` (seconds from the timeline's start, the snapshot's convention).
+  - SMPTE timecodes in text or inline code (`01:00:12:10`, drop-frame `;`) become the same chip (`remarkTimecodes`). They're placed with `lib/agent/timecode.ts` (29.97/59.94 drop-frame counted), using the fps and start timecode of the last snapshot. `snapshotFor` stores these as `useNleStateStore.lastTimeline`: null for a draft or no timeline, and then timecodes stay text.
+  - **The chip (`TimecodeChip`):** `nleCall(host, "set_playhead", { timeline, time })` on the editor's open timeline. It's disabled, saying why, with no editor or no timeline, and shows a failure for 2 s.
+
+### 8f: Tool call cards
+- `ChatMessage.tool?: { name, args, result?, state: "running" | "done" | "failed" }`. `args` and `result` are pretty JSON cut to `TOOL_DETAIL_CHARS` (4,000) by `toolDetail`, and the message's `text` is the summary.
+- **`runChatTool`** adds the card as running, then sets its summary and result. A result with `error` counts as failed. A call refused after Stop makes no card. All three providers go through it: Claude Code's calls come in over the MCP bridge.
+- **`ToolCards.tsx`:** consecutive cards group. A group stays open while its turn runs (`MessageList`'s `busy`), then folds to "n tool calls · m failed". Each card opens to show Arguments and Result, each with Copy. Retry notes, revert summaries and the step-budget note stay plain lines.
+- **Saved chats:** a malformed `tool` is dropped, keeping the line, and one saved while `running` reopens as `done`.
+
+### 8g: Images with a message
+**Limits** (`lib/agent/attachments.ts`, `agent/attachments.py`, `chat_store.rs`):
+- 4 images per message;
+- PNG/JPEG/WebP/GIF;
+- at most 1568 px on the long edge;
+- at most 3.75 MB each (4 MB on disk).
+
+**Shrinking (`prepareImage`):** an image within the edge limit and under 1 MB goes as it is. Otherwise it's redrawn in a canvas: a PNG stays PNG if that comes out under 1 MB, else it becomes JPEG at 0.85 (0.7 if still too big) on white.
+
+**Composer:**
+- **Ways in:** the image button (a file picker), a paste, or a drop anywhere on the chat. `dragDropEnabled: false` on the window lets HTML drops reach the page; the native drag *out* of the Library is unaffected.
+- **Chips:** thumbnails with a remove button. Backspace in an empty box removes the last one.
+- **Sending:** images can go without words, and the message reads "(image)". A send that didn't go out puts the words and images back.
+
+**Storage (new commands, `chat_store.rs`):**
+```text
+<app data>/history/attachments/<chatId>/<attId>.<png|jpg|webp|gif>   0700 folders, 0600 files
+chat_attachment_save(chatId, attachmentId, mime, data: base64)        ids as chat ids; type allow-list; ≤ 4 MB
+chat_attachment_load(chatId, attachmentId) → { mime, data }
+```
+- Deleting a chat, or its falling off the 30-chat list, removes its folder.
+- Messages keep only `attachments: [{ id, name, mime, width, height, bytes }]`, so chat files stay small. Thumbnails load on demand (a 40-image cache). One that's gone says "no longer on disk".
+- Images left behind when an edit drops them stay until the chat is deleted.
+
+**Sending:**
+- **Order:** `sendUserMessage(text, images)` files the images first (a failure stops the send, says so, and returns false), then adds the message.
+- **Payload:** `attachments: [{ mime, data }]` goes on the first `chat` request and on `user_message`.
+- **Retry and Edit:** Retry reads the images back before taking the turn back. Edit puts them back as chips.
+
+**Sidecar protocol (`chat.py`):**
+- The request and `user_message` gain an optional `attachments`, checked by `parse_images`: a list of at most 4, of the allowed types, valid non-empty base64, at most 3.75 MB each. A bad one is a `RequestError` before any model call.
+- Each provider's `run_chat_turn` takes `images`:
+  - **Gemini:** `inline_data` parts ahead of the text;
+  - **Claude API:** `image` blocks ahead of the text;
+  - **Claude Code:** see below.
+- **History:** the images stay in API providers' history, so later turns still see them (checked live). The existing 12 MB guard still drops an oversized history.
+
+**Claude Code now always runs with `--input-format stream-json`:**
+- The turn is one user line of image and text blocks (`user_line`). The lost-session note is its own leading text block.
+- **Checked live on 2.1.292 (Work profile):** the image was read, `system/init` still comes first, with no echo of the user line. `--resume` + `--fork-session` answers under a new id and remembers the image. A gone session still ends with the same `errors: ["No conversation found…"]` result, so `session_gone` holds.
+
+**Disclosure:** About's three provider lines say attached images are sent to the chosen model. There are no new hosts.
+
+### 8h: Saved prompts
+- **`store/usePromptStore.ts`:**
+  - **Storage:** localStorage `vibecut-agent.prompts`, version 1. Malformed entries are dropped on load.
+  - **Names:** `[a-z0-9][a-z0-9-]{0,31}`, unique. Bodies are at most 4,000 characters.
+  - **Starters:** `/markers-from-transcript`, `/find-silences`, `/rough-cut`, `/broll-ideas` and `/summarize-timeline`. "Restore starters" puts back missing ones by name and never overwrites.
+- **Composer:** `/` then a name, alone in the box, opens a listbox: names starting with the query first, then names containing it.
+  - ↑↓ choose (`aria-activedescendant` on the box), Enter or Tab puts the body in the box (it never sends), and Esc closes the list for that text.
+  - A `{{…}}` in the body is selected, ready to type over.
+- **Settings → Saved prompts (`PromptsSection.tsx`):**
+  - New and Edit, inline, with name and message problems shown;
+  - Delete on the second press;
+  - Restore starters;
+  - Esc leaves a form. `Modal` now ignores an Escape something inside already used (`defaultPrevented`).
+
+### Tests
+- **Python (+10):** images through Gemini and Claude, six refusals, the size limit, and Claude Code's stream-json line (image blocks; the session-gone note as a block). The two plain-stdin checks were updated.
+- **Rust (+2, and the modes test):** attachments round trip, ids/type/base64/size refused, they go with a deleted or pruned chat, `0700`/`0600`.
+- **Frontend (+42):**
+  - `timecode` 5 and `Markdown` 7;
+  - controller cards 2 and images 4;
+  - `ToolCards` 3;
+  - `attachments` 3;
+  - Composer images 4 and prompts 3;
+  - sent images 1;
+  - `chatHistory` 2;
+  - prompt store 5 and `PromptsSection` 3.
+- **All green:** pytest 728 (+2 skipped), cargo 121, vitest 471, ruff, mypy, eslint, tsc, clippy `-D warnings`, `npm run build`.
+
+**Checked live (2026-10-06):**
+- **Gemini** (`gemini-flash-latest`) and the **Claude API** (Sonnet 5.5), via `run_chat_turn` with a 32 px PNG: each said its colour ("Green"), and a follow-up sent only the history answered "Green" too.
+- **Claude Code** 2.1.292 (Work profile, the real MCP shim, no app): "Blue." The lockdown check passed, the reply streamed, and the next turn forked to a new session and still answered "Blue."
+
+**Not yet verified live (in the app):**
+- Markdown and a chip moving the playhead (Resolve, scratch timeline);
+- cards during a real request;
+- paste, pick and drop (drop needs `dragDropEnabled: false` in a real window);
+- thumbnails after a relaunch;
+- `/` in the composer.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -1048,6 +1153,7 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
   - *(2026-10-06)* **Claude Code profile:** the user signs VibeCut Agent in with their **Work** profile (`/Users/cj/.claude-profiles/Work`). No profile folder is saved in Settings yet (`claude-code.json` is absent), so the app runs Claude Code's default `~/.claude`. It's signed in to the same team account, but its sessions and settings are kept apart from Work's. Set Settings → Claude subscription → Profile folder to the Work folder. Earlier "Personal profile" checks (7b, 7e, 7f) ran in dev shells and stand for the same CLI behaviour.
   - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Revert after a restart is checked live in Resolve. Next: the user's own try of the app across a quit and relaunch, Premiere, then Phase 7's live checks.
   - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Gemini and Claude API streaming checked live with the keys. Next: the user's own try (with 8a's), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
+  - *(2026-10-06)* **Phases 8e–8h are built:** formatted replies with timeline-position chips, tool call cards, images with a message (all three providers; Claude Code now reads stream-json input), and saved prompts on `/`. Provider image turns checked live. Next: the user's own try in the app (8a–8h together), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1171,3 +1277,8 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
     - History search (`chat_search`) and renaming (`chat_rename`, F2);
     - the `chat-title` command, which names each new chat with its own model (Settings → Chat).
 - **2026-10-06 (Claude): 8b's streaming checked live on Gemini and the Claude API** (a tool call each, and a second turn on the returned history). Committed as `5ac084a`.
+- **2026-10-06 (Claude): Phases 8e–8h, a fuller chat.**
+  - **8e:** Markdown replies (`react-markdown` + `remark-gfm`) with `t:` and SMPTE timecode chips that move the playhead.
+  - **8f:** tool call cards (`ChatMessage.tool`), grouped per turn and folded after it.
+  - **8g:** images with a message. New commands `chat_attachment_save` / `chat_attachment_load` file them under `history/attachments/<chatId>/`, a new `attachments` field goes in the chat protocol, and Claude Code runs with `--input-format stream-json`. The window sets `dragDropEnabled: false`, and the `base64` crate is a direct dependency.
+  - **8h:** saved prompts (`usePromptStore`, `/` in the composer, Settings → Saved prompts).

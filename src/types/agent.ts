@@ -1,7 +1,33 @@
-/** "tool": one line per tool call the agent made; "error": something went wrong (shown in red). */
+/** "tool": a tool call the agent made (a card, Phase 8f), or a note about the turn (a retry, a revert);
+ * "error": something went wrong (shown in red). */
 export type ChatRole = "user" | "assistant" | "system" | "tool" | "error";
 
 export type ChatMessageStatus = "pending" | "done" | "error";
+
+/** One tool call, shown as a card (Phase 8f). Its message's `text` is the one-line summary. */
+export interface ChatToolCall {
+  name: string;
+  /** The call's arguments and its result as pretty JSON, each cut to TOOL_DETAIL_CHARS. */
+  args: string;
+  result?: string;
+  state: "running" | "done" | "failed";
+}
+
+/** An image sent with a user message (Phase 8g). Its bytes are filed beside the chat (`chat_attachment_*`). */
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number;
+}
+
+/** An image in the composer, ready to send: its base64 `data` and a `dataUrl` to show it. */
+export interface PendingImage extends ChatAttachment {
+  data: string;
+  dataUrl: string;
+}
 
 export interface ChatMessage {
   id: string;
@@ -9,6 +35,10 @@ export interface ChatMessage {
   text: string;
   createdAt: number;
   status?: ChatMessageStatus;
+  /** On a "tool" message for a tool call; notes about the turn have none. */
+  tool?: ChatToolCall;
+  /** Images sent with a user message. */
+  attachments?: ChatAttachment[];
 }
 
 /**

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { NleHost, NleState, PreferredHost } from "../types/nle";
 import { NLE_HOSTS } from "../types/nle";
+import type { TimelineInfo } from "../lib/agent/timecode";
 
 export interface NleStoreState {
   hosts: Record<NleHost, NleState>;
@@ -9,6 +10,9 @@ export interface NleStoreState {
   /** Applies a state pushed by Rust (`nle-state`) or read with `nle_state`. */
   applyState: (state: NleState) => void;
   setPreferredHost: (host: PreferredHost) => void;
+  /** The timeline the last chat snapshot read (Phase 8e): reply timecodes are placed on it. */
+  lastTimeline: TimelineInfo | null;
+  setLastTimeline: (info: TimelineInfo | null) => void;
 }
 
 export function emptyHostState(host: NleHost): NleState {
@@ -49,6 +53,8 @@ export const useNleStateStore = create<NleStoreState>()(
           return { hosts: { ...state.hosts, [next.host]: next } };
         }),
       setPreferredHost: (preferredHost) => set({ preferredHost }),
+      lastTimeline: null,
+      setLastTimeline: (lastTimeline) => set({ lastTimeline }),
     }),
     {
       name: "vibecut-agent.nle",

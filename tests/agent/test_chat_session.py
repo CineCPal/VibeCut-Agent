@@ -453,3 +453,107 @@ def test_max_steps_is_held_to_its_range_and_out_of_steps_is_passed_on(monkeypatc
     assert run_chat(monkeypatch, stdin, capture) == 0
     assert seen["max_iterations"] == used
     assert capture.of_type("result")[0]["outOfSteps"] is True
+
+
+# --- Images with a message (Phase 8g) ---------------------------------------------------------------
+
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+
+
+def test_images_go_to_gemini_as_inline_data_ahead_of_the_text(monkeypatch):
+    bodies = []
+
+    def post(*a, **k):
+        bodies.append(json.loads(k["data"]))
+        return text_response("A red square.")
+
+    monkeypatch.setattr(gemini_chat.requests, "post", post)
+    stdin = FakeStdin(
+        [
+            json.dumps(
+                {
+                    "apiKey": "k",
+                    "toolDeclarations": [],
+                    "history": [],
+                    "userMessage": "what is this?",
+                    "attachments": [{"mime": "image/png", "data": PNG}],
+                }
+            ),
+            json.dumps({"type": "user_message", "userMessage": "and now?", "history": [], "attachments": []}),
+            json.dumps({"type": "end_session"}),
+        ]
+    )
+    capture = Capture()
+
+    assert run_chat(monkeypatch, stdin, capture) == 0
+    assert bodies[0]["contents"][-1]["parts"] == [
+        {"inline_data": {"mime_type": "image/png", "data": PNG}},
+        {"text": "what is this?"},
+    ]
+    assert bodies[1]["contents"][-1]["parts"] == [{"text": "and now?"}]
+    # The image stays in the history the app keeps.
+    assert capture.of_type("result")[0]["history"][0]["parts"][0]["inline_data"]["data"] == PNG
+
+
+def test_images_go_to_claude_as_image_blocks(monkeypatch):
+    from tests.agent.claude_fakes import install, message, text
+
+    client = install(monkeypatch, [message(text("Red."))])
+    stdin = FakeStdin(
+        [
+            json.dumps(
+                {
+                    "provider": "claude",
+                    "apiKey": "k",
+                    "toolDeclarations": [],
+                    "history": [],
+                    "userMessage": "colour?",
+                    "attachments": [{"mime": "image/png", "data": PNG}],
+                }
+            ),
+            json.dumps({"type": "end_session"}),
+        ]
+    )
+    capture = Capture()
+
+    assert run_chat(monkeypatch, stdin, capture) == 0
+    assert client.requests[0]["messages"][-1]["content"] == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}},
+        {"type": "text", "text": "colour?"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("attachments", "says"),
+    [
+        ({"mime": "image/png"}, "must be a list"),
+        ([{"mime": "image/png", "data": PNG}] * 5, "At most 4"),
+        ([{"mime": "application/pdf", "data": PNG}], "only PNG, JPEG, WebP and GIF"),
+        ([{"mime": "image/png", "data": "not base64!"}], "isn't valid base64"),
+        ([{"mime": "image/png", "data": ""}], "is empty"),
+        ([{"mime": "image/png"}], "isn't an image"),
+    ],
+)
+def test_bad_attachments_are_refused_before_any_call(monkeypatch, attachments, says):
+    called = []
+    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: called.append(1))
+    stdin = FakeStdin(
+        [json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi", "attachments": attachments})]
+    )
+    capture = Capture()
+
+    assert run_chat(monkeypatch, stdin, capture) == 2
+    assert says in capture.of_type("error")[0]["message"]
+    assert not called
+
+
+def test_an_image_over_the_limit_is_refused():
+    import base64
+
+    from vibecut_agent.agent.attachments import MAX_IMAGE_BYTES, parse_images
+    from vibecut_agent.protocol import RequestError
+
+    big = base64.b64encode(b"\0" * (MAX_IMAGE_BYTES + 1)).decode()
+    with pytest.raises(RequestError, match="over 3.75 MB"):
+        parse_images([{"mime": "image/jpeg", "data": big}])
+    assert parse_images(None) == []

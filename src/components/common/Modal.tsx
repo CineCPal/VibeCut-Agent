@@ -28,6 +28,8 @@ export function Modal({ title, onClose, children }: ModalProps) {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // Something inside (an inline form) already used this Escape.
+        if (event.defaultPrevented) return;
         event.preventDefault();
         onCloseRef.current();
         return;

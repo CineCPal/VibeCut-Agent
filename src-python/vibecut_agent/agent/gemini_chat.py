@@ -24,6 +24,7 @@ from typing import Any
 
 import requests
 
+from vibecut_agent.agent.attachments import gemini_parts
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
@@ -218,8 +219,12 @@ def run_chat_turn(
     timeout: int = 90,
     on_retry: OnRetry = None,
     should_abort: Callable[[], bool] = lambda: False,
+    images: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Runs Gemini's tools/function-calling loop for one user chat message, end to end.
+
+    `images`: `[{"mime", "data"}]` sent with the message (attachments.parse_images, Phase 8g), as
+    `inline_data` parts ahead of its text; they stay in the history like any part.
 
     `tool_declarations`: JSON-Schema-shaped function declarations, e.g.
         [{"name": "trim_clip_end", "description": "...",
@@ -264,7 +269,7 @@ def run_chat_turn(
     if not user_message or not user_message.strip():
         raise ChatError("The chat message was empty.")
 
-    contents: list[dict[str, Any]] = [*history, {"role": "user", "parts": [{"text": user_message}]}]
+    contents: list[dict[str, Any]] = [*history, {"role": "user", "parts": gemini_parts(images, user_message)}]
 
     body_base: dict[str, Any] = {
         "systemInstruction": {"parts": [{"text": system_instruction}]},

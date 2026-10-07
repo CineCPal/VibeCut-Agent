@@ -13,6 +13,7 @@ First stdin line: {
     "toolDeclarations": [{"name", "description", "parameters": <Gemini OpenAPI schema>}, ...],
     "history": [...] (the previous ``result.history``, or [] for a new conversation),
     "userMessage": str,
+    "attachments": [{"mime", "data"}] (optional: up to 4 base64 images sent with the message, Phase 8g),
     "maxSteps": int (optional, held to 10-150)
 }
 
@@ -27,7 +28,7 @@ retried call). See streaming.py (Phase 8b).
 
 Each turn ends with ``result {text, history, usage, aborted, outOfSteps}``; its ``text`` is the final
 answer and replaces what was streamed. The process then waits up to
-CHAT_IDLE_TIMEOUT_SECONDS for ``{"type": "user_message", "userMessage", "history"}`` (the next message,
+CHAT_IDLE_TIMEOUT_SECONDS for ``{"type": "user_message", "userMessage", "history", "attachments"?}`` (the next message,
 with the app's history: the app is the source of truth) or ``{"type": "end_session"}``. A genuine API
 failure emits ``error`` and exits 1.
 """
@@ -65,6 +66,7 @@ def _provider_key(request: dict[str, Any], provider: str) -> str:
 def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
     """Runs the whole conversation; see the module docstring. ``channel`` yields the later stdin lines
     (a LineChannel in production)."""
+    from vibecut_agent.agent.attachments import parse_images
     from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, clamp_max_steps
     from vibecut_agent.agent.gemini_chat import ChatError
 
@@ -85,6 +87,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
                 turn["history"],
                 turn["user_message"],
                 turn["emit"],
+                images=turn["images"],
                 should_abort=turn["should_abort"],
                 max_iterations=turn["max_iterations"],
             )
@@ -153,12 +156,13 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
             reason=reason,
         )
 
-    def run_one_turn(user_message: Any, history: Any) -> bool:
+    def run_one_turn(user_message: Any, history: Any, attachments: Any) -> bool:
         """Runs one turn and emits its outcome. False means a genuine ChatError: exit with an error."""
         if not isinstance(user_message, str) or not user_message.strip():
             raise RequestError("userMessage must be non-empty text")
         if not isinstance(history, list):
             raise RequestError("history must be a list")
+        images = parse_images(attachments)
         abort["requested"] = False
         try:
             outcome = run_chat_turn(
@@ -168,6 +172,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
                 tool_declarations=tool_declarations,
                 history=history,
                 user_message=user_message,
+                images=images,
                 emit=emitter.emit,
                 read_tool_result=read_tool_result,
                 on_retry=notify_retry,
@@ -187,7 +192,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
         )
         return True
 
-    if not run_one_turn(request.get("userMessage"), request.get("history") or []):
+    if not run_one_turn(request.get("userMessage"), request.get("history") or [], request.get("attachments")):
         return 1
 
     while True:
@@ -201,5 +206,5 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
             continue  # Stop pressed just as the turn ended on its own
         if message_type != "user_message":
             raise RequestError(f"Expected a user_message or end_session message, got: {message_type!r}")
-        if not run_one_turn(message.get("userMessage"), message.get("history") or []):
+        if not run_one_turn(message.get("userMessage"), message.get("history") or [], message.get("attachments")):
             return 1

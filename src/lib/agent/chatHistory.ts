@@ -15,7 +15,7 @@ import { rewindOf } from "./rewind";
 import { useAgentStore, type AgentState } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
 import { parseSavedEditLog, savedEditLog, useEditLogStore } from "../../store/useEditLogStore";
-import type { ChatMessage, ChatProvider } from "../../types/agent";
+import type { ChatAttachment, ChatMessage, ChatProvider, ChatToolCall } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
 import type { SavedChat } from "../../types/history";
 
@@ -76,6 +76,24 @@ export function savedChatFrom(state: ChatFields, now = Date.now()): SavedChat | 
   };
 }
 
+function isAttachment(value: unknown): value is ChatAttachment {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" && typeof v.name === "string" && typeof v.mime === "string" &&
+    typeof v.width === "number" && typeof v.height === "number" && typeof v.bytes === "number"
+  );
+}
+
+function isToolCall(value: unknown): value is ChatToolCall {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.name === "string" && typeof v.args === "string" && (v.result === undefined || typeof v.result === "string") &&
+    (v.state === "running" || v.state === "done" || v.state === "failed")
+  );
+}
+
 /** A chat read back from disk, checked; null when it isn't one. Malformed messages are left out. */
 export function parseSavedChat(value: unknown): SavedChat | null {
   if (typeof value !== "object" || value === null) return null;
@@ -87,8 +105,21 @@ export function parseSavedChat(value: unknown): SavedChat | null {
         typeof m === "object" && m !== null && typeof (m as ChatMessage).id === "string" && ROLES.includes((m as ChatMessage).role) &&
         typeof (m as ChatMessage).text === "string" && typeof (m as ChatMessage).createdAt === "number",
     )
-    // A reply saved while it was still streaming (the app quit mid-turn) is shown as it stood.
-    .map((m) => (m.status === "pending" ? { ...m, status: "done" as const } : m));
+    // A reply saved while it was still streaming (the app quit mid-turn) is shown as it stood, and so is
+    // a tool call that was still running; a malformed card becomes a plain line.
+    .map((m) => (m.status === "pending" ? { ...m, status: "done" as const } : m))
+    .map((m) => {
+      if (m.attachments === undefined) return m;
+      const { attachments, ...rest } = m;
+      const kept = Array.isArray(attachments) ? attachments.filter(isAttachment) : [];
+      return kept.length ? { ...rest, attachments: kept } : rest;
+    })
+    .map((m) => {
+      if (m.tool === undefined) return m;
+      const { tool, ...rest } = m;
+      if (!isToolCall(tool)) return rest;
+      return { ...rest, tool: tool.state === "running" ? { ...tool, state: "done" as const } : tool };
+    });
   if (messages.length === 0) return null;
   const provider = PROVIDERS.includes(v.provider as ChatProvider) ? (v.provider as ChatProvider) : null;
   const aiChoice = AI_CHOICES.find((c) => c.id === v.aiChoice)?.id ?? AI_CHOICES[0].id;

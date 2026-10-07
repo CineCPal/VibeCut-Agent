@@ -74,5 +74,8 @@ ${syncInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.
-- Reply with a short, plain-language summary of what you did once you are done.`;
+- Reply with a short, plain-language summary of what you did once you are done. Replies are shown as
+  Markdown: use short lists or a small table where they help, not headings for a few lines.
+- When you mention a point on the ${timeline}, write it as a link the user can press to move the playhead
+  there: [1:23.4](t:83.4), seconds from the ${timeline}'s start after "t:".`;
 }

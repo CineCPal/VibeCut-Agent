@@ -67,19 +67,19 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label="Claude Code (subscription)"
             tone={claudeCodeUsable(claudeCode) ? "ok" : "off"}
             value={claudeCode === null ? "Unknown" : claudeCodeUsable(claudeCode) ? `Signed in${claudeCode.subscription ? ` (${claudeCode.subscription})` : ""}` : "Not ready"}
-            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model, and for its Story Editor cuts (the interviews' transcripts are sent) · counts against your Claude plan's usage limits · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
+            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent) · counts against your Claude plan's usage limits · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
           />
           <StatusRow
             label="Gemini API"
             tone={keys?.gemini ? "ok" : "off"}
             value={keys?.gemini ? "Key configured" : "Not configured"}
-            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (its Story Editor cuts too: the interviews' transcripts are sent; and naming its chats, from the first message and answer), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (with any images you attach; its Story Editor cuts too: the interviews' transcripts are sent; and naming its chats, from the first message and answer), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
           />
           <StatusRow
             label="Anthropic API"
             tone={keys?.anthropic ? "ok" : "off"}
             value={keys?.anthropic ? "Key configured" : "Not configured"}
-            detail={`api.anthropic.com · only while chatting with Claude (its Story Editor cuts too: the interviews' transcripts are sent)${keys?.anthropicSource ? ` · key ${keys.anthropicSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+            detail={`api.anthropic.com · only while chatting with Claude (with any images you attach; its Story Editor cuts too: the interviews' transcripts are sent)${keys?.anthropicSource ? ` · key ${keys.anthropicSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
           />
           <StatusRow
             label="Hugging Face"

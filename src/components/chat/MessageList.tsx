@@ -1,6 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Pencil, RotateCcw, Wrench } from "lucide-react";
-import type { ChatMessage } from "../../types/agent";
+import { AlertTriangle, Pencil, RotateCcw, Wrench } from "lucide-react";
+import { ACTION_BUTTON, CopyButton } from "./CopyButton";
+import { Markdown } from "./Markdown";
+import { ToolGroup } from "./ToolCards";
+import type { ChatAttachment, ChatMessage, ChatToolCall } from "../../types/agent";
+import { attachmentUrl } from "../../lib/agent/attachments";
+import { useAgentStore } from "../../store/useAgentStore";
 
 const ROLE_LABEL: Record<"user" | "assistant" | "system", string> = { user: "You", assistant: "Agent", system: "System" };
 /** Within this distance of the bottom, the list follows new text; scrolled further up, it stays put. */
@@ -23,30 +28,38 @@ export interface TurnActions {
   onEdit: () => void;
 }
 
-const ACTION_BUTTON =
-  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-cool-grey hover:text-athletic-blue-light focus-visible:text-athletic-blue-light disabled:opacity-40";
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
+/** One image sent with a message (Phase 8g), read back from beside the chat. */
+function SentImage({ chatId, attachment }: { chatId: string; attachment: ChatAttachment }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
   useEffect(() => {
-    if (!copied && !failed) return;
-    const timer = setTimeout(() => (setCopied(false), setFailed(false)), 1500);
-    return () => clearTimeout(timer);
-  }, [copied, failed]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-    } catch {
-      setFailed(true);
-    }
-  };
+    let live = true;
+    attachmentUrl(chatId, attachment)
+      .then((u) => live && setUrl(u))
+      .catch(() => live && setMissing(true));
+    return () => {
+      live = false;
+    };
+  }, [chatId, attachment]);
+  const label = `${attachment.name} · ${attachment.width}×${attachment.height}`;
+  if (missing) {
+    return <span className="flex h-16 items-center rounded border border-white/30 px-2 text-[11px] text-white/70">{attachment.name} (no longer on disk)</span>;
+  }
+  return url ? (
+    <img src={url} alt={attachment.name} title={label} className="max-h-32 max-w-[12rem] rounded border border-white/30 object-contain" />
+  ) : (
+    <span aria-label={`Loading ${attachment.name}`} className="block h-16 w-16 animate-pulse rounded bg-white/10" />
+  );
+}
+
+function SentImages({ attachments }: { attachments: ChatAttachment[] }) {
+  const chatId = useAgentStore((s) => s.chatId);
   return (
-    <button type="button" onClick={() => void copy()} aria-label={copied ? "Copied" : "Copy message"} title="Copy" className={ACTION_BUTTON}>
-      {copied ? <Check size={11} aria-hidden="true" /> : <Copy size={11} aria-hidden="true" />}
-      {copied ? "Copied" : failed ? "Couldn't copy" : null}
-    </button>
+    <div className="mb-1 flex flex-wrap gap-1.5">
+      {attachments.map((a) => (
+        <SentImage key={a.id} chatId={chatId} attachment={a} />
+      ))}
+    </div>
   );
 }
 
@@ -107,7 +120,8 @@ function Row({ message, onEdit, editBlocked }: { message: ChatMessage; onEdit?: 
           </span>
         ) : null}
       </header>
-      <p className="whitespace-pre-wrap break-words">{message.text}</p>
+      {message.attachments?.length ? <SentImages attachments={message.attachments} /> : null}
+      {message.role === "assistant" ? <Markdown text={message.text} /> : <p className="whitespace-pre-wrap break-words">{message.text}</p>}
     </article>
   );
 }
@@ -133,12 +147,42 @@ function RetryRow({ turn }: { turn: TurnActions }) {
   );
 }
 
-export function MessageList({ messages, activity, turn }: { messages: ChatMessage[]; activity: string | null; turn?: TurnActions | null }) {
+type ToolMessage = ChatMessage & { tool: ChatToolCall };
+type Item = { kind: "message"; message: ChatMessage } | { kind: "tools"; messages: ToolMessage[] };
+
+/** The list as it's shown: consecutive tool calls (Phase 8f) gathered into one group. */
+function itemsOf(messages: ChatMessage[]): Item[] {
+  const items: Item[] = [];
+  for (const message of messages) {
+    const last = items[items.length - 1];
+    if (message.role === "tool" && message.tool) {
+      if (last?.kind === "tools") last.messages.push(message as ToolMessage);
+      else items.push({ kind: "tools", messages: [message as ToolMessage] });
+    } else {
+      items.push({ kind: "message", message });
+    }
+  }
+  return items;
+}
+
+export function MessageList({
+  messages,
+  activity,
+  turn,
+  busy = false,
+}: {
+  messages: ChatMessage[];
+  activity: string | null;
+  turn?: TurnActions | null;
+  /** A turn is running: the newest tool calls stay open. */
+  busy?: boolean;
+}) {
   const listRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const streaming = messages.some((m) => m.role === "assistant" && m.status === "pending");
   const last = messages[messages.length - 1];
+  const items = itemsOf(messages);
 
   const onScroll = () => {
     const list = listRef.current;
@@ -166,15 +210,19 @@ export function MessageList({ messages, activity, turn }: { messages: ChatMessag
       aria-label="Conversation"
       className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-3"
     >
-      {messages.map((message) => (
-        // A finished reply gets a new key, so it's announced as a new message.
-        <Row
-          key={message.status === "pending" ? `${message.id}:live` : message.id}
-          message={message}
-          onEdit={turn && message.id === turn.userMessageId ? turn.onEdit : undefined}
-          editBlocked={turn?.blocked}
-        />
-      ))}
+      {items.map((item, index) =>
+        item.kind === "tools" ? (
+          <ToolGroup key={item.messages[0].id} messages={item.messages} live={busy && index >= items.length - 2} />
+        ) : (
+          // A finished reply gets a new key, so it's announced as a new message.
+          <Row
+            key={item.message.status === "pending" ? `${item.message.id}:live` : item.message.id}
+            message={item.message}
+            onEdit={turn && item.message.id === turn.userMessageId ? turn.onEdit : undefined}
+            editBlocked={turn?.blocked}
+          />
+        ),
+      )}
       {turn && !streaming && !activity ? <RetryRow turn={turn} /> : null}
       {activity && !streaming ? (
         <p className="flex items-center gap-2 px-1 text-[11px] text-athletic-blue-light">

@@ -18,6 +18,7 @@ import { newId } from "../id";
 import { refreshAgentStatus } from "./availability";
 import { describeError, snapshotFor } from "./context";
 import { revertLastRequest } from "./edits";
+import { MAX_IMAGES, attachmentOf, loadImages, saveImages } from "./attachments";
 import { systemInstruction } from "./prompt";
 import { executorsFor, runTool, toolDeclarations, type ToolContext } from "./tools";
 import type { ToolOutcome } from "./args";
@@ -25,9 +26,12 @@ import { useAgentStore } from "../../store/useAgentStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
-import type { ChatProvider, ChatUsage } from "../../types/agent";
+import type { ChatProvider, ChatUsage, PendingImage } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
 import type { SavedChat } from "../../types/history";
+
+/** How much of a call's arguments, and of its result, a card keeps (and the saved chat with it). */
+export const TOOL_DETAIL_CHARS = 4000;
 
 const PROVIDER_LABEL: Record<ChatProvider, string> = { gemini: "Gemini", claude: "Claude", "claude-code": "Claude (subscription)" };
 
@@ -74,15 +78,39 @@ function sessionEnded(): void {
   refreshAgentStatus();
 }
 
-/** Sends one user message to the agent. Does nothing unless the agent is idle. */
-export async function sendUserMessage(text: string): Promise<void> {
+/** What an image sent without words says in the transcript (and to the model). */
+export function imageOnlyText(count: number): string {
+  return count === 1 ? "(image)" : "(images)";
+}
+
+/**
+ * Sends one user message to the agent, with any images (Phase 8g: filed beside the chat first). Does
+ * nothing unless the agent is idle. True when it was sent.
+ */
+export async function sendUserMessage(text: string, images: PendingImage[] = []): Promise<boolean> {
   const store = useAgentStore.getState();
-  const words = text.trim();
+  const words = text.trim() || (images.length ? imageOnlyText(images.length) : "");
   // An outside client (MCP, Phase 7a) is editing: one driver at a time. The composer says so too.
-  if (!words || store.status !== "idle" || useMcpStore.getState().outsideRunning > 0) return;
-  const step = store.addMessage({ role: "user", text: words, status: "done" });
+  if (!words || images.length > MAX_IMAGES || store.status !== "idle" || useMcpStore.getState().outsideRunning > 0) return false;
   store.setStatus("thinking");
-  store.setActivity("Reading the timeline…");
+  if (images.length) {
+    store.setActivity("Saving the images…");
+    try {
+      await saveImages(store.chatId, images);
+    } catch (error) {
+      useAgentStore.getState().setActivity(null);
+      useAgentStore.getState().addMessage({ role: "error", text: `Couldn't keep the image${images.length === 1 ? "" : "s"} to send: ${describeError(error)}` });
+      endTurn();
+      return false;
+    }
+  }
+  const step = useAgentStore.getState().addMessage({
+    role: "user",
+    text: words,
+    status: "done",
+    ...(images.length ? { attachments: images.map(attachmentOf) } : {}),
+  });
+  useAgentStore.getState().setActivity("Reading the timeline…");
 
   const nle = useNleStateStore.getState();
   const host = selectActiveHost(nle);
@@ -96,12 +124,13 @@ export async function sendUserMessage(text: string): Promise<void> {
 
   const current = useAgentStore.getState();
   const history = current.historyProvider === provider ? current.history : [];
+  const attachments = images.length ? { attachments: images.map(({ mime, data }) => ({ mime, data })) } : {};
   // What Retry and Edit go back to (Phase 8c). Claude Code's turn forks its session, so this one stays.
   current.setLastTurn({ userMessageId: step, history, historyProvider: history.length ? provider : null });
   if (current.jobId && current.sessionKey === key) {
     try {
-      await sendToSidecar(current.jobId, { type: "user_message", userMessage, history });
-      return;
+      await sendToSidecar(current.jobId, { type: "user_message", userMessage, history, ...attachments });
+      return true;
     } catch {
       // The job died between turns; start a new one below.
     }
@@ -122,11 +151,13 @@ export async function sendUserMessage(text: string): Promise<void> {
       toolDeclarations: host ? toolDeclarations(host) : [],
       history,
       userMessage,
+      ...attachments,
     });
   } catch (error) {
     useAgentStore.getState().addMessage({ role: "error", text: describeError(error) });
     sessionEnded();
   }
+  return true;
 }
 
 /** The last turn's timeline edits that haven't been reverted (Phase 8c). */
@@ -182,14 +213,32 @@ export async function rewindLastTurn(): Promise<string> {
   return text;
 }
 
-/** Puts the last message in the composer to be edited (Phase 8c). False when it can't be now. */
+/** The last turn's user message, if it's still shown. */
+function lastTurnMessage() {
+  const store = useAgentStore.getState();
+  return store.messages.find((m) => m.id === store.lastTurn?.userMessageId);
+}
+
+/** Puts the last message in the composer to be edited (Phase 8c), with its images (8g). False when it
+ * can't be now. */
 export function startEditingLastMessage(): boolean {
   if (rewindBlockReason()) return false;
   const store = useAgentStore.getState();
-  const message = store.messages.find((m) => m.id === store.lastTurn?.userMessageId);
+  const message = lastTurnMessage();
   if (!message) return false;
-  store.setDraft(message.text);
+  const images = message.attachments ?? [];
+  store.setDraft(images.length && message.text === imageOnlyText(images.length) ? "" : message.text);
+  store.setPendingImages([]);
   store.setEditing(message.id);
+  if (images.length) {
+    const chatId = store.chatId;
+    loadImages(chatId, images)
+      .then((loaded) => {
+        const now = useAgentStore.getState();
+        if (now.editingMessageId === message.id && now.chatId === chatId) now.setPendingImages(loaded);
+      })
+      .catch((error: unknown) => useAgentStore.getState().addMessage({ role: "error", text: `Couldn't load that message's images: ${describeError(error)}` }));
+  }
   return true;
 }
 
@@ -199,19 +248,22 @@ export function cancelEditing(): void {
   if (!store.editingMessageId) return;
   store.setEditing(null);
   store.setDraft("");
+  store.setPendingImages([]);
 }
 
-/** Retry: the last message again, from where it started. */
+/** Retry: the last message again, with its images, from where it started. */
 export async function retryLastTurn(): Promise<void> {
+  // The images are read back first: if they can't be, nothing has been taken back yet.
+  const images = await loadImages(useAgentStore.getState().chatId, lastTurnMessage()?.attachments);
   const text = await rewindLastTurn();
-  await sendUserMessage(text);
+  await sendUserMessage(text, images);
 }
 
-/** Edit: the last message replaced with `text`, from where it started. */
-export async function sendEditedMessage(text: string): Promise<void> {
-  if (!text.trim()) return;
+/** Edit: the last message replaced with `text` and `images`, from where it started. */
+export async function sendEditedMessage(text: string, images: PendingImage[] = []): Promise<void> {
+  if (!text.trim() && !images.length) return;
   await rewindLastTurn();
-  await sendUserMessage(text);
+  await sendUserMessage(text, images);
 }
 
 /** Stop: the sidecar ends the turn at its next check; tools already running finish first. */
@@ -250,14 +302,31 @@ export async function runChatTool(jobId: string, name: string, args: unknown): P
   const executors = context ? executorsFor(context) : {};
   const stopping = useAgentStore.getState().status === "stopping";
   useAgentStore.getState().setActivity(`Running ${name}…`);
-  const outcome = stopping
-    ? { summary: "", result: { error: "Stopped by the user before this ran" } }
-    : await runTool(executors, name, args);
-  if (outcome.summary) useAgentStore.getState().addMessage({ role: "tool", text: outcome.summary });
+  if (stopping) return { summary: "", result: { error: "Stopped by the user before this ran" } };
+  // The card shows while the call runs (Phase 8f), then takes its summary and result.
+  const card = useAgentStore.getState().addMessage({ role: "tool", text: `Running ${name}…`, tool: { name, args: toolDetail(args), state: "running" } });
+  const outcome = await runTool(executors, name, args);
+  const failed = typeof outcome.result === "object" && outcome.result !== null && "error" in outcome.result;
+  useAgentStore.getState().updateMessage(card, {
+    text: outcome.summary || name,
+    tool: { name, args: toolDetail(args), result: toolDetail(outcome.result), state: failed ? "failed" : "done" },
+  });
   if (useAgentStore.getState().jobId === jobId && useAgentStore.getState().status === "thinking") {
     useAgentStore.getState().setActivity(`Calling ${PROVIDER_LABEL[provider]}…`);
   }
   return outcome;
+}
+
+/** A tool call's arguments or result as a card shows them: pretty JSON, cut to TOOL_DETAIL_CHARS. */
+export function toolDetail(value: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value ?? null, null, 2) ?? String(value);
+  } catch {
+    text = String(value);
+  }
+  if (text.length <= TOOL_DETAIL_CHARS) return text;
+  return `${text.slice(0, TOOL_DETAIL_CHARS)}\n… (${(text.length - TOOL_DETAIL_CHARS).toLocaleString("en-US")} more characters not kept)`;
 }
 
 async function answerToolCalls(jobId: string, calls: ToolCall[]): Promise<void> {

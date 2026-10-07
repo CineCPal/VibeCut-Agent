@@ -112,6 +112,8 @@ pub fn run() {
             chat_store::chat_delete,
             chat_store::chat_rename,
             chat_store::chat_search,
+            chat_store::chat_attachment_save,
+            chat_store::chat_attachment_load,
             chat_store::edit_log_load,
             chat_store::edit_log_save,
             broll_panel::broll_panel_thumbs,

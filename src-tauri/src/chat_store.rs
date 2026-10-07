@@ -8,7 +8,11 @@
 //!   edit-log.json              { version, entries, backups, restoredIds } (useEditLogStore)
 //!   chats/<id>.json            { version, id, title, customTitle?, autoTitle?, createdAt, updatedAt, provider,
 //!                                aiChoice, messages, history, rewind? }
+//!   attachments/<id>/<att>.<ext>  images sent with that chat's messages (Phase 8g), each at most 4 MB
 //! ```
+//!
+//! Phase 8g: a message names its images (`attachments: [{ id, name, mime, … }]`) and their bytes live here,
+//! so the chat file stays small. They go with their chat when it's deleted or falls off the list.
 //!
 //! Phase 8d: `chat_rename` names a chat without opening it (the user's name, `customTitle`, wins over the
 //! model's, `autoTitle`, which wins over the first request), and `chat_search` finds chats by what was said.
@@ -29,6 +33,10 @@ pub const KEEP_CHATS: usize = 30;
 const INDEX: &str = "index.json";
 const EDIT_LOG: &str = "edit-log.json";
 const CHATS: &str = "chats";
+const ATTACHMENTS: &str = "attachments";
+/// An image sent with a message, as bytes (the app keeps them under 3.75 MB; Claude's limit is 5 MB).
+pub const MAX_ATTACHMENT_BYTES: usize = 4 * 1024 * 1024;
+const IMAGE_TYPES: [(&str, &str); 4] = [("image/png", "png"), ("image/jpeg", "jpg"), ("image/webp", "webp"), ("image/gif", "gif")];
 const TITLE_CHARS: usize = 120;
 /** A name given to a chat (by the user or the model), and the first-request fallback (chatHistory.ts). */
 const NAME_CHARS: usize = 60;
@@ -190,6 +198,7 @@ pub fn save_in(dir: &Path, id: &str, chat: &Value) -> Result<Vec<ChatSummary>, S
     newest_first(&mut list);
     for old in list.split_off(KEEP_CHATS.min(list.len())) {
         let _ = std::fs::remove_file(chats.join(format!("{}.json", old.id)));
+        let _ = std::fs::remove_dir_all(dir.join(ATTACHMENTS).join(&old.id));
     }
     write_index(dir, &list)?;
     Ok(list)
@@ -199,6 +208,7 @@ pub fn delete_in(dir: &Path, id: &str) -> Result<Vec<ChatSummary>, String> {
     checked_id(id)?;
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let _ = std::fs::remove_file(dir.join(CHATS).join(format!("{id}.json")));
+    let _ = std::fs::remove_dir_all(dir.join(ATTACHMENTS).join(id));
     let list: Vec<ChatSummary> = read_index(dir).into_iter().filter(|s| s.id != id).collect();
     if dir.is_dir() {
         write_index(dir, &list)?;
@@ -316,6 +326,83 @@ pub fn save_edit_log_in(dir: &Path, log: &Value) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_private(dir)?;
     write_json(dir, EDIT_LOG, log)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Attachment {
+    pub mime: String,
+    /// The image, base64.
+    pub data: String,
+}
+
+fn extension_of(mime: &str) -> Result<&'static str, String> {
+    IMAGE_TYPES
+        .iter()
+        .find(|(m, _)| *m == mime)
+        .map(|(_, ext)| *ext)
+        .ok_or_else(|| format!("{mime} isn't an image type that can be sent (PNG, JPEG, WebP or GIF)"))
+}
+
+/// Files one image sent with a message in `chat_id`'s folder.
+pub fn save_attachment_in(dir: &Path, chat_id: &str, attachment_id: &str, mime: &str, data: &str) -> Result<(), String> {
+    use base64::Engine;
+    checked_id(chat_id)?;
+    if !valid_id(attachment_id) {
+        return Err("That attachment id isn't valid".into());
+    }
+    let ext = extension_of(mime)?;
+    // Base64 is 4/3 the size: refuse an oversized one before decoding it.
+    if data.len() > MAX_ATTACHMENT_BYTES / 3 * 4 + 4 {
+        return Err(format!("An image can be at most {} MB", MAX_ATTACHMENT_BYTES / 1_048_576));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "That image isn't valid base64".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!("An image can be at most {} MB", MAX_ATTACHMENT_BYTES / 1_048_576));
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    ensure_private(dir)?;
+    let all = dir.join(ATTACHMENTS);
+    ensure_private(&all)?;
+    let folder = all.join(chat_id);
+    ensure_private(&folder)?;
+    let name = format!("{attachment_id}.{ext}");
+    write_atomic(&folder, &name, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(folder.join(&name), std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// One image filed with `save_attachment_in`, with its type.
+pub fn load_attachment_in(dir: &Path, chat_id: &str, attachment_id: &str) -> Result<Attachment, String> {
+    use base64::Engine;
+    checked_id(chat_id)?;
+    if !valid_id(attachment_id) {
+        return Err("That attachment id isn't valid".into());
+    }
+    let folder = dir.join(ATTACHMENTS).join(chat_id);
+    for (mime, ext) in IMAGE_TYPES {
+        let path = folder.join(format!("{attachment_id}.{ext}"));
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.len() as usize > MAX_ATTACHMENT_BYTES {
+            break;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read that image: {e}"))?;
+        return Ok(Attachment { mime: mime.to_string(), data: base64::engine::general_purpose::STANDARD.encode(bytes) });
+    }
+    Err("That image is gone".into())
+}
+
+#[tauri::command]
+pub async fn chat_attachment_save(app: AppHandle, chat_id: String, attachment_id: String, mime: String, data: String) -> Result<(), String> {
+    save_attachment_in(&history_dir(&app)?, &chat_id, &attachment_id, &mime, &data)
+}
+
+#[tauri::command]
+pub async fn chat_attachment_load(app: AppHandle, chat_id: String, attachment_id: String) -> Result<Attachment, String> {
+    load_attachment_in(&history_dir(&app)?, &chat_id, &attachment_id)
 }
 
 #[tauri::command]
@@ -564,6 +651,41 @@ mod tests {
         assert_eq!(find_ignoring_case(&chars, &needle), Some((0, 6)));
     }
 
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn attachments_round_trip_and_are_checked() {
+        let dir = temp_dir("attach");
+        save_attachment_in(&dir, "c1", "a1", "image/png", PNG).unwrap();
+        assert_eq!(load_attachment_in(&dir, "c1", "a1").unwrap(), Attachment { mime: "image/png".into(), data: PNG.into() });
+        assert!(dir.join("attachments/c1/a1.png").exists());
+        assert!(load_attachment_in(&dir, "c1", "missing").unwrap_err().contains("gone"));
+        assert!(save_attachment_in(&dir, "../c1", "a1", "image/png", PNG).is_err());
+        assert!(save_attachment_in(&dir, "c1", "a/1", "image/png", PNG).is_err());
+        assert!(load_attachment_in(&dir, "c1", "..").is_err());
+        assert!(save_attachment_in(&dir, "c1", "a2", "application/pdf", PNG).unwrap_err().contains("isn't an image type"));
+        assert!(save_attachment_in(&dir, "c1", "a2", "image/png", "not base64!").unwrap_err().contains("base64"));
+        let big = "A".repeat(MAX_ATTACHMENT_BYTES / 3 * 4 + 8);
+        assert!(save_attachment_in(&dir, "c1", "a2", "image/jpeg", &big).unwrap_err().contains("at most 4 MB"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attachments_go_with_their_chat() {
+        let dir = temp_dir("attach-gone");
+        save_in(&dir, "a", &chat("a", 1.0)).unwrap();
+        save_attachment_in(&dir, "a", "x", "image/png", PNG).unwrap();
+        delete_in(&dir, "a").unwrap();
+        assert!(!dir.join("attachments/a").exists());
+        // Falling off the list takes them too.
+        save_attachment_in(&dir, "c0", "x", "image/png", PNG).unwrap();
+        for i in 0..=KEEP_CHATS {
+            save_in(&dir, &format!("c{i}"), &chat(&format!("c{i}"), i as f64)).unwrap();
+        }
+        assert!(!dir.join("attachments/c0").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn folders_and_files_are_private() {
@@ -575,6 +697,9 @@ mod tests {
         assert_eq!(mode(&dir.join("chats")), 0o700);
         assert_eq!(mode(&dir.join("chats/a.json")), 0o600);
         assert_eq!(mode(&dir.join(INDEX)), 0o600);
+        save_attachment_in(&dir, "a", "x", "image/png", PNG).unwrap();
+        assert_eq!(mode(&dir.join("attachments/a")), 0o700);
+        assert_eq!(mode(&dir.join("attachments/a/x.png")), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -33,6 +33,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from vibecut_agent.agent.attachments import claude_blocks
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
@@ -160,10 +161,12 @@ def run_chat_turn(
     timeout: int = 120,
     on_retry: OnRetry = None,
     should_abort: Callable[[], bool] = lambda: False,
+    images: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Runs Claude's tool-use loop for one user chat message, end to end. See
     gemini_chat.run_chat_turn for the shared contract; `history` here is the `messages` list a
-    previous call returned, resent verbatim and only ever appended to."""
+    previous call returned, resent verbatim and only ever appended to. `images` go ahead of the text
+    as image blocks (Phase 8g)."""
     if not api_key or not api_key.strip():
         raise ChatError("No Claude API key was provided.")
     if not user_message or not user_message.strip():
@@ -172,7 +175,8 @@ def run_chat_turn(
     resolved_model = resolve_model(model)
     reply = ReplyStream(emit)
     emit = reply.emit
-    messages: list[dict[str, Any]] = [*history, {"role": "user", "content": user_message}]
+    content: str | list[dict[str, Any]] = claude_blocks(images, user_message) if images else user_message
+    messages: list[dict[str, Any]] = [*history, {"role": "user", "content": content}]
     params = _base_params(resolved_model, system_instruction, tool_declarations)
     usage = {"promptTokens": 0, "cachedTokens": 0, "outputTokens": 0, "thoughtsTokens": 0, "steps": 0}
     repeats = RepeatFailures()
