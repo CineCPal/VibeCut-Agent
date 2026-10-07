@@ -57,7 +57,8 @@
       "../src-premiere-panel/broll/dist/panel.css": "premiere-panel/broll/dist/panel.css",
       "../src-python/resolve_watch.py": "python/src-python/resolve_watch.py",
       "../src-python/vibecut_agent/agent/*.py": "python/src-python/vibecut_agent/agent/",
-      "../src-python/vibecut_agent/broll/*.py": "python/src-python/vibecut_agent/broll/"
+      "../src-python/vibecut_agent/broll/*.py": "python/src-python/vibecut_agent/broll/",
+      "../src-python/vibecut_agent/story/*.py": "python/src-python/vibecut_agent/story/"
     }
   }
 }

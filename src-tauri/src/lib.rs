@@ -1,6 +1,8 @@
 mod audiosync;
 mod broll_panel;
+mod claude_code;
 mod commands;
+mod mcp_bridge;
 #[cfg(target_os = "macos")]
 mod native_drag;
 mod nle;
@@ -53,6 +55,8 @@ pub fn run() {
             nle::start_all(app.handle());
             // The B-roll panel docked in Premiere (broll_panel.rs): its inbox and the app's heartbeat.
             broll_panel::start(app.handle());
+            // The MCP bridge (mcp_bridge.rs): an MCP client calling the agent's tools, through files.
+            mcp_bridge::start(app.handle());
             // Old waveform envelopes of the audio sync (audiosync.rs) are cleared out now and then.
             audiosync::prune_in_background(app.handle());
             Ok(())
@@ -95,6 +99,12 @@ pub fn run() {
             transcript::read_suite_sync,
             broll_panel::broll_panel_publish,
             broll_panel::broll_panel_status,
+            mcp_bridge::mcp_reply,
+            mcp_bridge::mcp_status,
+            mcp_bridge::mcp_set_outside_allowed,
+            mcp_bridge::mcp_client_setup,
+            claude_code::claude_code_status,
+            claude_code::claude_code_set,
             broll_panel::broll_panel_thumbs,
             spyglass::find_spyglass_index,
             spyglass::spyglass_choose_index,

@@ -50,6 +50,8 @@ describe("AboutModal", () => {
     for (const host of ["generativelanguage.googleapis.com", "api.anthropic.com", "huggingface.co"]) {
       expect(screen.getByText(new RegExp(`^${host.replace(/\./g, "\\.")}`))).toBeInTheDocument();
     }
+    // Phase 7b: the subscription path and its MCP bridge are disclosed too.
+    expect(screen.getByText(/^Your own Claude Code .* calls api\.anthropic\.com .* MCP bridge \(files, no network port\)$/)).toBeInTheDocument();
   });
 
   it("closes on Escape", () => {

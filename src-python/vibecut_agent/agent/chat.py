@@ -5,8 +5,9 @@ Rust starts it with ``sidecar_start`` (an interactive command: stdin stays open)
 provider's API key into the first request; the frontend never holds a key.
 
 First stdin line: {
-    "provider": "gemini" | "claude" (optional, "gemini" when absent),
-    "apiKey": str (injected by Rust),
+    "provider": "gemini" | "claude" | "claude-code" (optional, "gemini" when absent),
+    "apiKey": str (injected by Rust; not for "claude-code"),
+    "claudeCode": {...} (injected by Rust for "claude-code" only: see claude_code_chat.py),
     "model": str (optional),
     "systemInstruction": str,
     "toolDeclarations": [{"name", "description", "parameters": <Gemini OpenAPI schema>}, ...],
@@ -17,7 +18,8 @@ First stdin line: {
 
 Within a turn, whenever the model wants tools this emits ``tool_calls {calls: [{id, name, args}]}`` and
 blocks for one ``{"type": "tool_result", "id", "result"}`` line per call, in any order. The app runs the
-tools (src/lib/agent/). ``{"type": "abort_turn"}`` may arrive at any time (Stop).
+tools (src/lib/agent/). ``{"type": "abort_turn"}`` may arrive at any time (Stop). On "claude-code" no
+``tool_calls`` are emitted: Claude Code calls the tools through the MCP bridge (Phase 7a) instead.
 
 Each turn ends with ``result {text, history, usage, aborted, outOfSteps}``. The process then waits up to
 CHAT_IDLE_TIMEOUT_SECONDS for ``{"type": "user_message", "userMessage", "history"}`` (the next message,
@@ -28,6 +30,7 @@ failure emits ``error`` and exits 1.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import Any
 
 from vibecut_agent.agent.redact import register_secret, scrub
@@ -36,7 +39,7 @@ from vibecut_agent.protocol import Emitter, RequestError
 # How long a conversation's process waits for another message before exiting quietly (not an error).
 CHAT_IDLE_TIMEOUT_SECONDS = float(os.environ.get("VIBECUT_CHAT_IDLE_TIMEOUT_SECONDS", "600"))
 
-PROVIDER_NAMES = {"gemini": "Gemini", "claude": "Claude"}
+PROVIDER_NAMES = {"gemini": "Gemini", "claude": "Claude", "claude-code": "Claude (subscription)"}
 
 
 def provider_of(request: dict[str, Any]) -> str:
@@ -63,12 +66,34 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
     # From here on the key is scrubbed from every error event and printed traceback.
     register_secret(request.get("apiKey"))
     provider = provider_of(request)
-    if provider == "claude":
-        from vibecut_agent.agent.claude_chat import run_chat_turn
-    else:
-        from vibecut_agent.agent.gemini_chat import run_chat_turn
+    if provider == "claude-code":
+        # Claude (subscription), Phase 7b: no key; Rust put the Claude Code setup in `claudeCode`.
+        from vibecut_agent.agent import claude_code_chat
 
-    api_key = _provider_key(request, provider)
+        setup = request.get("claudeCode")
+
+        def subscription_turn(**turn: Any) -> dict[str, Any]:
+            return claude_code_chat.run_chat_turn(
+                setup,
+                turn["model"],
+                turn["system_instruction"],
+                turn["history"],
+                turn["user_message"],
+                turn["emit"],
+                should_abort=turn["should_abort"],
+                max_iterations=turn["max_iterations"],
+            )
+
+        run_chat_turn: Callable[..., dict[str, Any]] = subscription_turn
+        api_key = ""
+    else:
+        if provider == "claude":
+            from vibecut_agent.agent import claude_chat as provider_chat
+        else:
+            from vibecut_agent.agent import gemini_chat as provider_chat  # type: ignore[no-redef]
+
+        run_chat_turn = provider_chat.run_chat_turn
+        api_key = _provider_key(request, provider)
     model = request.get("model") or None
     system_instruction = request.get("systemInstruction") or ""
     max_steps = clamp_max_steps(request["maxSteps"]) if "maxSteps" in request else DEFAULT_MAX_STEPS

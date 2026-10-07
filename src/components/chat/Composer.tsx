@@ -2,14 +2,16 @@ import { useId, type FormEvent, type KeyboardEvent } from "react";
 import { SendHorizontal, Square } from "lucide-react";
 import { sendUserMessage, stopTurn } from "../../lib/agent/controller";
 import { useAgentStore } from "../../store/useAgentStore";
+import { useMcpStore } from "../../store/useMcpStore";
 import type { AgentStatus } from "../../types/agent";
 
 /** Why the composer can't send right now, or null if it can. */
-export function composerBlockReason(status: AgentStatus, statusDetail: string | null): string | null {
+export function composerBlockReason(status: AgentStatus, statusDetail: string | null, outsideRunning = false): string | null {
   if (status === "offline") return statusDetail ?? "Agent offline";
   if (status === "error") return statusDetail ?? "The agent hit an error";
   if (status === "thinking") return "Agent is working…";
   if (status === "stopping") return "Stopping…";
+  if (outsideRunning) return "Claude Code is editing from outside…";
   return null;
 }
 
@@ -18,9 +20,10 @@ export function Composer() {
   const status = useAgentStore((s) => s.status);
   const statusDetail = useAgentStore((s) => s.statusDetail);
   const setDraft = useAgentStore((s) => s.setDraft);
+  const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
   const hintId = useId();
 
-  const blocked = composerBlockReason(status, statusDetail);
+  const blocked = composerBlockReason(status, statusDetail, outsideRunning);
   const canSend = !blocked && draft.trim().length > 0;
   const running = status === "thinking" || status === "stopping";
 

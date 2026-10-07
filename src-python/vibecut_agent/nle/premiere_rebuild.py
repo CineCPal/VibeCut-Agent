@@ -130,6 +130,22 @@ def validate_tracks(raw: Any) -> list[dict[str, Any]]:
     return tracks
 
 
+def refuse_sound_on_picture(tracks: list[dict[str, Any]], sources: dict[str, Any]) -> None:
+    """Premiere imports an XML with a sound-only file on a video track as nothing at all, and says
+    nothing (found live, 2026-10-06: a Story Editor draft cut from WAV transcripts). Refuse it here, by
+    name, instead."""
+    for track in tracks:
+        if track["type"] != "video":
+            continue
+        for clip in track["clips"]:
+            info = sources.get(clip["source_path"]) or {}
+            if info.get("has_video") is False:
+                raise HostError(
+                    f"{os.path.basename(clip['source_path'])} is sound only, but the draft puts it on a picture "
+                    "track, which Premiere can't import. The connected sequence is unchanged"
+                )
+
+
 def unique_name(wanted: str, taken: set[str]) -> str:
     if wanted not in taken:
         return wanted
@@ -240,6 +256,7 @@ def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -
     )
 
     sources, unreadable = source_info(tracks, probe)
+    refuse_sound_on_picture(tracks, sources)
     text, warnings = xml_builder.build_premiere_xml_timeline(name, fps, tracks, source_info=sources)
     imports.mkdir(parents=True, exist_ok=True)
     path = imports / f"rebuild-{secrets.token_hex(6)}.xml"

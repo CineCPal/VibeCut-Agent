@@ -7,7 +7,8 @@ vi.mock("@tauri-apps/api/core", () => ({ ...core, convertFileSrc: (p: string) =>
 const jobs = vi.hoisted(() => ({ runJob: vi.fn() }));
 vi.mock("../jobs", () => jobs);
 
-import { libraryBroll, poolBroll, storyExecutors, withBrollOffsets } from "./storyTools";
+import { libraryBroll, poolBroll, storyExecutors, storyModel, withBrollOffsets } from "./storyTools";
+import { AI_CHOICES } from "../../types/agent";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
@@ -92,6 +93,7 @@ describe("run_story_editor", () => {
   it("sends the interviews' answers with the chat's model and opens the cut as a draft", async () => {
     const outcome = await run({ prompt: "How the bakery began", targetDuration: "2 minutes", sequenceName: "Bakery story" });
     expect(jobs.runJob).toHaveBeenCalledWith("assemble", 'Story Editor: "Bakery story" from 1 file(s)', expect.any(Object), expect.any(Function));
+    expect(jobs.runJob.mock.calls[0][2]).toMatchObject({ provider: "claude", model: "claude-opus-5-5", extraction: "same" });
     expect(sentRequest()).toMatchObject({
       provider: "claude",
       model: "claude-opus-5-5",
@@ -191,5 +193,18 @@ describe("the B-roll catalog", () => {
   it("moves only B-roll cuts by their entry's offset", () => {
     const shifted = withBrollOffsets(RESULT, [{ entry: { brollId: "b1", path: "/lib/oven.mov", durationSeconds: 6, caption: null, tags: [], technicalScore: null }, offset: 12 }]);
     expect((shifted.resolvedSegments as { in_seconds: number }[]).map((s) => s.in_seconds)).toEqual([2, 12]);
+  });
+});
+
+describe("the Story Editor's model", () => {
+  const choice = (id: string) => AI_CHOICES.find((c) => c.id === id)!;
+
+  it("is the chat's own, including Claude (subscription), with the first-pass setting", () => {
+    useAgentStore.setState({ storyFirstPass: "same" });
+    expect(storyModel(choice("claude-opus-5-5"))).toEqual({ provider: "claude", model: "claude-opus-5-5", extraction: "same" });
+    expect(storyModel(choice("gemini"))).toEqual({ provider: "gemini", model: undefined, extraction: "same" });
+    expect(storyModel(choice("claude-code-sonnet-5-5"))).toEqual({ provider: "claude-code", model: "claude-sonnet-5-5", extraction: "same" });
+    useAgentStore.setState({ storyFirstPass: "gemini" });
+    expect(storyModel(choice("claude-code-opus-5-5")).extraction).toBe("gemini");
   });
 });

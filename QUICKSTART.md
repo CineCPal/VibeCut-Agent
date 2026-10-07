@@ -18,7 +18,7 @@
    uv sync
    ```
 
-3. **API keys** (only the model you'll use needs one):
+3. **API keys** (only the model you'll use needs one; the "(subscription)" models need none, see **Claude without an API key** below):
    - **Any build:** open Settings → API keys, paste the key and press Save. It's stored in your macOS login Keychain (service `com.cj.vibecutagent`) and never shown again. Remove deletes it.
    - **Dev builds:** you can also create a `.env` at the root; it's git-ignored and takes precedence over the Keychain:
      ```env
@@ -58,6 +58,26 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **It can also edit the open timeline directly:** add clips from files, delete, switch on or off, levels, fades, split, trim, slip, move, nest, and duck music under dialogue.
 - **Backup and Revert:** the first edit of each request makes a backup copy ("Main (before VibeCut 1)"), and **Revert n edits** in the chat header undoes the latest request. The edit log lives in memory, so after a restart use the backup copy.
 - **Premiere:** these need panel 0.7.0 or later (Settings → Editors → Update panel, then restart Premiere).
+
+**Claude without an API key** (Settings → Claude subscription): the **"Claude Opus 5.5 (subscription)"** and **"Claude Sonnet 5.5 (subscription)"** models run your own Claude Code, signed in with your Claude account, so turns use your Claude plan instead of an API key.
+- **Needs:** Claude Code installed and signed in (run `claude` once in Terminal and sign in). The app looks in `~/.local/bin`, `~/.claude/local`, Homebrew and PATH; **Choose…** picks the program yourself.
+- **Profiles:** if you switch Claude Code accounts with `CLAUDE_CONFIG_DIR` (or a shell function that sets it), choose that folder as the **Profile folder**. The app never runs your shell, so it can't pick one by itself.
+- **Check** runs `claude auth status` and shows who's signed in.
+- Claude Code runs with only VibeCut's editing tools: no shell, files or web, none of your hooks, and no permission prompts. Its tool calls come back to the app through the MCP bridge (below).
+- Usage counts against your Claude plan's limits. For your own use on this Mac only: don't hand a build to someone else with your login.
+- The **Story Editor** runs on it too, with no key.
+- **Long footage** (over 2,000 transcript lines, about 3–4 hours of interviews): the Story Editor first reads every line in parts and shortlists the strongest moments, then cuts the story from them. Settings → Agent model → **first read** sets which model does that first pass: the agent's own provider (Claude Sonnet on the subscription), or Gemini Flash, which is faster and spares your Claude plan but needs a Gemini key and sends the transcripts to Google. Only text is sent, never audio.
+
+**Remote edits with Claude Code** (Settings → Outside control): a Claude Code session you start, on this Mac or driven from your phone, can use the agent's tools on the open timeline.
+1. Turn on **Allow Claude Code to edit through VibeCut Agent** (off by default).
+2. Press **Copy remote session command** and run it in Terminal on this Mac. It starts `claude --remote-control vibecut` with only VibeCut's editing tools: no shell, file or web tools, no other MCP servers, and VibeCut's tools allowed without asking. It needs no setup in Claude Code.
+3. Open the session from claude.ai or the Claude app on your phone.
+4. Ask it to edit: "read the timeline, then mark every place the speaker says 'bakery'". It calls `get_instructions` and `get_editor_context` first.
+- **Your other Claude Code sessions:** **Copy Claude Code command** adds VibeCut to all of them (`claude mcp add --scope user …`). Those sessions keep their usual tools, so they can also change files on this Mac, VibeCut's included; your permission prompts guard them. The app never edits Claude Code's settings itself.
+- **The Mac must stay awake**, with VibeCut Agent running and Premiere (with its panel) or Resolve connected.
+- **Outside edits** are noted in the chat as "Claude Code (outside): …", backed up and grouped: one **Revert n edits** undoes a run (a run ends after 2 minutes without a call).
+- **One driver at a time:** outside edits wait for an in-app chat turn to finish, and the message box waits while an outside call runs.
+- **How it connects:** Claude Code starts `python -m vibecut_agent mcp`, which passes each call to the app through files in `~/Library/Application Support/VibeCut Agent/host-bridge/mcp/` (no network port).
 
 **B-roll in Premiere** (the way to drag clips into Premiere): after Settings → Editors → **Update panel** and a Premiere restart, open **Window → Extensions → VibeCut Agent B-roll** and dock it.
 - It's the B-roll Library inside Premiere. **Drag a card** into the Project panel or onto the timeline (you'll see Premiere's insert marker), and **double-click a card** to open the shot in the Source monitor with In/Out marked.
@@ -99,6 +119,12 @@ printf '{}\n{"type":"call","id":"c1","command":"status","args":{}}\n{"type":"end
 ```bash
 echo '{"folder": "/absolute/path/to/clips"}' | PYTHONPATH=src-python uv run python -u -m vibecut_agent broll-analyze
 ```
+
+**Try the MCP server by hand** (needs the app running; lists the agent's tools):
+```bash
+PYTHONPATH=src-python uv run --extra mcp python -m vibecut_agent mcp
+```
+Easier: `claude mcp add` it (Settings → Outside control → Copy Claude Code command), then `/mcp` in Claude Code shows its tools.
 
 **Try the sidecar by hand** (the same protocol Rust uses):
 ```bash

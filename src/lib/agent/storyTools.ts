@@ -19,9 +19,9 @@ import { browseSpyglass } from "../spyglassIpc";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
-import { AI_CHOICES } from "../../types/agent";
+import { AI_CHOICES, type AiChoice, type ChatProvider, type StoryFirstPass } from "../../types/agent";
 import type { NleHost } from "../../types/nle";
-import { draftFromPlan } from "../../vibecut/lib/connect/hostDraft";
+import { draftFromPlan, syncedPictures } from "../../vibecut/lib/connect/hostDraft";
 import { roughCutPlan, roughCutSummary } from "../../vibecut/lib/sidecarResults";
 import {
   briefWantsInterviewer,
@@ -127,6 +127,19 @@ function cancelOnStop(): { started: (id: string) => void; stopped: () => boolean
   };
 }
 
+/**
+ * The model the Story Editor calls: the chat's own, so on Claude (subscription) the user's Claude Code,
+ * with no key (PLAN.md, Phase 7e). Its first pass over long footage uses the same provider unless
+ * Settings sets it to Gemini (`extraction`).
+ */
+export function storyModel(choice: AiChoice): { provider: ChatProvider; model?: string; extraction: StoryFirstPass } {
+  return { provider: choice.chatProvider, model: choice.model, extraction: useAgentStore.getState().storyFirstPass };
+}
+
+/** The most transcript lines one Story Editor run sends. Above 2,000 (extract.SINGLE_PASS_LIMIT in
+ * Python) a first pass reads them all and shortlists; this only keeps a run from being enormous. */
+export const MAX_STORY_LINES = 20000;
+
 export function storyExecutors(context: ToolContext): Record<string, Executor> {
   const { host } = context;
   const noun = TIMELINE_NOUN[host];
@@ -160,13 +173,14 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       const missing = files.filter((_, i) => read[i] === null).map(fileName);
       if (!gathered.length) throw new Error(`None of these files has a transcript yet: ${missing.join(", ")}. Ask the user, then transcribe_clips.`);
       const answers = briefWantsInterviewer(prompt) ? gathered : withoutInterviewer(gathered);
-      const { sources, truncated } = capTranscripts(answers.length ? answers : gathered);
+      const { sources, truncated } = capTranscripts(answers.length ? answers : gathered, MAX_STORY_LINES);
 
       const broll = [...poolBroll(host, args), ...(bool(args, "brollFromLibrary") ? await libraryBroll() : [])];
       const capped = capCatalog(broll.map((b) => b.entry));
 
       const view = await connectedView(context);
       const choice = AI_CHOICES.find((c) => c.id === useAgentStore.getState().aiChoice) ?? AI_CHOICES[0];
+      const story = storyModel(choice);
       const sequenceName = optStr(args, "sequenceName") ?? "Story Cut";
       const stop = cancelOnStop();
       let job;
@@ -175,8 +189,9 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
           "assemble",
           `Story Editor: "${sequenceName}" from ${sources.length} file(s)`,
           {
-            provider: choice.chatProvider,
-            ...(choice.model ? { model: choice.model } : {}),
+            provider: story.provider,
+            ...(story.model ? { model: story.model } : {}),
+            extraction: story.extraction,
             sources: sources.map((s) => ({ sourceId: s.sourceId, segments: payloadSegments(s) })),
             media: Object.fromEntries(sources.map((s) => [s.sourceId, s.mediaPath])),
             brollCatalog: capped.entries,
@@ -196,11 +211,12 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       if (!plan || plan.segments.length === 0) return { summary: "The Story Editor returned no usable cuts", result: { cuts: 0 } };
       const summary = roughCutSummary(job.result);
       // The model may rename the cut; the timeline gets the name asked for, when one was.
-      const draft = draftFromPlan(context.timeline, view.fps, { ...plan, sequenceName: optStr(args, "sequenceName") ?? plan.sequenceName });
+      // Cuts from a separately recorded WAV take their picture from the camera synced to it in this timeline.
+      const draft = draftFromPlan(context.timeline, view.fps, { ...plan, sequenceName: optStr(args, "sequenceName") ?? plan.sequenceName }, syncedPictures(view));
       useConnectionStore.getState().setDraft(host, draft);
       const notes = [
         missing.length ? `left out ${missing.length} file(s) with no transcript (${missing.join(", ")})` : "",
-        truncated ? "some transcript lines were left out to keep the request a reasonable size" : "",
+        truncated ? `only the first ${MAX_STORY_LINES} transcript lines were read` : "",
         capped.truncated ? `only ${capped.entries.length} of ${broll.length} B-roll clips were offered` : "",
         plan.unreadable ? `${plan.unreadable} cut(s) couldn't be read` : "",
         ...draft.notCarried,

@@ -16,6 +16,8 @@ import type {
   SidecarInfo,
 } from "../types/sidecar";
 import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
+import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
+import type { ClaudeCodeStatus } from "../types/agent";
 
 export const NAVIGATE_EVENT = "navigate";
 export const SIDECAR_EVENT = "sidecar-event";
@@ -23,6 +25,8 @@ export const SIDECAR_EXIT_EVENT = "sidecar-exit";
 export const SIDECAR_SESSION_EVENT = "sidecar-session";
 export const NLE_STATE_EVENT = "nle-state";
 export const KEEP_ON_TOP_EVENT = "keep-on-top";
+export const MCP_REQUEST_EVENT = "mcp-request";
+export const MCP_OUTSIDE_EVENT = "mcp-outside";
 /** The agent session's job id (`SESSION_JOB_ID` in sidecar.rs). */
 export const SESSION_JOB_ID = "agent-session";
 
@@ -143,9 +147,10 @@ export async function chooseFolder(title: string, defaultPath?: string): Promise
   return typeof picked === "string" ? picked : null;
 }
 
-/** Asks the user for one file with one of these extensions; null if they cancelled. */
+/** Asks the user for one file with one of these extensions (none: any file); null if they cancelled. */
 export async function chooseFile(title: string, extensions: string[], defaultPath?: string): Promise<string | null> {
-  const picked = await openDialog({ multiple: false, title, filters: [{ name: title, extensions }], ...(defaultPath ? { defaultPath } : {}) });
+  const filters = extensions.length ? { filters: [{ name: title, extensions }] } : {};
+  const picked = await openDialog({ multiple: false, title, ...filters, ...(defaultPath ? { defaultPath } : {}) });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -166,4 +171,42 @@ export function setKeepOnTop(on: boolean): Promise<boolean> {
 /** Every change, whichever control made it (the header, Settings or the tray). */
 export function onKeepOnTop(handler: (on: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>(KEEP_ON_TOP_EVENT, (event) => handler(event.payload));
+}
+
+/** A request from the MCP shim (mcp_bridge.rs), already checked by Rust. */
+export function onMcpRequest(handler: (request: McpRequest) => void): Promise<UnlistenFn> {
+  return listen<McpRequest>(MCP_REQUEST_EVENT, (event) => handler(event.payload));
+}
+
+/** Answers an MCP request; Rust writes it where the shim waits for it. */
+export function mcpReply(id: string, reply: McpReply): Promise<void> {
+  return invoke("mcp_reply", { id, reply });
+}
+
+export function getMcpStatus(): Promise<McpStatus> {
+  return invoke<McpStatus>("mcp_status");
+}
+
+/** Turns outside control (an MCP client the user started) on or off; saved by Rust. */
+export function setMcpOutsideAllowed(on: boolean): Promise<McpStatus> {
+  return invoke<McpStatus>("mcp_set_outside_allowed", { on });
+}
+
+export function onMcpOutside(handler: (status: McpStatus) => void): Promise<UnlistenFn> {
+  return listen<McpStatus>(MCP_OUTSIDE_EVENT, (event) => handler(event.payload));
+}
+
+/** How to register the MCP server with Claude Code, with this build's paths. */
+export function getMcpClientSetup(): Promise<McpClientSetup> {
+  return invoke<McpClientSetup>("mcp_client_setup");
+}
+
+/** Whether Claude Code is installed and signed in (Rust runs `claude auth status`). */
+export function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
+  return invoke<ClaudeCodeStatus>("claude_code_status");
+}
+
+/** Saves the claude program and Claude Code profile folder (null: forget), then checks again. */
+export function setClaudeCode(program: string | null, configDir: string | null): Promise<ClaudeCodeStatus> {
+  return invoke<ClaudeCodeStatus>("claude_code_set", { program, configDir });
 }

@@ -38,6 +38,11 @@ diarize = [
     "torch==2.13.0",
     "torchaudio==2.11.0",
 ]
+# Phase 7a: the MCP server that lets an MCP client (Claude Code) call the agent's tools
+# (`python -m vibecut_agent mcp`). Only that server loads it; no sidecar run installs it.
+mcp = [
+    "mcp==2.3.0",
+]
 
 [dependency-groups]
 dev = [

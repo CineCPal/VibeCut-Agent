@@ -25,6 +25,20 @@ describe("availability", () => {
     expect(availability(ready, { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null }, "gemini")).toEqual({ status: "idle", detail: null });
   });
 
+  it("needs Claude Code installed and signed in for a subscription model, and no key", () => {
+    const noKeys = { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null };
+    const code = { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: "a@b.c", subscription: "pro", detail: null };
+    expect(availability(ready, noKeys, "claude-code-sonnet-5-5", null)).toEqual({ status: "offline", detail: "Checking Claude Code…" });
+    expect(availability(ready, noKeys, "claude-code-sonnet-5-5", code)).toEqual({ status: "idle", detail: null });
+    const signedOut = { ...code, signedIn: false, detail: "Claude Code isn't signed in." };
+    expect(availability(ready, noKeys, "claude-code-opus-5-5", signedOut)).toEqual({
+      status: "offline",
+      detail: "Claude Code isn't signed in. See Settings → Claude subscription, or choose another model.",
+    });
+    expect(availability(ready, noKeys, "claude-code-opus-5-5", { ...code, program: null, detail: "Not installed." }).status).toBe("offline");
+    expect(availability(ready, noKeys, "claude-code-opus-5-5", { ...code, signedIn: null }).status).toBe("idle");
+  });
+
   describe("refreshAgentStatus", () => {
     beforeEach(() => {
       useSidecarStore.setState({ session: ready });

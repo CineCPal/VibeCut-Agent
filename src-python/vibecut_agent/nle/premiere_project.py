@@ -45,14 +45,30 @@ def preset_for(fps: float) -> str:
     return found[-1]
 
 
+def _frame_rate_for_new(host: Any, connected: Any, status: dict[str, Any]) -> float:
+    """The frame rate a new sequence copies: the connected sequence's, else the one open in Premiere,
+    else any in the project, else 25. The connected one may have been deleted or renamed since the
+    agent connected; an empty sequence doesn't need it, so that never stops one being made."""
+    candidates = [connected, status.get("currentTimeline"), *(status.get("timelines") or [])]
+    tried: set[str] = set()
+    for name in candidates:
+        if not isinstance(name, str) or not name or name in tried:
+            continue
+        tried.add(name)
+        try:
+            info = host._send("sequence_info", {"timeline": name})
+            return frame_rate(int(info["timebase"]))
+        except (HostError, KeyError, TypeError, ValueError):
+            continue
+    return 25.0
+
+
 def create_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline (the connected one, for its frame rate), name?} -> an empty 1080p sequence at the
     nearest of Premiere's preset rates, opened."""
-    fps = 25.0
-    if isinstance(args.get("timeline"), str) and args["timeline"]:
-        info = host._send("sequence_info", {"timeline": args["timeline"]})
-        fps = frame_rate(int(info["timebase"]))
-    name = unique_name(_new_name(args.get("name"), "Sequence (VibeCut)"), _names(host))
+    status = host.status({})
+    fps = _frame_rate_for_new(host, args.get("timeline"), status)
+    name = unique_name(_new_name(args.get("name"), "Sequence (VibeCut)"), set(status.get("timelines") or []))
     made = host._send("create_sequence", {"name": name, "preset": preset_for(fps)})
     return {"timeline": made["name"], "fps": frame_rate(int(made["timebase"]))}
 

@@ -4,6 +4,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useAgent } from "./hooks/useAgent";
 import { startBrollPanelBridge } from "./lib/brollPanel";
+import { startMcpBridge } from "./lib/mcp/server";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useKeepOnTop } from "./hooks/useKeepOnTop";
 import { useNavigateListener } from "./hooks/useNavigateListener";
@@ -30,6 +31,9 @@ function App() {
 
   // The B-roll panel docked in Premiere (lib/brollPanel.ts).
   useEffect(() => startBrollPanelBridge(), []);
+
+  // The MCP bridge: Claude Code calling the agent's tools (lib/mcp/server.ts).
+  useEffect(() => startMcpBridge(), []);
 
   return (
     <>

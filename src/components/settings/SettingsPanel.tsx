@@ -6,13 +6,15 @@ import { useNleStateStore } from "../../store/useNleStateStore";
 import { useUiStore } from "../../store/useUiStore";
 import { toggleKeepOnTop } from "../../hooks/useKeepOnTop";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES, type AiProvider } from "../../types/agent";
+import { AI_CHOICES, claudeCodeUsable, type AiProvider, type ChoiceAccess, type ClaudeCodeStatus } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS, type PreferredHost } from "../../types/nle";
 import type { KeyStatus } from "../../types/system";
 import { DependencyList } from "../common/DependencyList";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { EditorsSection } from "./EditorsSection";
 import { LibrarySection } from "./LibrarySection";
+import { ClaudeCodeSection } from "./ClaudeCodeSection";
+import { OutsideControlSection } from "./OutsideControlSection";
 import { Modal } from "../common/Modal";
 import { SidecarStatusRow } from "../common/SidecarStatusRow";
 import { Section } from "../common/Section";
@@ -22,7 +24,8 @@ export const KEY_ENV: Record<AiProvider, { label: string; env: string }> = {
   anthropic: { label: "Anthropic (Claude)", env: "ANTHROPIC_API_KEY" },
 };
 
-export function providerReady(keys: KeyStatus | null, provider: AiProvider): boolean {
+export function providerReady(keys: KeyStatus | null, provider: ChoiceAccess, claudeCode: ClaudeCodeStatus | null = null): boolean {
+  if (provider === "claude-code") return claudeCodeUsable(claudeCode);
   return keys?.[provider] ?? false;
 }
 
@@ -31,9 +34,12 @@ const fieldClass = "w-full rounded-md border border-border bg-canvas px-2 py-1.5
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const aiChoice = useAgentStore((s) => s.aiChoice);
   const setAiChoice = useAgentStore((s) => s.setAiChoice);
+  const storyFirstPass = useAgentStore((s) => s.storyFirstPass);
+  const setStoryFirstPass = useAgentStore((s) => s.setStoryFirstPass);
   const preferredHost = useNleStateStore((s) => s.preferredHost);
   const setPreferredHost = useNleStateStore((s) => s.setPreferredHost);
   const keys = useSystemStore((s) => s.keys);
+  const claudeCode = useSystemStore((s) => s.claudeCode);
   const loading = useSystemStore((s) => s.loading);
   const error = useSystemStore((s) => s.error);
   const refresh = useSystemStore((s) => s.refresh);
@@ -59,15 +65,34 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           onChange={(event) => setAiChoice(event.target.value as typeof aiChoice)}
         >
           {AI_CHOICES.map((choice) => {
-            const ready = providerReady(keys, choice.provider);
+            const ready = providerReady(keys, choice.provider, claudeCode);
+            const missing = choice.provider === "claude-code" ? " — Claude Code not ready" : " — key missing";
             return (
               <option key={choice.id} value={choice.id} disabled={!ready && choice.id !== aiChoice}>
                 {choice.label}
-                {ready ? "" : " — key missing"}
+                {ready ? "" : missing}
               </option>
             );
           })}
         </select>
+        <label htmlFor="settings-first-pass" className="mt-2 block text-[11px] text-cool-grey">
+          Story Editor on long footage (over 2,000 transcript lines): first read
+        </label>
+        <select
+          id="settings-first-pass"
+          className={`${fieldClass} mt-0.5`}
+          value={storyFirstPass}
+          onChange={(event) => setStoryFirstPass(event.target.value === "gemini" ? "gemini" : "same")}
+        >
+          <option value="same">Same provider as the agent (Claude Sonnet, or Gemini Flash)</option>
+          <option value="gemini" disabled={!keys?.gemini && storyFirstPass !== "gemini"}>
+            Gemini Flash{keys?.gemini ? "" : " — key missing"}
+          </option>
+        </select>
+        <p className="mt-1 text-[11px] text-cool-grey">
+          It reads every line and shortlists the strongest moments, then the agent&rsquo;s model cuts the story from them. Text only. Gemini Flash is faster and
+          spares your Claude plan&rsquo;s limits, but sends the transcripts to Google.
+        </p>
       </Section>
 
       <Section title="Window">
@@ -90,9 +115,13 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
       <ApiKeysSection />
 
+      <ClaudeCodeSection />
+
       <EditorsSection />
 
       <LibrarySection />
+
+      <OutsideControlSection />
 
       <Section title="Preferred editor">
         <label htmlFor="settings-host" className="sr-only">

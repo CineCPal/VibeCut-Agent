@@ -120,6 +120,23 @@ describe("agent controller", () => {
     expect(request).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5", history: [] });
   });
 
+  it("runs Claude (subscription) with no key, its model, and Claude Code's session as history", async () => {
+    useSystemStore.setState({
+      keys: { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null },
+      claudeCode: { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: null, subscription: "pro", detail: null },
+    });
+    useAgentStore.getState().setAiChoice("claude-code-opus-5-5");
+    await sendUserMessage("mark the hook");
+    const [, command, request] = ipc.startSidecar.mock.calls[0];
+    expect(command).toBe("chat");
+    expect(request).toMatchObject({ provider: "claude-code", model: "claude-opus-5-5", history: [] });
+    expect(request.apiKey).toBeUndefined();
+    expect(request.claudeCode).toBeUndefined();
+    expect(agent().activity).toBe("Calling Claude (subscription)…");
+    event({ type: "result", text: "Marked.", history: [{ claudeCodeSession: "s1" }], usage: { steps: 2 } });
+    expect(agent()).toMatchObject({ status: "idle", history: [{ claudeCodeSession: "s1" }], historyProvider: "claude-code" });
+  });
+
   it("stops a turn and reports it", async () => {
     await sendUserMessage("go");
     await stopTurn();

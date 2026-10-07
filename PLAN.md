@@ -65,8 +65,8 @@ It is designed to run locally in the background, launching independently and int
 | command | `dependency_status` | `commands.rs` | `getDependencyStatus()` | `[{ name, path, version }]` for ffmpeg, ffprobe, exiftool, uv (PATH, then `/opt/homebrew/bin`, `/usr/local/bin`) |
 | command | `hardware_acceleration` | `commands.rs` | `getHardwareAcceleration()` | `{ videotoolbox, nvenc }` from `ffmpeg -encoders` |
 | command | `storage_paths` | `commands.rs` | `getStoragePaths()` | `{ config, data, logs }` app directories |
-| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key), `broll-analyze`, `broll-match`, `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
-| command | `sidecar_send` | `sidecar.rs` | `sendToSidecar(jobId, message)` | writes one JSON line to an interactive job (`agent-session`); any `apiKey` is stripped |
+| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key, or for `claude-code` the Claude Code setup as `claudeCode`, Phase 7b), `broll-analyze`, `broll-match`, `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
+| command | `sidecar_send` | `sidecar.rs` | `sendToSidecar(jobId, message)` | writes one JSON line to an interactive job (`agent-session`); any `apiKey` or `claudeCode` is stripped |
 | command | `sidecar_cancel` | `sidecar.rs` | `cancelSidecar(jobId)` | SIGTERM to the process group, SIGKILL after 3 s |
 | command | `sidecar_session_status` | `sidecar.rs` | `getSessionStatus()` | `{ state: "starting" \| "ready" \| "stopped", version, python, message }` |
 | command | `sidecar_session_restart` | `sidecar.rs` | `restartSession()` | stops the session and starts a fresh one |
@@ -86,6 +86,12 @@ It is designed to run locally in the background, launching independently and int
 | command | `spyglass_start_drag` | `spyglass.rs` | `startShotDrag(shotId)` | a native macOS file drag of the shot's whole clip (the `drag` crate); Rust looks the file up in the index, so the webview never names a path |
 | command | `broll_panel_publish` / `broll_panel_thumbs` / `broll_panel_status` | `broll_panel.rs` | `invoke` in `src/lib/brollPanel.ts` | write `broll.json` (false when the Premiere B-roll panel has never run); write shots' thumbnails, returning those that exist; whether the panel is open |
 | event | `broll-panel-action` | `broll_panel.rs` | `listen` in `src/lib/brollPanel.ts` | `{ action, error, fileId }`: one checked action from the Premiere B-roll panel's inbox |
+| command | `mcp_reply` | `mcp_bridge.rs` | `mcpReply(id, reply)` | 7a: writes `replies/<id>.json` for the MCP shim (`{ ok, result, summary? }` or `{ ok: false, error }`); an oversized reply becomes an error |
+| command | `mcp_status` / `mcp_set_outside_allowed` | `mcp_bridge.rs` | `getMcpStatus()`, `setMcpOutsideAllowed(on)` | 7a: `{ outsideAllowed, lastOutsideAt, folder }`; Allow is saved in `mcp.json`, off by default |
+| command | `mcp_client_setup` | `mcp_bridge.rs` | `getMcpClientSetup()` | 7d: `{ launch: { program, args, env }, claudeAdd }`, the shim's launch with this build's paths and the `claude mcp add --scope user …` line |
+| event | `mcp-request` | `mcp_bridge.rs` | `onMcpRequest(cb)` | 7a: `{ id, caller, kind: list_tools \| call_tool, name?, args? }`, checked and rebuilt by Rust; refused requests (outside while Allow is off, a chat job that isn't running) never arrive |
+| event | `mcp-outside` | `mcp_bridge.rs` | `onMcpOutside(cb)` | 7a: the `mcp_status` shape, after Allow changes |
+| command | `claude_code_status` / `claude_code_set` | `claude_code.rs` | `getClaudeCodeStatus()`, `setClaudeCode(program, configDir)` | 7b: `{ program, programSaved, configDir, signedIn, email, subscription, detail }` from `claude auth status --json`; the program and profile folder are saved in `claude-code.json` |
 | event | `navigate` | `tray.rs` → main window | `onNavigate(cb)` | `"chat" \| "broll" \| "settings" \| "about"` |
 | event | `sidecar-event` | `sidecar.rs` | `onSidecarEvent(cb)` | `{ jobId, command, event }`; `event` is one protocol object `{ type, ... }`. Chat: `status`, `retry`, `tool_calls`, `result`, `error`. B-roll: `starting`, `status`, `progress {fraction, phase, detail}`, `result`, `error`, `done` |
 | plugin | dialog `open` | `tauri-plugin-dialog` | `chooseFolder(title)` | the B-roll folder picker; only `dialog:allow-open` is granted |
@@ -577,6 +583,233 @@ It starts over when the editor's project changes (`forProject`).
 
 **Not yet verified live:** the chat driving it end to end with a model, B-roll in a live cut, and Premiere (panel 0.7.0+ and a restart).
 
+## Phase 7: Claude Without an API Key — built 2026-10-06 (7a, 7b, 7d); live checks in the editors pending
+
+**Why (the user, 2026-10-06):** use Claude as the editing agent on the user's own Claude subscription, with no API key, both from the app's chat and remotely from another device.
+
+**Decisions (the user):**
+- Build **7a** (an MCP bridge to the agent's tools), **7b** (a "Claude (subscription)" provider in the chat that runs the user's own Claude Code CLI) and **7d** (remote use through Claude Code's Remote Control).
+- **7c** (Claude desktop) is not planned. With 7a in place it would only be a "Copy config" button.
+- **Personal use only.** A subscription login may only be used by the person who owns it. A build handed to someone else keeps the API-key providers.
+
+**The idea:** today the chat sidecar only *decides* which tools to call; the frontend runs them (`controller.ts` → `runTool` → `nle_call`). An MCP server can stand in as the decider's door. Any MCP client (the app's own Claude Code run in 7b, an interactive Claude Code session in 7d) then calls the very same executors, with the same snapshot, backup, edit log and Revert.
+
+### 7a: The MCP bridge
+
+**Shape (one new boundary; files, no network port, like the B-roll panel):**
+
+```text
+MCP client (claude -p in 7b, interactive claude in 7d)
+   │ stdio MCP
+   ▼
+vibecut_agent/mcp_server.py  (Python shim, launched by the client)
+   │ files: requests/<id>.json → replies/<id>.json
+   ▼
+src-tauri/src/mcp_bridge.rs  (drain, check, emit `mcp-request`; `mcp_reply` writes the reply)
+   ▼
+src/lib/mcp/server.ts  (webview) → executorsFor(...) / runTool → nle_call → editors
+```
+
+**Folder:** `~/Library/Application Support/VibeCut Agent/host-bridge/mcp/` (override `VIBECUT_AGENT_MCP_DIR`, for tests and parallel dev builds), mode `0700`:
+- `requests/<id>.json`: `{ id, caller, kind: "list_tools" | "call_tool", name?, args? }`, written by the shim and renamed into place. `caller` is the chat job id for 7b, or `"outside"`.
+- `replies/<id>.json`: `{ id, ok, result | error }`, written by the app through `mcp_reply` and deleted by the shim once read.
+- `agent-alive.json`: stamped every second by the app. It records whether outside control is allowed, so the shim can tell "VibeCut Agent isn't running" from "outside control is off".
+
+**Rust `mcp_bridge.rs`** (modelled on `broll_panel.rs`):
+- Polls `requests/` every 150 ms, oldest first, with a 64 KB size cap.
+- Validates `id`, `caller`, `kind` and `name`, rebuilds each request from its allowed fields, deletes it, and emits `mcp-request`.
+- `mcp_reply(id, reply)` writes the reply with `write_atomic`.
+- `mcp_status` / `mcp_set_outside_allowed`. The setting is saved like `window.json` and is **off by default**. The 7b chat's own calls (`caller` = the running chat job) are always served; `"outside"` calls only while it is on.
+
+**Frontend `src/lib/mcp/server.ts`** (started from `App.tsx`, like `startBrollPanelBridge`):
+- **`list_tools`:** `toolDeclarations(host)` for the connected editor, plus two MCP-only tools:
+  - `get_editor_context`: what the in-app chat puts ahead of each message: the editor, the open timeline, the draft, the pool and `editLogContext()`. `snapshotFor` moves out of `controller.ts` into `src/lib/agent/context.ts` so both paths use it.
+  - `get_instructions`: `systemInstruction(host)`, for clients that don't get our system prompt (7d).
+  - With no editor connected, only `get_editor_context`, which says why.
+- **`call_tool` from the 7b chat job:** runs under that turn's `ToolContext` (its step, so the edits join the turn's Revert group), with the same transcript lines and Stop handling as `answerToolCalls` today.
+- **`call_tool` from outside (7d):**
+  - Builds a fresh `ToolContext` from `useNleStateStore` (the timeline open *now*).
+  - Posts each `summary` into the chat transcript as an "Outside (Claude Code)" line.
+  - Groups edits into one step, labelled "Outside", starting with the first call after 2 minutes without one. The header's **Revert n edits** undoes an outside run the way it undoes an in-app request.
+- **One driver at a time:** while an in-app turn is running, outside edit calls get "VibeCut's own chat is busy; try again when it finishes". While an outside edit runs, the composer waits. Read tools are exempt.
+
+**Python shim `vibecut_agent/mcp_server.py`** (`python -m vibecut_agent mcp`; not in Rust's `COMMANDS`, since the MCP client launches it, not the app):
+- Uses the official `mcp` SDK's low-level `Server`, with a dynamic `list_tools` (the app is asked each time) and `call_tool`. `caller` comes from `VIBECUT_MCP_CALLER` (default `"outside"`).
+- Converts declarations with the existing `claude_schema.to_claude_tool` (Gemini OpenAPI dialect → JSON Schema), so in-app and MCP schemas can't drift.
+- Returns results as JSON text content; an `{error}` result sets `isError`.
+- Waits for each reply with a per-tool timeout: 30 s for reads and edits, 15 min for `transcribe_*`, `sync_*` and `run_story_editor`. It sends MCP progress notifications every 10 s while waiting.
+- Says plainly when the app isn't running (stale heartbeat) or outside control is off.
+- `mcp` is a new **optional extra** (`[project.optional-dependencies] mcp`). `uv.lock` is regenerated in the same change, since every run is `--locked`, but no existing run installs or loads it.
+
+### 7b: "Claude (subscription)" in the chat
+
+**What it is:** a third chat provider, beside Gemini and Claude (API key). The sidecar runs the user's own signed-in Claude Code CLI, so turns use the Claude subscription and need no key.
+
+**How a turn runs:**
+- `chat.py` accepts `provider: "claude-code"`. A new `agent/claude_code_chat.py` starts:
+
+  ```text
+  claude -p --output-format stream-json --verbose
+         --model <claude-opus-5-5|claude-sonnet-5-5> --system-prompt <systemInstruction(host)>
+         --tools "" --strict-mcp-config --mcp-config <inline: the 7a shim, VIBECUT_MCP_CALLER=<job id>>
+         --allowedTools "mcp__vibecut__*" --permission-prompts none
+         --settings '{"disableAllHooks":true}' --max-turns <maxSteps>
+         [--resume <session id>]
+  ```
+
+  - One `claude -p` per turn, with the user's message on stdin (as built; the plan had one long stream-json process). `--resume` carries the conversation, so nothing is lost, and Stop only has to end one process.
+  - `--tools ""` switches off every built-in tool (shell, files, web, skills): checked live, the session's tool list is only `mcp__vibecut__*`.
+  - Only VibeCut's MCP tools are allowed, and nothing can stop on a permission prompt.
+  - The user's hooks are turned off with `--settings`. `--safe-mode` would do it too, but it also turns off `--mcp-config` servers (checked live), and `--bare` can't use a subscription login.
+  - It runs in an empty folder of the app's (`<app data>/claude-code`), so no project's CLAUDE.md or settings apply.
+  - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock/Vertex switches are removed from its environment, so it can only use the subscription.
+- **Events:**
+  - Claude Code's stream is translated into the chat protocol the controller already handles: `status` (thinking / calling a tool), `result {text, history, usage}`, `error`.
+  - There are no `tool_calls` events for this provider. Its tool calls arrive through the 7a bridge tagged with this job.
+- **History:** Claude Code keeps the conversation itself. `result.history` carries `[{ "claudeCodeSession": "<id>" }]`, and the next message resumes it with `--resume`. Switching provider starts over, as today.
+- **Stop and limits:**
+  - Stop sends SIGINT to Claude Code's process group, then SIGTERM and SIGKILL 5 s apart. The session id is kept, so the next message resumes it.
+  - `maxSteps` maps to `--max-turns`.
+- **Usage:** read from Claude Code's `result` event into `ChatUsage`.
+
+**Rust:**
+- `prepare_request` treats `claude-code` as needing **no key** and strips any `apiKey`.
+- **Finding the CLI:** Rust resolves the `claude` program (a Settings path, else PATH and the usual install folders, as `dependency_status` does) and passes its absolute path in the request.
+  - On this Mac `claude` is a shell function that sets `CLAUDE_CONFIG_DIR` for a profile, and the sidecar never runs the user's shell.
+- **Profile:** Settings gets a **Claude Code profile folder** (`CLAUDE_CONFIG_DIR`). Rust adds it to the environment of this one run only. `passes_to_child` stays unchanged for every other command.
+- `ANTHROPIC_API_KEY` is never passed to this run (it already isn't), so Claude Code uses the subscription login and not a key.
+
+**Frontend:**
+- `AI_CHOICES` gains "Claude Opus 5.5 (subscription)" and "Claude Sonnet 5.5 (subscription)".
+- `availability.ts` reports the provider unavailable when the CLI isn't found or isn't signed in. A Settings **Check** button runs `claude auth status` (or its equivalent) through Rust.
+- **About:** a row saying subscription turns go to Anthropic through the user's Claude Code, and count against the plan's usage limits.
+
+**`run_story_editor` stays keyed:** it makes its own model call through `assemble`. On this provider it uses the same Claude model with an Anthropic key if there is one, else Gemini with its key, else it says it needs a key (`storyModel`, storyTools.ts). Rust also refuses `assemble` on `claude-code`. A later follow-up can let Claude write the story script itself through a tool, with VibeCut only checking it and opening the draft.
+
+### 7d: Remote edits through Claude Code's Remote Control
+
+**What it is:** the user starts an interactive Claude Code session on the Mac with VibeCut's MCP server and Remote Control on, then drives it from a phone or another computer (claude.ai or the Claude app). Edits land in the editor through 7a, as "Outside" steps.
+
+**Build work:**
+- **Settings → Outside control:**
+  - the **Allow** toggle (7a);
+  - the last outside request and whether a client is connected;
+  - **Copy Claude Code command**: `claude mcp add vibecut -- <uv> run --locked --no-dev --extra mcp --project <root> python -m vibecut_agent mcp`, with this build's absolute paths (dev: the repo; release: the bundled sources).
+- **QUICKSTART.md "Remote edits":**
+  - turn on Allow, run the copied command once, then start `claude --remote-control vibecut` in a terminal on the Mac;
+  - allow `mcp__vibecut__*` when asked (or add it to that profile's allowed tools);
+  - the Mac must stay awake, with VibeCut running and the editor connected.
+- **The app never edits Claude Code's config itself.** The user runs the copied command.
+
+**What's different when the user isn't watching:**
+- Approvals for tool calls appear on the remote device.
+- Results come back as tool summaries and `get_editor_context`, with no timeline view.
+- Revert works per "Outside" step when the user is back. The "(before VibeCut n)" backups in the editor are the second safety net.
+
+**Not possible:** scheduled cloud agents can't reach the bridge folder on the Mac. A self-built remote inbox (Slack, Telegram, a webhook) would break the no-network-port rule.
+
+### As built (2026-10-06)
+
+**Files:**
+- **Rust:** `mcp_bridge.rs` (the bridge, `mcp_reply`, `mcp_status`, `mcp_set_outside_allowed`, `mcp_client_setup`, saved as `mcp.json`), `claude_code.rs` (`claude_code_status`, `claude_code_set`, saved as `claude-code.json`), and `prepare_request` in `sidecar.rs` (now also strips `claudeCode` from anything the UI sends, including later `sidecar_send` lines).
+- **Python:** `mcp_server.py` (entry `python -m vibecut_agent mcp`, handled in `__main__.py`, not one of `headless.COMMANDS`), `agent/claude_code_chat.py`, and the `claude-code` provider in `agent/chat.py`. `mcp==2.3.0` is the new `mcp` extra.
+- **Frontend:** `lib/mcp/server.ts`, `store/useMcpStore.ts`, `types/mcp.ts`, `lib/agent/context.ts` (`snapshotFor`, moved from `controller.ts`), `runChatTool` in `controller.ts` (one tool call of the running turn, shared by `tool_calls` and bridge calls), Settings → **Claude subscription** (`ClaudeCodeSection`) and → **Outside control** (`OutsideControlSection`), About's Claude Code row, and `storyModel`.
+
+**Details that differ from the plan above:**
+- Outside edits are labelled "Claude Code (outside)" in the transcript and the edit log.
+- Read tools exempt from the busy lock are `get_editor_context`, `get_instructions` and any `list_`, `get_`, `find_`, `describe_` or `search_` tool.
+- The shim's default timeout is 120 s (not 30 s), since an edit first reads the timeline and makes a backup.
+- Long tools (15 min): `transcribe_clips`, `sync_and_place`, `sync_clips`, `slip_into_sync`, `run_story_editor`, `send_to_premiere`, `send_to_resolve`, `find_silences`.
+- The copied command registers the server at user scope (`claude mcp add --scope user -e … vibecut -- <uv> run --locked --no-dev --project <root> --extra mcp python -u -m vibecut_agent mcp`), with `PYTHONPATH`, `PYTHONDONTWRITEBYTECODE` and, in a release build, `UV_PROJECT_ENVIRONMENT`.
+
+**Tests added:** Rust 14 (`mcp_bridge` 8, `claude_code` 5, `prepare_request` 1), Python 20 (`test_mcp_server.py` 10, `test_claude_code_chat.py` 10; the shim's skip if the `mcp` extra isn't installed), frontend 22 (`server.test.ts` 11, `OutsideControlSection` 3, `ClaudeCodeSection` 5, availability, Story Editor model and controller 1 each). All suites green: pytest 663 (+2 skipped), cargo 103, vitest 358, ruff, mypy, eslint and tsc. Two files ruff would reformat (`nle/links.py` and one other) predate this phase.
+
+**Verified without the editors (2026-10-06, Claude Code 2.1.291, the user's Personal profile, Pro plan):**
+- **The shim alone:** `claude -p` with `--mcp-config` and a stand-in app answering through a temp bridge folder. The session's tools were exactly `mcp__vibecut__add_markers` and `mcp__vibecut__list_markers`; Claude called `add_markers` and the stand-in saw it tagged with the caller; `apiKeySource` was `none` (the subscription).
+- **The whole 7b chain:** the real `chat` sidecar command on `claude-code` (Sonnet 5.5), started the way Rust starts it, with a stand-in app. Events: `status` "Starting Claude Code…", "Calling Claude…", "Running add_markers…", then `result` with the reply, `[{claudeCodeSession}]` history and usage, in 5.4 s. The stand-in saw `list_tools` and `add_markers`, both tagged `e2e-job`.
+
+**Not yet verified live:** the running app with Premiere or Resolve (the live checks below), Remote Control from a phone, and a long tool against Claude Code's request timeout.
+
+### Tests (all of Phase 7)
+- **Rust:**
+  - request validation and draining (oldest first; bad files refused and deleted);
+  - `mcp_reply` atomicity and the outside-allowed gate;
+  - no key and the profile env for `claude-code`, and nothing new in `passes_to_child`.
+- **Frontend:**
+  - `server.ts`: listing per editor and with none connected; 7b calls joining the turn's step; outside calls grouped every 2 minutes; the busy lock both ways; transcript lines.
+  - `context.ts`, with the existing controller tests still passing after the move.
+- **Python:**
+  - the shim against an in-memory MCP client and a fake app folder: list and call round-trips, schema conversion, stale-heartbeat and "outside off" errors, timeouts and progress;
+  - `claude_code_chat.py` against a fake `claude` script that emits recorded stream-json: text, tool use, result and usage, interrupt, resume, and a missing or signed-out CLI.
+- **Existing suites** (pytest, cargo, vitest, lint, typecheck) stay green.
+
+### Live checks (with the user's go-ahead, on scratch copies)
+- **7b:** in the chat, "Claude Sonnet 5.5 (subscription)" with no API keys set. Read context, add markers, one edit, Revert, Stop mid-turn, and a follow-up message (resume). In Resolve, then Premiere.
+- **7d:** `claude --remote-control vibecut` on the Mac, driven from the phone. One marker and one edit, then Revert from the app.
+- **Long call:** transcribe, to see whether progress notifications keep the call alive.
+
+### Risks to watch
+- **Long tools versus client timeouts.** If progress notifications don't keep a call alive, long tools switch to start + `check_job`.
+- **The hidden window's webview** must keep answering bridge requests. It does for the B-roll panel; check that WKWebView doesn't throttle it after hours hidden.
+- **Claude Code CLI changes:** its stream-json and flags can change between versions. Pin the tested version in About and fail with a clear message on an unknown event shape.
+- **Any local process running as the user** can write to the bridge folder, as with the B-roll panel. Mitigations: outside control off by default, `0700`, strict validation, and only the tools the in-app agent already has.
+
+### 7e: The Story Editor on the subscription, and a first pass for long footage (built 2026-10-06)
+
+**Why (the user, 2026-10-06):**
+- **On the subscription:** the Story Editor (`assemble`) should run through Claude Code too, so a story cut needs no key.
+- **Long footage:** VibeCut's cap (`MAX_STORY_SEGMENTS`, 2,000 lines) trimmed the **end** of every interview by the same share, so past about 3–4 hours the model never saw the later answers.
+
+**Decisions (the user):**
+- **Text only:** transcripts made on the Mac, no audio sent.
+- **Claude for both steps by default:** the first pass on **Sonnet**, the story on the chat's model.
+- **Option:** a setting to run the first pass on Gemini Flash instead (needs a Gemini key).
+- **Only above the cap:** the first pass runs only over 2,000 lines; shorter footage keeps the single call.
+- **Not built:** voiceover script writing is a separate feature, left for later.
+
+**How it works:**
+- **`agent/claude_code_json.py`, `run_json`:**
+  - One `claude -p --output-format json --json-schema <schema>` with `--tools ""`, `--strict-mcp-config` (no MCP server at all), hooks off, `--no-session-persistence`, `--effort` and `--max-turns 4`.
+  - The text goes on stdin, and the answer is read from Claude Code's `structured_output`.
+  - Stop and a 15-minute timeout end it.
+  - Same environment rules as 7b: no `ANTHROPIC_*`, and the chosen profile folder.
+- **`story/models.py`:** the calls are general now (`gemini_json`, `claude_json`, `claude_code_json_answer`, each taking any system text, user text and schema). `gemini_story` and `claude_story` are unchanged wrappers, and `claude_code_story` is new. The story keeps effort "high".
+- **`story/extract.py`, the first pass:**
+  - Above `SINGLE_PASS_LIMIT` (2,000 lines), each interview is split into parts of up to 1,500 lines, read 3 at a time.
+  - Each part returns `themes` and `moments` (segment index, why, strength 1–5). Indices only, never quotes, so the story still picks from real lines.
+  - The shortlist keeps each moment with one line either side, strongest first, up to 1,800 lines, in the original order.
+  - The story call gets those lines, plus "FIRST-PASS NOTES" (themes and each moment's reason) added to the brief.
+  - A part that fails fails the cut, Stop stops it, and the result's first warning says what the first pass did.
+- **The first pass's model:**
+  - `extraction: "same"` uses the story's own provider: Claude Sonnet through Claude Code (subscription), Claude Sonnet through the API (key), or Gemini Flash (key).
+  - `extraction: "gemini"` always uses Gemini Flash, with the key Rust adds as `extractionKey` (`set_extraction_key`).
+  - It runs at effort "medium".
+- **Rust:**
+  - `assemble` on `claude-code` gets the Claude Code setup, as the chat does.
+  - `extractionKey` is stripped from anything the UI sends.
+- **Frontend:**
+  - `storyModel` sends the chat's provider and the first-pass choice.
+  - Transcripts are capped only at `MAX_STORY_LINES` (20,000) before sending.
+  - Settings → Agent model has "Story Editor on long footage: first read" (`storyFirstPass`, saved with the model choice).
+  - About lists the Story Editor under Claude Code and the Gemini first-pass option.
+
+**Also fixed:** Claude Code is no longer started in its own process group (7b did that). It stays in the sidecar's group, so the app's cancel and quit reach it, and Stop signals it directly.
+
+**Tests:**
+- Python 17 new: `test_claude_code_json.py` 4, `tests/story/test_first_pass.py` 13. They cover parts, shortlist and neighbours, unknown indices, the two-step flow and its notes and warning, Gemini with and without its key, a failed part, Stop, and an empty first pass.
+- Rust 1 new: `set_extraction_key`; the subscription test now expects `assemble` to run.
+- Frontend: `storyModel`, the request's `extraction`, and the setting's store.
+- All green: pytest 680 (+2 skipped), cargo 104, vitest 359, ruff, mypy, eslint and tsc.
+
+**Verified with real Claude Code (2026-10-06, Sonnet 5.5 on the user's Personal profile), no editor:**
+- **Short footage:** 12 lines went to one Claude Code call (11.6 s), which made 7 cuts, 25 s against a 30 s target.
+- **Long footage:**
+  - 2,100 lines of filler with 6 on-brief lines hidden at 300, 301, 950, 1500, 1501 and 2050.
+  - The first pass read 2 parts and shortlisted 14 lines, and the story used all 6 (plus one neighbour), 25 s for a 30 s target, in 16.6 s.
+  - Line 2050 is one the old 2,000-line cap would have dropped.
+
+**Not yet verified live:** a real multi-hour project in the editors, and the Gemini Flash first pass with a real key.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -603,6 +836,7 @@ It starts over when the editor's project changes (`forProject`).
   - **Transcripts** (VibeCut's interview-transcriber) for a real speech-based duck.
   - **Drafts and ripple edits**, from VibeCut's `hostDraft.ts`.
   - *(2026-10-06)* Transcripts, drafts, audio sync and the Story Editor are done (Phase 6a–6d). Next by value: the user's live try of the whole interview-to-edit flow in the chat; Premiere's live checks (panel 0.8.0); the Story Editor's music bed (VibeCut's beat sync); ducking carried into a Story Editor draft.
+  - *(2026-10-06)* **Phase 7 (7a, 7b, 7d) is built and unit-tested**, and the 7b chain was checked end to end with real Claude Code and a stand-in app. Next: its live checks in Resolve and Premiere ("Phase 7" → Live checks), then the user's own try of a remote session from their phone.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -686,3 +920,31 @@ It starts over when the editor's project changes (`forProject`).
   - `run_story_editor`: a story cut from the interviews' transcripts (and project or Library B-roll), made with the chat's model through the new `assemble` sidecar command (`vibecut_agent/story/`; Gemini, or Claude via structured outputs), opened as a draft and sent as a new timeline.
   - No music bed, by decision.
   - Checked live with both providers and a Resolve rebuild.
+- **2026-10-06 (Claude): Phase 7 planned (7a, 7b, 7d), not built.** Claude without an API key: an MCP bridge to the agent's tools (files, no port), a "Claude (subscription)" chat provider running the user's Claude Code CLI, and remote edits through Claude Code's Remote Control. 7c (Claude desktop) left out by decision.
+- **2026-10-06 (Claude): Phase 7 built (7a, 7b, 7d).**
+  - **7a, the MCP bridge:** `mcp_bridge.rs`, `vibecut_agent/mcp_server.py` (the `mcp` extra, `mcp==2.3.0`) and `src/lib/mcp/server.ts`. Outside control is off by default; one driver at a time; outside edits are grouped for Revert.
+  - **7b, Claude (subscription):** the `claude-code` chat provider (`claude_code.rs`, `agent/claude_code_chat.py`), two "(subscription)" models, and Settings → Claude subscription. No API key; Claude Code runs with only VibeCut's tools.
+  - **7d, remote edits:** Settings → Outside control with **Copy Claude Code command**, and QUICKSTART's "Remote edits with Claude Code".
+  - `snapshotFor` moved to `lib/agent/context.ts`; `runChatTool` factored out of the controller.
+- **2026-10-06 (Claude): fix: `create_timeline` in Premiere no longer needs the connected sequence.** It read the connected sequence's frame rate first. When that sequence had been deleted or renamed ("Sequence 03" in "2026 Agent Tests", found live), every new sequence failed. The rate now comes from the connected sequence, else the one open in Premiere, else any in the project, else 25 fps (`_frame_rate_for_new`, premiere_project.py), with a regression test. Takes effect after Settings → Editors → Reconnect (Premiere), which restarts the watcher.
+- **2026-10-06 (Claude): Phase 7e, the Story Editor on Claude (subscription) and a first pass for long footage.** `agent/claude_code_json.py`, `story/extract.py`, general model calls in `story/models.py`, `extraction`/`extractionKey` for `assemble`, the "first read" setting, and Claude Code kept in the sidecar's process group. Checked with real Claude Code on 12 and 2,100 lines.
+- **2026-10-06 (Claude): fix: release builds now bundle `src-python/vibecut_agent/story/`** (missing since 6d, so the Story Editor and the 7e first pass would have failed in a release `.app`). `tests/test_bundle_resources.py` fails if any Python package folder isn't in `tauri.conf.json`'s `bundle.resources`.
+- **2026-10-06 (Claude): fix: a Story Editor cut from a separately recorded WAV now takes its picture from the synced camera.**
+  - **Found live in Premiere:** transcripts made from the recorder's WAVs put the WAV on V1 as well as A1 (`draftFromPlan`). Premiere imports such an XML as nothing at all, silently ("imported the rebuilt sequence's file but made no sequence from it").
+  - **Reproduced:** diagnostic imports in "2026 Agent Tests" through the panel worked (a test clip, the real Ria MP4 + WAV under the space-prefixed ` Projects` folder, the synced layout with empty tracks), except a WAV on the picture track, which failed with exactly that error.
+  - **Fix:** `syncedPictures(view)` (hostDraft.ts) maps each sound-only file linked to a camera clip in the connected timeline to that camera and its offset, and `draftFromPlan` puts the camera's picture on V1. A cut with no synced camera, or outside the camera's range, goes in as sound only, with a note.
+  - **Guard:** `premiere_rebuild.refuse_sound_on_picture` refuses a sound-only file on a video track by name, before importing.
+  - **Checked:** "VCA diag 5", made with the real offsets read from "ALW Course Piece" (Ria −120.8 s, Josie −118.9 s, Brandon −265.6 s), imported with all three cameras over their WAVs. This is the first confirmed working Premiere import of a send-draft (the "Not yet verified live: Premiere's rebuild" note under 6b).
+  - **Left in that project for the user to delete:** the diagnostic sequences "VCA diag 1", "2", "3" and "5" in the "VibeCut" bin.
+- **2026-10-06 (Claude): Phase 7f, Claude Code lockdown.**
+  - **Checked each run:** every chat turn (7b) and every Story Editor or first-pass answer (7e) now checks Claude Code's own startup event (`lockdown_problem`, claude_code_chat.py).
+    - A chat turn may have only `mcp__vibecut__*` tools and the `vibecut` MCP server.
+    - A schema run (now `--output-format stream-json`, so it reports its startup) may have only `StructuredOutput` and no MCP server.
+    - Anything else, or no startup report, stops Claude Code before it does anything, saying so. A future Claude Code that changed what `--tools ""` or `--strict-mcp-config` do can't widen what VibeCut runs.
+    - A chat turn also stops with a clear message if VibeCut's MCP server didn't connect.
+  - **Remote sessions:** Settings → Outside control now recommends **Copy remote session command**: `claude --remote-control vibecut --tools '' --strict-mcp-config --mcp-config '<VibeCut's server, inline>' --allowedTools 'mcp__vibecut__*'` (`remote_command`, mcp_bridge.rs). It needs no `claude mcp add`. The `claude mcp add` line stays, labelled as giving VibeCut to full-tool sessions.
+  - **Tests:** Python 8 (each failure mode for chat and schema runs, plus the checker), Rust 1 (the remote command and its inline config).
+  - **Checked with real Claude Code 2.1.291:**
+    - A chat turn and a Story Editor cut passed the check.
+    - The remote command's flags (in `-p` mode, stopped after startup) gave exactly `mcp__vibecut__get_editor_context` and the `vibecut` server. It's the one tool, since outside control was off.
+  - **Not checked:** `--remote-control` itself with these flags, which needs the user's phone.

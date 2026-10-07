@@ -6,7 +6,7 @@ import { useLibraryStore } from "../../store/useLibraryStore";
 import { INDEX_SOURCE } from "../settings/LibrarySection";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES } from "../../types/agent";
+import { AI_CHOICES, claudeCodeUsable } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
 import { DependencyList } from "../common/DependencyList";
 import { Modal } from "../common/Modal";
@@ -22,6 +22,7 @@ export const APP_DESCRIPTION =
 export function AboutModal({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
   const keys = useSystemStore((s) => s.keys);
+  const claudeCode = useSystemStore((s) => s.claudeCode);
   const hwAccel = useSystemStore((s) => s.hwAccel);
   const storage = useSystemStore((s) => s.storage);
   const sidecar = useSystemStore((s) => s.sidecar);
@@ -41,7 +42,11 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  const modelKeyReady = model && keys ? keys[model.provider] : false;
+  const subscription = model?.provider === "claude-code";
+  const modelKeyReady = !model ? false : model.provider === "claude-code" ? claudeCodeUsable(claudeCode) : keys ? keys[model.provider] : false;
+  const modelChecked = subscription ? claudeCode !== null : keys !== null;
+  const readyText = subscription ? "Claude Code signed in" : "Key configured";
+  const missingText = subscription ? "Claude Code not ready" : "Key missing";
 
   return (
     <Modal title="About This App" onClose={onClose}>
@@ -54,15 +59,21 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
         <ul className="divide-y divide-border">
           <StatusRow
             label={`Active model: ${model?.label ?? aiChoice}`}
-            tone={keys === null ? "off" : modelKeyReady ? "ok" : "warn"}
-            value={keys === null ? "Unknown" : modelKeyReady ? "Key configured" : "Key missing"}
-            detail={model ? KEY_ENV[model.provider].env : undefined}
+            tone={!modelChecked ? "off" : modelKeyReady ? "ok" : "warn"}
+            value={!modelChecked ? "Unknown" : modelKeyReady ? readyText : missingText}
+            detail={!model ? undefined : model.provider === "claude-code" ? "Your Claude subscription, through Claude Code" : KEY_ENV[model.provider].env}
+          />
+          <StatusRow
+            label="Claude Code (subscription)"
+            tone={claudeCodeUsable(claudeCode) ? "ok" : "off"}
+            value={claudeCode === null ? "Unknown" : claudeCodeUsable(claudeCode) ? `Signed in${claudeCode.subscription ? ` (${claudeCode.subscription})` : ""}` : "Not ready"}
+            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model, and for its Story Editor cuts (the interviews' transcripts are sent) · counts against your Claude plan's usage limits · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
           />
           <StatusRow
             label="Gemini API"
             tone={keys?.gemini ? "ok" : "off"}
             value={keys?.gemini ? "Key configured" : "Not configured"}
-            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (its Story Editor cuts too: the interviews' transcripts are sent)${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (its Story Editor cuts too: the interviews' transcripts are sent), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
           />
           <StatusRow
             label="Anthropic API"

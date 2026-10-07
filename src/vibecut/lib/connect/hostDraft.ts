@@ -428,7 +428,46 @@ export function draftAsTimeline(draft: HostDraft, project: string): HostTimeline
  * on V1 with their sound on A1, linked, and B-roll on V2, with its sound on A2 unless the plan made it
  * silent. `base` is the connected timeline, for its frame rate; nothing of it is kept.
  */
-export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): HostDraft {
+/** Where a sound-only recording's picture comes from: the camera file synced to it, and how far the
+ * camera's source time runs ahead of the recording's (camera time = recording time + offset), with the
+ * camera's source range in the synced timeline. */
+export interface SyncedPicture {
+  cameraPath: string;
+  offset: number;
+  cameraIn: number;
+  cameraOut: number;
+}
+
+/** Files that are sound only, by extension: a cut from one has no picture of its own. */
+const SOUND_ONLY = /\.(wav|wave|bwf|aif|aiff|aifc|mp3|m4a|aac|flac|caf|ogg|opus)$/i;
+export const isSoundOnly = (path: string): boolean => SOUND_ONLY.test(path);
+
+/**
+ * Each separately recorded sound file in `view` that's linked to a camera clip (as sync_and_place and
+ * a hand sync leave them), mapped to that camera's picture (PLAN.md, Phase 7e fix). Transcripts are
+ * often made from the recorder, so the Story Editor's cuts name the WAV; the draft takes the picture
+ * from the camera instead. Only speed-1 pairs count, and the first pair found for a file wins.
+ */
+export function syncedPictures(view: { tracks: { type: string; clips: { id: string; start: number; sourceIn?: number; sourceOut?: number; speed?: number; filePath?: string; linkedIds?: string[] }[] }[] }): Map<string, SyncedPicture> {
+  const pictures = new Map<string, SyncedPicture>();
+  const videoById = new Map(view.tracks.filter((t) => t.type === "video").flatMap((t) => t.clips.map((c) => [c.id, c] as const)));
+  for (const track of view.tracks.filter((t) => t.type === "audio")) {
+    for (const sound of track.clips) {
+      const path = sound.filePath;
+      if (!path || !isSoundOnly(path) || pictures.has(path) || sound.sourceIn === undefined || (sound.speed ?? 1) !== 1) continue;
+      for (const id of sound.linkedIds ?? []) {
+        const camera = videoById.get(id);
+        if (!camera?.filePath || camera.filePath === path || camera.sourceIn === undefined || camera.sourceOut === undefined || (camera.speed ?? 1) !== 1) continue;
+        const offset = camera.sourceIn - camera.start - (sound.sourceIn - sound.start);
+        pictures.set(path, { cameraPath: camera.filePath, offset: round3(offset), cameraIn: camera.sourceIn, cameraOut: camera.sourceOut });
+        break;
+      }
+    }
+  }
+  return pictures;
+}
+
+export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan, pictures: Map<string, SyncedPicture> = new Map()): HostDraft {
   const main: DraftClip[] = [];
   const mainSound: DraftClip[] = [];
   const broll: DraftClip[] = [];
@@ -436,6 +475,8 @@ export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): Ho
   const notes: string[] = [];
   let ducked = 0;
   let missing = 0;
+  let soundOnly = 0;
+  let fromCamera = 0;
   plan.segments.forEach((segment, i) => {
     if (!segment.mediaPath) {
       missing++;
@@ -455,8 +496,22 @@ export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): Ho
       volumeDb: null,
     };
     if (segment.track === "main") {
-      main.push({ ...clip, linkGroup: `story-${i}` });
-      mainSound.push({ ...clip, linkGroup: `story-${i}` });
+      const group = `story-${i}`;
+      mainSound.push({ ...clip, linkGroup: group });
+      if (!isSoundOnly(clip.sourcePath)) {
+        main.push({ ...clip, linkGroup: group });
+        return;
+      }
+      // A cut from a separately recorded sound file: the picture is the camera synced to it.
+      const picture = pictures.get(clip.sourcePath);
+      const cameraIn = picture ? round3(clip.sourceIn + picture.offset) : -1;
+      const cameraOut = picture ? round3(clip.sourceOut + picture.offset) : -1;
+      if (picture && cameraIn >= Math.max(0, picture.cameraIn - 0.05) && cameraOut <= picture.cameraOut + 0.05) {
+        main.push({ ...clip, sourcePath: picture.cameraPath, sourceName: fileName(picture.cameraPath), sourceIn: cameraIn, sourceOut: cameraOut, linkGroup: group });
+        fromCamera++;
+      } else {
+        soundOnly++;
+      }
     } else {
       broll.push(clip);
       if (segment.audioMode !== "silent") brollSound.push(clip);
@@ -464,6 +519,7 @@ export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): Ho
     }
   });
   if (missing) notes.push(`${plural(missing, "cut")} had no source file and ${missing === 1 ? "was" : "were"} left out`);
+  if (soundOnly) notes.push(`${plural(soundOnly, "cut")} from a sound recording with no synced camera ${soundOnly === 1 ? "has" : "have"} sound only (sync the camera first to get picture)`);
   if (ducked) notes.push(`the interview isn't lowered under ${plural(ducked, "B-roll clip")} the plan wanted ducked`);
   // B-roll that overlaps other B-roll goes up a track rather than over it.
   const brollTracks: DraftTrack[] = [];
@@ -472,7 +528,7 @@ export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): Ho
     if (!track) brollTracks.push((track = { type: "video", clips: [] }));
     track.clips.push(clip);
   }
-  const duration = Math.max(0, ...[...main, ...broll].map((c) => c.end));
+  const duration = Math.max(0, ...[...main, ...mainSound, ...broll].map((c) => c.end));
   return {
     base,
     name: plan.sequenceName,
@@ -482,7 +538,9 @@ export function draftFromPlan(base: string, fps: number, plan: RoughCutPlan): Ho
     audio: [{ type: "audio", clips: mainSound }, ...(brollSound.length ? [{ type: "audio" as const, clips: brollSound }] : [])],
     markers: [],
     notCarried: notes,
-    changes: [`Story Editor: "${plan.sequenceName}", ${plural(main.length, "cut")}${broll.length ? ` and ${plural(broll.length, "B-roll clip")}` : ""} (${round3(duration)}s)`],
+    changes: [
+      `Story Editor: "${plan.sequenceName}", ${plural(mainSound.length, "cut")}${broll.length ? ` and ${plural(broll.length, "B-roll clip")}` : ""} (${round3(duration)}s)${fromCamera ? `, picture from the synced camera for ${plural(fromCamera, "cut")}` : ""}`,
+    ],
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HostTimeline } from "../../types/connect";
-import { addDraftMarkers, arrangeSections, draftAsTimeline, draftClipAt, draftFromPlan, draftFromSnapshot, keptBetween, placeClip, rebuildRequest, removeRanges, reshapeDraftClip } from "./hostDraft";
+import { addDraftMarkers, arrangeSections, draftAsTimeline, draftClipAt, draftFromPlan, draftFromSnapshot, isSoundOnly, keptBetween, placeClip, rebuildRequest, removeRanges, reshapeDraftClip, syncedPictures } from "./hostDraft";
 
 // A 10 s interview at 25 fps: A.mov on V1 with its linked sound on A1 (at -6 dB), B-roll on V2,
 // a transition and a title, and two markers.
@@ -250,6 +250,41 @@ describe("draftFromPlan", () => {
     expect(draft.notCarried).toEqual(["1 cut had no source file and was left out", "the interview isn't lowered under 1 B-roll clip the plan wanted ducked"]);
     expect(draft.duration).toBe(7);
     expect(draft.changes).toEqual(['Story Editor: "Bakery", 2 cuts and 3 B-roll clips (7s)']);
+  });
+
+  // Live, 2026-10-06: transcripts made from the recorder's WAVs put the WAV on V1, and Premiere imported
+  // the sequence as nothing. A WAV cut now takes its picture from the camera synced to it.
+  const SYNCED = {
+    tracks: [
+      { type: "video", clips: [{ id: "v1", start: 0, sourceIn: 100, sourceOut: 400, filePath: "/m/RiaC.MP4", linkedIds: ["a1", "w1"] }] },
+      { type: "audio", clips: [{ id: "a1", start: 0, sourceIn: 100, sourceOut: 400, filePath: "/m/RiaC.MP4", linkedIds: ["v1", "w1"] }] },
+      { type: "audio", clips: [{ id: "w1", start: 0, sourceIn: 2.5, sourceOut: 302.5, filePath: "/m/RiaC.WAV", linkedIds: ["v1", "a1"] }] },
+      { type: "audio", clips: [{ id: "w2", start: 400, sourceIn: 0, sourceOut: 50, filePath: "/m/Lonely.WAV", linkedIds: [] }] },
+    ],
+  };
+
+  it("finds each recorder file's synced camera and offset", () => {
+    expect(syncedPictures(SYNCED)).toEqual(new Map([["/m/RiaC.WAV", { cameraPath: "/m/RiaC.MP4", offset: 97.5, cameraIn: 100, cameraOut: 400 }]]));
+  });
+
+  // The length snaps to whole frames at 29.97 fps, so 5 s of source becomes 5.005 s.
+  it("takes a WAV cut's picture from its synced camera, and leaves an unsynced one as sound only", () => {
+    const draft = draftFromPlan(
+      "ALW Course Piece",
+      29.97,
+      { sequenceName: "Story", unreadable: 0, segments: [seg("main", "/m/RiaC.WAV", 0, 20, 25), seg("main", "/m/Lonely.WAV", 5, 1, 3), seg("main", "/m/RiaC.WAV", 7, 400, 402)] },
+      syncedPictures(SYNCED),
+    );
+    expect(draft.video[0].clips.map((c) => [c.sourcePath, c.sourceIn, c.sourceOut, c.linkGroup])).toEqual([["/m/RiaC.MP4", 117.5, 122.505, "story-0"]]);
+    expect(draft.audio[0].clips.map((c) => [c.sourcePath, c.sourceIn, c.linkGroup])).toEqual([
+      ["/m/RiaC.WAV", 20, "story-0"],
+      ["/m/Lonely.WAV", 1, "story-1"],
+      ["/m/RiaC.WAV", 400, "story-2"],
+    ]);
+    expect(draft.notCarried).toEqual(["2 cuts from a sound recording with no synced camera have sound only (sync the camera first to get picture)"]);
+    expect(draft.changes[0]).toContain("3 cuts");
+    expect(draft.changes[0]).toContain("picture from the synced camera for 1 cut");
+    expect(isSoundOnly("/m/x.Wav") && !isSoundOnly("/m/x.mov")).toBe(true);
   });
 });
 

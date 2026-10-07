@@ -194,3 +194,18 @@ def test_validate_tracks_carries_fades_and_transitions(media):
     assert first["audio_channels"] == [2]
     assert first["transition_out"] == {"kind": "dipToBlack", "seconds": 0.5}
     assert "fade_in_seconds" not in second
+
+
+def test_a_sound_only_file_on_a_picture_track_is_refused_before_import(tmp_path, media, monkeypatch):
+    """Live, 2026-10-06: a Story Editor draft cut from WAV transcripts put the WAV on V1, and Premiere
+    imported the XML as nothing, silently. Now it's refused by name before anything is imported."""
+    a, roll = media
+    monkeypatch.setattr(premiere_rebuild, "Probe", lambda: FakeProbe({a}))
+    host, requests, _ = rebuild_host(tmp_path)
+    tracks = [
+        {"type": "audio", "clips": [clip(roll, 0, 0, 3, linkGroup="s@0")]},
+        {"type": "video", "clips": [clip(roll, 0, 0, 3, linkGroup="s@0")]},
+    ]
+    with pytest.raises(HostError, match="ROLL.wav is sound only"):
+        run_command(host, "rebuild", {"timeline": "Main", "tracks": tracks})
+    assert requests.sent("import_sequence") == []

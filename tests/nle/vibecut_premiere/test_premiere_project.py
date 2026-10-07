@@ -6,6 +6,7 @@ import pytest
 
 from tests.nle.compat import run_command
 from tests.nle.vibecut_premiere.premiere_fakes import FakeProject
+from vibecut_agent.nle import premiere_project
 from vibecut_agent.nle.premiere import HostError, PremiereHost
 
 TB_25 = 254016000000 // 25
@@ -16,6 +17,7 @@ class SequenceProject(FakeProject):
         super().__init__()
         self.sequences = ["Interview", "Interview (before VibeCut 1)"]
         self.active = "Interview"
+        self.timebases: dict[str, int] = {}
         self.selection: list[str] = []
         self.view: list[str] = []
 
@@ -23,9 +25,10 @@ class SequenceProject(FakeProject):
         return {"sequences": list(self.sequences), "activeSequence": self.active}
 
     def sequence_info(self, a):
-        assert a["timeline"] in self.sequences
+        if a["timeline"] not in self.sequences:
+            raise HostError(f"There's no sequence called {a['timeline']!r} in this project")
         return {
-            "timebase": str(TB_25),
+            "timebase": str(self.timebases.get(a["timeline"], TB_25)),
             "zeroPoint": "0",
             "endTicks": "0",
             "isActive": True,
@@ -90,6 +93,22 @@ def test_create_and_duplicate_make_unique_names_and_open_them(project, tmp_path)
     assert call(project, "duplicate_timeline", timeline="Interview") == {"timeline": "Interview Copy"}
     assert project.active == "Interview Copy"
     assert call(project, "open_timeline", timeline="Interview") == {"timeline": "Interview"}
+
+
+def test_a_new_sequence_doesnt_need_the_connected_one_to_still_exist(project, monkeypatch):
+    """Live, 2026-10-06: "Sequence 03" was deleted after the agent connected, and every create_timeline
+    failed on its frame rate. Now the rate comes from the sequence open in Premiere, else any other."""
+    rates: list[float] = []
+    real = premiere_project.preset_for
+    monkeypatch.setattr(premiere_project, "preset_for", lambda fps: (rates.append(round(fps, 3)), real(fps))[1])
+    project.timebases["Interview"] = 254016000000 * 1001 // 30000
+    made = call(project, "create_timeline", timeline="Sequence 03", name="Campus Video")
+    assert made["timeline"] == "Campus Video"
+    assert rates == [29.97], "the open sequence's rate, since the connected one is gone"
+    project.sequences = []
+    project.active = None
+    assert call(project, "create_timeline", timeline="Gone")["timeline"] == "Sequence (VibeCut)"
+    assert rates[-1] == 25.0, "no sequence to copy: 25 fps"
 
 
 def test_rename_refuses_a_taken_name(project):

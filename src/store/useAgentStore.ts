@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage } from "../types/agent";
+import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, StoryFirstPass } from "../types/agent";
 import { AI_CHOICES } from "../types/agent";
 import { newId } from "../lib/id";
 
@@ -10,6 +10,8 @@ export interface AgentState {
   /** Why the agent can't chat, or what failed; shown under the composer. */
   statusDetail: string | null;
   aiChoice: AiChoiceId;
+  /** Which model reads long footage first for the Story Editor (Phase 7e). */
+  storyFirstPass: StoryFirstPass;
   draft: string;
   /** The running `chat` sidecar job, and what it was started for ("<provider>:<host>"). */
   jobId: string | null;
@@ -25,6 +27,7 @@ export interface AgentState {
   updateMessage: (id: string, patch: Partial<Omit<ChatMessage, "id">>) => void;
   setStatus: (status: AgentStatus, detail?: string | null) => void;
   setAiChoice: (choice: AiChoiceId) => void;
+  setStoryFirstPass: (choice: StoryFirstPass) => void;
   setDraft: (draft: string) => void;
   setSession: (jobId: string, sessionKey: string) => void;
   /** The sidecar's job ended (or never started): the next message starts a new one. */
@@ -44,6 +47,7 @@ export const useAgentStore = create<AgentState>()(
       status: "offline",
       statusDetail: AGENT_OFFLINE_DETAIL,
       aiChoice: "gemini",
+      storyFirstPass: "same",
       draft: "",
       jobId: null,
       sessionKey: null,
@@ -65,6 +69,7 @@ export const useAgentStore = create<AgentState>()(
       setAiChoice: (choice) => {
         if (AI_CHOICES.some((c) => c.id === choice)) set({ aiChoice: choice });
       },
+      setStoryFirstPass: (storyFirstPass) => set({ storyFirstPass: storyFirstPass === "gemini" ? "gemini" : "same" }),
       setDraft: (draft) => set({ draft }),
       setSession: (jobId, sessionKey) => set({ jobId, sessionKey }),
       endSession: () => set({ jobId: null, sessionKey: null, activity: null }),
@@ -75,7 +80,7 @@ export const useAgentStore = create<AgentState>()(
     {
       name: "vibecut-agent.agent",
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ aiChoice: state.aiChoice }),
+      partialize: (state) => ({ aiChoice: state.aiChoice, storyFirstPass: state.storyFirstPass }),
     },
   ),
 );
