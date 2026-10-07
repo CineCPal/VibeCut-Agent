@@ -876,7 +876,16 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
 - A turn with a made-up session id in its history fell back and answered under a new session id: 5.2 s on the Personal profile, and 5.0 s on the **Work** profile (`~/.claude-profiles/Work`, the Blair Academy team plan), which is the login the user uses for VibeCut Agent.
 - The bridge saw only `list_tools`, tagged with the job.
 
-**Not yet verified live:** the app itself across a quit and relaunch, and Revert (earlier session) on a Resolve scratch timeline.
+**Checked live in Resolve (2026-10-06, project "VibeCut 7a", a scratch copy):**
+- **Setup:** "Bakery (VibeCut 1)" (4 video, 4 audio) was copied to "VCA 8a revert after restart". Timeline 28, the one left open, is empty.
+- **The edit:** through a real `resolve-watch`, a backup, then one clip switched off and one deleted with its linked sound (changes `enabled`, `deleted`, `deleted`).
+- **The quit:** that watcher was ended, and its edit log went through JSON as the saved file does.
+- **The relaunch:** a **new** watcher reverted newest first from the saved entries alone (changes, backup, timeline). Everything reverted, with no `changedSince` and no `failed`.
+- **Result:** the timeline matched the original clip by clip (track, name, in, out, on/off).
+- **What came back differently:** the deleted picture and sound came back under new ids (expected; Resolve gives new items new ids), with the grade, transform and fades taken from the backup (`gradedFromBackup`).
+- **Cleanup:** the test timeline and its "(before VibeCut 1)" backup were deleted, nothing was imported, and Timeline 28 is open again.
+
+**Not yet verified live:** the app itself across a quit and relaunch (the chat, the History menu and the header's "(earlier session)" button), and Premiere.
 
 ## API Keys in the Keychain (2026-10-05)
 
@@ -906,7 +915,7 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
   - *(2026-10-06)* Transcripts, drafts, audio sync and the Story Editor are done (Phase 6a–6d). Next by value: the user's live try of the whole interview-to-edit flow in the chat; Premiere's live checks (panel 0.8.0); the Story Editor's music bed (VibeCut's beat sync); ducking carried into a Story Editor draft.
   - *(2026-10-06)* **Phase 7 (7a, 7b, 7d) is built and unit-tested**, and the 7b chain was checked end to end with real Claude Code and a stand-in app. Next: its live checks in Resolve and Premiere ("Phase 7" → Live checks), then the user's own try of a remote session from their phone.
   - *(2026-10-06)* **Claude Code profile:** the user signs VibeCut Agent in with their **Work** profile (`/Users/cj/.claude-profiles/Work`). No profile folder is saved in Settings yet (`claude-code.json` is absent), so the app runs Claude Code's default `~/.claude`. It's signed in to the same team account, but its sessions and settings are kept apart from Work's. Set Settings → Claude subscription → Profile folder to the Work folder. Earlier "Personal profile" checks (7b, 7e, 7f) ran in dev shells and stand for the same CLI behaviour.
-  - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Next: the user's own try across a quit and relaunch; Revert (earlier session) on a Resolve scratch timeline; then Phase 7's live checks.
+  - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Revert after a restart is checked live in Resolve. Next: the user's own try of the app across a quit and relaunch, Premiere, then Phase 7's live checks.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1022,3 +1031,4 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
 - **2026-10-06 (Claude): Phase 8a, chats and Revert that survive a restart.**
   - `chat_store.rs` (`<app data>/history/`), `lib/agent/chatHistory.ts`, a saved edit log with `fromEarlierRun` and ids that never repeat, **Revert n edits (earlier session)**, and the History menu (⌘Y).
   - Fix: a Claude Code session that's gone no longer fails as a lockdown error; the turn starts a new session.
+- **2026-10-06 (Claude): Phase 8a checked live in Resolve:** a fresh watcher reverted, from the saved log alone, an edit made before the "quit". The timeline matched clip by clip, and the scratch timelines were cleaned up.
