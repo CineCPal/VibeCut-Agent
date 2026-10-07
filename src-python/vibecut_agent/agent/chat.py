@@ -21,7 +21,12 @@ blocks for one ``{"type": "tool_result", "id", "result"}`` line per call, in any
 tools (src/lib/agent/). ``{"type": "abort_turn"}`` may arrive at any time (Stop). On "claude-code" no
 ``tool_calls`` are emitted: Claude Code calls the tools through the MCP bridge (Phase 7a) instead.
 
-Each turn ends with ``result {text, history, usage, aborted, outOfSteps}``. The process then waits up to
+While the model writes, ``reply_delta {text}`` carries the answer as it's written, ``reply_break`` ends text
+said before a tool call (it stays a message of its own), and ``reply_reset`` voids the text so far (a
+retried call). See streaming.py (Phase 8b).
+
+Each turn ends with ``result {text, history, usage, aborted, outOfSteps}``; its ``text`` is the final
+answer and replaces what was streamed. The process then waits up to
 CHAT_IDLE_TIMEOUT_SECONDS for ``{"type": "user_message", "userMessage", "history"}`` (the next message,
 with the app's history: the app is the source of truth) or ``{"type": "end_session"}``. A genuine API
 failure emits ``error`` and exits 1.

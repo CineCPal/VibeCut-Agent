@@ -32,6 +32,13 @@ class FakeStream:
 
     def __iter__(self):
         for index, block in enumerate(self._message.get("content") or []):
+            if block.get("type") == "text" and block.get("text"):
+                # Written in two pieces, as a real stream would (Phase 8b).
+                half = len(block["text"]) // 2
+                for piece in (block["text"][:half], block["text"][half:]):
+                    if piece:
+                        delta = SimpleNamespace(type="text_delta", text=piece)
+                        yield SimpleNamespace(type="content_block_delta", index=index, delta=delta)
             yield SimpleNamespace(type="content_block_stop", index=index, content_block=FakeModel(block))
 
     def get_final_message(self):

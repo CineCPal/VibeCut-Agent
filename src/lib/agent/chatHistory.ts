@@ -8,9 +8,10 @@
  * - At launch: the list, the edit log, and the chat that was open (its id is remembered).
  * - Saves run one after another, so an older one never lands after a newer one.
  */
-import { deleteChatFile, listChats, loadChatFile, loadEditLogFile, saveChatFile, saveEditLogFile } from "../ipc";
+import { deleteChatFile, listChats, loadChatFile, loadEditLogFile, renameChatFile, saveChatFile, saveEditLogFile } from "../ipc";
 import { newConversation } from "./controller";
 import { describeError } from "./context";
+import { rewindOf } from "./rewind";
 import { useAgentStore, type AgentState } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
 import { parseSavedEditLog, savedEditLog, useEditLogStore } from "../../store/useEditLogStore";
@@ -29,12 +30,19 @@ const PROVIDERS: readonly ChatProvider[] = ["gemini", "claude", "claude-code"];
 const PROVIDER_NAME: Record<ChatProvider, string> = { gemini: "Gemini", claude: "Claude (API key)", "claude-code": "Claude (subscription)" };
 const ROLES: readonly ChatMessage["role"][] = ["user", "assistant", "system", "tool", "error"];
 
-type ChatFields = Pick<AgentState, "chatId" | "messages" | "history" | "historyProvider" | "aiChoice">;
+type ChatFields = Pick<AgentState, "chatId" | "messages" | "history" | "historyProvider" | "aiChoice"> &
+  Partial<Pick<AgentState, "lastTurn" | "customTitle" | "autoTitle">>;
 
 /** The list's name for a chat: its first request, on one line. */
 export function chatTitle(messages: ChatMessage[]): string {
   const first = messages.find((m) => m.role === "user")?.text.replace(/\s+/g, " ").trim() ?? "";
   return first.length > TITLE_CHARS ? `${first.slice(0, TITLE_CHARS - 1).trimEnd()}…` : first;
+}
+
+/** A chat's name on one line, at most TITLE_CHARS; "" when there's none. */
+export function cleanName(name: string | null | undefined): string {
+  const one = (name ?? "").replace(/\s+/g, " ").trim();
+  return one.length > TITLE_CHARS ? `${one.slice(0, TITLE_CHARS - 1).trimEnd()}…` : one;
 }
 
 /** The chat as it's saved; null until it has a user message. */
@@ -47,10 +55,16 @@ export function savedChatFrom(state: ChatFields, now = Date.now()): SavedChat | 
     size = Infinity;
   }
   const dropped = size > MAX_HISTORY_CHARS;
+  const rewind = dropped ? undefined : rewindOf(state.lastTurn ?? null, state.messages);
+  const customTitle = cleanName(state.customTitle);
+  const autoTitle = cleanName(state.autoTitle);
   return {
     version: 1,
     id: state.chatId,
-    title: chatTitle(state.messages),
+    // The user's name wins over the model's, which wins over the first request (Phase 8d).
+    title: customTitle || autoTitle || chatTitle(state.messages),
+    ...(customTitle ? { customTitle } : {}),
+    ...(autoTitle ? { autoTitle } : {}),
     createdAt: state.messages[0].createdAt,
     updatedAt: now,
     provider: state.historyProvider,
@@ -58,6 +72,7 @@ export function savedChatFrom(state: ChatFields, now = Date.now()): SavedChat | 
     messages: state.messages,
     history: dropped ? [] : state.history,
     ...(dropped ? { historyDropped: true } : {}),
+    ...(rewind ? { rewind } : {}),
   };
 }
 
@@ -66,18 +81,25 @@ export function parseSavedChat(value: unknown): SavedChat | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
   if (typeof v.id !== "string" || !v.id || !Array.isArray(v.messages)) return null;
-  const messages = v.messages.filter(
-    (m): m is ChatMessage =>
-      typeof m === "object" && m !== null && typeof (m as ChatMessage).id === "string" && ROLES.includes((m as ChatMessage).role) &&
-      typeof (m as ChatMessage).text === "string" && typeof (m as ChatMessage).createdAt === "number",
-  );
+  const messages = v.messages
+    .filter(
+      (m): m is ChatMessage =>
+        typeof m === "object" && m !== null && typeof (m as ChatMessage).id === "string" && ROLES.includes((m as ChatMessage).role) &&
+        typeof (m as ChatMessage).text === "string" && typeof (m as ChatMessage).createdAt === "number",
+    )
+    // A reply saved while it was still streaming (the app quit mid-turn) is shown as it stood.
+    .map((m) => (m.status === "pending" ? { ...m, status: "done" as const } : m));
   if (messages.length === 0) return null;
   const provider = PROVIDERS.includes(v.provider as ChatProvider) ? (v.provider as ChatProvider) : null;
   const aiChoice = AI_CHOICES.find((c) => c.id === v.aiChoice)?.id ?? AI_CHOICES[0].id;
+  const customTitle = typeof v.customTitle === "string" ? cleanName(v.customTitle) : "";
+  const autoTitle = typeof v.autoTitle === "string" ? cleanName(v.autoTitle) : "";
   return {
     version: 1,
     id: v.id,
     title: typeof v.title === "string" ? v.title : chatTitle(messages),
+    ...(customTitle ? { customTitle } : {}),
+    ...(autoTitle ? { autoTitle } : {}),
     createdAt: typeof v.createdAt === "number" ? v.createdAt : messages[0].createdAt,
     updatedAt: typeof v.updatedAt === "number" ? v.updatedAt : messages[messages.length - 1].createdAt,
     // A history without its provider can't be resent to anyone.
@@ -86,6 +108,8 @@ export function parseSavedChat(value: unknown): SavedChat | null {
     messages,
     history: provider && Array.isArray(v.history) ? v.history : [],
     ...(v.historyDropped === true ? { historyDropped: true } : {}),
+    // Checked when the chat is opened (lastTurnFrom), against the messages and history it comes with.
+    ...(typeof v.rewind === "object" && v.rewind !== null ? { rewind: v.rewind as SavedChat["rewind"] } : {}),
   };
 }
 
@@ -192,6 +216,30 @@ export async function openChat(id: string): Promise<void> {
   }
 }
 
+/**
+ * Names a chat (Phase 8d): the user's name, which wins over the model's. A blank one goes back to the
+ * automatic name. The open chat takes it at once, so its next save keeps it; any other is renamed in place.
+ */
+export async function renameChat(id: string, title: string): Promise<void> {
+  const name = cleanName(title);
+  const agent = useAgentStore.getState();
+  if (agent.chatId === id) agent.setTitles({ customTitle: name || null });
+  useChatHistoryStore.getState().setChats(await renameChatFile(id, name));
+}
+
+/** The model's name for a chat, once it has one; the user's name, if any, still wins. */
+export async function nameChatAutomatically(id: string, title: string): Promise<void> {
+  const name = cleanName(title);
+  if (!name) return;
+  const agent = useAgentStore.getState();
+  if (agent.chatId === id) {
+    agent.setTitles({ autoTitle: name });
+    return;
+  }
+  if (deleted.has(id)) return;
+  useChatHistoryStore.getState().setChats(await renameChatFile(id, name, true));
+}
+
 /** Deletes a past chat; the current one starts over. */
 export async function deleteChat(id: string): Promise<void> {
   deleted.add(id);
@@ -219,7 +267,14 @@ export function startChatHistory(): () => void {
       return;
     }
     if (quiet) return;
-    if (state.messages === prev.messages && state.history === prev.history && state.historyProvider === prev.historyProvider) return;
+    const same =
+      state.messages === prev.messages &&
+      state.history === prev.history &&
+      state.historyProvider === prev.historyProvider &&
+      state.lastTurn === prev.lastTurn &&
+      state.customTitle === prev.customTitle &&
+      state.autoTitle === prev.autoTitle;
+    if (same) return;
     if (chatTimer) clearTimeout(chatTimer);
     chatTimer = setTimeout(() => void flushChat(), SAVE_DELAY_MS);
   });

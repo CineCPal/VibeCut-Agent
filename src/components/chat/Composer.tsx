@@ -1,6 +1,6 @@
-import { useId, type FormEvent, type KeyboardEvent } from "react";
-import { SendHorizontal, Square } from "lucide-react";
-import { sendUserMessage, stopTurn } from "../../lib/agent/controller";
+import { useEffect, useId, useRef, type FormEvent, type KeyboardEvent } from "react";
+import { Pencil, SendHorizontal, Square, X } from "lucide-react";
+import { cancelEditing, lastTurnEdits, sendEditedMessage, sendUserMessage, startEditingLastMessage, stopTurn } from "../../lib/agent/controller";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import type { AgentStatus } from "../../types/agent";
@@ -21,7 +21,17 @@ export function Composer() {
   const statusDetail = useAgentStore((s) => s.statusDetail);
   const setDraft = useAgentStore((s) => s.setDraft);
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
+  const editing = useAgentStore((s) => s.editingMessageId);
   const hintId = useId();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Editing starts from the message's pencil too: the box takes focus with the caret at the end.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!editing || !input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [editing]);
 
   const blocked = composerBlockReason(status, statusDetail, outsideRunning);
   const canSend = !blocked && draft.trim().length > 0;
@@ -31,7 +41,16 @@ export function Composer() {
     if (!canSend) return;
     const text = draft;
     setDraft("");
-    void sendUserMessage(text);
+    if (editing) {
+      useAgentStore.getState().setEditing(null);
+      void sendEditedMessage(text).catch((error: unknown) => {
+        // Nothing was taken back: the edited words go back in the box, to send as a new message.
+        useAgentStore.getState().addMessage({ role: "error", text: error instanceof Error ? error.message : String(error) });
+        if (!useAgentStore.getState().draft) setDraft(text);
+      });
+    } else {
+      void sendUserMessage(text);
+    }
   };
 
   const onSubmit = (event: FormEvent) => {
@@ -43,19 +62,47 @@ export function Composer() {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       send();
+    } else if (event.key === "ArrowUp" && !draft && !editing && !event.shiftKey && !event.altKey && !event.metaKey) {
+      // ↑ in an empty box edits the last message (Phase 8c).
+      if (startEditingLastMessage()) event.preventDefault();
+    } else if (event.key === "Escape" && editing) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelEditing();
     }
   };
 
+  const onChange = (value: string) => {
+    setDraft(value);
+    // Clearing the box is a way out of editing too.
+    if (editing && !value) useAgentStore.getState().setEditing(null);
+  };
+
+  const editCount = editing ? lastTurnEdits().length : 0;
+
   return (
     <form onSubmit={onSubmit} className="border-t border-border bg-surface px-3 py-2">
+      {editing ? (
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-athletic-blue-light">
+          <Pencil size={11} aria-hidden="true" />
+          <span className="flex-1">
+            Editing your last message · Esc to cancel
+            {editCount ? ` · its ${editCount} edit${editCount === 1 ? " is" : "s are"} reverted when you send` : ""}
+          </span>
+          <button type="button" onClick={cancelEditing} aria-label="Cancel editing" className="rounded p-0.5 text-cool-grey hover:text-white">
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-end gap-2">
         <label className="sr-only" htmlFor={`${hintId}-input`}>
           Message the agent
         </label>
         <textarea
           id={`${hintId}-input`}
+          ref={inputRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => onChange(event.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
           disabled={status === "offline" || status === "error"}
@@ -77,7 +124,7 @@ export function Composer() {
           <button
             type="submit"
             disabled={!canSend}
-            aria-label="Send message"
+            aria-label={editing ? "Send edited message" : "Send message"}
             className="rounded-md bg-athletic-blue p-2 text-athletic-blue-light hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             <SendHorizontal size={16} aria-hidden="true" />

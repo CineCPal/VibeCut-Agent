@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
-const history = vi.hoisted(() => ({ openChat: vi.fn(), deleteChat: vi.fn() }));
+const history = vi.hoisted(() => ({ openChat: vi.fn(), deleteChat: vi.fn(), renameChat: vi.fn() }));
 vi.mock("../../lib/agent/chatHistory", () => history);
+const ipc = vi.hoisted(() => ({ searchChats: vi.fn() }));
+vi.mock("../../lib/ipc", () => ipc);
 
 import { ChatHistoryMenu, relativeTime } from "./ChatHistoryMenu";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -20,6 +22,8 @@ describe("ChatHistoryMenu", () => {
     vi.clearAllMocks();
     history.openChat.mockResolvedValue(undefined);
     history.deleteChat.mockResolvedValue(undefined);
+    history.renameChat.mockResolvedValue(undefined);
+    ipc.searchChats.mockResolvedValue([]);
     useChatHistoryStore.setState({ chats, saveError: null });
     useAgentStore.setState({ chatId: "c1" });
     useUiStore.setState({ historyOpen: false });
@@ -41,7 +45,7 @@ describe("ChatHistoryMenu", () => {
     expect(options[0]).toHaveTextContent("Tighten the interview");
     expect(options[0]).toHaveTextContent("Open now · 2 min ago · 6 messages");
     expect(options[1]).toHaveTextContent("yesterday · 1 message");
-    expect(screen.getByRole("listbox", { name: "Past chats" })).toHaveFocus();
+    expect(screen.getByRole("combobox", { name: "Search past chats" })).toHaveFocus();
   });
 
   it("opens a chat from the keyboard and closes", async () => {
@@ -92,5 +96,66 @@ describe("ChatHistoryMenu", () => {
     useChatHistoryStore.setState({ chats: [] });
     render(<ChatHistoryMenu busy={false} />);
     expect(screen.getByRole("button", { name: "History" })).toBeDisabled();
+  });
+
+  describe("search and rename (Phase 8d)", () => {
+    it("filters by name at once, then adds chats whose messages match, with the words around it", async () => {
+      vi.useFakeTimers();
+      try {
+        ipc.searchChats.mockResolvedValue([{ id: "c2", snippet: "…put a marker on the hook at 0:12…", matchStart: 21, matchEnd: 25 }]);
+        useUiStore.setState({ historyOpen: true });
+        render(<ChatHistoryMenu busy={false} />);
+        const search = screen.getByRole("combobox", { name: "Search past chats" });
+        fireEvent.change(search, { target: { value: "INTERVIEW" } });
+        expect(screen.getAllByRole("option")).toHaveLength(1);
+        expect(screen.getAllByRole("option")[0]).toHaveTextContent("Tighten the interview");
+
+        fireEvent.change(search, { target: { value: "hook" } });
+        expect(ipc.searchChats).not.toHaveBeenCalled();
+        await act(async () => vi.advanceTimersByTimeAsync(200));
+        expect(ipc.searchChats).toHaveBeenCalledWith("hook");
+        const options = screen.getAllByRole("option");
+        expect(options).toHaveLength(1);
+        expect(options[0].querySelector("mark")).toHaveTextContent("hook");
+
+        await act(async () => fireEvent.keyDown(search, { key: "Enter" }));
+        expect(history.openChat).toHaveBeenCalledWith("c2");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("says when nothing matches, and Escape clears the search before it closes", async () => {
+      useUiStore.setState({ historyOpen: true });
+      render(<ChatHistoryMenu busy={false} />);
+      const search = screen.getByRole("combobox", { name: "Search past chats" });
+      fireEvent.change(search, { target: { value: "zebra" } });
+      expect(await screen.findByText("No chats match")).toBeInTheDocument();
+      fireEvent.keyDown(search, { key: "Escape" });
+      expect(search).toHaveValue("");
+      expect(useUiStore.getState().historyOpen).toBe(true);
+      fireEvent.keyDown(search, { key: "Escape" });
+      expect(useUiStore.getState().historyOpen).toBe(false);
+    });
+
+    it("renames with F2: Enter saves, Escape leaves it", async () => {
+      useUiStore.setState({ historyOpen: true });
+      render(<ChatHistoryMenu busy />);
+      const search = screen.getByRole("combobox", { name: "Search past chats" });
+      fireEvent.keyDown(search, { key: "ArrowDown" });
+      fireEvent.keyDown(search, { key: "F2" });
+      const field = screen.getByRole("textbox", { name: 'New name for "Mark the hook"' });
+      expect(field).toHaveValue("Mark the hook");
+      fireEvent.change(field, { target: { value: "Bakery hook" } });
+      await act(async () => fireEvent.keyDown(field, { key: "Enter" }));
+      expect(history.renameChat).toHaveBeenCalledWith("c2", "Bakery hook");
+      expect(search).toHaveFocus();
+
+      fireEvent.click(screen.getByRole("button", { name: 'Rename "Tighten the interview"' }));
+      const other = screen.getByRole("textbox", { name: 'New name for "Tighten the interview"' });
+      fireEvent.keyDown(other, { key: "Escape" });
+      expect(history.renameChat).toHaveBeenCalledTimes(1);
+      expect(useUiStore.getState().historyOpen).toBe(true);
+    });
   });
 });

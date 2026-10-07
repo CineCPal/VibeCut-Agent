@@ -16,13 +16,19 @@ from vibecut_agent.protocol import Emitter
 
 
 class FakeResponse:
+    """A `streamGenerateContent?alt=sse` response (Phase 8b): the whole answer as one event."""
+
     def __init__(self, status_code, json_data=None, text=""):
         self.status_code = status_code
         self._json = json_data
         self.text = text
 
-    def json(self):
-        return self._json
+    def iter_lines(self, decode_unicode=False):
+        if self._json is not None:
+            yield f"data: {json.dumps(self._json)}"
+
+    def close(self):
+        pass
 
 
 def text_response(text):
@@ -162,7 +168,7 @@ def test_tool_results_can_be_sent_back_out_of_order(monkeypatch):
     bodies = []
     responses = [batch, text_response("Both done.")]
 
-    def fake_post(url, headers=None, data=None, timeout=None):
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
         bodies.append(json.loads(data))
         return responses.pop(0)
 

@@ -887,6 +887,127 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
 
 **Not yet verified live:** the app itself across a quit and relaunch (the chat, the History menu and the header's "(earlier session)" button), and Premiere.
 
+## Phase 8b–8d: Streaming replies, message actions, History upgrades (built 2026-10-06)
+
+**Why (the user, 2026-10-06):** the chat still felt basic. Replies landed all at once after the whole turn, nothing could be copied, retried or edited, and History could only open or delete. The user chose these three, built first, with the live checks after.
+
+### 8b: The reply as it's written
+
+**Sidecar protocol (new events; `chat.py`'s docstring):**
+- `reply_delta {text}`: more of the reply.
+- `reply_break`: the text so far was said before a tool call. It stays as its own message, and the next delta starts a new one.
+- `reply_reset`: the text so far is void (a call retried from the start).
+- `result` is unchanged and still the authority: its `text` replaces what was streamed.
+
+**`agent/streaming.py`, `ReplyStream`:** joins deltas and sends them every 40 ms or 200 characters, and always before any other event (`ReplyStream.emit`), so the order holds. All three providers use it.
+- **Claude API:** `claude_client.send` gains `on_text` (each `text_delta`) and `on_reset` (before a retry). The chat loop breaks before `tool_calls`.
+- **Gemini:**
+  - `:streamGenerateContent?alt=sse` (`GEMINI_STREAM_ENDPOINT`) with `requests` `stream=True`.
+  - The chunks are gathered into one `generateContent`-shaped answer. Adjacent plain-text parts are joined, and any part with a `thoughtSignature` or `functionCall` is kept exactly as sent. Thought parts aren't streamed.
+  - Stop is checked per chunk and closes the stream.
+  - A dropped stream, or an `error` chunk with 429/5xx, is retried with a reset. Any other `error` chunk fails the turn, scrubbed.
+  - The Story Editor's `gemini_json` stays on `generateContent`.
+- **Claude Code:**
+  - `--include-partial-messages`; `stream_event` text deltas become `reply_delta`, and a `tool_use` block breaks.
+  - `stream_event` joins the "nothing before the lockdown check" guard (Phase 7f).
+  - Checked live on 2.1.292: `system/init` comes first, then `stream_event` lines, then the whole `assistant` message.
+- **Frontend:**
+  - **`controller.ts`:** `liveReplyId` keeps one pending assistant message, then:
+    - a break settles it (and removes it if blank), and a reset removes it;
+    - `result` writes the final text into it;
+    - after Stop, the partial text stays, then "Stopped.";
+    - an error or exit leaves it as it stood.
+  - **`useAgentStore`:** `appendToMessage`, `removeMessage`.
+  - **`MessageList.tsx`:**
+    - a caret on the pending reply;
+    - its growing text is `aria-hidden` behind a visually hidden "Agent is replying…", and the log is `aria-relevant="additions"`. The finished reply renders under a new key, so it's read once;
+    - the list follows new text only while it's within 48 px of the bottom;
+    - the activity line hides while a reply streams.
+  - **`chatHistory.ts`:** a reply saved mid-stream reopens as `done`.
+
+### 8c: Copy, Retry, Edit
+
+- **Copy:** an icon on user and assistant messages, shown on hover or focus (`navigator.clipboard.writeText`, "Copied" for 1.5 s).
+- **The last turn:** `useAgentStore.lastTurn = { userMessageId, history, historyProvider }` is the history exactly as it was sent with the last message (set in `sendUserMessage`). Saved with the chat as `rewind` (`lib/agent/rewind.ts`):
+
+```text
+rewind: { userMessageId, historyLength }      Gemini, Claude API (their histories only grow: a slice is exact)
+        { userMessageId, session: id | null }  Claude Code (the session the turn forked from)
+```
+
+  `lastTurnFrom` checks it against the chat when opened: it must name the last user message, and the history it needs must have been kept.
+- **Claude Code can't rewind a session in place.** Checked live: a plain `--resume` keeps the id and adds to it. So every resumed turn now passes **`--fork-session`**. The turn answers under a new id, and the session it started from stays as it was. Live, a retry from the earlier session didn't know a codeword given in the forked turn. Old forks go with Claude Code's own cleanup.
+- **`rewindLastTurn()` (`controller.ts`):**
+  - **Refused when:** not idle, an outside (MCP) call is running, or later requests made edits (`rewindBlockReason`).
+  - **Edits:** if the turn left live edits, it runs `revertLastRequest()` first. If anything changed since or failed, it stops and leaves the conversation as it is.
+  - **The take-back:** `takeBackLastTurn` removes that message and everything after it, and puts the history back. The job keeps running, because history goes with every message.
+  - **Built on it:** `retryLastTurn()` and `sendEditedMessage(text)`.
+- **UI:**
+  - **Retry:** under the last turn. With edits it reads "Revert n edits & retry", and while it can't run it's disabled, with the reason as its tooltip.
+  - **Edit:** the pencil on the last user message, or **↑** in an empty composer, puts its text in the composer, under a bar: "Editing your last message · Esc to cancel · its n edits are reverted when you send". Clearing the text cancels too. If the send fails, the words go back in the box.
+
+### 8d: History upgrades
+
+**Names:**
+- `SavedChat` gains `customTitle?` (the user's) and `autoTitle?` (the model's). The list shows `customTitle`, else `autoTitle`, else the first request. The open chat's names live in `useAgentStore`, so every save keeps them.
+- **New `chat_rename(id, title, auto?)` in `chat_store.rs`:**
+  - It renames a chat that isn't open: the file and its index row are rewritten, `updatedAt` is unchanged, and so is its place in the list.
+  - `auto` sets `autoTitle`, which never replaces a `customTitle`.
+  - A blank user name goes back to the model's name, else the first request (`first_request`, as `chatTitle` makes it).
+  - Names are one line, at most 60 characters.
+
+**Search:** `chat_search(query)` answers `[{ id, snippet, matchStart, matchEnd }]`, newest first.
+- It looks at the name and what the user and the agent said, never tool lines or the model's history.
+- Case is ignored per character, so offsets stay in the original's characters ("İ" too). Corrupt chats are skipped.
+
+**Model-written names:**
+- **New sidecar command `chat-title`** (`agent/titles.py`; the allow-list, `needs_llm_key` and Claude Code injection in `sidecar.rs`). It makes one schema call through `story/models.py`'s helpers on the chat's own provider and model, at low effort. It sends the first request (without the snapshot) and the first answer, each cut to 2,000 characters. `clean_title` keeps one line of at most 60 characters, with no quotes or full stop.
+- **`lib/agent/chatTitles.ts`** (started from `App.tsx`) asks once per chat, as a turn ends (never just for opening one), when the chat has a finished answer and no name. The answer goes to the store if the chat is open, else through `chat_rename(…, auto)`. A failed job changes nothing.
+- **Settings → Chat → "Name chats with the model":** on by default and remembered.
+- **Checked live** (Claude Code, Work profile): "Red markers on Bakery interviews".
+
+**The History menu (`ChatHistoryMenu.tsx`):**
+- A search box takes focus when it opens. Names filter as you type, and messages are searched 150 ms after typing stops, with the match marked in a snippet. "No chats match" when none do.
+- From the box: ↑↓ Home End move, Enter opens, **F2** renames inline (Enter saves, Escape leaves), and Escape clears the search, then closes. Delete twice still works from the list (Tab).
+- A pencil sits beside the bin. Renaming works during a request; opening and deleting don't.
+
+**Disclosure:** About's Gemini line now mentions naming chats. No new hosts.
+
+### Tests
+- **Python (+26):**
+  - `ReplyStream` 5;
+  - Gemini streaming 6: gathering, signatures and calls kept, thought parts, a reset on retry, an error chunk, Stop mid-stream;
+  - Claude streaming and break 2;
+  - Claude Code streaming, the guard, `--fork-session` 2;
+  - `titles.py` 11.
+  - The Gemini and session fakes now answer as SSE.
+- **Rust (+4):**
+  - `chat_rename`: place kept, and user over model over first request;
+  - `chat_search`: what's said, never history; length-changing case;
+  - `chat-title` injection asserts in the `prepare_request` tests.
+- **Frontend (+36):**
+  - controller streaming 5 and Retry/Edit 8;
+  - `rewind.ts` 3;
+  - MessageList 5;
+  - Composer edit 3;
+  - `chatHistory` 5;
+  - `chatTitles.ts` 4;
+  - History menu search and rename 3.
+- **All green:** pytest 718 (+2 skipped), cargo 119, vitest 429, ruff, mypy, eslint, tsc, clippy `-D warnings`, `npm run build`.
+
+**Checked with real Claude Code 2.1.292 (Sonnet 5.5, the Work profile), with the real MCP shim and no app running (its fallback `get_editor_context` answers):**
+- The lockdown check passes with partial messages.
+- Deltas came before the result, and the tool call ran.
+- Each turn forked.
+- A retry from the earlier session didn't know a codeword given after it.
+- `chat-title` answered.
+
+**Not yet verified live:**
+- Gemini's and the Claude API's streaming, which need their keys: one turn each with a tool call, and the next turn accepted.
+- The app itself: a streamed reply on screen, and Copy in the Tauri webview. If `navigator.clipboard` is refused there, add `tauri-plugin-clipboard-manager` with only `allow-write-text`.
+- Retry and Edit, and "Revert & retry" on a scratch Resolve timeline.
+- Search, rename and a model name across a relaunch.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -916,6 +1037,7 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
   - *(2026-10-06)* **Phase 7 (7a, 7b, 7d) is built and unit-tested**, and the 7b chain was checked end to end with real Claude Code and a stand-in app. Next: its live checks in Resolve and Premiere ("Phase 7" → Live checks), then the user's own try of a remote session from their phone.
   - *(2026-10-06)* **Claude Code profile:** the user signs VibeCut Agent in with their **Work** profile (`/Users/cj/.claude-profiles/Work`). No profile folder is saved in Settings yet (`claude-code.json` is absent), so the app runs Claude Code's default `~/.claude`. It's signed in to the same team account, but its sessions and settings are kept apart from Work's. Set Settings → Claude subscription → Profile folder to the Work folder. Earlier "Personal profile" checks (7b, 7e, 7f) ran in dev shells and stand for the same CLI behaviour.
   - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Revert after a restart is checked live in Resolve. Next: the user's own try of the app across a quit and relaunch, Premiere, then Phase 7's live checks.
+  - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Next: the user's own try (with 8a's), Gemini and Claude API streaming with their keys, "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1032,3 +1154,9 @@ The new session id replaces the lost one. Gemini and Claude (API key) need nothi
   - `chat_store.rs` (`<app data>/history/`), `lib/agent/chatHistory.ts`, a saved edit log with `fromEarlierRun` and ids that never repeat, **Revert n edits (earlier session)**, and the History menu (⌘Y).
   - Fix: a Claude Code session that's gone no longer fails as a lockdown error; the turn starts a new session.
 - **2026-10-06 (Claude): Phase 8a checked live in Resolve:** a fresh watcher reverted, from the saved log alone, an edit made before the "quit". The timeline matched clip by clip, and the scratch timelines were cleaned up.
+- **2026-10-06 (Claude): Phases 8b–8d, the chat.**
+  - **8b:** replies stream (`reply_delta` / `reply_break` / `reply_reset`, `agent/streaming.py`). Gemini moves to `streamGenerateContent` (SSE), the Claude API passes its text deltas on, and Claude Code runs with `--include-partial-messages`.
+  - **8c:** Copy, Retry and Edit for the last message, which revert that request's edits first. `rewind` is saved with the chat, and Claude Code turns pass `--fork-session`, so the session before a turn stays resumable.
+  - **8d:**
+    - History search (`chat_search`) and renaming (`chat_rename`, F2);
+    - the `chat-title` command, which names each new chat with its own model (Settings → Chat).

@@ -65,6 +65,13 @@ def assemble(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main(stdin, emitter)
 
 
+def chat_title(emitter: Emitter, stdin: TextIO) -> int:
+    """A short name for a chat, from its first message and answer (Phase 8d)."""
+    from vibecut_agent.agent import titles
+
+    return titles.main(stdin, emitter)
+
+
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
     read_line_request(stdin)
     return watch(PremiereAdapter(), LineChannel(stdin), emitter)
@@ -86,6 +93,7 @@ COMMANDS: dict[str, Command] = {
     "transcribe": transcribe,
     "audio-peaks": audio_peaks,
     "assemble": assemble,
+    "chat-title": chat_title,
     "premiere-watch": premiere_watch,
     "resolve-watch": resolve_watch,
 }

@@ -6,8 +6,12 @@
 //! <app data>/history/          0700 (VIBECUT_AGENT_HISTORY_DIR overrides it, for tests and dev builds)
 //!   index.json                 [{ id, title, createdAt, updatedAt, messageCount }], newest first
 //!   edit-log.json              { version, entries, backups, restoredIds } (useEditLogStore)
-//!   chats/<id>.json            { version, id, title, createdAt, updatedAt, provider, aiChoice, messages, history }
+//!   chats/<id>.json            { version, id, title, customTitle?, autoTitle?, createdAt, updatedAt, provider,
+//!                                aiChoice, messages, history, rewind? }
 //! ```
+//!
+//! Phase 8d: `chat_rename` names a chat without opening it (the user's name, `customTitle`, wins over the
+//! model's, `autoTitle`, which wins over the first request), and `chat_search` finds chats by what was said.
 //!
 //! Every file is written atomically and is at most `MAX_FILE_BYTES`. Only the newest `KEEP_CHATS` chats
 //! are kept. A corrupt chat is left out of the list, never fatal; a missing or corrupt index is rebuilt
@@ -26,6 +30,23 @@ const INDEX: &str = "index.json";
 const EDIT_LOG: &str = "edit-log.json";
 const CHATS: &str = "chats";
 const TITLE_CHARS: usize = 120;
+/** A name given to a chat (by the user or the model), and the first-request fallback (chatHistory.ts). */
+const NAME_CHARS: usize = 60;
+const FIRST_REQUEST_CHARS: usize = 60;
+const QUERY_CHARS: usize = 100;
+const SNIPPET_BEFORE: usize = 30;
+const SNIPPET_AFTER: usize = 70;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub id: String,
+    /// The words around the first match, on one line.
+    pub snippet: String,
+    /// Where the match is in `snippet`, in characters.
+    pub match_start: usize,
+    pub match_end: usize,
+}
 
 /// One save, list or delete at a time, so the index never loses a chat to a race.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -185,6 +206,105 @@ pub fn delete_in(dir: &Path, id: &str) -> Result<Vec<ChatSummary>, String> {
     Ok(list)
 }
 
+/// Text on one line: runs of whitespace become one space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn cut(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(max - 1).collect::<String>().trim_end())
+}
+
+/// The list's fallback name: the first request, as chatHistory.ts's `chatTitle` makes it.
+fn first_request(chat: &Value) -> String {
+    let first = chat["messages"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| m["role"] == "user"))
+        .and_then(|m| m["text"].as_str())
+        .unwrap_or("");
+    cut(&one_line(first), FIRST_REQUEST_CHARS)
+}
+
+/// Names a saved chat. `auto`: the model's name, kept as `autoTitle` and shown unless the user named it.
+/// Otherwise the user's (`customTitle`); a blank one goes back to the model's name or the first request.
+/// The chat keeps its place in the list. Answers the list.
+pub fn rename_in(dir: &Path, id: &str, title: &str, auto: bool) -> Result<Vec<ChatSummary>, String> {
+    checked_id(id)?;
+    let name = cut(&one_line(title), NAME_CHARS);
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let chats = dir.join(CHATS);
+    let mut chat = read_json(&chats.join(format!("{id}.json"))).ok_or("That chat is gone or can't be read")?;
+    let obj = chat.as_object_mut().ok_or("That chat can't be read")?;
+    if auto {
+        if name.is_empty() {
+            return Ok(read_index(dir));
+        }
+        obj.insert("autoTitle".into(), Value::String(name));
+    } else if name.is_empty() {
+        obj.remove("customTitle");
+    } else {
+        obj.insert("customTitle".into(), Value::String(name));
+    }
+    let shown = ["customTitle", "autoTitle"]
+        .iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(str::to_string));
+    let shown = shown.unwrap_or_else(|| first_request(&chat));
+    chat["title"] = Value::String(shown);
+    let summary = summary_of(id, &chat).ok_or("That chat can't be read")?;
+    write_json(&chats, &format!("{id}.json"), &chat)?;
+    let list: Vec<ChatSummary> = read_index(dir).into_iter().map(|s| if s.id == id { summary.clone() } else { s }).collect();
+    write_index(dir, &list)?;
+    Ok(list)
+}
+
+/// Where `needle` (already lowercase) first occurs in `haystack`, ignoring case: (start, end) in chars.
+fn find_ignoring_case(haystack: &[char], needle: &[char]) -> Option<(usize, usize)> {
+    let lower: Vec<char> = haystack.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    if needle.is_empty() || needle.len() > lower.len() {
+        return None;
+    }
+    (0..=lower.len() - needle.len()).find(|&i| lower[i..i + needle.len()] == *needle).map(|i| (i, i + needle.len()))
+}
+
+fn hit_in(id: &str, text: &str, needle: &[char]) -> Option<SearchHit> {
+    let chars: Vec<char> = one_line(text).chars().collect();
+    let (start, end) = find_ignoring_case(&chars, needle)?;
+    let from = start.saturating_sub(SNIPPET_BEFORE);
+    let to = (end + SNIPPET_AFTER).min(chars.len());
+    let lead = if from > 0 { "…" } else { "" };
+    let tail = if to < chars.len() { "…" } else { "" };
+    let lead_chars = lead.chars().count();
+    Some(SearchHit {
+        id: id.to_string(),
+        snippet: format!("{lead}{}{tail}", chars[from..to].iter().collect::<String>()),
+        match_start: start - from + lead_chars,
+        match_end: end - from + lead_chars,
+    })
+}
+
+/// The saved chats whose name or messages (what the user and the agent said, never the model's history)
+/// contain `query`, ignoring case, newest first, each with the words around its first match.
+pub fn search_in(dir: &Path, query: &str) -> Vec<SearchHit> {
+    let needle: Vec<char> = one_line(query).chars().take(QUERY_CHARS).flat_map(char::to_lowercase).collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    read_index(dir)
+        .into_iter()
+        .filter_map(|summary| {
+            let chat = read_json(&dir.join(CHATS).join(format!("{}.json", summary.id)))?;
+            let said = chat["messages"].as_array()?.iter().filter(|m| m["role"] == "user" || m["role"] == "assistant");
+            std::iter::once(summary.title.as_str())
+                .chain(said.filter_map(|m| m["text"].as_str()))
+                .find_map(|text| hit_in(&summary.id, text, &needle))
+        })
+        .collect()
+}
+
 pub fn load_edit_log_in(dir: &Path) -> Option<Value> {
     read_json(&dir.join(EDIT_LOG)).filter(Value::is_object)
 }
@@ -216,6 +336,16 @@ pub async fn chat_save(app: AppHandle, id: String, chat: Value) -> Result<Vec<Ch
 #[tauri::command]
 pub async fn chat_delete(app: AppHandle, id: String) -> Result<Vec<ChatSummary>, String> {
     delete_in(&history_dir(&app)?, &id)
+}
+
+#[tauri::command]
+pub async fn chat_rename(app: AppHandle, id: String, title: String, auto: Option<bool>) -> Result<Vec<ChatSummary>, String> {
+    rename_in(&history_dir(&app)?, &id, &title, auto.unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn chat_search(app: AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
+    Ok(search_in(&history_dir(&app)?, &query))
 }
 
 #[tauri::command]
@@ -356,6 +486,82 @@ mod tests {
         std::fs::write(dir.join(EDIT_LOG), b"[]").unwrap();
         assert_eq!(load_edit_log_in(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renaming_a_chat_that_isnt_open_keeps_its_place() {
+        let dir = temp_dir("rename");
+        save_in(&dir, "a", &chat("a", 1.0)).unwrap();
+        save_in(&dir, "b", &chat("b", 2.0)).unwrap();
+        let list = rename_in(&dir, "a", "  Bakery\n  rough cut ", false).unwrap();
+        assert_eq!(list.iter().map(|s| (s.id.as_str(), s.title.as_str())).collect::<Vec<_>>(), [("b", "Chat b"), ("a", "Bakery rough cut")]);
+        let saved = load_in(&dir, "a").unwrap();
+        assert_eq!(saved["customTitle"], "Bakery rough cut");
+        assert_eq!(saved["updatedAt"], 1.0, "a rename isn't a change to the conversation");
+        assert_eq!(list_in(&dir), list);
+        assert!(rename_in(&dir, "gone", "x", false).is_err());
+        assert!(rename_in(&dir, "../a", "x", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_users_name_wins_over_the_models_and_blank_goes_back() {
+        let dir = temp_dir("rename-order");
+        save_in(&dir, "a", &chat("a", 1.0)).unwrap();
+        assert_eq!(rename_in(&dir, "a", "Model name", true).unwrap()[0].title, "Model name");
+        assert_eq!(rename_in(&dir, "a", "Mine", false).unwrap()[0].title, "Mine");
+        assert_eq!(rename_in(&dir, "a", "Newer model name", true).unwrap()[0].title, "Mine");
+        assert_eq!(rename_in(&dir, "a", "   ", false).unwrap()[0].title, "Newer model name");
+        let saved = load_in(&dir, "a").unwrap();
+        assert!(saved.get("customTitle").is_none());
+        let mut plain = chat("p", 2.0);
+        plain["messages"][0]["text"] = json!(format!("trim   the {}", "intro ".repeat(20)));
+        save_in(&dir, "p", &plain).unwrap();
+        rename_in(&dir, "p", "Named", false).unwrap();
+        let title = rename_in(&dir, "p", "", false).unwrap()[0].title.clone();
+        assert!(title.starts_with("trim the intro"), "{title}");
+        assert_eq!(title.chars().count(), FIRST_REQUEST_CHARS);
+        assert_eq!(rename_in(&dir, "p", &"x".repeat(300), false).unwrap()[0].title.chars().count(), NAME_CHARS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_finds_what_was_said_ignoring_case_but_never_the_history() {
+        let dir = temp_dir("search");
+        let mut a = chat("a", 1.0);
+        a["messages"] = json!([
+            { "role": "user", "text": "Good morning, I have a long request today. Put a marker on every INTERVIEW clip, please, and then tell me which ones are the longest, so I can trim them before the client review this afternoon" },
+            { "role": "tool", "text": "interview tool line" },
+        ]);
+        a["history"] = json!(["secret-in-history"]);
+        save_in(&dir, "a", &a).unwrap();
+        save_in(&dir, "b", &chat("b", 2.0)).unwrap();
+        save_in(&dir, "bad", &chat("bad", 3.0)).unwrap();
+        std::fs::write(dir.join("chats/bad.json"), b"{not json").unwrap();
+
+        let hits = search_in(&dir, "interview");
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.id, "a");
+        let shown: String = hit.snippet.chars().skip(hit.match_start).take(hit.match_end - hit.match_start).collect();
+        assert_eq!(shown, "INTERVIEW");
+        assert!(hit.snippet.starts_with('…') && hit.snippet.ends_with('…'), "{}", hit.snippet);
+        assert!(search_in(&dir, "secret-in-history").is_empty());
+        assert!(search_in(&dir, "tool line").is_empty(), "tool lines aren't what was said");
+        assert_eq!(search_in(&dir, "chat B")[0].id, "b", "the name counts too");
+        assert_eq!(search_in(&dir, "HELLO").iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert!(search_in(&dir, "   ").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_handles_text_whose_case_changes_its_length() {
+        let chars: Vec<char> = "Straße İstanbul".chars().collect();
+        // "İ" lowercases to two characters; each is matched by its first, so offsets stay in the original's.
+        let needle: Vec<char> = "istanbul".chars().collect();
+        assert_eq!(find_ignoring_case(&chars, &needle), Some((7, 15)));
+        let needle: Vec<char> = "straße".chars().collect();
+        assert_eq!(find_ignoring_case(&chars, &needle), Some((0, 6)));
     }
 
     #[cfg(unix)]

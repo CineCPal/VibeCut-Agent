@@ -33,6 +33,15 @@ with open(record + ".runs", "a") as f:
 def out(event):
     print(json.dumps(event), flush=True)
 sid = "11111111-2222-3333-4444-555555555555"
+def say(text):
+    # --include-partial-messages (Phase 8b): the text as it's written, ahead of its whole message.
+    if "--include-partial-messages" in sys.argv:
+        out({{"type": "stream_event", "session_id": sid, "event": {{"type": "message_start"}}}})
+        for piece in (text[: len(text) // 2], text[len(text) // 2 :]):
+            out({{"type": "stream_event", "session_id": sid,
+                 "event": {{"type": "content_block_delta", "index": 0, "delta": {{"type": "text_delta", "text": piece}}}}}})
+        out({{"type": "stream_event", "session_id": sid,
+             "event": {{"type": "content_block_delta", "index": 1, "delta": {{"type": "input_json_delta", "partial_json": "{{}}"}}}}}})
 if mode == "session-gone" and "--resume" in sys.argv:
     gone = sys.argv[sys.argv.index("--resume") + 1]
     out({{"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 0, "session_id": gone,
@@ -42,6 +51,9 @@ if mode == "session-gone" and "--resume" in sys.argv:
 if mode == "signed-out":
     print("Not logged in · Please run /login", file=sys.stderr, flush=True)
     sys.exit(1)
+if mode == "partial-before-init":
+    say("hi")
+    sys.exit(0)
 if mode == "no-init":
     out({{"type": "assistant", "session_id": sid, "message": {{"content": [{{"type": "text", "text": "hi"}}]}}}})
     sys.exit(0)
@@ -51,9 +63,11 @@ out({{"type": "system", "subtype": "init", "session_id": sid, "tools": tools,
      "mcp_servers": [{{"name": "vibecut", "status": status}}] + ([{{"name": "github", "status": "connected"}}] if mode == "mcp" else [])}})
 if mode == "hang":
     time.sleep(60)
+say("Let me look.")
 out({{"type": "assistant", "session_id": sid, "message": {{"content": [{{"type": "text", "text": "Let me look."}},
      {{"type": "tool_use", "id": "t1", "name": "mcp__vibecut__add_markers", "input": {{"markers": []}}}}]}}}})
 out({{"type": "user", "session_id": sid, "message": {{"content": [{{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}]}}}})
+say("Marked the hook.")
 out({{"type": "assistant", "session_id": sid, "message": {{"content": [{{"type": "text", "text": "Marked the hook."}}]}}}})
 usage = {{"input_tokens": 100, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30, "output_tokens": 40,
          "output_tokens_details": {{"thinking_tokens": 12}}}}
@@ -130,6 +144,7 @@ def test_a_turn_runs_claude_code_with_only_vibecuts_tools(fake: dict[str, Any]) 
     assert flag(argv, "--system-prompt") == "You edit timelines."
     assert flag(argv, "--max-turns") == "40"
     assert "--resume" not in argv
+    assert "--fork-session" not in argv
     server = json.loads(flag(argv, "--mcp-config"))["mcpServers"]["vibecut"]
     assert server["command"] == "/opt/homebrew/bin/uv"
     assert server["env"] == {"PYTHONPATH": "/r/src-python", "VIBECUT_MCP_CALLER": "job-7"}
@@ -155,10 +170,28 @@ def test_a_turn_runs_claude_code_with_only_vibecuts_tools(fake: dict[str, Any]) 
     assert "Running add_markers…" in details
 
 
+def test_the_reply_streams_and_text_before_a_tool_call_is_its_own_message(fake: dict[str, Any]) -> None:
+    """Phase 8b: --include-partial-messages, deltas joined, a break at the tool call."""
+    _, events = run(fake)
+    argv = recorded(fake)["argv"]
+    assert "--include-partial-messages" in argv
+    replies = [(kind, fields.get("text")) for kind, fields in events if kind.startswith("reply_")]
+    assert "".join(t or "" for k, t in replies[: replies.index(("reply_break", None))]) == "Let me look."
+    after = replies[replies.index(("reply_break", None)) + 1 :]
+    assert "".join(t or "" for _, t in after) == "Marked the hook."
+    assert all(kind == "reply_delta" for kind, _ in after)
+    # The status for the tool comes after the break, so the app ends the first message first.
+    kinds = [kind for kind, fields in events]
+    running = next(i for i, (k, f) in enumerate(events) if k == "status" and f["detail"] == "Running add_markers…")
+    assert kinds.index("reply_break") < running
+
+
 def test_the_next_turn_resumes_the_session(fake: dict[str, Any]) -> None:
     run(fake, history=[{"claudeCodeSession": SESSION}], model="something-else")
     argv = recorded(fake)["argv"]
     assert flag(argv, "--resume") == SESSION
+    # Phase 8c: the turn forks, so the session it started from stays as it was for Retry and Edit.
+    assert "--fork-session" in argv
     assert flag(argv, "--model") == "claude-sonnet-5-5", "an unknown model falls back to the default"
 
 
@@ -273,6 +306,7 @@ def test_usage_and_names_are_read_safely() -> None:
         ("bash", "VibeCut stopped Claude Code before it did anything: .*doesn't allow \\(Bash\\)"),
         ("mcp", "VibeCut stopped Claude Code before it did anything: .*MCP servers .*\\(github\\)"),
         ("no-init", "VibeCut stopped Claude Code before it did anything: .*didn't report its tools"),
+        ("partial-before-init", "VibeCut stopped Claude Code before it did anything: .*didn't report its tools"),
         ("mcp-failed", "VibeCut's tools didn't start in Claude Code \\(failed\\)"),
     ],
 )

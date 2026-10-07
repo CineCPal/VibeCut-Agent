@@ -18,7 +18,7 @@ import type {
 import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
 import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
 import type { ClaudeCodeStatus } from "../types/agent";
-import type { ChatSummary, SavedChat, SavedEditLog } from "../types/history";
+import type { ChatSearchHit, ChatSummary, SavedChat, SavedEditLog } from "../types/history";
 
 export const NAVIGATE_EVENT = "navigate";
 export const SIDECAR_EVENT = "sidecar-event";
@@ -229,6 +229,17 @@ export function saveChatFile(id: string, chat: SavedChat): Promise<ChatSummary[]
 
 export function deleteChatFile(id: string): Promise<ChatSummary[]> {
   return invoke<ChatSummary[]>("chat_delete", { id });
+}
+
+/** Names a saved chat without opening it (Phase 8d). `auto`: the model's name, which the user's wins over;
+ * a blank user name goes back to the automatic one. Answers the list. */
+export function renameChatFile(id: string, title: string, auto = false): Promise<ChatSummary[]> {
+  return invoke<ChatSummary[]>("chat_rename", { id, title, auto });
+}
+
+/** The saved chats whose name or messages contain `query`, newest first (Phase 8d). */
+export function searchChats(query: string): Promise<ChatSearchHit[]> {
+  return invoke<ChatSearchHit[]>("chat_search", { query });
 }
 
 /** The saved edit log, unchecked, or null when there is none. */

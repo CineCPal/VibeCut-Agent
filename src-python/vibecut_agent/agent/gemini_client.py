@@ -13,6 +13,10 @@ from typing import Any
 from vibecut_agent.agent.redact import scrub
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# The chat's answers as they're written (Phase 8b): the same request, answered as server-sent events.
+GEMINI_STREAM_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+)
 
 # 503 (model overloaded, common on the free tier at peak hours) and 429 (rate limited) are worth
 # retrying; anything else (400, 401/403 bad key...) is not transient and fails fast.

@@ -66,6 +66,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "audio-peaks", interactive: false, managed: false },
     // The Story Editor's one model call (Phase 6d): a story cut from transcripts and a B-roll catalog.
     CommandSpec { name: "assemble", interactive: false, managed: false },
+    // A short name for a chat from its first message and answer, with the chat's model (Phase 8d).
+    CommandSpec { name: "chat-title", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -249,9 +251,10 @@ pub fn set_extraction_key(request: &mut Value, gemini_key: Option<&str>) {
     }
 }
 
-/// The commands that call a model with the chat's provider: the chat itself and the Story Editor.
+/// The commands that call a model with the chat's provider: the chat itself, the Story Editor, and the
+/// chat's name (Phase 8d).
 pub fn needs_llm_key(command: &str) -> bool {
-    matches!(command, "chat" | "assemble")
+    matches!(command, "chat" | "assemble" | "chat-title")
 }
 
 /// Puts the Hugging Face token into a `transcribe` request, or takes out any the UI sent.
@@ -775,7 +778,7 @@ pub async fn sidecar_start(
     if spec.managed {
         return Err(format!("{command} is started by the app, not on request"));
     }
-    // The environment first, then the Keychain (secrets.rs); only a chat or a Story Editor run is given one.
+    // The environment first, then the Keychain (secrets.rs); only a chat, a Story Editor run or a chat-title run is given one.
     let store = app.state::<crate::secrets::Keys>();
     let (gemini_key, claude_key) = if needs_llm_key(spec.name) {
         (
@@ -787,7 +790,7 @@ pub async fn sidecar_start(
     };
     // A chat on Claude (subscription) gets the program and profile Rust chose (claude_code.rs).
     let wants_claude_code =
-        matches!(spec.name, "chat" | "assemble") && request.get("provider").and_then(Value::as_str) == Some(crate::claude_code::PROVIDER);
+        needs_llm_key(spec.name) && request.get("provider").and_then(Value::as_str) == Some(crate::claude_code::PROVIDER);
     let claude_code = if wants_claude_code { Some(crate::claude_code::setup_for(&app, &job_id)?) } else { None };
     let mut request = prepare_request(spec.name, request, gemini_key.as_deref(), claude_key.as_deref(), claude_code)?;
     if spec.name == "assemble" {
@@ -1010,6 +1013,9 @@ mod tests {
         assert!(prepare_request("chat", json!({"provider": "claude-code"}), None, None, None).unwrap_err().contains("isn't set up"));
         let story = prepare_request("assemble", json!({"provider": "claude-code", "extractionKey": "ui"}), None, None, Some(setup.clone())).unwrap();
         assert_eq!(story["claudeCode"], setup, "the Story Editor runs on the subscription too (7e)");
+        let title = prepare_request("chat-title", json!({"provider": "claude-code", "apiKey": "ui"}), None, None, Some(setup.clone())).unwrap();
+        assert_eq!(title["claudeCode"], setup, "a chat's name comes from its own provider (8d)");
+        assert!(title.get("apiKey").is_none());
         assert!(story.get("extractionKey").is_none());
         let later = prepare_request("", json!({"type": "user_message", "claudeCode": {"program": "/bin/rm"}}), None, None, None).unwrap();
         assert!(later.get("claudeCode").is_none(), "a later line can't name a program");
@@ -1034,6 +1040,9 @@ mod tests {
         assert_eq!(claude["apiKey"], "c-key");
         let gemini = prepare_request("assemble", json!({}), Some("g-key"), None, None).unwrap();
         assert_eq!(gemini["apiKey"], "g-key");
+        let title = prepare_request("chat-title", json!({"provider": "claude", "apiKey": "ui"}), Some("g-key"), Some("c-key"), None).unwrap();
+        assert_eq!(title["apiKey"], "c-key");
+        assert!(prepare_request("chat-title", json!({}), None, Some("c-key"), None).is_err());
         assert!(prepare_request("assemble", json!({}), None, Some("c-key"), None).is_err());
         assert!(prepare_request("transcribe", json!({"apiKey": "ui"}), Some("g-key"), None, None).unwrap().get("apiKey").is_none());
     }

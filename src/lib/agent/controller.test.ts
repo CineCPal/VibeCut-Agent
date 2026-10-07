@@ -16,7 +16,21 @@ const ipc = vi.hoisted(() => ({
 }));
 vi.mock("../ipc", () => ipc);
 
-import { newConversation, sendUserMessage, startAgentService, stopTurn } from "./controller";
+import {
+  cancelEditing,
+  newConversation,
+  retryLastTurn,
+  rewindBlockReason,
+  rewindLastTurn,
+  sendEditedMessage,
+  sendUserMessage,
+  startAgentService,
+  startEditingLastMessage,
+  stopTurn,
+} from "./controller";
+import { useEditLogStore } from "../../store/useEditLogStore";
+import { useMcpStore } from "../../store/useMcpStore";
+import type { EditEntry } from "../../types/edits";
 import { useAgentStore } from "../../store/useAgentStore";
 import { initialHosts, useNleStateStore } from "../../store/useNleStateStore";
 import { useSidecarStore } from "../../store/useSidecarStore";
@@ -54,7 +68,9 @@ describe("agent controller", () => {
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
     useSidecarStore.setState({ session: { state: "ready", version: "0.1.0", python: "3.14.0", message: null } });
     useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
-    useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null });
+    useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "" });
+    useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
+    useMcpStore.setState({ outsideRunning: 0 });
     startAgentService();
     await flush();
   });
@@ -192,5 +208,177 @@ describe("agent controller", () => {
     await sendUserMessage("go");
     handlers.event?.({ jobId: "someone-else", command: "chat", event: { type: "result", text: "nope", history: [] } });
     expect(agent().status).toBe("thinking");
+  });
+
+  describe("streamed replies (Phase 8b)", () => {
+    const assistants = () => agent().messages.filter((m) => m.role === "assistant");
+
+    it("writes deltas into one live message and the result replaces its text", async () => {
+      await sendUserMessage("go");
+      event({ type: "reply_delta", text: "Hel" });
+      event({ type: "reply_delta", text: "lo" });
+      expect(assistants()).toHaveLength(1);
+      expect(assistants()[0]).toMatchObject({ text: "Hello", status: "pending" });
+      event({ type: "result", text: "Hello.", history: ["h"] });
+      expect(assistants()).toHaveLength(1);
+      expect(assistants()[0]).toMatchObject({ text: "Hello.", status: "done" });
+      expect(agent().status).toBe("idle");
+    });
+
+    it("keeps text said before a tool call as its own message, ahead of the tool line", async () => {
+      await sendUserMessage("mark the hook");
+      event({ type: "reply_delta", text: "Let me look." });
+      event({ type: "reply_break" });
+      event({ type: "tool_calls", calls: [{ id: "a", name: "add_markers", args: { markers: [{ time: 1, name: "Hook" }] } }] });
+      await vi.waitFor(() => expect(ipc.sendToSidecar).toHaveBeenCalled());
+      event({ type: "reply_delta", text: "Marked." });
+      event({ type: "result", text: "Marked.", history: [] });
+      const roles = agent().messages.map((m) => `${m.role}:${m.status ?? ""}`);
+      expect(roles).toEqual(["user:done", "assistant:done", "tool:", "assistant:done"]);
+      expect(assistants().map((m) => m.text)).toEqual(["Let me look.", "Marked."]);
+    });
+
+    it("drops the live text on a reset, and a break with nothing said leaves nothing", async () => {
+      await sendUserMessage("go");
+      event({ type: "reply_delta", text: "Half" });
+      event({ type: "reply_reset" });
+      expect(assistants()).toHaveLength(0);
+      event({ type: "reply_break" });
+      event({ type: "reply_delta", text: "Whole." });
+      event({ type: "result", text: "Whole.", history: [] });
+      expect(assistants().map((m) => m.text)).toEqual(["Whole."]);
+    });
+
+    it("keeps what was written before Stop, then says it stopped", async () => {
+      await sendUserMessage("go");
+      event({ type: "reply_delta", text: "I'll trim the" });
+      await stopTurn();
+      event({ type: "result", text: "Stopped by the user.", history: [], aborted: true });
+      const tail = agent().messages.slice(1).map((m) => [m.role, m.text, m.status]);
+      expect(tail).toEqual([
+        ["assistant", "I'll trim the", "done"],
+        ["error", "Stopped.", undefined],
+        ["assistant", "Stopped by the user.", undefined],
+      ]);
+    });
+
+    it("leaves a half-written reply as it stood when the job fails", async () => {
+      await sendUserMessage("go");
+      event({ type: "reply_delta", text: "Partly" });
+      event({ type: "error", message: "boom" });
+      expect(assistants()[0]).toMatchObject({ text: "Partly", status: "done" });
+      expect(agent().messages.at(-1)).toMatchObject({ role: "error", text: "boom" });
+    });
+  });
+
+  describe("Retry and Edit (Phase 8c)", () => {
+    const edit = (id: string, step: string): EditEntry => ({
+      id,
+      step,
+      stepText: "go",
+      at: 1,
+      host: "resolve",
+      timeline: "Main",
+      tool: "delete_clips",
+      summary: `edit ${id}`,
+      backup: "Main (before VibeCut 1)",
+      changes: [{ kind: "deleted", name: "A.mov", itemId: "v1" }],
+    });
+    const userText = () => agent().messages.filter((m) => m.role === "user").map((m) => m.text);
+
+    /** Two turns on Gemini: the second started from ["h1"] and ended with ["h1", "h2"]. */
+    async function twoTurns() {
+      await sendUserMessage("first");
+      event({ type: "result", text: "one", history: ["h1"] });
+      await sendUserMessage("second");
+      event({ type: "result", text: "two", history: ["h1", "h2"] });
+    }
+
+    it("remembers the history each message was sent with", async () => {
+      await twoTurns();
+      expect(agent().lastTurn).toMatchObject({ history: ["h1"], historyProvider: "gemini" });
+      expect(agent().messages.find((m) => m.id === agent().lastTurn?.userMessageId)?.text).toBe("second");
+    });
+
+    it("retry takes the last turn back and sends it again from where it started", async () => {
+      await twoTurns();
+      const jobId = agent().jobId;
+      ipc.sendToSidecar.mockClear();
+      await retryLastTurn();
+      expect(userText()).toEqual(["first", "second"]);
+      expect(agent().messages.map((m) => m.text)).toEqual(["first", "one", "second"]);
+      const [sentTo, message] = ipc.sendToSidecar.mock.calls[0];
+      expect(sentTo).toBe(jobId);
+      expect(message).toMatchObject({ type: "user_message", history: ["h1"] });
+      expect(message.userMessage.endsWith("\n\nsecond")).toBe(true);
+    });
+
+    it("an edited message replaces the last one", async () => {
+      await twoTurns();
+      expect(startEditingLastMessage()).toBe(true);
+      expect(agent()).toMatchObject({ draft: "second" });
+      await sendEditedMessage("second, but shorter");
+      expect(userText()).toEqual(["first", "second, but shorter"]);
+      expect(agent().editingMessageId).toBeNull();
+      cancelEditing();
+    });
+
+    it("Claude Code goes back to the session the turn forked from", async () => {
+      useAgentStore.setState({ aiChoice: "claude-code-sonnet-5-5" });
+      await sendUserMessage("first");
+      event({ type: "result", text: "one", history: [{ claudeCodeSession: "s1" }] });
+      await sendUserMessage("second");
+      event({ type: "result", text: "two", history: [{ claudeCodeSession: "s2" }] });
+      ipc.sendToSidecar.mockClear();
+      await retryLastTurn();
+      expect(ipc.sendToSidecar.mock.calls[0][1]).toMatchObject({ history: [{ claudeCodeSession: "s1" }] });
+    });
+
+    it("reverts the turn's edits first, and says so", async () => {
+      await twoTurns();
+      useEditLogStore.setState({ entries: [edit("e1", agent().lastTurn!.userMessageId)] });
+      ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+        if (command === "read_timeline") return TIMELINE;
+        if (command === "revert_timeline_changes") return { reverted: [{ kind: "deleted", name: "A.mov" }], changedSince: [], failed: [], lost: [], restoredIds: {} };
+        throw new Error(`unexpected ${command}`);
+      });
+      const text = await rewindLastTurn();
+      expect(text).toBe("second");
+      expect(useEditLogStore.getState().entries[0].reverted).toBeTruthy();
+      expect(agent().messages.at(-1)).toMatchObject({ role: "tool", text: "Reverted 1 timeline change" });
+    });
+
+    it("leaves the conversation alone when an edit couldn't be fully undone", async () => {
+      await twoTurns();
+      useEditLogStore.setState({ entries: [edit("e1", agent().lastTurn!.userMessageId)] });
+      ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+        if (command === "revert_timeline_changes")
+          return { reverted: [], changedSince: [{ name: "A.mov", reason: "it was changed since" }], failed: [], lost: [], restoredIds: {} };
+        throw new Error(`unexpected ${command}`);
+      });
+      await expect(rewindLastTurn()).rejects.toThrow(/Not every edit/);
+      expect(userText()).toEqual(["first", "second"]);
+      expect(agent().messages.at(-1)).toMatchObject({ role: "tool" });
+    });
+
+    it("refuses while busy, during outside calls, or when later edits would be reverted instead", async () => {
+      expect(rewindBlockReason()).toMatch(/no message/);
+      await twoTurns();
+      expect(rewindBlockReason()).toBeNull();
+      useMcpStore.setState({ outsideRunning: 1 });
+      expect(rewindBlockReason()).toMatch(/outside/);
+      useMcpStore.setState({ outsideRunning: 0 });
+      useEditLogStore.setState({ entries: [edit("e1", agent().lastTurn!.userMessageId), edit("e2", "broll-place")] });
+      expect(rewindBlockReason()).toMatch(/revert those first/);
+      expect(startEditingLastMessage()).toBe(false);
+      useAgentStore.setState({ status: "thinking" });
+      expect(rewindBlockReason()).toMatch(/Finish or stop/);
+    });
+
+    it("a new chat has nothing to take back", async () => {
+      await twoTurns();
+      await newConversation();
+      expect(agent().lastTurn).toBeNull();
+    });
   });
 });

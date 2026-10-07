@@ -103,23 +103,34 @@ def send(
     on_retry: OnRetry = None,
     should_abort: Callable[[], bool] = lambda: False,
     on_block: Callable[[dict[str, Any]], None] | None = None,
+    on_text: Callable[[str], None] | None = None,
+    on_reset: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """One streamed Messages request (beta namespace, for the betas in `params["betas"]`), retried on
     transient failures. Returns the final message as a plain dict, or None when `should_abort()`
     turned true while it streamed (the partial answer is discarded, so history never holds it).
 
     `on_block(block)` is called with each content block as it completes — the chat loop uses it to
-    show the model's progress notes while a long turn is still running."""
+    show the model's progress notes while a long turn is still running. `on_text(delta)` gets the
+    answer's text as it's written (Phase 8b), and `on_reset()` is called before a retry starts the
+    answer over."""
     if not api_key or not api_key.strip():
         raise ClaudeError("No Claude API key was provided.")
     client = _make_client(api_key, timeout)
     last_error: ClaudeError | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if attempt > 1 and on_reset:
+            on_reset()
         try:
             with client.beta.messages.stream(**params) as stream:
                 for event in stream:
                     if should_abort():
                         return None
+                    if on_text and getattr(event, "type", None) == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        piece = getattr(delta, "text", None) if getattr(delta, "type", None) == "text_delta" else None
+                        if isinstance(piece, str) and piece:
+                            on_text(piece)
                     if on_block and getattr(event, "type", None) == "content_block_stop":
                         block = getattr(event, "content_block", None)
                         if block is not None:

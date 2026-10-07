@@ -7,6 +7,7 @@ import json
 import anthropic
 import pytest
 
+from tests.agent import claude_fakes
 from tests.agent.claude_fakes import (
     connection_error,
     install,
@@ -453,3 +454,56 @@ def test_an_unknown_tool_result_id_fails_the_turn(monkeypatch):
 
     with pytest.raises(ChatError, match="unknown call id"):
         claude_chat.run_chat_turn("k", None, "s", TOOLS, [], "hi", lambda *a, **k: None, wrong_id)
+
+
+def test_the_answer_streams_and_text_before_a_tool_call_breaks(monkeypatch):
+    """Phase 8b: text deltas go out as reply_delta, and a reply_break comes before the tool_calls."""
+    claude_fakes.install(
+        monkeypatch,
+        [
+            claude_fakes.message(claude_fakes.text("Looking now."), claude_fakes.tool_use("t1", "noop", {}), stop_reason="tool_use"),
+            claude_fakes.message(claude_fakes.text("All done.")),
+        ],
+    )
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    replies = [(e["type"], e.get("text")) for e in rec.events if e["type"].startswith("reply_")]
+    first = replies[: replies.index(("reply_break", None))]
+    assert "".join(t for _, t in first) == "Looking now."
+    assert "".join(t or "" for _, t in replies[len(first) + 1 :]) == "All done."
+    kinds = [e["type"] for e in rec.events]
+    assert kinds.index("reply_break") < kinds.index("tool_calls")
+    assert outcome["text"] == "All done."
+
+
+def test_a_retried_answer_resets_what_was_streamed(monkeypatch):
+    """A failure after some text was written: the retry starts the answer over."""
+
+    class Broken(claude_fakes.FakeStream):
+        def __iter__(self):
+            from types import SimpleNamespace
+
+            yield SimpleNamespace(type="content_block_delta", index=0, delta=SimpleNamespace(type="text_delta", text="Hal"))
+            raise claude_fakes.connection_error()
+
+    client = claude_fakes.install(monkeypatch, [claude_fakes.message(claude_fakes.text("Whole."))])
+    original = client._stream
+    calls = {"n": 0}
+
+    def stream(**params):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            client.requests.append(params)
+            return Broken(None)
+        return original(**params)
+
+    client.beta.messages.stream = stream
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    assert {"type": "reply_reset"} in rec.events
+    assert "".join(e["text"] for e in rec.events[rec.events.index({"type": "reply_reset"}) :] if e["type"] == "reply_delta") == "Whole."
+    assert outcome["text"] == "Whole."

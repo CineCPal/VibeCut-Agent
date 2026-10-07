@@ -32,7 +32,7 @@ from vibecut_agent.agent.chat_steps import (
     is_last_step,
 )
 from vibecut_agent.agent.gemini_client import (
-    GEMINI_ENDPOINT,
+    GEMINI_STREAM_ENDPOINT,
     MAX_ATTEMPTS,
     RETRYABLE_STATUSES,
     GeminiError,
@@ -42,6 +42,7 @@ from vibecut_agent.agent.gemini_client import (
     _wait_before_retry,
 )
 from vibecut_agent.agent.redact import scrub
+from vibecut_agent.agent.streaming import ReplyStream
 
 # Same auto-updated alias gemini_client.py defaults to — see its own comment for why.
 DEFAULT_MODEL = "gemini-flash-latest"
@@ -59,9 +60,19 @@ class ChatError(GeminiError):
 
 
 def _post(
-    api_key: str, model: str, body: dict[str, Any], timeout: int, on_retry: OnRetry = None
-) -> dict[str, Any]:
-    """One `generateContent` call, with the same retry/backoff and error shape as gemini_client.py.
+    api_key: str,
+    model: str,
+    body: dict[str, Any],
+    timeout: int,
+    on_retry: OnRetry = None,
+    reply: ReplyStream | None = None,
+    should_abort: Callable[[], bool] = lambda: False,
+) -> dict[str, Any] | None:
+    """One streamed `streamGenerateContent` call (Phase 8b), with the same retry/backoff and error shape
+    as gemini_client.py. Returns the chunks gathered into one `generateContent`-shaped response, or None
+    when `should_abort()` turned true while it streamed (the partial answer is dropped).
+
+    The answer's text goes to `reply` as it arrives; a retry after some went out resets it first.
 
     `on_retry`: optional callback(attempt, max_attempts, wait_seconds, reason), same convention as
     gemini_client.py's own retrying calls — lets the caller surface a "retrying…" status instead of a
@@ -70,15 +81,18 @@ def _post(
     if not api_key or not api_key.strip():
         raise ChatError("No Gemini API key was provided.")
 
-    url = GEMINI_ENDPOINT.format(model=model)
+    url = GEMINI_STREAM_ENDPOINT.format(model=model)
     last_error: GeminiError | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if attempt > 1 and reply:
+            reply.reset()
         try:
             resp = requests.post(
                 url,
                 headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 data=json.dumps(body),
                 timeout=timeout,
+                stream=True,
             )
         except requests.RequestException as e:
             last_error = ChatError(f"Network error calling Gemini API: {_scrub_secret(e, api_key)}")
@@ -87,20 +101,108 @@ def _post(
                 continue
             raise last_error from e
 
-        if resp.status_code in CHAT_RETRYABLE_STATUSES:
-            last_error = ChatError(_overload_message(resp))
-            if attempt < MAX_ATTEMPTS:
-                _wait_before_retry(attempt, on_retry, reason=f"HTTP {resp.status_code}")
-                continue
-            raise last_error
+        try:
+            if resp.status_code in CHAT_RETRYABLE_STATUSES:
+                last_error = ChatError(_overload_message(resp))
+                if attempt < MAX_ATTEMPTS:
+                    _wait_before_retry(attempt, on_retry, reason=f"HTTP {resp.status_code}")
+                    continue
+                raise last_error
 
-        if resp.status_code != 200:
-            raise ChatError(f"Gemini API returned HTTP {resp.status_code}: {scrub(resp.text, api_key)[:500]}")
+            if resp.status_code != 200:
+                raise ChatError(f"Gemini API returned HTTP {resp.status_code}: {scrub(resp.text, api_key)[:500]}")
 
-        answer: dict[str, Any] = resp.json()
-        return answer
+            try:
+                return _read_stream(resp, reply, should_abort, api_key)
+            except _RetryableStreamError as e:
+                last_error = ChatError(str(e))
+                if attempt < MAX_ATTEMPTS:
+                    _wait_before_retry(attempt, on_retry, reason=e.reason)
+                    continue
+                raise last_error from None
+        finally:
+            resp.close()
 
     raise last_error or ChatError("Gemini API request failed for an unknown reason.")
+
+
+class _RetryableStreamError(Exception):
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _read_stream(
+    resp: Any, reply: ReplyStream | None, should_abort: Callable[[], bool], api_key: str
+) -> dict[str, Any] | None:
+    """Reads one answer's server-sent events into one response. Usage, the finish reason and any prompt
+    feedback are the latest a chunk gave."""
+    parts: list[dict[str, Any]] = []
+    answer: dict[str, Any] = {}
+    finish_reason: Any = None
+    saw_candidate = False
+    try:
+        for raw in resp.iter_lines(decode_unicode=True):
+            if should_abort():
+                return None
+            line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+            if not line or not line.startswith("data:"):
+                continue
+            try:
+                chunk = json.loads(line[5:].strip())
+            except ValueError:
+                raise ChatError("Gemini sent a malformed answer chunk.") from None
+            if not isinstance(chunk, dict):
+                continue
+            error = chunk.get("error")
+            if isinstance(error, dict):
+                code = error.get("code")
+                message = f"Gemini API error {code}: {scrub(str(error.get('message', '')), api_key)[:500]}"
+                if code in CHAT_RETRYABLE_STATUSES:
+                    raise _RetryableStreamError(message, f"HTTP {code}")
+                raise ChatError(message)
+            for key in ("usageMetadata", "promptFeedback", "modelVersion", "responseId"):
+                if key in chunk:
+                    answer[key] = chunk[key]
+            candidates = chunk.get("candidates")
+            if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                continue
+            saw_candidate = True
+            candidate = candidates[0]
+            if candidate.get("finishReason"):
+                finish_reason = candidate["finishReason"]
+            content = candidate.get("content")
+            new_parts = content.get("parts") if isinstance(content, dict) else None
+            for part in new_parts if isinstance(new_parts, list) else []:
+                if not isinstance(part, dict):
+                    continue
+                if reply and isinstance(part.get("text"), str) and not part.get("thought"):
+                    reply.text(part["text"])
+                _add_part(parts, part)
+    except requests.RequestException as e:
+        raise _RetryableStreamError(
+            f"Network error reading Gemini's answer: {_scrub_secret(e, api_key)}", "network error"
+        ) from None
+    if saw_candidate:
+        candidate_out: dict[str, Any] = {"content": {"role": "model", "parts": parts}}
+        if finish_reason:
+            candidate_out["finishReason"] = finish_reason
+        answer["candidates"] = [candidate_out]
+    return answer
+
+
+def _plain_text(part: dict[str, Any]) -> bool:
+    return isinstance(part.get("text"), str) and set(part) <= {"text", "thought"}
+
+
+def _add_part(parts: list[dict[str, Any]], part: dict[str, Any]) -> None:
+    """Adds one streamed part. Text that only continues the text before it is joined to it; a part with
+    anything else (a function call, a thought signature) is kept exactly as sent, since the model needs
+    those back verbatim."""
+    if parts and _plain_text(part) and _plain_text(parts[-1]) and bool(part.get("thought")) == bool(parts[-1].get("thought")):
+        parts[-1] = {**parts[-1], "text": parts[-1]["text"] + part["text"]}
+    else:
+        parts.append(dict(part))
 
 
 def run_chat_turn(
@@ -155,6 +257,8 @@ def run_chat_turn(
     response shape.
     """
     resolved_model = model or DEFAULT_MODEL
+    reply = ReplyStream(emit)
+    emit = reply.emit
     if not api_key or not api_key.strip():
         raise ChatError("No Gemini API key was provided.")
     if not user_message or not user_message.strip():
@@ -198,7 +302,12 @@ def run_chat_turn(
         if last and tool_declarations:
             body["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
         emit("status", phase="calling_model", detail="Calling Gemini…")
-        data = _post(api_key, resolved_model, body, timeout, on_retry=on_retry)
+        data = _post(
+            api_key, resolved_model, body, timeout, on_retry=on_retry, reply=reply, should_abort=should_abort
+        )
+        reply.flush()
+        if data is None:
+            return stop()
         _add_usage(usage, data)
 
         parts = _response_parts(data)
@@ -224,6 +333,7 @@ def run_chat_turn(
         if not calls:
             return finish(text)
 
+        reply.brk()
         call_ids = [uuid.uuid4().hex[:12] for _ in calls]
         emit(
             "tool_calls",

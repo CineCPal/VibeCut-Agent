@@ -6,6 +6,7 @@ const ipc = vi.hoisted(() => ({
   loadChatFile: vi.fn(),
   saveChatFile: vi.fn(),
   deleteChatFile: vi.fn(),
+  renameChatFile: vi.fn(),
   loadEditLogFile: vi.fn(),
   saveEditLogFile: vi.fn(),
   startSidecar: vi.fn(),
@@ -23,6 +24,8 @@ import {
   SAVE_DELAY_MS,
   chatTitle,
   deleteChat,
+  nameChatAutomatically,
+  renameChat,
   openChat,
   parseSavedChat,
   resetChatHistoryForTests,
@@ -74,7 +77,7 @@ describe("chat history (Phase 8a)", () => {
     ipc.startSidecar.mockResolvedValue(undefined);
     ipc.cancelSidecar.mockResolvedValue(undefined);
     useNleStateStore.setState({ hosts: initialHosts(), preferredHost: "auto" });
-    useAgentStore.setState({ chatId: "c-now", messages: [], status: "idle", aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null });
+    useAgentStore.setState({ chatId: "c-now", messages: [], status: "idle", aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, lastTurn: null, customTitle: null, autoTitle: null });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} }, floorSeq: 1 });
     useChatHistoryStore.setState({ chats: null, saveError: null });
   });
@@ -106,6 +109,63 @@ describe("chat history (Phase 8a)", () => {
     expect(parsed?.provider).toBeNull();
     expect(parsed?.history).toEqual([]);
     expect(parsed?.aiChoice).toBe("gemini");
+  });
+
+  it("saves how to take the last message back, and an opened chat can (Phase 8c)", () => {
+    const messages = [msg("u1", "user", "Mark the hook"), msg("a1", "assistant", "Marked it.")];
+    const state = { chatId: "c1", messages, history: ["h0", "h1"], historyProvider: "gemini" as const, aiChoice: "gemini" as const };
+    const saved = savedChatFrom({ ...state, lastTurn: { userMessageId: "u1", history: ["h0"], historyProvider: "gemini" } });
+    expect(saved?.rewind).toEqual({ userMessageId: "u1", historyLength: 1 });
+    // Too big to keep the history: nothing to go back to either.
+    expect(savedChatFrom({ ...state, history: ["x".repeat(MAX_HISTORY_CHARS + 1)], lastTurn: { userMessageId: "u1", history: ["h0"], historyProvider: "gemini" } })?.rewind).toBeUndefined();
+
+    const parsed = parseSavedChat(JSON.parse(JSON.stringify(saved)));
+    useAgentStore.getState().loadChat(parsed!);
+    expect(useAgentStore.getState().lastTurn).toEqual({ userMessageId: "u1", history: ["h0"], historyProvider: "gemini" });
+  });
+
+  it("names a chat by the user's name, else the model's, else its first request (Phase 8d)", () => {
+    const base = { chatId: "c1", messages: [msg("u1", "user", "Mark the hook")], history: [], historyProvider: null, aiChoice: "gemini" as const };
+    expect(savedChatFrom(base)?.title).toBe("Mark the hook");
+    expect(savedChatFrom({ ...base, autoTitle: "Hook markers" })).toMatchObject({ title: "Hook markers", autoTitle: "Hook markers" });
+    const both = savedChatFrom({ ...base, autoTitle: "Hook markers", customTitle: "  Bakery\n hook " });
+    expect(both).toMatchObject({ title: "Bakery hook", customTitle: "Bakery hook", autoTitle: "Hook markers" });
+    const parsed = parseSavedChat(JSON.parse(JSON.stringify(both)));
+    expect(parsed).toMatchObject({ customTitle: "Bakery hook", autoTitle: "Hook markers" });
+    useAgentStore.getState().loadChat(parsed!);
+    expect(useAgentStore.getState()).toMatchObject({ customTitle: "Bakery hook", autoTitle: "Hook markers" });
+    useAgentStore.getState().clear();
+    expect(useAgentStore.getState()).toMatchObject({ customTitle: null, autoTitle: null });
+  });
+
+  it("renames the open chat in the store as well as on disk, and others on disk only", async () => {
+    ipc.renameChatFile.mockResolvedValue([summary("c1")]);
+    useAgentStore.setState({ chatId: "c1", customTitle: null });
+    await renameChat("c1", "  Bakery cut ");
+    expect(ipc.renameChatFile).toHaveBeenCalledWith("c1", "Bakery cut");
+    expect(useAgentStore.getState().customTitle).toBe("Bakery cut");
+    await renameChat("c1", " ");
+    expect(useAgentStore.getState().customTitle).toBeNull();
+    await renameChat("other", "Theirs");
+    expect(useAgentStore.getState().customTitle).toBeNull();
+    expect(ipc.renameChatFile).toHaveBeenLastCalledWith("other", "Theirs");
+  });
+
+  it("the model's name goes to the open chat's store, or to a saved chat on disk", async () => {
+    ipc.renameChatFile.mockResolvedValue([summary("c9")]);
+    useAgentStore.setState({ chatId: "c1", autoTitle: null });
+    await nameChatAutomatically("c1", "Hook markers");
+    expect(useAgentStore.getState().autoTitle).toBe("Hook markers");
+    expect(ipc.renameChatFile).not.toHaveBeenCalled();
+    await nameChatAutomatically("c9", "Older chat");
+    expect(ipc.renameChatFile).toHaveBeenCalledWith("c9", "Older chat", true);
+    await nameChatAutomatically("c9", "   ");
+    expect(ipc.renameChatFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a reply saved mid-stream as it stood (Phase 8b)", () => {
+    const parsed = parseSavedChat({ ...savedChat("x"), messages: [msg("u", "user", "go"), { ...msg("a", "assistant", "Half"), status: "pending" }] });
+    expect(parsed?.messages[1]).toMatchObject({ text: "Half", status: "done" });
   });
 
   it("saves the chat a moment after it changes, once, and keeps the list Rust answers", async () => {

@@ -40,7 +40,7 @@ describe("useAgentStore", () => {
     useAgentStore.getState().setAiChoice("gpt-9" as AiChoiceId);
     expect(useAgentStore.getState().aiChoice).toBe("claude-opus-5-5");
     const saved = JSON.parse(localStorage.getItem("vibecut-agent.agent") ?? "{}");
-    expect(saved.state).toEqual({ aiChoice: "claude-opus-5-5", storyFirstPass: "same", chatId: useAgentStore.getState().chatId });
+    expect(saved.state).toEqual({ aiChoice: "claude-opus-5-5", storyFirstPass: "same", chatId: useAgentStore.getState().chatId, autoTitles: true });
   });
 
   it("keeps the Story Editor's first-pass choice to the two known ones", () => {

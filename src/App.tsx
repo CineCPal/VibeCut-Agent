@@ -4,6 +4,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useAgent } from "./hooks/useAgent";
 import { startChatHistory } from "./lib/agent/chatHistory";
+import { startChatTitles } from "./lib/agent/chatTitles";
 import { startBrollPanelBridge } from "./lib/brollPanel";
 import { startMcpBridge } from "./lib/mcp/server";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -35,6 +36,7 @@ function App() {
 
   // Past chats and the edit log, saved and restored across restarts (lib/agent/chatHistory.ts).
   useEffect(() => startChatHistory(), []);
+  useEffect(() => startChatTitles(), []);
 
   // The MCP bridge: Claude Code calling the agent's tools (lib/mcp/server.ts).
   useEffect(() => startMcpBridge(), []);

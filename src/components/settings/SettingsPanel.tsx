@@ -46,6 +46,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const sidecar = useSystemStore((s) => s.sidecar);
   const [restartError, setRestartError] = useState<string | null>(null);
   const keepOnTop = useUiStore((s) => s.keepOnTop);
+  const autoTitles = useAgentStore((s) => s.autoTitles);
+  const setAutoTitles = useAgentStore((s) => s.setAutoTitles);
 
   const restart = () => {
     setRestartError(null);
@@ -93,6 +95,24 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           It reads every line and shortlists the strongest moments, then the agent&rsquo;s model cuts the story from them. Text only. Gemini Flash is faster and
           spares your Claude plan&rsquo;s limits, but sends the transcripts to Google.
         </p>
+      </Section>
+
+      <Section title="Chat">
+        <label className="flex items-start gap-2 text-xs text-white">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-athletic-blue-light"
+            checked={autoTitles}
+            onChange={(e) => setAutoTitles(e.target.checked)}
+          />
+          <span>
+            Name chats with the model
+            <span className="block text-[11px] text-cool-grey">
+              After a chat&rsquo;s first answer, the agent&rsquo;s model gives it a short name for History. It&rsquo;s one small extra call per new chat, on your
+              Claude plan too. Off: chats are named after their first message. A name you give a chat always stays.
+            </span>
+          </span>
+        </label>
       </Section>
 
       <Section title="Window">

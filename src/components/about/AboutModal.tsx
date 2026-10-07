@@ -73,7 +73,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label="Gemini API"
             tone={keys?.gemini ? "ok" : "off"}
             value={keys?.gemini ? "Key configured" : "Not configured"}
-            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (its Story Editor cuts too: the interviews' transcripts are sent), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (its Story Editor cuts too: the interviews' transcripts are sent; and naming its chats, from the first message and answer), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
           />
           <StatusRow
             label="Anthropic API"

@@ -22,6 +22,14 @@ export type AgentStatus = "offline" | "idle" | "thinking" | "stopping" | "error"
  * the user's own signed-in Claude Code CLI (Phase 7b). */
 export type ChatProvider = "gemini" | "claude" | "claude-code";
 
+/** The last message's turn as it can be taken back (Phase 8c): the history exactly as it was sent with
+ * that message. Retry and Edit put it back, then send again. */
+export interface LastTurn {
+  userMessageId: string;
+  history: unknown[];
+  historyProvider: ChatProvider | null;
+}
+
 /** Token use for a turn, as the chat sidecar reports it. */
 export interface ChatUsage {
   promptTokens: number;

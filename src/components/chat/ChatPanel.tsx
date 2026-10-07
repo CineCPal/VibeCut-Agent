@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { SquarePen, Undo2 } from "lucide-react";
-import { newConversation } from "../../lib/agent/controller";
+import { lastTurnEdits, newConversation, retryLastTurn, rewindBlockReason, startEditingLastMessage } from "../../lib/agent/controller";
 import { revertLastRequest } from "../../lib/agent/edits";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
@@ -12,7 +12,7 @@ import { StatusDot, type Tone } from "../common/StatusDot";
 import { ChatHistoryMenu } from "./ChatHistoryMenu";
 import { Composer } from "./Composer";
 import { DraftBar } from "./DraftBar";
-import { MessageList } from "./MessageList";
+import { MessageList, type TurnActions } from "./MessageList";
 
 const STATUS_TONE: Record<AgentStatus, Tone> = { offline: "off", idle: "ok", thinking: "warn", stopping: "warn", error: "bad" };
 const STATUS_TEXT: Record<AgentStatus, string> = {
@@ -38,6 +38,28 @@ export function ChatPanel() {
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
   const saveError = useChatHistoryStore((s) => s.saveError);
   const [reverting, setReverting] = useState(false);
+  // What Retry and Edit may do (rewindBlockReason) follows this, the status, the messages, the edit log
+  // and outside calls, all read above.
+  const lastTurn = useAgentStore((s) => s.lastTurn);
+
+  const retry = async () => {
+    try {
+      await retryLastTurn();
+    } catch (error) {
+      useAgentStore.getState().addMessage({ role: "error", text: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const turn: TurnActions | null =
+    lastTurn && !running
+      ? {
+          userMessageId: lastTurn.userMessageId,
+          blocked: reverting ? "Reverting…" : rewindBlockReason(),
+          edits: lastTurnEdits().length,
+          onRetry: () => void retry(),
+          onEdit: () => startEditingLastMessage(),
+        }
+      : null;
 
   const revert = async () => {
     setReverting(true);
@@ -99,7 +121,7 @@ export function ChatPanel() {
           </p>
         </div>
       ) : (
-        <MessageList messages={messages} activity={activity} />
+        <MessageList messages={messages} activity={activity} turn={turn} />
       )}
       <DraftBar disabled={running} />
       <Composer />

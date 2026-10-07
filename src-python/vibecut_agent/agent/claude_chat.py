@@ -19,6 +19,8 @@ What differs from Gemini, and why:
   step of a long turn pays full price only for what's new.
 - Text the model writes between tool calls comes back as short progress-update thinking blocks
   (`display: "updates"`); each one is emitted as a status line so a long turn isn't silent.
+- The answer streams to the app as it's written (streaming.py, Phase 8b). Text written before a tool
+  call ends with `reply_break`, so it stays a message of its own.
 - The step budget's notes (chat_steps.py) are text blocks after the tool results, which keeps the
   history append-only. The last step sets `tool_choice: none`: that costs the messages cache for that
   one call, but leaves thinking blocks valid (tool_choice isn't part of what they're bound to).
@@ -43,6 +45,7 @@ from vibecut_agent.agent.claude_schema import to_claude_tools
 from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
 from vibecut_agent.agent.gemini_client import OnRetry
 from vibecut_agent.agent.redact import scrub
+from vibecut_agent.agent.streaming import ReplyStream
 
 BETAS = [
     "compact-2026-01-12",
@@ -167,6 +170,8 @@ def run_chat_turn(
         raise ChatError("The chat message was empty.")
 
     resolved_model = resolve_model(model)
+    reply = ReplyStream(emit)
+    emit = reply.emit
     messages: list[dict[str, Any]] = [*history, {"role": "user", "content": user_message}]
     params = _base_params(resolved_model, system_instruction, tool_declarations)
     usage = {"promptTokens": 0, "cachedTokens": 0, "outputTokens": 0, "thoughtsTokens": 0, "steps": 0}
@@ -222,9 +227,12 @@ def run_chat_turn(
                 on_retry=on_retry,
                 should_abort=should_abort,
                 on_block=show_progress,
+                on_text=reply.text,
+                on_reset=reply.reset,
             )
         except ChatError as exc:
             raise ChatError(scrub(exc, api_key)) from None
+        reply.flush()
         if response is None:
             return stop()
         add_usage(usage, response)
@@ -261,6 +269,7 @@ def run_chat_turn(
         if not calls:
             return finish(text_of(response))
 
+        reply.brk()
         call_ids = [str(call.get("id")) for call in calls]
         emit(
             "tool_calls",

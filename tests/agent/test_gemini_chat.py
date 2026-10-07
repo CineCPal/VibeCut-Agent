@@ -10,13 +10,22 @@ from vibecut_agent.agent import gemini_chat
 
 
 class FakeResponse:
-    def __init__(self, status_code, json_data=None, text=""):
-        self.status_code = status_code
-        self._json = json_data
-        self.text = text
+    """A `requests` response to a `streamGenerateContent?alt=sse` call (Phase 8b). `json_data` is
+    the whole answer, sent as one event; `chunks` sends several."""
 
-    def json(self):
-        return self._json
+    def __init__(self, status_code, json_data=None, text="", chunks=None):
+        self.status_code = status_code
+        self._chunks = chunks if chunks is not None else ([json_data] if json_data is not None else [])
+        self.text = text
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for chunk in self._chunks:
+            yield f"data: {json.dumps(chunk)}"
+            yield ""
+
+    def close(self):
+        self.closed = True
 
 
 def text_response(text):
@@ -41,6 +50,7 @@ class Recorder:
         self.events = []
         self._results = list(results or [])
         self._pending_ids = []
+        self.reads = 0
 
     def emit(self, event_type, **fields):
         self.events.append({"type": event_type, **fields})
@@ -48,6 +58,7 @@ class Recorder:
             self._pending_ids = [c["id"] for c in fields["calls"]]
 
     def read_tool_result(self):
+        self.reads += 1
         call_id = self._pending_ids.pop(0)
         result = self._results.pop(0) if self._results else "ok"
         return {"type": "tool_result", "id": call_id, "result": result}
@@ -60,7 +71,7 @@ def test_a_text_only_response_ends_the_loop_at_once(monkeypatch):
     outcome = run_turn(rec)
 
     assert outcome["text"] == "Hi there."
-    assert [e["type"] for e in rec.events] == ["status"]
+    assert [e["type"] for e in rec.events] == ["status", "reply_delta"]
     # The final history carries the user message and the model's reply, ready to resend next turn.
     assert outcome["history"][-2] == {"role": "user", "parts": [{"text": "hello"}]}
     assert outcome["history"][-1]["role"] == "model"
@@ -117,7 +128,7 @@ def test_the_last_step_turns_function_calling_off_and_its_own_answer_ends_the_tu
         text_response("Two done; one left."),
     ]
 
-    def fake_post(url, headers=None, data=None, timeout=None):
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
         bodies.append(json.loads(data))
         return replies.pop(0)
 
@@ -151,7 +162,7 @@ def test_five_steps_before_the_end_the_model_hears_how_many_are_left(monkeypatch
     bodies = []
     replies = [function_call_response(("noop", {})), text_response("Done.")]
 
-    def fake_post(url, headers=None, data=None, timeout=None):
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
         bodies.append(json.loads(data))
         return replies.pop(0)
 
@@ -203,7 +214,7 @@ def run_turn(rec, **kwargs):
 def test_the_key_is_sent_as_a_header_never_the_body(monkeypatch):
     seen = {}
 
-    def fake_post(url, headers=None, data=None, timeout=None):
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
         seen["headers"] = headers
         seen["body"] = json.loads(data)
         return text_response("ok")
@@ -244,7 +255,7 @@ def test_a_retryable_failure_calls_on_retry_before_succeeding(monkeypatch):
 
 
 def with_usage(response, prompt, cached, output, thoughts=0):
-    response._json["usageMetadata"] = {
+    response._chunks[-1]["usageMetadata"] = {
         "promptTokenCount": prompt,
         "cachedContentTokenCount": cached,
         "candidatesTokenCount": output,
@@ -273,13 +284,17 @@ def test_usage_is_summed_over_every_call_in_the_turn(monkeypatch):
 
 
 def test_abort_before_handing_out_calls_drops_the_unanswered_response(monkeypatch):
-    monkeypatch.setattr(
-        gemini_chat.requests, "post", lambda *a, **k: function_call_response(("split_at_playhead", {}))
-    )
-    rec = Recorder()
-    checks = iter([False, True])  # not before the first call; yes once its response is in
+    posts = []
 
-    outcome = run_turn(rec, should_abort=lambda: next(checks))
+    def fake_post(*a, **k):
+        posts.append(1)
+        return function_call_response(("split_at_playhead", {}))
+
+    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    rec = Recorder()
+
+    # Not before the first call; yes once its response is coming in.
+    outcome = run_turn(rec, should_abort=lambda: bool(posts))
 
     assert outcome["aborted"] is True
     assert outcome["text"] == gemini_chat.STOPPED_NOTICE
@@ -297,9 +312,9 @@ def test_abort_after_a_batch_stops_before_the_next_model_call(monkeypatch):
         return function_call_response(("split_at_playhead", {}))
 
     monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
-    checks = iter([False, False, True])
+    rec = Recorder()
 
-    outcome = run_turn(Recorder(), should_abort=lambda: next(checks))
+    outcome = run_turn(rec, should_abort=lambda: rec.reads > 0)
 
     assert outcome["aborted"] is True
     assert len(posts) == 1
@@ -403,7 +418,7 @@ def test_thought_signatures_are_kept_verbatim_in_history_and_resent(monkeypatch)
     seq = [FakeResponse(200, {"candidates": [{"content": {"parts": parts}}]}), text_response("ok")]
     bodies = []
 
-    def fake_post(url, headers=None, data=None, timeout=None):
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
         bodies.append(json.loads(data))
         return seq.pop(0)
 
@@ -427,3 +442,111 @@ def test_a_non_200_body_reflecting_the_key_is_scrubbed(monkeypatch):
 
     assert "secret-key" not in str(exc_info.value)
     assert "[REDACTED]" in str(exc_info.value)
+
+
+# Phase 8b: the answer streams as server-sent events.
+
+
+def test_the_answer_streams_and_its_chunks_are_gathered_into_one_reply(monkeypatch):
+    seen = {}
+    chunks = [
+        {"candidates": [{"content": {"role": "model", "parts": [{"text": "Hello "}]}}]},
+        {"candidates": [{"content": {"role": "model", "parts": [{"text": "there."}]}, "finishReason": "STOP"}],
+         "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}},
+    ]
+
+    def fake_post(url, headers=None, data=None, timeout=None, stream=False):
+        seen["url"], seen["stream"] = url, stream
+        return FakeResponse(200, chunks=chunks)
+
+    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    assert seen["url"].endswith(":streamGenerateContent?alt=sse")
+    assert seen["stream"] is True
+    assert outcome["text"] == "Hello there."
+    assert outcome["history"][-1] == {"role": "model", "parts": [{"text": "Hello there."}]}
+    assert outcome["usage"]["promptTokens"] == 7
+    assert "".join(e["text"] for e in rec.events if e["type"] == "reply_delta") == "Hello there."
+
+
+def test_signed_and_call_parts_are_kept_as_sent_and_text_before_a_call_breaks(monkeypatch):
+    signed = {"text": "", "thoughtSignature": "sig-1"}
+    call = {"functionCall": {"name": "noop", "args": {}}, "thoughtSignature": "sig-2"}
+    first = FakeResponse(
+        200,
+        chunks=[
+            {"candidates": [{"content": {"parts": [{"text": "Checking"}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": " the cut."}, signed]}}]},
+            {"candidates": [{"content": {"parts": [call]}}]},
+        ],
+    )
+    seq = [first, text_response("Done.")]
+    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    assert outcome["history"][1] == {"role": "model", "parts": [{"text": "Checking the cut."}, signed, call]}
+    kinds = [e["type"] for e in rec.events]
+    assert kinds.index("reply_break") < kinds.index("tool_calls")
+    assert outcome["text"] == "Done."
+
+
+def test_thought_parts_are_not_streamed():
+    parts = []
+    gemini_chat._add_part(parts, {"text": "plan", "thought": True})
+    gemini_chat._add_part(parts, {"text": " more", "thought": True})
+    gemini_chat._add_part(parts, {"text": "Answer"})
+    assert parts == [{"text": "plan more", "thought": True}, {"text": "Answer"}]
+
+
+def test_a_dropped_stream_is_retried_from_the_start_and_the_streamed_text_reset(monkeypatch):
+    class Dropped(FakeResponse):
+        def iter_lines(self, decode_unicode=False):
+            yield 'data: {"candidates": [{"content": {"parts": [{"text": "Half"}]}}]}'
+            raise gemini_chat.requests.ConnectionError("reset by peer")
+
+    seq = [Dropped(200), text_response("Whole answer.")]
+    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    replies = [(e["type"], e.get("text")) for e in rec.events if e["type"].startswith("reply_")]
+    # "Half" may still be waiting in the buffer when the reset drops it; the reset always goes out.
+    reset = replies.index(("reply_reset", None))
+    assert "".join(t for _, t in replies[reset + 1 :]) == "Whole answer."
+    assert outcome["text"] == "Whole answer."
+    assert outcome["history"][-1]["parts"] == [{"text": "Whole answer."}]
+
+
+def test_an_error_inside_the_stream_fails_the_turn_without_the_key(monkeypatch):
+    bad = FakeResponse(200, chunks=[{"error": {"code": 400, "message": "bad secret-key"}}])
+    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: bad)
+
+    with pytest.raises(gemini_chat.ChatError) as exc_info:
+        run_turn(Recorder())
+
+    assert "Gemini API error 400" in str(exc_info.value)
+    assert "secret-key" not in str(exc_info.value)
+    assert bad.closed is True
+
+
+def test_stop_while_streaming_drops_the_partial_answer_and_closes_the_stream(monkeypatch):
+    chunks = [{"candidates": [{"content": {"parts": [{"text": f"w{n} "}]}}]} for n in range(5)]
+    response = FakeResponse(200, chunks=chunks)
+    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: response)
+    checks = {"n": 0}
+
+    def should_abort():
+        checks["n"] += 1
+        return checks["n"] > 3
+
+    outcome = run_turn(Recorder(), should_abort=should_abort)
+
+    assert outcome["aborted"] is True
+    assert outcome["history"][-1] == {"role": "model", "parts": [{"text": gemini_chat.STOPPED_NOTICE}]}
+    assert response.closed is True

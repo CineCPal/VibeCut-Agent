@@ -10,8 +10,12 @@ differences:
 - Tool calls don't come back through this process as ``tool_calls`` events. Claude Code calls
   VibeCut's MCP server (vibecut_agent/mcp_server.py, Phase 7a), which hands them to the app through
   the MCP bridge tagged with this chat's job id; the app runs them as part of this turn.
+- The reply streams (Phase 8b): ``--include-partial-messages`` makes Claude Code report its text as it's
+  written (``stream_event`` lines), which go to the app through streaming.ReplyStream.
 - Claude Code keeps the conversation itself. ``history`` is ``[{"claudeCodeSession": <id>}]`` and the
-  next turn resumes that session.
+  next turn resumes that session. Each turn forks it (``--fork-session``, Phase 8c): the turn answers under
+  a new id and leaves the session it started from as it was, so the app can retry or edit the last
+  message from there. A plain ``--resume`` keeps the id and adds to it (checked on 2.1.292).
 
 What runs is decided by Rust (claude_code.rs) and arrives as the request's ``claudeCode``: the
 program, the Claude Code profile folder (``CLAUDE_CONFIG_DIR``), the job id, an empty working folder
@@ -33,6 +37,7 @@ from typing import Any
 
 from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE
 from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
+from vibecut_agent.agent.streaming import ReplyStream
 
 SERVER_NAME = "vibecut"
 ALLOWED_TOOLS = f"mcp__{SERVER_NAME}__*"
@@ -99,6 +104,7 @@ def build_args(
         "--output-format",
         "stream-json",
         "--verbose",
+        "--include-partial-messages",
         "--model",
         model,
         # No built-in tools (shell, files, web, skills): only VibeCut's MCP tools.
@@ -121,7 +127,7 @@ def build_args(
         str(max_turns),
     ]
     if session:
-        args += ["--resume", session]
+        args += ["--resume", session, "--fork-session"]
     return args
 
 
@@ -269,6 +275,18 @@ class _SessionGone(Exception):
     pass
 
 
+def _text_delta(event: dict[str, Any]) -> str | None:
+    """The reply text in a ``stream_event`` line (``--include-partial-messages``), if it carries some."""
+    inner = event.get("event")
+    if not isinstance(inner, dict) or inner.get("type") != "content_block_delta":
+        return None
+    delta = inner.get("delta")
+    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+        return None
+    text = delta.get("text")
+    return text if isinstance(text, str) and text else None
+
+
 def run_chat_turn(
     setup: Any,
     model: str | None,
@@ -282,6 +300,7 @@ def run_chat_turn(
 ) -> dict[str, Any]:
     """Runs one turn through Claude Code, end to end. Raises ChatError when it can't."""
     setup = check_setup(setup)
+    reply = ReplyStream(emit)
     if not user_message or not user_message.strip():
         raise ChatError("The chat message was empty.")
     resolved_model = model if model in MODELS else DEFAULT_MODEL
@@ -290,13 +309,14 @@ def run_chat_turn(
     try:
         return _run_once(
             setup, resolved_model, system_instruction, session, history, user_message,
-            emit, should_abort, max_iterations, popen,
+            reply, should_abort, max_iterations, popen,
         )
     except _SessionGone:
-        emit("status", detail=SESSION_GONE_STATUS)
+        reply.reset()
+        reply.emit("status", detail=SESSION_GONE_STATUS)
         return _run_once(
             setup, resolved_model, system_instruction, None, [], SESSION_GONE_NOTE + user_message,
-            emit, should_abort, max_iterations, popen,
+            reply, should_abort, max_iterations, popen,
         )
 
 
@@ -307,12 +327,13 @@ def _run_once(
     session: str | None,
     history: list[Any],
     user_message: str,
-    emit: Callable[..., None],
+    stream: ReplyStream,
     should_abort: Callable[[], bool],
     max_iterations: int,
     popen: Popen,
 ) -> dict[str, Any]:
     """One ``claude -p`` for the turn. Raises _SessionGone when ``session`` can't be resumed."""
+    emit = stream.emit
     resuming = session is not None
     args = build_args(setup, resolved_model, system_instruction, max_iterations, session)
     try:
@@ -393,16 +414,21 @@ def _run_once(
                 raise ChatError(problem)
             checked = True
             emit("status", detail=f"Calling Claude ({resolved_model}) through Claude Code…")
-        elif not checked and not aborted and kind in ("assistant", "user", "result"):
+        elif not checked and not aborted and kind in ("assistant", "user", "result", "stream_event"):
             # Nothing may happen before the run has shown it's locked down.
             _stop(process)
             raise ChatError(LOCKDOWN_NOTE.format(problem="it didn't report its tools before starting"))
+        elif kind == "stream_event":
+            delta = _text_delta(event)
+            if delta and not aborted:
+                stream.text(delta)
         elif kind == "assistant":
             content = (event.get("message") or {}).get("content")
             for block in content if isinstance(content, list) else []:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_use":
+                    stream.brk()
                     emit("status", detail=f"Running {short_tool_name(str(block.get('name')))}…")
                     texts.clear()  # only the words after the last tool call are the reply
                 elif block.get("type") == "text" and block.get("text"):
@@ -410,6 +436,7 @@ def _run_once(
         elif kind == "result":
             result = event
 
+    stream.flush()
     try:
         process.wait(timeout=STOP_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
