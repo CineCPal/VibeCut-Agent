@@ -67,6 +67,8 @@ export interface ChatUsage {
   outputTokens: number;
   thoughtsTokens: number;
   steps: number;
+  /** Claude (subscription) only: what the turn would have cost on the API, by Claude Code's reckoning. */
+  costUsd?: number;
 }
 
 /** Same ids as VibeCut's `useAiProviderStore`, so preferences carry over. */
@@ -94,6 +96,20 @@ export const AI_CHOICES: readonly AiChoice[] = [
   { id: "claude-code-opus-5-5", label: "Claude Opus 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-opus-5-5" },
   { id: "claude-code-sonnet-5-5", label: "Claude Sonnet 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-sonnet-5-5" },
 ];
+
+/** How long Claude thinks (Phase 9a): the API's `output_config.effort`, Claude Code's `--effort`. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+export const DEFAULT_EFFORT: EffortLevel = "medium";
+
+/** Effort is set per Claude model, the same on the API and on the subscription. */
+export type ClaudeFamily = "opus" | "sonnet";
+
+/** Which Claude model a choice runs, or null for Gemini. */
+export function familyOf(choice: AiChoice): ClaudeFamily | null {
+  if (choice.chatProvider === "gemini") return null;
+  return choice.model?.includes("opus") ? "opus" : "sonnet";
+}
 
 /** The Story Editor's first pass over long footage (Phase 7e): the story's own provider (Sonnet on
  * Claude, Flash on Gemini), or always Gemini Flash (needs a Gemini key). */

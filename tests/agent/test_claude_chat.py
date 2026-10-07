@@ -98,7 +98,7 @@ def test_the_request_caches_converts_tools_and_sets_thinking_and_compaction(monk
 
     params = client.requests[0]
     assert params["model"] == "claude-opus-5-5"
-    assert params["output_config"] == {"effort": "high"}
+    assert params["output_config"] == {"effort": "medium"}, "medium unless Settings says otherwise (Phase 9a)"
     assert params["system"] == [
         {"type": "text", "text": "You edit video.", "cache_control": {"type": "ephemeral"}}
     ]
@@ -131,6 +131,15 @@ def test_sonnet_runs_at_medium_effort_and_a_missing_or_unknown_model_falls_back_
         "medium",
     )
     assert [r["model"] for r in client.requests[1:]] == ["claude-sonnet-5-5", "claude-sonnet-5-5"]
+
+
+def test_settings_effort_is_sent_and_an_unknown_one_falls_back_to_medium(monkeypatch):
+    client = install(monkeypatch, [message(text("a")), message(text("b"))])
+
+    run_turn(Recorder(), model="claude-opus-5-5", effort="max")
+    run_turn(Recorder(), model="claude-opus-5-5", effort="turbo")
+
+    assert [r["output_config"]["effort"] for r in client.requests] == ["max", "medium"]
 
 
 def test_one_tool_call_is_emitted_with_claudes_own_id_and_answered(monkeypatch):

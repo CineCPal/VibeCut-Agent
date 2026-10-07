@@ -41,7 +41,14 @@ from vibecut_agent.agent.chat_steps import (
     budget_note,
     is_last_step,
 )
-from vibecut_agent.agent.claude_client import EFFORT, FALLBACK_BETA, add_usage, resolve_model, send, text_of
+from vibecut_agent.agent.claude_client import (
+    FALLBACK_BETA,
+    add_usage,
+    resolve_effort,
+    resolve_model,
+    send,
+    text_of,
+)
 from vibecut_agent.agent.claude_schema import to_claude_tools
 from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
 from vibecut_agent.agent.gemini_client import OnRetry
@@ -57,7 +64,7 @@ BETAS = [
 
 
 def _base_params(
-    model: str, system_instruction: str, tool_declarations: list[dict[str, Any]]
+    model: str, system_instruction: str, tool_declarations: list[dict[str, Any]], effort: str | None = None
 ) -> dict[str, Any]:
     params: dict[str, Any] = {
         "model": model,
@@ -69,7 +76,7 @@ def _base_params(
             "display": "updates",
             "block_binding": {"prefix_mismatch_behavior": "drop_block"},
         },
-        "output_config": {"effort": EFFORT[model]},
+        "output_config": {"effort": resolve_effort(effort, model)},
         "context_management": {"edits": [{"type": "compact_20260112"}]},
         "betas": BETAS,
         "fallbacks": "default",
@@ -162,11 +169,12 @@ def run_chat_turn(
     on_retry: OnRetry = None,
     should_abort: Callable[[], bool] = lambda: False,
     images: list[dict[str, str]] | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Runs Claude's tool-use loop for one user chat message, end to end. See
     gemini_chat.run_chat_turn for the shared contract; `history` here is the `messages` list a
     previous call returned, resent verbatim and only ever appended to. `images` go ahead of the text
-    as image blocks (Phase 8g)."""
+    as image blocks (Phase 8g). `effort` is Settings' level for this model (Phase 9a)."""
     if not api_key or not api_key.strip():
         raise ChatError("No Claude API key was provided.")
     if not user_message or not user_message.strip():
@@ -177,7 +185,7 @@ def run_chat_turn(
     emit = reply.emit
     content: str | list[dict[str, Any]] = claude_blocks(images, user_message) if images else user_message
     messages: list[dict[str, Any]] = [*history, {"role": "user", "content": content}]
-    params = _base_params(resolved_model, system_instruction, tool_declarations)
+    params = _base_params(resolved_model, system_instruction, tool_declarations, effort)
     usage = {"promptTokens": 0, "cachedTokens": 0, "outputTokens": 0, "thoughtsTokens": 0, "steps": 0}
     repeats = RepeatFailures()
 

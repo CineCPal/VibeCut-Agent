@@ -26,6 +26,7 @@ export const SIDECAR_EXIT_EVENT = "sidecar-exit";
 export const SIDECAR_SESSION_EVENT = "sidecar-session";
 export const NLE_STATE_EVENT = "nle-state";
 export const KEEP_ON_TOP_EVENT = "keep-on-top";
+export const MINI_PLAYER_EVENT = "mini-player";
 export const MCP_REQUEST_EVENT = "mcp-request";
 export const MCP_OUTSIDE_EVENT = "mcp-outside";
 /** The agent session's job id (`SESSION_JOB_ID` in sidecar.rs). */
@@ -189,6 +190,20 @@ export function onKeepOnTop(handler: (on: boolean) => void): Promise<UnlistenFn>
   return listen<boolean>(KEEP_ON_TOP_EVENT, (event) => handler(event.payload));
 }
 
+/** Whether the window is the Mini Player (mini_player.rs, Phase 9c). */
+export function getMiniPlayer(): Promise<boolean> {
+  return invoke<boolean>("mini_player_status");
+}
+
+export function setMiniPlayer(on: boolean): Promise<boolean> {
+  return invoke<boolean>("set_mini_player", { on });
+}
+
+/** Every change, whichever control made it (the header, the Mini Player, a hotkey or the tray). */
+export function onMiniPlayer(handler: (on: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>(MINI_PLAYER_EVENT, (event) => handler(event.payload));
+}
+
 /** A request from the MCP shim (mcp_bridge.rs), already checked by Rust. */
 export function onMcpRequest(handler: (request: McpRequest) => void): Promise<UnlistenFn> {
   return listen<McpRequest>(MCP_REQUEST_EVENT, (event) => handler(event.payload));
@@ -225,6 +240,11 @@ export function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
 /** Saves the claude program and Claude Code profile folder (null: forget), then checks again. */
 export function setClaudeCode(program: string | null, configDir: string | null): Promise<ClaudeCodeStatus> {
   return invoke<ClaudeCodeStatus>("claude_code_set", { program, configDir });
+}
+
+/** The Claude plan's usage, as Claude Code's `/usage` reports it (its text; Phase 9b). No model call. */
+export function getClaudeCodeUsage(): Promise<string> {
+  return invoke<string>("claude_code_usage");
 }
 
 /** Past chats, newest first (chat_store.rs, Phase 8a). */

@@ -8,6 +8,7 @@
  * - At launch: the list, the edit log, and the chat that was open (its id is remembered).
  * - Saves run one after another, so an older one never lands after a newer one.
  */
+import { useUsageStore } from "../../store/useUsageStore";
 import { deleteChatFile, listChats, loadChatFile, loadEditLogFile, renameChatFile, saveChatFile, saveEditLogFile } from "../ipc";
 import { newConversation } from "./controller";
 import { describeError } from "./context";
@@ -280,6 +281,7 @@ export async function deleteChat(id: string): Promise<void> {
     deleted.delete(id);
     throw error;
   }
+  useUsageStore.getState().forgetChat(id);
   if (useAgentStore.getState().chatId === id) {
     if (chatTimer) clearTimeout(chatTimer);
     chatTimer = null;

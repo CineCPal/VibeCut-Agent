@@ -61,6 +61,11 @@ tools = ["mcp__vibecut__add_markers"] + (["Bash"] if mode == "bash" else [])
 status = "failed" if mode == "mcp-failed" else "connected"
 out({{"type": "system", "subtype": "init", "session_id": sid, "tools": tools,
      "mcp_servers": [{{"name": "vibecut", "status": status}}] + ([{{"name": "github", "status": "connected"}}] if mode == "mcp" else [])}})
+# Plan limits (Phase 9b), as 2.1.292 reports them right after init.
+out({{"type": "rate_limit_event", "session_id": sid, "rate_limit_info": {{"status": "allowed", "resetsAt": 1791382200,
+     "rateLimitType": "five_hour", "overageStatus": "rejected", "isUsingOverage": False,
+     "unifiedWindows": {{"five_hour": {{"utilization": 0.42, "resetsAt": 1791382200}},
+                        "seven_day": {{"utilization": 0.03, "resetsAt": 1791867600}}}}}}}})
 if mode == "hang":
     time.sleep(60)
 say("Let me look.")
@@ -77,7 +82,7 @@ elif mode == "error":
     out({{"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": sid, "result": "overloaded", "usage": usage}})
 else:
     out({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid, "result": "Marked the hook.",
-         "num_turns": 2, "usage": usage}})
+         "num_turns": 2, "usage": usage, "total_cost_usd": 0.0158}})
 """
 
 SESSION = "11111111-2222-3333-4444-555555555555"
@@ -174,12 +179,48 @@ def test_a_turn_runs_claude_code_with_only_vibecuts_tools(fake: dict[str, Any]) 
             "outputTokens": 40,
             "thoughtsTokens": 12,
             "steps": 2,
+            "costUsd": 0.0158,
         },
         "aborted": False,
         "outOfSteps": False,
     }
     details = [fields["detail"] for kind, fields in events if kind == "status"]
     assert "Running add_markers…" in details
+    assert flag(argv, "--effort") == "medium", "Settings' default (Phase 9a)"
+
+
+def test_settings_effort_reaches_claude_code_and_an_unknown_one_falls_back(fake: dict[str, Any]) -> None:
+    run(fake, effort="xhigh")
+    assert flag(recorded(fake)["argv"], "--effort") == "xhigh"
+    run(fake, effort="extreme")
+    assert flag(recorded(fake)["argv"], "--effort") == "medium"
+
+
+def test_plan_limits_are_passed_to_the_app(fake: dict[str, Any]) -> None:
+    _, events = run(fake)
+    limits = [fields["limits"] for kind, fields in events if kind == "rate_limit"]
+    assert limits == [
+        {
+            "status": "allowed",
+            "limiting": "fiveHour",
+            "fiveHour": {"used": 0.42, "resetsAt": 1791382200.0},
+            "weekly": {"used": 0.03, "resetsAt": 1791867600.0},
+        }
+    ]
+
+
+def test_plan_limits_fall_back_to_the_limiting_window_and_skip_junk() -> None:
+    event = {"rate_limit_info": {"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.91, "resetsAt": 5}}
+    assert claude_code_chat.plan_limits(event) == {
+        "status": "allowed_warning",
+        "limiting": "weekly",
+        "weekly": {"used": 0.91, "resetsAt": 5.0},
+    }
+    assert claude_code_chat.plan_limits({"rate_limit_info": {"status": "allowed"}}) == {"status": "allowed"}
+    assert claude_code_chat.plan_limits({"rate_limit_info": "x"}) is None
+    assert claude_code_chat.plan_limits({}) is None
+    odd = {"rate_limit_info": {"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": "lots"}, "seven_day": None}}}
+    assert claude_code_chat.plan_limits(odd) == {"status": "allowed"}
 
 
 def test_the_reply_streams_and_text_before_a_tool_call_is_its_own_message(fake: dict[str, Any]) -> None:
@@ -312,6 +353,7 @@ def test_usage_and_names_are_read_safely() -> None:
         "outputTokens": 0,
         "thoughtsTokens": 0,
         "steps": 0,
+        "costUsd": 0.0,
     }
     assert claude_code_chat.short_tool_name("mcp__vibecut__split_clip") == "split_clip"
     assert (

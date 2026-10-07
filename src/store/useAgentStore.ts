@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, LastTurn, PendingImage, StoryFirstPass } from "../types/agent";
-import { AI_CHOICES } from "../types/agent";
+import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, StoryFirstPass } from "../types/agent";
+import { AI_CHOICES, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
 import type { SavedChat } from "../types/history";
@@ -15,6 +15,8 @@ export interface AgentState {
   /** Why the agent can't chat, or what failed; shown under the composer. */
   statusDetail: string | null;
   aiChoice: AiChoiceId;
+  /** How long each Claude model thinks in the chat (Settings → Agent model, Phase 9a). Remembered. */
+  effort: Record<ClaudeFamily, EffortLevel>;
   /** Which model reads long footage first for the Story Editor (Phase 7e). */
   storyFirstPass: StoryFirstPass;
   draft: string;
@@ -47,6 +49,7 @@ export interface AgentState {
   setStatus: (status: AgentStatus, detail?: string | null) => void;
   setAiChoice: (choice: AiChoiceId) => void;
   setStoryFirstPass: (choice: StoryFirstPass) => void;
+  setEffort: (family: ClaudeFamily, level: EffortLevel) => void;
   setDraft: (draft: string) => void;
   setPendingImages: (images: PendingImage[]) => void;
   setSession: (jobId: string, sessionKey: string) => void;
@@ -78,6 +81,7 @@ export const useAgentStore = create<AgentState>()(
       statusDetail: AGENT_OFFLINE_DETAIL,
       aiChoice: "gemini",
       storyFirstPass: "same",
+      effort: { opus: DEFAULT_EFFORT, sonnet: DEFAULT_EFFORT },
       draft: "",
       pendingImages: [],
       jobId: null,
@@ -111,6 +115,9 @@ export const useAgentStore = create<AgentState>()(
         if (AI_CHOICES.some((c) => c.id === choice)) set({ aiChoice: choice });
       },
       setStoryFirstPass: (storyFirstPass) => set({ storyFirstPass: storyFirstPass === "gemini" ? "gemini" : "same" }),
+      setEffort: (family, level) => {
+        if (EFFORT_LEVELS.includes(level)) set((state) => ({ effort: { ...state.effort, [family]: level } }));
+      },
       setDraft: (draft) => set({ draft }),
       setPendingImages: (pendingImages) => set({ pendingImages }),
       setSession: (jobId, sessionKey) => set({ jobId, sessionKey }),
@@ -158,7 +165,13 @@ export const useAgentStore = create<AgentState>()(
     {
       name: "vibecut-agent.agent",
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ aiChoice: state.aiChoice, storyFirstPass: state.storyFirstPass, chatId: state.chatId, autoTitles: state.autoTitles }),
+      partialize: (state) => ({
+        aiChoice: state.aiChoice,
+        storyFirstPass: state.storyFirstPass,
+        effort: state.effort,
+        chatId: state.chatId,
+        autoTitles: state.autoTitles,
+      }),
     },
   ),
 );

@@ -1123,6 +1123,71 @@ chat_attachment_load(chatId, attachmentId) → { mime, data }
 - thumbnails after a relaunch;
 - `/` in the composer.
 
+## Phase 9: Effort, a usage tracker, the Mini Player (built 2026-10-07)
+
+The user's choices: an effort picker per Claude model, medium by default; a usage tracker with the plan's limits **and** tokens and cost; and a Mini Player that is the same window shrunk to a bar, with no menu-bar text.
+
+### 9a: Effort per model
+- **Settings → Agent model:** "Opus effort" and "Sonnet effort" (Low, Medium (default), High, Extra high, Max). They're kept in `useAgentStore.effort`, persisted as `{opus, sonnet}`.
+- **The flow:** `controller.ts` puts `effort` in the `chat` start request for a Claude choice (API or subscription), never for Gemini. The effort is part of the session key (`<choice>:<effort>:<host>`), so a change starts a new job and the history carries over.
+- **Python:**
+  - `claude_client.EFFORT_LEVELS` and `resolve_effort(effort, model)`: an unknown level falls back to the default.
+  - `EFFORT` is now medium for both models. Opus was `high` before.
+  - `claude_chat` sends it as `output_config.effort`.
+  - `claude_code_chat.build_args` always passes `--effort`, so the Claude Code profile's own default no longer applies.
+- The Story Editor and the chat-title calls keep their own fixed levels.
+
+### 9b: The usage tracker
+- **Plan limits from the chat:** in `stream-json`, Claude Code 2.1.292 emits `{"type":"rate_limit_event","rate_limit_info":{status, resetsAt, rateLimitType, utilization, unifiedWindows:{five_hour:{utilization,resetsAt}, seven_day:{…}}}}`. `utilization` is a fraction and `resetsAt` is in epoch seconds.
+  - `claude_code_chat.plan_limits()` turns it into `PlanLimits`: `{status, limiting?, fiveHour?, weekly?, weeklyOverage?}`, each window `{used, resetsAt?}`. It's sent as a new chat event, `rate_limit {limits}`.
+  - `unifiedWindows` is marked internal in the CLI, so the top-level `utilization` stands in for the limiting window when it's missing.
+- **Cost of a subscription turn:** the turn's `usage` gains `costUsd`, from the result's `total_cost_usd`: what the turn would have cost on the API. The plan pays for it.
+- **Plan limits on demand:** the new Rust command `claude_code_usage` (`claude_code.rs`) runs `claude -p "/usage" --output-format json --no-session-persistence --settings '{"disableAllHooks":true}'`.
+  - It uses the saved profile, a bare environment, the app's empty work folder and a 20 s timeout.
+  - `/usage` is answered locally, with no model call (0.7 s live).
+  - `usage.parsePlanUsage` reads "Current session: N% used · resets …" and "Current week (all models): …". Single-model weekly lines are left out.
+  - `lib/agent/planRefresh.ts` asks when the window gains focus and the last report is over 15 minutes old, and from the popover's Refresh. It only asks when Claude Code is usable.
+- **Tokens and cost:**
+  - `useUsageStore` (localStorage `vibecut-agent.usage`) keeps `plan`/`planAt`, `days[YYYY-MM-DD][choiceId]`, and `chats[chatId]` (30 days, 200 chats; a deleted chat is forgotten).
+  - `lib/agent/usage.ts` prices API turns at Opus 5.5 $4/$20 and Sonnet 5.5 $2/$10 per MTok, with cached input at $0.20 and cache writes at the input rate.
+  - Subscription turns show Claude Code's figure as "≈", covered by the plan.
+  - Gemini (`gemini-flash-latest`, an alias whose price moves) shows tokens only.
+- **UI:** `components/usage/UsageMeter.tsx`.
+  - A header pill shows the 5-hour bar and %, amber at 75% and red at 90% or when `rejected`. Without a plan report it shows today's tokens.
+  - Clicking it opens a popover: both windows with "Resets in …", Refresh, this chat, then today and the last 7 days per model.
+  - The Mini Player has a compact version.
+
+### 9c: The Mini Player
+- **`mini_player.rs`:**
+  - `set_mini_player(on)` / `mini_player_status`, and the `mini-player` event.
+  - **Going mini:** remembers the full frame in memory. The window goes undecorated, not resizable, 380×112, floating over full-screen apps (`window_mode::apply(true)`), at the saved `miniPosition` or the top-right of the screen.
+  - **Expanding:** puts the frame, decorations and limits back and re-applies the saved Keep on Top.
+  - `WindowEvent::Moved` tracks the bar. Its place is saved to `window.json` (`miniPosition`) on expand or quit.
+  - `window_mode::save_field` now merges into `window.json` instead of overwriting it. Keep on Top changes made while mini apply on expand.
+- **Tray:** a "Mini Player" check item (⌥⌘M). Every "open" item expands first.
+- **Capability:** `core:window:allow-start-dragging`, for `data-tauri-drag-region`.
+- **Frontend:**
+  - `useUiStore.miniPlayer` and `hooks/useMiniPlayer.ts` (`toggleMiniPlayer`, which closes overlays on the way in).
+  - `App.tsx` renders `components/mini/MiniPlayer.tsx` in place of the shell.
+  - **The bar:** the editor and timeline, the usage pill, Expand, then the current activity or the last answer as one plain line, then a one-line box sharing the chat's draft and images, with Send or Stop.
+  - **Keys:** Return sends and Escape clears. A double-click on the bar expands.
+  - **Hotkeys:** ⌥⌘M toggles (matched by `code`, since ⌥M types µ). ⌘1/⌘2/⌘,/⌘I/⌘Y expand first.
+  - The header has a Mini Player button.
+
+### Tests
+- **Python (+7):** `--effort` default and override, `plan_limits` from the live event shape and its fallback and junk handling, the `rate_limit` event, `costUsd`, effort on the Claude API, and `chat.py` passing effort to Claude and not to Gemini.
+- **Rust (+3):** `parse_usage`, the mini position parse, and the first-bar placement. The tray test now covers the Mini Player item.
+- **Frontend (+32):** `usage` 9, `useUsageStore` 4, `UsageMeter` 4, `MiniPlayer` 7, `useMiniPlayer` and the hotkey 4, the controller's effort, Gemini and usage 3, and the agent store's effort 1.
+- **All green:** pytest 735 (+2 skipped), cargo 124, vitest 503, ruff, mypy, eslint, tsc, clippy, `npm run build`.
+
+### Checked live (2026-10-07, Claude Code 2.1.292, Work profile)
+- `claude -p "/usage" --output-format json`: the report text above, in 0.7 s, with no model call. Its exact text is the parser's fixture.
+- A Haiku turn in `stream-json`: the `rate_limit_event` line above, and `--effort medium` was accepted.
+- `claude_code_chat.run_chat_turn` with the real MCP shim and no app, Sonnet at `effort="low"`: "Ok". It emitted `rate_limit {fiveHour: 0%, weekly: 3%}` and `usage.costUsd` 0.0082.
+- **Not checked:**
+  - The Claude API at medium: the repo `.env` key returns 401 now; the app uses the Keychain's.
+  - The Mini Player and the usage pill in a real window. Your own `tauri dev` was running and wasn't touched.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -1154,6 +1219,7 @@ chat_attachment_load(chatId, attachmentId) → { mime, data }
   - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Revert after a restart is checked live in Resolve. Next: the user's own try of the app across a quit and relaunch, Premiere, then Phase 7's live checks.
   - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Gemini and Claude API streaming checked live with the keys. Next: the user's own try (with 8a's), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-06)* **Phases 8e–8h are built:** formatted replies with timeline-position chips, tool call cards, images with a message (all three providers; Claude Code now reads stream-json input), and saved prompts on `/`. Provider image turns checked live. Next: the user's own try in the app (8a–8h together), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
+  - *(2026-10-07)* **Phase 9 is built:** effort per Claude model (medium by default), the usage tracker (plan limits from Claude Code plus tokens and cost), and the Mini Player (⌥⌘M). Phases 8e–8h are committed as `890e089`. Next: the user's own try of the Mini Player (drag, expand, over a full-screen editor) and the usage pill; replace the repo `.env` Anthropic key (401); then 8a–8h's in-app checks and Resolve's "Revert & retry".
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1282,3 +1348,11 @@ chat_attachment_load(chatId, attachmentId) → { mime, data }
   - **8f:** tool call cards (`ChatMessage.tool`), grouped per turn and folded after it.
   - **8g:** images with a message. New commands `chat_attachment_save` / `chat_attachment_load` file them under `history/attachments/<chatId>/`, a new `attachments` field goes in the chat protocol, and Claude Code runs with `--input-format stream-json`. The window sets `dragDropEnabled: false`, and the `base64` crate is a direct dependency.
   - **8h:** saved prompts (`usePromptStore`, `/` in the composer, Settings → Saved prompts).
+- **2026-10-07 (Claude): checkpoint commit** of Phases 8e–8h (`890e089`).
+- **2026-10-07 (Claude): Phase 9, effort, a usage tracker and the Mini Player.**
+  - **9a:** Settings → Agent model gains Opus and Sonnet effort (medium by default). A new `effort` field goes in the `chat` request, and Claude Code turns pass `--effort`.
+  - **9b:**
+    - A new `rate_limit` chat event (from Claude Code's `rate_limit_event`), `costUsd` in subscription usage, and a new command `claude_code_usage` (`claude -p /usage`).
+    - `useUsageStore`, and the header usage pill with its popover.
+    - The About modal notes where the usage comes from. Nothing new is sent anywhere.
+  - **9c:** a new `mini_player.rs` (`set_mini_player`, `mini_player_status`, the `mini-player` event, `miniPosition` in `window.json`), a tray "Mini Player" item, `core:window:allow-start-dragging`, and `MiniPlayer.tsx` on ⌥⌘M.

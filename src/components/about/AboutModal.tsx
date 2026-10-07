@@ -67,7 +67,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label="Claude Code (subscription)"
             tone={claudeCodeUsable(claudeCode) ? "ok" : "off"}
             value={claudeCode === null ? "Unknown" : claudeCodeUsable(claudeCode) ? `Signed in${claudeCode.subscription ? ` (${claudeCode.subscription})` : ""}` : "Not ready"}
-            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent) · counts against your Claude plan's usage limits · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
+            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent) · counts against your Claude plan's usage limits · the usage meter reads the plan's limits from Claude Code's own reports and its /usage (answered without a model call) · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
           />
           <StatusRow
             label="Gemini API"

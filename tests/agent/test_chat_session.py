@@ -455,6 +455,40 @@ def test_max_steps_is_held_to_its_range_and_out_of_steps_is_passed_on(monkeypatc
     assert capture.of_type("result")[0]["outOfSteps"] is True
 
 
+@pytest.mark.parametrize("provider,module", [("claude", "claude_chat"), ("claude-code", "claude_code_chat")])
+def test_settings_effort_reaches_the_claude_providers(monkeypatch, provider, module):
+    import importlib
+
+    seen = {}
+
+    def fake_turn(*args, **kwargs):
+        seen["effort"] = kwargs.get("effort")
+        return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
+
+    monkeypatch.setattr(importlib.import_module(f"vibecut_agent.agent.{module}"), "run_chat_turn", fake_turn)
+    request = {"provider": provider, "apiKey": "k", "claudeCode": {}, "effort": "high", "toolDeclarations": [],
+               "history": [], "userMessage": "go"}
+    stdin = FakeStdin([json.dumps(request), json.dumps({"type": "end_session"})])
+
+    assert run_chat(monkeypatch, stdin, Capture()) == 0
+    assert seen["effort"] == "high"
+
+
+def test_gemini_is_not_given_an_effort(monkeypatch):
+    seen = {}
+
+    def fake_turn(**kwargs):
+        seen.update(kwargs)
+        return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
+
+    monkeypatch.setattr(gemini_chat, "run_chat_turn", fake_turn)
+    request = {"apiKey": "k", "effort": "high", "toolDeclarations": [], "history": [], "userMessage": "go"}
+    stdin = FakeStdin([json.dumps(request), json.dumps({"type": "end_session"})])
+
+    assert run_chat(monkeypatch, stdin, Capture()) == 0
+    assert "effort" not in seen
+
+
 # --- Images with a message (Phase 8g) ---------------------------------------------------------------
 
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="

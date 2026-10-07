@@ -27,7 +27,9 @@ import { useMcpStore } from "../../store/useMcpStore";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
 import type { ChatProvider, ChatUsage, PendingImage } from "../../types/agent";
-import { AI_CHOICES } from "../../types/agent";
+import { AI_CHOICES, familyOf, type AiChoiceId } from "../../types/agent";
+import type { PlanLimits, PlanWindow } from "../../types/usage";
+import { useUsageStore } from "../../store/useUsageStore";
 import type { SavedChat } from "../../types/history";
 
 /** How much of a call's arguments, and of its result, a card keeps (and the saved chat with it). */
@@ -44,14 +46,43 @@ interface ToolCall {
 /** What the current job's tools act on and how it was started; set when a turn begins. */
 let context: ToolContext | null = null;
 let provider: ChatProvider = "gemini";
+/** The model the running turn was sent to, for the usage tracker (Phase 9b). */
+let turnChoice: AiChoiceId | null = null;
 /** The assistant message the reply is streaming into, if one is. */
 let liveReplyId: string | null = null;
 
-function parseUsage(value: unknown): ChatUsage | null {
+export function parseUsage(value: unknown): ChatUsage | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
   const n = (key: string) => (typeof v[key] === "number" ? (v[key] as number) : 0);
-  return { promptTokens: n("promptTokens"), cachedTokens: n("cachedTokens"), outputTokens: n("outputTokens"), thoughtsTokens: n("thoughtsTokens"), steps: n("steps") };
+  return {
+    promptTokens: n("promptTokens"),
+    cachedTokens: n("cachedTokens"),
+    outputTokens: n("outputTokens"),
+    thoughtsTokens: n("thoughtsTokens"),
+    steps: n("steps"),
+    ...(typeof v.costUsd === "number" ? { costUsd: v.costUsd } : {}),
+  };
+}
+
+/** A `rate_limit` event's limits (claude_code_chat.plan_limits), checked field by field. */
+export function parsePlanLimits(value: unknown): PlanLimits | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const windowOf = (raw: unknown): PlanWindow | undefined => {
+    if (typeof raw !== "object" || raw === null) return undefined;
+    const w = raw as Record<string, unknown>;
+    if (typeof w.used !== "number") return undefined;
+    return { used: w.used, ...(typeof w.resetsAt === "number" ? { resetsAt: w.resetsAt } : {}) };
+  };
+  const limits: PlanLimits = {};
+  if (typeof v.status === "string") limits.status = v.status;
+  if (typeof v.limiting === "string") limits.limiting = v.limiting;
+  for (const name of ["fiveHour", "weekly", "weeklyOverage"] as const) {
+    const window = windowOf(v[name]);
+    if (window) limits[name] = window;
+  }
+  return Object.keys(limits).length ? limits : null;
 }
 
 /** Ends the streamed message as it stands; a blank one is removed. */
@@ -117,9 +148,13 @@ export async function sendUserMessage(text: string, images: PendingImage[] = [])
   const timeline = host ? nle.hosts[host].timeline : null;
   const choice = AI_CHOICES.find((c) => c.id === store.aiChoice) ?? AI_CHOICES[0];
   const userMessage = `${await snapshotFor(host, timeline)}\n\n${words}`;
-  const key = `${choice.id}:${host ?? "none"}`;
+  // Settings' effort for this Claude model (Phase 9a). A change starts a new job, like a model switch.
+  const family = familyOf(choice);
+  const effort = family ? store.effort[family] : null;
+  const key = `${choice.id}:${effort ?? "-"}:${host ?? "none"}`;
   context = host ? { host, timeline, step, stepText: words } : null;
   provider = choice.chatProvider;
+  turnChoice = choice.id;
   useAgentStore.getState().setActivity(`Calling ${PROVIDER_LABEL[provider]}…`);
 
   const current = useAgentStore.getState();
@@ -147,6 +182,7 @@ export async function sendUserMessage(text: string, images: PendingImage[] = [])
     await startSidecar(jobId, "chat", {
       provider,
       ...(choice.model ? { model: choice.model } : {}),
+      ...(effort ? { effort } : {}),
       systemInstruction: systemInstruction(host),
       toolDeclarations: host ? toolDeclarations(host) : [],
       history,
@@ -378,6 +414,12 @@ export function startAgentService(): () => void {
         case "status":
           if (typeof event.detail === "string" && event.detail) store.setActivity(event.detail);
           break;
+        case "rate_limit": {
+          // The Claude plan's windows, as Claude Code saw them during the turn (Phase 9b).
+          const limits = parsePlanLimits(event.limits);
+          if (limits) useUsageStore.getState().setPlan(limits);
+          break;
+        }
         case "retry": {
           const reason = typeof event.reason === "string" ? `: ${event.reason}` : "";
           const attempt = typeof event.attempt === "number" && typeof event.maxAttempts === "number" ? ` (attempt ${event.attempt} of ${event.maxAttempts})` : "";
@@ -402,7 +444,9 @@ export function startAgentService(): () => void {
           if (event.outOfSteps === true) {
             store.addMessage({ role: "tool", text: "The agent used its step budget for this message; send another to continue." });
           }
-          store.finishTurn(Array.isArray(event.history) ? event.history : store.history, provider, parseUsage(event.usage));
+          const usage = parseUsage(event.usage);
+          if (usage && turnChoice) useUsageStore.getState().addTurn(turnChoice, store.chatId, usage);
+          store.finishTurn(Array.isArray(event.history) ? event.history : store.history, provider, usage);
           endTurn();
           break;
         }

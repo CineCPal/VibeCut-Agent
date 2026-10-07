@@ -41,6 +41,7 @@ import { useAgentStore } from "../../store/useAgentStore";
 import { initialHosts, useNleStateStore } from "../../store/useNleStateStore";
 import { useSidecarStore } from "../../store/useSidecarStore";
 import { useSystemStore } from "../../store/useSystemStore";
+import { useUsageStore } from "../../store/useUsageStore";
 
 const TIMELINE = {
   project: "Doc",
@@ -77,6 +78,7 @@ describe("agent controller", () => {
     useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "" });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
     useMcpStore.setState({ outsideRunning: 0 });
+    useUsageStore.setState({ plan: null, planAt: null, days: {}, chats: {} });
     ipc.saveChatAttachment.mockResolvedValue(undefined);
     ipc.loadChatAttachment.mockResolvedValue({ mime: "image/png", data: "QUJD" });
     clearAttachmentCache();
@@ -195,6 +197,34 @@ describe("agent controller", () => {
     expect(agent().activity).toBe("Calling Claude (subscription)…");
     event({ type: "result", text: "Marked.", history: [{ claudeCodeSession: "s1" }], usage: { steps: 2 } });
     expect(agent()).toMatchObject({ status: "idle", history: [{ claudeCodeSession: "s1" }], historyProvider: "claude-code" });
+  });
+
+  it("sends Settings' effort for a Claude model and starts a new job when it changes (Phase 9a)", async () => {
+    useAgentStore.getState().setAiChoice("claude-opus-5-5");
+    await sendUserMessage("first");
+    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "claude", effort: "medium" });
+    event({ type: "result", text: "ok", history: ["h1"] });
+    useAgentStore.getState().setEffort("opus", "max");
+    await sendUserMessage("second");
+    expect(ipc.startSidecar).toHaveBeenCalledTimes(2);
+    expect(ipc.startSidecar.mock.calls[1][2]).toMatchObject({ effort: "max", history: ["h1"] });
+    useAgentStore.getState().setEffort("opus", "medium");
+  });
+
+  it("gives Gemini no effort", async () => {
+    await sendUserMessage("go");
+    expect(ipc.startSidecar.mock.calls[0][2].effort).toBeUndefined();
+  });
+
+  it("keeps the plan's limits and counts each turn's tokens and cost (Phase 9b)", async () => {
+    useAgentStore.getState().setAiChoice("claude-sonnet-5-5");
+    await sendUserMessage("go");
+    event({ type: "rate_limit", limits: { status: "allowed", fiveHour: { used: 0.42, resetsAt: 1791382200 }, weekly: { used: "lots" } } });
+    expect(useUsageStore.getState().plan).toEqual({ status: "allowed", fiveHour: { used: 0.42, resetsAt: 1791382200 } });
+    event({ type: "result", text: "ok", history: [], usage: { promptTokens: 1_000_000, cachedTokens: 0, outputTokens: 100_000, thoughtsTokens: 0, steps: 1 } });
+    const chat = useUsageStore.getState().chats[agent().chatId];
+    expect(chat).toMatchObject({ turns: 1, promptTokens: 1_000_000, outputTokens: 100_000 });
+    expect(chat.costUsd).toBeCloseTo(3);
   });
 
   it("stops a turn and reports it", async () => {

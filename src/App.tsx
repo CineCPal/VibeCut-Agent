@@ -1,14 +1,17 @@
 import { useEffect } from "react";
 import { AboutModal } from "./components/about/AboutModal";
 import { AppShell } from "./components/layout/AppShell";
+import { MiniPlayer } from "./components/mini/MiniPlayer";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useAgent } from "./hooks/useAgent";
 import { startChatHistory } from "./lib/agent/chatHistory";
 import { startChatTitles } from "./lib/agent/chatTitles";
+import { startPlanRefresh } from "./lib/agent/planRefresh";
 import { startBrollPanelBridge } from "./lib/brollPanel";
 import { startMcpBridge } from "./lib/mcp/server";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useKeepOnTop } from "./hooks/useKeepOnTop";
+import { useMiniPlayer } from "./hooks/useMiniPlayer";
 import { useNavigateListener } from "./hooks/useNavigateListener";
 import { useNleBridge } from "./hooks/useNleBridge";
 import { useSidecarBridge } from "./hooks/useSidecarBridge";
@@ -18,12 +21,14 @@ import { useUiStore } from "./store/useUiStore";
 function App() {
   const overlay = useUiStore((s) => s.overlay);
   const closeOverlay = useUiStore((s) => s.closeOverlay);
+  const miniPlayer = useUiStore((s) => s.miniPlayer);
   const refreshSystem = useSystemStore((s) => s.refresh);
 
   useNavigateListener();
   useSidecarBridge();
   useNleBridge();
   useKeepOnTop();
+  useMiniPlayer();
   useAgent();
   useHotkeys();
 
@@ -40,6 +45,12 @@ function App() {
 
   // The MCP bridge: Claude Code calling the agent's tools (lib/mcp/server.ts).
   useEffect(() => startMcpBridge(), []);
+
+  // The Claude plan's usage, asked of Claude Code now and then (lib/agent/planRefresh.ts, Phase 9b).
+  useEffect(() => startPlanRefresh(), []);
+
+  // The Mini Player (Phase 9c) is the whole window while it's up.
+  if (miniPlayer) return <MiniPlayer />;
 
   return (
     <>

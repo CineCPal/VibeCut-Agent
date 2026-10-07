@@ -9,6 +9,7 @@ First stdin line: {
     "apiKey": str (injected by Rust; not for "claude-code"),
     "claudeCode": {...} (injected by Rust for "claude-code" only: see claude_code_chat.py),
     "model": str (optional),
+    "effort": "low" | "medium" | "high" | "xhigh" | "max" (optional; Claude only, Phase 9a: medium when absent),
     "systemInstruction": str,
     "toolDeclarations": [{"name", "description", "parameters": <Gemini OpenAPI schema>}, ...],
     "history": [...] (the previous ``result.history``, or [] for a new conversation),
@@ -25,6 +26,9 @@ tools (src/lib/agent/). ``{"type": "abort_turn"}`` may arrive at any time (Stop)
 While the model writes, ``reply_delta {text}`` carries the answer as it's written, ``reply_break`` ends text
 said before a tool call (it stays a message of its own), and ``reply_reset`` voids the text so far (a
 retried call). See streaming.py (Phase 8b).
+
+On "claude-code", ``rate_limit {limits}`` reports the Claude plan's usage windows as Claude Code sees
+them (claude_code_chat.plan_limits, Phase 9b).
 
 Each turn ends with ``result {text, history, usage, aborted, outOfSteps}``; its ``text`` is the final
 answer and replaces what was streamed. The process then waits up to
@@ -90,6 +94,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
                 images=turn["images"],
                 should_abort=turn["should_abort"],
                 max_iterations=turn["max_iterations"],
+                effort=turn.get("effort"),
             )
 
         run_chat_turn: Callable[..., dict[str, Any]] = subscription_turn
@@ -103,6 +108,8 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
         run_chat_turn = provider_chat.run_chat_turn
         api_key = _provider_key(request, provider)
     model = request.get("model") or None
+    # Settings' effort (Phase 9a), for Claude only; Gemini's loop takes no such argument.
+    effort_args: dict[str, Any] = {"effort": request.get("effort")} if provider != "gemini" else {}
     system_instruction = request.get("systemInstruction") or ""
     max_steps = clamp_max_steps(request["maxSteps"]) if "maxSteps" in request else DEFAULT_MAX_STEPS
 
@@ -178,6 +185,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
                 on_retry=notify_retry,
                 should_abort=should_abort,
                 max_iterations=max_steps,
+                **effort_args,
             )
         except ChatError as exc:
             emitter.error(scrub(exc, api_key))

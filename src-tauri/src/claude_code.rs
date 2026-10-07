@@ -23,6 +23,8 @@ use tauri::{AppHandle, Manager};
 
 const SETTINGS_FILE: &str = "claude-code.json";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+/// `/usage` is answered locally (no model call; 0.7 s on 2.1.292), but it asks the account server.
+const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 pub const PROVIDER: &str = "claude-code";
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -144,9 +146,29 @@ pub fn parse_auth(status: &mut ClaudeCodeStatus, stdout: &str) {
     }
 }
 
-fn run_auth_status(program: &Path, config_dir: Option<&Path>) -> Result<String, String> {
+/// How the plan's usage is asked for (Phase 9b): Claude Code's own `/usage`, which runs without a model
+/// call in print mode. Nothing is saved as a session, and the user's hooks don't run.
+pub const USAGE_ARGS: [&str; 7] =
+    ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--settings", r#"{"disableAllHooks":true}"#];
+
+/// The text of `/usage`'s answer (the `result` of its JSON), or why there's none.
+pub fn parse_usage(stdout: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(stdout.trim()).map_err(|_| "Claude Code's usage report couldn't be read.".to_string())?;
+    let text = value.get("result").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    if value.get("is_error").and_then(Value::as_bool).unwrap_or(false) || text.is_empty() {
+        return Err(if text.is_empty() { "Claude Code gave no usage report.".into() } else { text });
+    }
+    Ok(text)
+}
+
+/// Runs Claude Code with a bare environment (no `ANTHROPIC_*`, so it uses the subscription) and the
+/// chosen profile, and returns what it printed.
+fn run_claude(program: &Path, config_dir: Option<&Path>, args: &[&str], cwd: Option<&Path>, timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(program);
-    command.args(["auth", "status", "--json"]).env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    command.args(args).env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
     for name in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "PATH"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -161,10 +183,10 @@ fn run_auth_status(program: &Path, config_dir: Option<&Path>) -> Result<String, 
         if child.try_wait().map_err(|e| e.to_string())?.is_some() {
             break;
         }
-        if started.elapsed() > AUTH_TIMEOUT {
+        if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Claude Code didn't answer within 15 s.".into());
+            return Err(format!("Claude Code didn't answer within {} s.", timeout.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -190,7 +212,7 @@ fn check(app: &AppHandle) -> ClaudeCodeStatus {
         return status;
     };
     status.program = Some(program.to_string_lossy().into_owned());
-    match run_auth_status(&program, saved.config_dir.as_deref()) {
+    match run_claude(&program, saved.config_dir.as_deref(), &["auth", "status", "--json"], None, AUTH_TIMEOUT) {
         Ok(stdout) => parse_auth(&mut status, &stdout),
         Err(error) => status.detail = Some(error),
     }
@@ -201,6 +223,19 @@ fn check(app: &AppHandle) -> ClaudeCodeStatus {
 #[tauri::command]
 pub async fn claude_code_status(app: AppHandle) -> Result<ClaudeCodeStatus, String> {
     tauri::async_runtime::spawn_blocking(move || check(&app)).await.map_err(|e| e.to_string())
+}
+
+/// The Claude plan's usage as `/usage` reports it (Phase 9b): its text, which the app reads.
+#[tauri::command]
+pub async fn claude_code_usage(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let program = program_for(&app).ok_or("Claude Code isn't set up. See Settings → Claude subscription.")?;
+        let dir = work_dir(&app)?;
+        let stdout = run_claude(&program, saved(&app).config_dir.as_deref(), &USAGE_ARGS, Some(&dir), USAGE_TIMEOUT)?;
+        parse_usage(&stdout)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Saves the program and the profile folder (empty or null: forget it), then checks again.
@@ -277,6 +312,16 @@ mod tests {
         assert_eq!(found[0], PathBuf::from("/Users/me/.local/bin/claude"));
         assert!(found.contains(&PathBuf::from("/opt/homebrew/bin/claude")));
         assert_eq!(found.last(), Some(&PathBuf::from("/b/claude")));
+    }
+
+    #[test]
+    fn the_usage_report_is_its_result_text_and_errors_say_why() {
+        let ok = r#"{"type":"result","is_error":false,"result":"Current session: 0% used\nCurrent week (all models): 3% used","local_command":"usage"}"#;
+        assert_eq!(parse_usage(ok).unwrap(), "Current session: 0% used\nCurrent week (all models): 3% used");
+        assert_eq!(parse_usage(r#"{"is_error":true,"result":"Not logged in"}"#).unwrap_err(), "Not logged in");
+        assert!(parse_usage(r#"{"is_error":false,"result":""}"#).is_err());
+        assert!(parse_usage("nope").is_err());
+        assert!(USAGE_ARGS.contains(&"--no-session-persistence"));
     }
 
     #[test]

@@ -30,9 +30,11 @@ SONNET = "claude-sonnet-5-5"
 MODELS = (OPUS, SONNET)
 DEFAULT_MODEL = SONNET
 
-# Opus 5.5 defaults to "medium" effort; the agent's multi-step edits want "high". Sonnet 5.5's levels
-# are recalibrated, and "medium" is its recommended start for multi-step tool use.
-EFFORT = {OPUS: "high", SONNET: "medium"}
+# How long Claude thinks (`output_config.effort`, and Claude Code's `--effort`). Both models take all five.
+# The chat's default is "medium" for both (Phase 9a): Opus 5.5's own default, and Sonnet 5.5's
+# recommended start for multi-step tool use. Settings → Agent model can change it per model.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+EFFORT = {OPUS: "medium", SONNET: "medium"}
 
 MAX_ATTEMPTS = 4
 BASE_DELAY_SECONDS = 2.0
@@ -50,6 +52,11 @@ class ClaudeError(ChatError):
 def resolve_model(model: str | None) -> str:
     """The model to call: one of `MODELS`, else the default. The frontend only offers these two."""
     return model if model in MODELS else DEFAULT_MODEL
+
+
+def resolve_effort(effort: object, model: str) -> str:
+    """The effort to run `model` at: a known level as asked, else the model's default."""
+    return effort if isinstance(effort, str) and effort in EFFORT_LEVELS else EFFORT.get(model, "medium")
 
 
 def _make_client(api_key: str, timeout: float) -> anthropic.Anthropic:

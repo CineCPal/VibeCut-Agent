@@ -40,7 +40,21 @@ describe("useAgentStore", () => {
     useAgentStore.getState().setAiChoice("gpt-9" as AiChoiceId);
     expect(useAgentStore.getState().aiChoice).toBe("claude-opus-5-5");
     const saved = JSON.parse(localStorage.getItem("vibecut-agent.agent") ?? "{}");
-    expect(saved.state).toEqual({ aiChoice: "claude-opus-5-5", storyFirstPass: "same", chatId: useAgentStore.getState().chatId, autoTitles: true });
+    expect(saved.state).toEqual({
+      aiChoice: "claude-opus-5-5",
+      storyFirstPass: "same",
+      effort: { opus: "medium", sonnet: "medium" },
+      chatId: useAgentStore.getState().chatId,
+      autoTitles: true,
+    });
+  });
+
+  it("keeps each Claude model's effort, medium by default, and only known levels (Phase 9a)", () => {
+    expect(useAgentStore.getState().effort).toEqual({ opus: "medium", sonnet: "medium" });
+    useAgentStore.getState().setEffort("opus", "xhigh");
+    useAgentStore.getState().setEffort("sonnet", "turbo" as never);
+    expect(useAgentStore.getState().effort).toEqual({ opus: "xhigh", sonnet: "medium" });
+    useAgentStore.getState().setEffort("opus", "medium");
   });
 
   it("keeps the Story Editor's first-pass choice to the two known ones", () => {

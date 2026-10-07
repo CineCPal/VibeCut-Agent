@@ -12,6 +12,8 @@ differences:
   the MCP bridge tagged with this chat's job id; the app runs them as part of this turn.
 - The reply streams (Phase 8b): ``--include-partial-messages`` makes Claude Code report its text as it's
   written (``stream_event`` lines), which go to the app through streaming.ReplyStream.
+- Plan limits (Phase 9b): Claude Code reports the subscription's 5-hour and weekly windows as
+  ``rate_limit_event`` lines; each goes to the app as ``rate_limit {limits}`` (see plan_limits).
 - Claude Code keeps the conversation itself. ``history`` is ``[{"claudeCodeSession": <id>}]`` and the
   next turn resumes that session. Each turn forks it (``--fork-session``, Phase 8c): the turn answers under
   a new id and leaves the session it started from as it was, so the app can retry or edit the last
@@ -37,6 +39,7 @@ from typing import Any
 
 from vibecut_agent.agent.attachments import claude_blocks
 from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE
+from vibecut_agent.agent.claude_client import resolve_effort
 from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
 from vibecut_agent.agent.streaming import ReplyStream
 
@@ -97,7 +100,12 @@ def mcp_config(setup: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_args(
-    setup: dict[str, Any], model: str, system_instruction: str, max_turns: int, session: str | None
+    setup: dict[str, Any],
+    model: str,
+    system_instruction: str,
+    max_turns: int,
+    session: str | None,
+    effort: str | None = None,
 ) -> list[str]:
     args = [
         setup["program"],
@@ -111,6 +119,9 @@ def build_args(
         "--include-partial-messages",
         "--model",
         model,
+        # Settings' level for this model (Phase 9a); without it Claude Code would use the profile's own.
+        "--effort",
+        resolve_effort(effort, model),
         # No built-in tools (shell, files, web, skills): only VibeCut's MCP tools.
         "--tools",
         "",
@@ -198,7 +209,7 @@ def mcp_problem(init: dict[str, Any]) -> str | None:
     return None
 
 
-def usage_of(result: dict[str, Any]) -> dict[str, int]:
+def usage_of(result: dict[str, Any]) -> dict[str, Any]:
     raw_usage = result.get("usage")
     usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
     raw_details = usage.get("output_tokens_details")
@@ -214,7 +225,49 @@ def usage_of(result: dict[str, Any]) -> dict[str, int]:
         "outputTokens": n("output_tokens"),
         "thoughtsTokens": int(details.get("thinking_tokens") or 0),
         "steps": int(result.get("num_turns") or 0),
+        # What the turn would have cost on the API, by Claude Code's own reckoning. The plan pays for it.
+        "costUsd": float(result.get("total_cost_usd") or 0),
     }
+
+
+def _window(raw: Any) -> dict[str, float] | None:
+    if not isinstance(raw, dict):
+        return None
+    used, resets = raw.get("utilization"), raw.get("resetsAt")
+    if not isinstance(used, (int, float)) or isinstance(used, bool):
+        return None
+    window: dict[str, float] = {"used": float(used)}
+    if isinstance(resets, (int, float)) and not isinstance(resets, bool):
+        window["resetsAt"] = float(resets)
+    return window
+
+
+# Claude Code's window names → the app's (PlanLimits in src/types/usage.ts).
+WINDOW_NAMES = {"five_hour": "fiveHour", "seven_day": "weekly", "seven_day_overage_included": "weeklyOverage"}
+
+
+def plan_limits(event: dict[str, Any]) -> dict[str, Any] | None:
+    """The plan's usage windows in a ``rate_limit_event`` (checked live on 2.1.292):
+    ``{status, limiting?, fiveHour?: {used, resetsAt?}, weekly?: ..., weeklyOverage?: ...}``, ``used`` a
+    fraction (above 1 past a cap). ``unifiedWindows`` is the CLI's internal field, so when it's missing
+    the top-level ``utilization`` stands for the window named by ``rateLimitType``. None for no info."""
+    info = event.get("rate_limit_info")
+    if not isinstance(info, dict) or not isinstance(info.get("status"), str):
+        return None
+    limits: dict[str, Any] = {"status": info["status"]}
+    kind = info.get("rateLimitType")
+    if isinstance(kind, str):
+        limits["limiting"] = WINDOW_NAMES.get(kind, kind)
+    windows = info.get("unifiedWindows")
+    for raw_name, name in WINDOW_NAMES.items():
+        window = _window(windows.get(raw_name)) if isinstance(windows, dict) else None
+        if window:
+            limits[name] = window
+    if isinstance(kind, str) and WINDOW_NAMES.get(kind) and WINDOW_NAMES[kind] not in limits:
+        window = _window(info)
+        if window:
+            limits[WINDOW_NAMES[kind]] = window
+    return limits
 
 
 def short_tool_name(name: str) -> str:
@@ -313,6 +366,7 @@ def run_chat_turn(
     max_iterations: int = DEFAULT_MAX_STEPS,
     popen: Popen = subprocess.Popen,
     images: list[dict[str, str]] | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Runs one turn through Claude Code, end to end. Raises ChatError when it can't. ``images`` go
     ahead of the text as image blocks in the stream-json user line (Phase 8g)."""
@@ -326,7 +380,7 @@ def run_chat_turn(
     try:
         return _run_once(
             setup, resolved_model, system_instruction, session, history,
-            user_line(images, user_message), reply, should_abort, max_iterations, popen,
+            user_line(images, user_message), reply, should_abort, max_iterations, popen, effort,
         )
     except _SessionGone:
         reply.reset()
@@ -334,6 +388,7 @@ def run_chat_turn(
         return _run_once(
             setup, resolved_model, system_instruction, None, [],
             user_line(images, user_message, note=SESSION_GONE_NOTE), reply, should_abort, max_iterations, popen,
+            effort,
         )
 
 
@@ -348,11 +403,12 @@ def _run_once(
     should_abort: Callable[[], bool],
     max_iterations: int,
     popen: Popen,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """One ``claude -p`` for the turn. Raises _SessionGone when ``session`` can't be resumed."""
     emit = stream.emit
     resuming = session is not None
-    args = build_args(setup, resolved_model, system_instruction, max_iterations, session)
+    args = build_args(setup, resolved_model, system_instruction, max_iterations, session, effort)
     try:
         process = popen(
             args,
@@ -418,7 +474,11 @@ def _run_once(
             raise _SessionGone()
         if isinstance(event.get("session_id"), str):
             session = event["session_id"]
-        if kind == "system" and event.get("subtype") == "init":
+        if kind == "rate_limit_event":
+            limits = plan_limits(event)
+            if limits:
+                emit("rate_limit", limits=limits)
+        elif kind == "system" and event.get("subtype") == "init":
             problem = lockdown_problem(
                 event, ALLOWED_TOOLS.rstrip("*"), frozenset(), frozenset({SERVER_NAME})
             )

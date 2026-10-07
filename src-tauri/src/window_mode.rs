@@ -31,12 +31,28 @@ pub fn saved(app: &AppHandle) -> bool {
     parse_keep_on_top(text.as_deref())
 }
 
-fn save(app: &AppHandle, on: bool) -> Result<(), String> {
+/// `window.json` as saved, or an empty object.
+pub fn read_file(app: &AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    file(app)
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Sets one field of `window.json`, keeping the others (the Mini Player keeps its place there too).
+pub fn save_field(app: &AppHandle, key: &str, value: serde_json::Value) -> Result<(), String> {
     let path = file(app).ok_or("The app's config folder is unavailable")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, serde_json::json!({ "keepOnTop": on }).to_string()).map_err(|e| e.to_string())
+    let mut saved = read_file(app);
+    saved.insert(key.to_string(), value);
+    std::fs::write(path, serde_json::Value::Object(saved).to_string()).map_err(|e| e.to_string())
+}
+
+fn save(app: &AppHandle, on: bool) -> Result<(), String> {
+    save_field(app, "keepOnTop", serde_json::Value::Bool(on))
 }
 
 /// Floats the window (or not) and lets it into full-screen Spaces (macOS).
@@ -73,7 +89,8 @@ pub fn setup(app: &AppHandle) {
 /// Saves, applies and announces a change (the header, Settings and the tray all go through here).
 pub fn set(app: &AppHandle, on: bool) -> Result<bool, String> {
     save(app, on)?;
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+    // The Mini Player always floats; the choice applies again when it expands (mini_player.rs).
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW).filter(|_| !crate::mini_player::is_on(app)) {
         apply(&window, on);
     }
     crate::tray::sync_keep_on_top(app, on);

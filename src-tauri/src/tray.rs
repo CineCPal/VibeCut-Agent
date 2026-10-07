@@ -18,10 +18,23 @@ const ID_SETTINGS: &str = "tray-settings";
 const ID_ABOUT: &str = "tray-about";
 const ID_QUIT: &str = "tray-quit";
 const ID_ON_TOP: &str = "tray-on-top";
+const ID_MINI: &str = "tray-mini";
 
 /// The tray's "Keep on Top of Editors" item, so a change made elsewhere ticks or unticks it.
 #[derive(Default)]
 pub struct KeepOnTopItem(Mutex<Option<CheckMenuItem<Wry>>>);
+
+/// The tray's "Mini Player" item (Phase 9c), ticked while the window is the bar.
+#[derive(Default)]
+pub struct MiniPlayerItem(Mutex<Option<CheckMenuItem<Wry>>>);
+
+pub fn sync_mini_player(app: &AppHandle, on: bool) {
+    if let Some(item) = app.try_state::<MiniPlayerItem>() {
+        if let Some(item) = item.0.lock().ok().and_then(|i| i.clone()) {
+            let _ = item.set_checked(on);
+        }
+    }
+}
 
 pub fn sync_keep_on_top(app: &AppHandle, on: bool) {
     if let Some(item) = app.try_state::<KeepOnTopItem>() {
@@ -50,8 +63,11 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
-/// Shows the main window on `view`.
+/// Shows the main window on `view`, full size (it leaves the Mini Player).
 pub fn open_view(app: &AppHandle, view: View) {
+    if crate::mini_player::is_on(app) {
+        let _ = crate::mini_player::set(app, false);
+    }
     app.state::<AppState>().set_pending_view(view);
     show_main(app);
     let _ = app.emit_to(MAIN_WINDOW, NAVIGATE_EVENT, view);
@@ -67,12 +83,17 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     if let Ok(mut slot) = app.state::<KeepOnTopItem>().0.lock() {
         *slot = Some(on_top.clone());
     }
+    let mini = CheckMenuItem::with_id(handle, ID_MINI, "Mini Player", true, false, Some("Alt+CmdOrCtrl+M"))?;
+    if let Ok(mut slot) = app.state::<MiniPlayerItem>().0.lock() {
+        *slot = Some(mini.clone());
+    }
     let quit = MenuItem::with_id(handle, ID_QUIT, "Quit VibeCut Agent", true, None::<&str>)?;
     let menu = Menu::with_items(
         handle,
         &[
             &chat,
             &broll,
+            &mini,
             &PredefinedMenuItem::separator(handle)?,
             &on_top,
             &PredefinedMenuItem::separator(handle)?,
@@ -95,6 +116,10 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 // The check item has already flipped itself; its new state is the choice.
                 let on = !crate::window_mode::saved(app);
                 let _ = crate::window_mode::set(app, on);
+            } else if id == ID_MINI {
+                // As for Keep on Top: the item has flipped itself; the window follows.
+                let on = !crate::mini_player::is_on(app);
+                let _ = crate::mini_player::set(app, on);
             } else if let Some(view) = view_for_menu_id(id) {
                 open_view(app, view);
             }
@@ -117,6 +142,7 @@ mod tests {
         assert_eq!(view_for_menu_id(ID_SETTINGS), Some(View::Settings));
         assert_eq!(view_for_menu_id(ID_ABOUT), Some(View::About));
         assert_eq!(view_for_menu_id(ID_QUIT), None);
+        assert_eq!(view_for_menu_id(ID_MINI), None, "Mini Player switches the window, it opens no view");
         assert_eq!(view_for_menu_id("unknown"), None);
     }
 }

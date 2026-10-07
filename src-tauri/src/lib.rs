@@ -4,6 +4,7 @@ mod chat_store;
 mod claude_code;
 mod commands;
 mod mcp_bridge;
+mod mini_player;
 #[cfg(target_os = "macos")]
 mod native_drag;
 mod nle;
@@ -43,6 +44,8 @@ pub fn run() {
         .manage(audiosync::AudioSyncJobs::default())
         .manage(spyglass::DragCache::default())
         .manage(tray::KeepOnTopItem::default())
+        .manage(tray::MiniPlayerItem::default())
+        .manage(mini_player::MiniPlayer::default())
         .setup(|app| {
             // A menu-bar app: no Dock icon, and the window stays hidden until the tray opens it.
             #[cfg(target_os = "macos")]
@@ -63,12 +66,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing hides the window; the app keeps living in the menu bar until "Quit".
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == tray::MAIN_WINDOW {
+            if window.label() != tray::MAIN_WINDOW {
+                return;
+            }
+            match event {
+                // Closing hides the window; the app keeps living in the menu bar until "Quit".
+                WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+                // The Mini Player remembers where it was dragged (mini_player.rs).
+                WindowEvent::Moved(position) => mini_player::moved(window.app_handle(), window, *position),
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -93,6 +102,8 @@ pub fn run() {
             premiere_panel::premiere_panel_uninstall,
             window_mode::keep_on_top_status,
             window_mode::set_keep_on_top,
+            mini_player::mini_player_status,
+            mini_player::set_mini_player,
             commands::media_durations,
             audiosync::sync_audio,
             audiosync::cancel_audio_sync,
@@ -106,6 +117,7 @@ pub fn run() {
             mcp_bridge::mcp_client_setup,
             claude_code::claude_code_status,
             claude_code::claude_code_set,
+            claude_code::claude_code_usage,
             chat_store::chat_list,
             chat_store::chat_load,
             chat_store::chat_save,
@@ -131,6 +143,7 @@ pub fn run() {
 
     app.run(|app, event| {
         if let RunEvent::Exit = event {
+            mini_player::save_on_exit(app);
             // Never leave Python processes behind.
             app.state::<SidecarJobs>().kill_all();
         }

@@ -1,5 +1,7 @@
-import { Info, Pin, PinOff, Settings } from "lucide-react";
+import { Info, Minimize2, Pin, PinOff, Settings } from "lucide-react";
 import { toggleKeepOnTop } from "../../hooks/useKeepOnTop";
+import { toggleMiniPlayer } from "../../hooks/useMiniPlayer";
+import { UsageMeter } from "../usage/UsageMeter";
 import { useUiStore } from "../../store/useUiStore";
 import { ChatPanel } from "../chat/ChatPanel";
 import { BrollPanel } from "../broll/BrollPanel";
@@ -19,6 +21,7 @@ export function AppShell() {
         <h1 className="text-sm font-semibold tracking-tight text-white">VibeCut Agent</h1>
         <div className="flex items-center gap-1">
           <NleStatusPill />
+          <UsageMeter />
           {keepOnTop !== null ? (
             <button
               type="button"
@@ -31,6 +34,9 @@ export function AppShell() {
               {keepOnTop ? <Pin size={16} aria-hidden="true" /> : <PinOff size={16} aria-hidden="true" />}
             </button>
           ) : null}
+          <button type="button" className={iconButton} onClick={() => void toggleMiniPlayer(true)} aria-label="Mini Player" title="Mini Player (⌥⌘M)">
+            <Minimize2 size={16} aria-hidden="true" />
+          </button>
           <button type="button" className={iconButton} onClick={() => openOverlay("settings")} aria-label="Settings" title="Settings (⌘,)">
             <Settings size={16} aria-hidden="true" />
           </button>
