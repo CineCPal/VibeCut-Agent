@@ -1002,8 +1002,18 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
 - A retry from the earlier session didn't know a codeword given after it.
 - `chat-title` answered.
 
+**Checked live with the API keys (2026-10-06), `run_chat_turn` direct, a stand-in `count_markers` tool answering `{markers: 4}`:**
+- **Gemini** (`gemini-flash-latest`):
+  - The first delta came after 2.0–2.5 s.
+  - "I will check the number of markers…" streamed, then `reply_break` before `tool_calls`, then the answer.
+  - The streamed text matched `result.text`.
+  - The next turn, sent the gathered history (thought signatures included), was accepted.
+- **Claude API** (Sonnet 5.5):
+  - The first delta came after 1.1 s, with the same order: text, break, tool call, answer.
+  - The streamed text matched `result.text`.
+  - The next turn (thinking blocks and tool use in history) was accepted.
+
 **Not yet verified live:**
-- Gemini's and the Claude API's streaming, which need their keys: one turn each with a tool call, and the next turn accepted.
 - The app itself: a streamed reply on screen, and Copy in the Tauri webview. If `navigator.clipboard` is refused there, add `tauri-plugin-clipboard-manager` with only `allow-write-text`.
 - Retry and Edit, and "Revert & retry" on a scratch Resolve timeline.
 - Search, rename and a model name across a relaunch.
@@ -1037,7 +1047,7 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
   - *(2026-10-06)* **Phase 7 (7a, 7b, 7d) is built and unit-tested**, and the 7b chain was checked end to end with real Claude Code and a stand-in app. Next: its live checks in Resolve and Premiere ("Phase 7" → Live checks), then the user's own try of a remote session from their phone.
   - *(2026-10-06)* **Claude Code profile:** the user signs VibeCut Agent in with their **Work** profile (`/Users/cj/.claude-profiles/Work`). No profile folder is saved in Settings yet (`claude-code.json` is absent), so the app runs Claude Code's default `~/.claude`. It's signed in to the same team account, but its sessions and settings are kept apart from Work's. Set Settings → Claude subscription → Profile folder to the Work folder. Earlier "Personal profile" checks (7b, 7e, 7f) ran in dev shells and stand for the same CLI behaviour.
   - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Revert after a restart is checked live in Resolve. Next: the user's own try of the app across a quit and relaunch, Premiere, then Phase 7's live checks.
-  - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Next: the user's own try (with 8a's), Gemini and Claude API streaming with their keys, "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
+  - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Gemini and Claude API streaming checked live with the keys. Next: the user's own try (with 8a's), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1160,3 +1170,4 @@ rewind: { userMessageId, historyLength }      Gemini, Claude API (their historie
   - **8d:**
     - History search (`chat_search`) and renaming (`chat_rename`, F2);
     - the `chat-title` command, which names each new chat with its own model (Settings → Chat).
+- **2026-10-06 (Claude): 8b's streaming checked live on Gemini and the Claude API** (a tool call each, and a second turn on the returned history). Committed as `5ac084a`.
