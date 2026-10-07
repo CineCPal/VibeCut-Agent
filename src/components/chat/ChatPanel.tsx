@@ -3,10 +3,13 @@ import { SquarePen, Undo2 } from "lucide-react";
 import { newConversation } from "../../lib/agent/controller";
 import { revertLastRequest } from "../../lib/agent/edits";
 import { useAgentStore } from "../../store/useAgentStore";
+import { useChatHistoryStore } from "../../store/useChatHistoryStore";
+import { useMcpStore } from "../../store/useMcpStore";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import type { AgentStatus } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
 import { StatusDot, type Tone } from "../common/StatusDot";
+import { ChatHistoryMenu } from "./ChatHistoryMenu";
 import { Composer } from "./Composer";
 import { DraftBar } from "./DraftBar";
 import { MessageList } from "./MessageList";
@@ -28,7 +31,12 @@ export function ChatPanel() {
   const model = AI_CHOICES.find((c) => c.id === aiChoice)?.label ?? aiChoice;
   const running = status === "thinking" || status === "stopping";
   const entries = useEditLogStore((s) => s.entries);
-  const revertable = lastEditStep(entries).length;
+  const step = lastEditStep(entries);
+  const revertable = step.length;
+  // The latest request's edits were made before the app last restarted (the saved log, Phase 8a).
+  const earlier = revertable > 0 && entries.some((e) => e.id === step[0] && e.fromEarlierRun);
+  const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
+  const saveError = useChatHistoryStore((s) => s.saveError);
   const [reverting, setReverting] = useState(false);
 
   const revert = async () => {
@@ -56,13 +64,18 @@ export function ChatPanel() {
             type="button"
             onClick={() => void revert()}
             disabled={running || reverting}
-            title="Undo every edit of the latest request that changed the timeline"
+            title={
+              earlier
+                ? "Undo every edit of the latest request, made before the app restarted. Clips changed since are left as they are."
+                : "Undo every edit of the latest request that changed the timeline"
+            }
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-warning hover:bg-warning/10 disabled:opacity-40"
           >
             <Undo2 size={12} aria-hidden="true" />
-            {reverting ? "Reverting…" : `Revert ${revertable} edit${revertable === 1 ? "" : "s"}`}
+            {reverting ? "Reverting…" : `Revert ${revertable} edit${revertable === 1 ? "" : "s"}${earlier ? " (earlier session)" : ""}`}
           </button>
         ) : null}
+        <ChatHistoryMenu busy={running || outsideRunning} />
         {messages.length > 0 ? (
           <button
             type="button"
@@ -76,6 +89,7 @@ export function ChatPanel() {
         ) : null}
         </span>
       </div>
+      {saveError ? <p className="px-3 pb-1 text-[11px] text-warning">{saveError}</p> : null}
       {messages.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 text-center">
           <p className="text-sm text-white">No conversation yet</p>

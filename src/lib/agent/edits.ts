@@ -235,5 +235,7 @@ export function editLogContext(entries: EditEntry[] = useEditLogStore.getState()
   if (entries.length === 0) return null;
   const live = entries.filter((e) => !e.reverted);
   const recent = live.slice(-5).map((e) => `${e.id} ${e.summary}`);
-  return `Your direct timeline edits this session: ${entries.length} (${live.length} not reverted)${recent.length ? `; latest: ${recent.join(" | ")}` : ""}`;
+  // After a restart the saved log carries on (Phase 8a): Revert still works on those, by id.
+  const when = entries.some((e) => e.fromEarlierRun) ? "this session and before the app last restarted" : "this session";
+  return `Your direct timeline edits ${when}: ${entries.length} (${live.length} not reverted)${recent.length ? `; latest: ${recent.join(" | ")}` : ""}`;
 }

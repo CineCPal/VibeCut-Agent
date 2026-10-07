@@ -1,5 +1,6 @@
 mod audiosync;
 mod broll_panel;
+mod chat_store;
 mod claude_code;
 mod commands;
 mod mcp_bridge;
@@ -105,6 +106,12 @@ pub fn run() {
             mcp_bridge::mcp_client_setup,
             claude_code::claude_code_status,
             claude_code::claude_code_set,
+            chat_store::chat_list,
+            chat_store::chat_load,
+            chat_store::chat_save,
+            chat_store::chat_delete,
+            chat_store::edit_log_load,
+            chat_store::edit_log_save,
             broll_panel::broll_panel_thumbs,
             spyglass::find_spyglass_index,
             spyglass::spyglass_choose_index,

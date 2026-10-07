@@ -122,6 +122,28 @@ describe("direct edits", () => {
     await expect(revertLastRequest()).rejects.toThrow("already reverted, or there are none");
   });
 
+  it("reverts an edit made before the app restarted, with the saved ids followed, and says so to the agent", async () => {
+    useEditLogStore.getState().hydrate({
+      version: 1,
+      entries: [
+        { id: "e4", step: "m9", stepText: "tidy it", at: 1, host: "resolve", timeline: "Main", tool: "delete_clips", summary: "Removed 1 clip", backup: "Main (before VibeCut 1)", changes: [deleted] },
+      ],
+      backups: {},
+      restoredIds: { premiere: {}, resolve: { v1: "v1b" } },
+    });
+    expect(editLogContext()).toBe("Your direct timeline edits this session and before the app last restarted: 1 (1 not reverted); latest: e4 Removed 1 clip");
+    editor({
+      revert_timeline_changes: { reverted: [{ kind: "deleted", name: "A.mov" }], changedSince: [], failed: [], lost: [], restoredIds: {} },
+    });
+    await revertLastRequest();
+    expect(ipc.nleCall).toHaveBeenCalledWith("resolve", "revert_timeline_changes", {
+      timeline: "Main",
+      changes: [{ ...deleted, itemId: "v1b" }],
+      backup: "Main (before VibeCut 1)",
+    });
+    expect(useEditLogStore.getState().entries[0].reverted).toBeTruthy();
+  });
+
   it("describes each kind of change", () => {
     expect(describeTimelineChange({ kind: "added", name: "B.mov", at: 1, end: 3, tracks: ["V2", "A2"] })).toBe('"B.mov" added at 1.0s–3.0s on V2+A2');
     expect(describeTimelineChange({ kind: "deleted", name: "A.mov", track: ["audio", 1], start: 2 })).toBe('"A.mov" removed from A1 at 2.0s');

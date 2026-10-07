@@ -35,4 +35,6 @@ export interface StoragePaths {
   config: string | null;
   data: string | null;
   logs: string | null;
+  /** Past chats and the edit log (Phase 8a). */
+  history: string | null;
 }

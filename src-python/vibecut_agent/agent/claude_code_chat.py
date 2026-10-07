@@ -243,6 +243,32 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
             continue
 
 
+# A saved session Claude Code no longer has (cleaned up, another profile, a reinstall): the turn starts a
+# new one, and Claude is told it can't see the earlier part (PLAN.md, Phase 8a).
+SESSION_GONE_STATUS = "Couldn't resume the earlier Claude Code session; starting a new one…"
+SESSION_GONE_NOTE = (
+    "(VibeCut note: the earlier part of this conversation couldn't be resumed in Claude Code, so you "
+    "don't have its context. The user can still see the earlier messages; ask them if you need "
+    "something from them.)\n\n"
+)
+
+
+def session_gone(event: dict[str, Any]) -> bool:
+    """Whether Claude Code ended at once because the session to resume doesn't exist. Checked live
+    (2.1.292): a ``result`` with ``errors: ["No conversation found with session ID: …"]`` and no
+    startup report before it."""
+    errors = event.get("errors")
+    return (
+        event.get("type") == "result"
+        and isinstance(errors, list)
+        and any(isinstance(e, str) and "no conversation found" in e.lower() for e in errors)
+    )
+
+
+class _SessionGone(Exception):
+    pass
+
+
 def run_chat_turn(
     setup: Any,
     model: str | None,
@@ -260,8 +286,35 @@ def run_chat_turn(
         raise ChatError("The chat message was empty.")
     resolved_model = model if model in MODELS else DEFAULT_MODEL
     session = session_of(history)
-    args = build_args(setup, resolved_model, system_instruction, max_iterations, session)
     os.makedirs(setup["workDir"], exist_ok=True)
+    try:
+        return _run_once(
+            setup, resolved_model, system_instruction, session, history, user_message,
+            emit, should_abort, max_iterations, popen,
+        )
+    except _SessionGone:
+        emit("status", detail=SESSION_GONE_STATUS)
+        return _run_once(
+            setup, resolved_model, system_instruction, None, [], SESSION_GONE_NOTE + user_message,
+            emit, should_abort, max_iterations, popen,
+        )
+
+
+def _run_once(
+    setup: dict[str, Any],
+    resolved_model: str,
+    system_instruction: str,
+    session: str | None,
+    history: list[Any],
+    user_message: str,
+    emit: Callable[..., None],
+    should_abort: Callable[[], bool],
+    max_iterations: int,
+    popen: Popen,
+) -> dict[str, Any]:
+    """One ``claude -p`` for the turn. Raises _SessionGone when ``session`` can't be resumed."""
+    resuming = session is not None
+    args = build_args(setup, resolved_model, system_instruction, max_iterations, session)
     try:
         process = popen(
             args,
@@ -322,6 +375,9 @@ def run_chat_turn(
         if not isinstance(event, dict):
             continue
         kind = event.get("type")
+        if resuming and not checked and not aborted and session_gone(event):
+            _stop(process)
+            raise _SessionGone()
         if isinstance(event.get("session_id"), str):
             session = event["session_id"]
         if kind == "system" and event.get("subtype") == "init":

@@ -21,6 +21,7 @@ import { useMcpStore } from "../../store/useMcpStore";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
 import type { ChatProvider, ChatUsage } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
+import type { SavedChat } from "../../types/history";
 
 const PROVIDER_LABEL: Record<ChatProvider, string> = { gemini: "Gemini", claude: "Claude", "claude-code": "Claude (subscription)" };
 
@@ -120,14 +121,16 @@ export async function stopTurn(): Promise<void> {
   }
 }
 
-/** Starts over: ends the job and forgets the conversation. */
-export async function newConversation(): Promise<void> {
+/** Starts over, or switches to a saved chat (Phase 8a): ends the job and shows `next` or nothing. The
+ * next message starts a new job with `next`'s history, as after any ended job. */
+export async function newConversation(next?: SavedChat): Promise<void> {
   const { jobId, status } = useAgentStore.getState();
   if (status === "thinking" || status === "stopping") return;
   if (jobId) await sendToSidecar(jobId, { type: "end_session" }).catch(() => cancelSidecar(jobId).catch(() => undefined));
   context = null;
   useAgentStore.getState().endSession();
-  useAgentStore.getState().clear();
+  if (next) useAgentStore.getState().loadChat(next);
+  else useAgentStore.getState().clear();
 }
 
 /**

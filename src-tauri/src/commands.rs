@@ -36,6 +36,8 @@ pub struct StoragePaths {
     pub config: Option<String>,
     pub data: Option<String>,
     pub logs: Option<String>,
+    /// Past chats and the edit log (chat_store.rs).
+    pub history: Option<String>,
 }
 
 /// PATH entries followed by the extra install dirs, without duplicates.
@@ -183,7 +185,12 @@ pub async fn hardware_acceleration() -> Result<HwAccel, String> {
 pub fn storage_paths(app: AppHandle) -> StoragePaths {
     let path = app.path();
     let show = |dir: tauri::Result<PathBuf>| dir.ok().map(|d| d.display().to_string());
-    StoragePaths { config: show(path.app_config_dir()), data: show(path.app_data_dir()), logs: show(path.app_log_dir()) }
+    StoragePaths {
+        config: show(path.app_config_dir()),
+        data: show(path.app_data_dir()),
+        logs: show(path.app_log_dir()),
+        history: crate::chat_store::history_dir(&app).ok().map(|d| d.display().to_string()),
+    }
 }
 
 #[cfg(test)]

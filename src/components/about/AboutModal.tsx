@@ -132,6 +132,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
               ["Config", storage?.config],
               ["Data", storage?.data],
               ["Logs", storage?.logs],
+              ["Chats & edit log", storage?.history],
               ["Sidecar", sidecar?.pythonRoot],
               ["Python env", sidecar ? (sidecar.environment ?? `${sidecar.pythonRoot}/.venv`) : null],
             ] as const

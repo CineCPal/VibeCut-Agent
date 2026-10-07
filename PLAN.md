@@ -810,6 +810,74 @@ src/lib/mcp/server.ts  (webview) → executorsFor(...) / runTool → nle_call �
 
 **Not yet verified live:** a real multi-hour project in the editors, and the Gemini Flash first pass with a real key.
 
+## Phase 8a: Chats and Revert that survive a restart (built 2026-10-06)
+
+**Why (the user, 2026-10-06):** before this, only the model choice survived a quit. The transcript, the model's history (or Claude Code session) and the edit log were lost, and with them **Revert n edits**. The user chose this as the next build, plus a short list of past chats.
+
+**Storage (one new boundary, `src-tauri/src/chat_store.rs`):** local JSON in the app's data folder (AGENTS.md §4), not localStorage, since a provider's history carries tool results and can run to megabytes.
+
+```text
+<app data>/history/          0700; VIBECUT_AGENT_HISTORY_DIR overrides it (tests, parallel dev builds)
+  index.json                 [{ id, title, createdAt, updatedAt, messageCount }], newest first
+  edit-log.json              { version: 1, entries, backups, restoredIds, nextSeq }
+  chats/<id>.json            { version: 1, id, title, createdAt, updatedAt, provider, aiChoice, messages, history, historyDropped? }
+```
+
+- **Layout differs from the plan:** the plan put everything in a flat `chats/` folder. The index and the edit log sit one level up, so no chat id can collide with them.
+- **Commands:** `chat_list`, `chat_load(id)`, `chat_save(id, chat)` (answers the new list), `chat_delete(id)`, `edit_log_load`, `edit_log_save(log)`. All of them are async, off the main thread.
+- **Rules:**
+  - ids must match `[A-Za-z0-9_-]{1,64}`, and a chat must carry its own id;
+  - every file is at most 16 MB and is written atomically (`broll_panel::write_atomic`), with files `0600`;
+  - one save, list or delete at a time (a mutex);
+  - only the newest 30 chats are kept;
+  - a corrupt chat is left out of the list, a missing or corrupt index is rebuilt from the chats, and a row whose file is gone drops out.
+- `storage_paths` gains `history`, shown in About → Storage as "Chats & edit log".
+
+**Frontend:**
+- **`lib/agent/chatHistory.ts`** (started from `App.tsx`):
+  - The current chat is saved 400 ms after its messages or history change, once it has a user message. When the chat itself changes (New chat, or opening a past one), the old one is saved at once.
+  - Saves run one after another. A save already on its way for a deleted chat is dropped.
+  - Past 12 MB of history (as JSON), the chat is saved with `history: []` and `historyDropped`, and the transcript says so once.
+  - At launch, it reads the list, the edit log, and the chat whose id was open (`chatId` is in the `vibecut-agent.agent` localStorage).
+  - The edit log is saved only after the saved one was read, so an empty log can't overwrite it.
+  - `pagehide` flushes whatever is waiting.
+  - `openChat` and `deleteChat`. A failed save shows under the chat header, and the chat goes on.
+- **`useAgentStore`:** `chatId` (a new one on `clear`), and `loadChat`. `newConversation(next?)` in the controller ends the job and shows `next` or nothing. The next message then starts a job with the saved history, as after any ended job.
+- **`useEditLogStore`:**
+  - `hydrate` puts the saved entries ahead of anything logged since, flagged `fromEarlierRun`.
+  - Entry ids never repeat: the next id is above every entry's and above `floorSeq`, which comes from the saved `nextSeq`.
+  - The saved copy keeps the newest 500 entries (reverted ones go first), plus the backups of requests still in it.
+  - It stays one log for the app, not per chat: Revert follows the timeline, not the conversation.
+- **Revert after a restart:** no change in the editors. `revert_timeline_changes` already compares each change with the timeline as it is now (`changedSince`) and falls back to the backup. The header reads **Revert n edits (earlier session)**, and its tooltip says clips changed since are left alone. `editLogContext` tells the agent the edits are from "this session and before the app last restarted".
+- **History menu** (`ChatHistoryMenu.tsx`, beside New chat, and **⌘Y** through `useHotkeys`):
+  - A listbox of title, relative time and message count, with "Open now" on the current chat.
+  - ↑↓ / Home / End move, Enter opens, Delete or the bin icon asks once and deletes on the second press, Escape backs out.
+  - Read-only while a turn or an outside (MCP) call runs.
+  - A chat whose provider differs from the chosen model gets a note that the model starts without its memory of it.
+
+**Sidecar, a fix that this phase made visible:** resuming a Claude Code session that's gone (cleaned up, another profile) ended at once with a `result` carrying `errors: ["No conversation found with session ID: …"]` and no startup report. Checked live on 2.1.292. 7f's lockdown check read that as "didn't report its tools before starting". Now `claude_code_chat.run_chat_turn` sees it (`session_gone`) and does three things:
+- retries once without `--resume`;
+- emits `status` "Couldn't resume the earlier Claude Code session; starting a new one…";
+- puts `SESSION_GONE_NOTE` ahead of the message, so Claude knows it lacks the earlier context.
+
+The new session id replaces the lost one. Gemini and Claude (API key) need nothing, since their history is resent in full.
+
+**Tests:**
+- **Rust 10** (`chat_store`): ids, order, own id, titles, the 30-chat limit, the 16 MB limit, corrupt files and a lost index, delete, the edit-log round trip, modes.
+- **Python 2:** the fallback against the fake `claude` (with the 2.1.292 event shape), and `session_gone`.
+- **Frontend 32:**
+  - `chatHistory.test.ts` 15;
+  - `useEditLogStore.test.ts` 6;
+  - `ChatHistoryMenu.test.tsx` 7;
+  - ChatPanel, hotkeys, `edits` (revert of a hydrated entry, with ids followed) and the agent store, 1 or 2 each.
+- **All green:** pytest 692 (+2 skipped), cargo 115, vitest 393, ruff, mypy, eslint, tsc, clippy and `npm run build`.
+
+**Verified with real Claude Code 2.1.292 (Sonnet 5.5), with a stand-in app on a temp bridge folder:**
+- A turn with a made-up session id in its history fell back and answered under a new session id: 5.2 s on the Personal profile, and 5.0 s on the **Work** profile (`~/.claude-profiles/Work`, the Blair Academy team plan), which is the login the user uses for VibeCut Agent.
+- The bridge saw only `list_tools`, tagged with the job.
+
+**Not yet verified live:** the app itself across a quit and relaunch, and Revert (earlier session) on a Resolve scratch timeline.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -837,6 +905,8 @@ src/lib/mcp/server.ts  (webview) → executorsFor(...) / runTool → nle_call �
   - **Drafts and ripple edits**, from VibeCut's `hostDraft.ts`.
   - *(2026-10-06)* Transcripts, drafts, audio sync and the Story Editor are done (Phase 6a–6d). Next by value: the user's live try of the whole interview-to-edit flow in the chat; Premiere's live checks (panel 0.8.0); the Story Editor's music bed (VibeCut's beat sync); ducking carried into a Story Editor draft.
   - *(2026-10-06)* **Phase 7 (7a, 7b, 7d) is built and unit-tested**, and the 7b chain was checked end to end with real Claude Code and a stand-in app. Next: its live checks in Resolve and Premiere ("Phase 7" → Live checks), then the user's own try of a remote session from their phone.
+  - *(2026-10-06)* **Claude Code profile:** the user signs VibeCut Agent in with their **Work** profile (`/Users/cj/.claude-profiles/Work`). No profile folder is saved in Settings yet (`claude-code.json` is absent), so the app runs Claude Code's default `~/.claude`. It's signed in to the same team account, but its sessions and settings are kept apart from Work's. Set Settings → Claude subscription → Profile folder to the Work folder. Earlier "Personal profile" checks (7b, 7e, 7f) ran in dev shells and stand for the same CLI behaviour.
+  - *(2026-10-06)* **Phase 8a is built:** chats, the Claude Code session and the edit log survive a restart, with a History menu (⌘Y), and a gone Claude Code session falls back to a new one. Next: the user's own try across a quit and relaunch; Revert (earlier session) on a Resolve scratch timeline; then Phase 7's live checks.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -948,3 +1018,7 @@ src/lib/mcp/server.ts  (webview) → executorsFor(...) / runTool → nle_call �
     - A chat turn and a Story Editor cut passed the check.
     - The remote command's flags (in `-p` mode, stopped after startup) gave exactly `mcp__vibecut__get_editor_context` and the `vibecut` server. It's the one tool, since outside control was off.
   - **Not checked:** `--remote-control` itself with these flags, which needs the user's phone.
+- **2026-10-06 (Claude): checkpoint commit** of Phases 5–7f (`7e18885`, branch `phase-8-persist-chats`). Nothing had been committed since the first commit.
+- **2026-10-06 (Claude): Phase 8a, chats and Revert that survive a restart.**
+  - `chat_store.rs` (`<app data>/history/`), `lib/agent/chatHistory.ts`, a saved edit log with `fromEarlierRun` and ids that never repeat, **Revert n edits (earlier session)**, and the History menu (⌘Y).
+  - Fix: a Claude Code session that's gone no longer fails as a lockdown error; the turn starts a new session.

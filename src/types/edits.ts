@@ -59,6 +59,8 @@ export interface EditEntry {
   backup: string;
   changes: TimelineChange[];
   reverted?: { at: number; changedSince: number; failed: number; lost: string[] };
+  /** Made before this launch (loaded from the saved log, Phase 8a): its clips may have changed since. */
+  fromEarlierRun?: boolean;
 }
 
 export interface RevertResult {

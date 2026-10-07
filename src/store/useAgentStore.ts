@@ -3,8 +3,12 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, StoryFirstPass } from "../types/agent";
 import { AI_CHOICES } from "../types/agent";
 import { newId } from "../lib/id";
+import type { SavedChat } from "../types/history";
 
 export interface AgentState {
+  /** The conversation's id in the past-chats list (Phase 8a); a new one after `clear`. Remembered, so
+   * the app reopens it at launch. */
+  chatId: string;
   messages: ChatMessage[];
   status: AgentStatus;
   /** Why the agent can't chat, or what failed; shown under the composer. */
@@ -34,8 +38,10 @@ export interface AgentState {
   endSession: () => void;
   finishTurn: (history: unknown[], provider: ChatProvider, usage: ChatUsage | null) => void;
   setActivity: (activity: string | null) => void;
-  /** Starts over: no messages, no history. */
+  /** Starts over: no messages, no history, a new chat id. */
   clear: () => void;
+  /** Shows a saved chat in place of the current one. The caller ends the running job first. */
+  loadChat: (chat: SavedChat) => void;
 }
 
 export const AGENT_OFFLINE_DETAIL = "Agent sidecar not running";
@@ -43,6 +49,7 @@ export const AGENT_OFFLINE_DETAIL = "Agent sidecar not running";
 export const useAgentStore = create<AgentState>()(
   persist(
     (set) => ({
+      chatId: newId(),
       messages: [],
       status: "offline",
       statusDetail: AGENT_OFFLINE_DETAIL,
@@ -75,12 +82,24 @@ export const useAgentStore = create<AgentState>()(
       endSession: () => set({ jobId: null, sessionKey: null, activity: null }),
       finishTurn: (history, provider, usage) => set({ history, historyProvider: provider, usage, activity: null }),
       setActivity: (activity) => set({ activity }),
-      clear: () => set({ messages: [], draft: "", history: [], historyProvider: null, usage: null, activity: null }),
+      clear: () => set({ chatId: newId(), messages: [], draft: "", history: [], historyProvider: null, usage: null, activity: null }),
+      loadChat: (chat) =>
+        set({
+          chatId: chat.id,
+          messages: chat.messages,
+          history: chat.history,
+          historyProvider: chat.provider,
+          draft: "",
+          usage: null,
+          activity: null,
+          jobId: null,
+          sessionKey: null,
+        }),
     }),
     {
       name: "vibecut-agent.agent",
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ aiChoice: state.aiChoice, storyFirstPass: state.storyFirstPass }),
+      partialize: (state) => ({ aiChoice: state.aiChoice, storyFirstPass: state.storyFirstPass, chatId: state.chatId }),
     },
   ),
 );

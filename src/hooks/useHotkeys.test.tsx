@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
-import { useHotkeys, viewForShortcut } from "./useHotkeys";
+import { opensHistory, useHotkeys, viewForShortcut } from "./useHotkeys";
 import { useUiStore } from "../store/useUiStore";
 
 function Harness() {
@@ -18,7 +18,7 @@ const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | 
 });
 
 describe("useHotkeys", () => {
-  beforeEach(() => useUiStore.setState({ tab: "chat", overlay: null }));
+  beforeEach(() => useUiStore.setState({ tab: "chat", overlay: null, historyOpen: false }));
 
   it("maps ⌘/Ctrl shortcuts to views", () => {
     expect(viewForShortcut(key("1", { metaKey: true }))).toBe("chat");
@@ -39,5 +39,16 @@ describe("useHotkeys", () => {
     expect(useUiStore.getState().tab).toBe("broll");
     fireEvent.keyDown(window, { key: ",", metaKey: true });
     expect(useUiStore.getState().overlay).toBe("settings");
+  });
+
+  it("⌘Y opens the past chats, from any tab or overlay", () => {
+    expect(opensHistory(key("y", { metaKey: true }))).toBe(true);
+    expect(opensHistory(key("Y", { ctrlKey: true }))).toBe(true);
+    expect(opensHistory(key("y", { metaKey: true, shiftKey: true }))).toBe(false);
+    expect(opensHistory(key("y"))).toBe(false);
+    useUiStore.setState({ tab: "broll", overlay: "settings" });
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "y", metaKey: true });
+    expect(useUiStore.getState()).toMatchObject({ tab: "chat", overlay: null, historyOpen: true });
   });
 });

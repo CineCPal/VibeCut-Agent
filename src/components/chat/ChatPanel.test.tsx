@@ -51,6 +51,13 @@ describe("ChatPanel revert", () => {
     expect(screen.queryByRole("button", { name: /Revert/ })).toBeNull();
   });
 
+  it("says when the latest request's edits are from before the app restarted", () => {
+    useEditLogStore.setState({ entries: [entry("e1", "m1"), { ...entry("e2", "m2"), fromEarlierRun: true }] });
+    render(<ChatPanel />);
+    const button = screen.getByRole("button", { name: "Revert 1 edit (earlier session)" });
+    expect(button).toHaveAttribute("title", expect.stringContaining("Clips changed since are left as they are"));
+  });
+
   it("can't revert while the agent is working", () => {
     useEditLogStore.setState({ entries: [entry("e1", "m1")] });
     useAgentStore.setState({ status: "thinking" });

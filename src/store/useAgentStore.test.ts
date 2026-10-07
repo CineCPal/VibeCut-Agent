@@ -40,7 +40,7 @@ describe("useAgentStore", () => {
     useAgentStore.getState().setAiChoice("gpt-9" as AiChoiceId);
     expect(useAgentStore.getState().aiChoice).toBe("claude-opus-5-5");
     const saved = JSON.parse(localStorage.getItem("vibecut-agent.agent") ?? "{}");
-    expect(saved.state).toEqual({ aiChoice: "claude-opus-5-5", storyFirstPass: "same" });
+    expect(saved.state).toEqual({ aiChoice: "claude-opus-5-5", storyFirstPass: "same", chatId: useAgentStore.getState().chatId });
   });
 
   it("keeps the Story Editor's first-pass choice to the two known ones", () => {
@@ -50,10 +50,24 @@ describe("useAgentStore", () => {
     expect(useAgentStore.getState().storyFirstPass).toBe("same");
   });
 
-  it("clear empties messages and the draft", () => {
+  it("clear empties messages and the draft, as a new chat", () => {
+    const before = useAgentStore.getState().chatId;
     useAgentStore.getState().addMessage({ role: "user", text: "x" });
     useAgentStore.getState().setDraft("half-typed");
     useAgentStore.getState().clear();
     expect(useAgentStore.getState()).toMatchObject({ messages: [], draft: "" });
+    expect(useAgentStore.getState().chatId).not.toBe(before);
+  });
+
+  it("loadChat shows a saved chat with its history, and no job", () => {
+    useAgentStore.setState({ jobId: "j", sessionKey: "k", draft: "half" });
+    const messages = [{ id: "u", role: "user" as const, text: "go", createdAt: 1 }];
+    useAgentStore.getState().loadChat({
+      version: 1, id: "c-old", title: "go", createdAt: 1, updatedAt: 2, provider: "claude-code", aiChoice: "claude-code-sonnet-5-5",
+      messages, history: [{ claudeCodeSession: "s1" }],
+    });
+    expect(useAgentStore.getState()).toMatchObject({
+      chatId: "c-old", messages, history: [{ claudeCodeSession: "s1" }], historyProvider: "claude-code", jobId: null, sessionKey: null, draft: "",
+    });
   });
 });

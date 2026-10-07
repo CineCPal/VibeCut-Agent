@@ -1,5 +1,6 @@
 """Claude (subscription), Phase 7b: claude_code_chat against a fake `claude` program that records how
-it was run and replays Claude Code's stream-json events (shapes taken from Claude Code 2.1.291)."""
+it was run and replays Claude Code's stream-json events (shapes taken from Claude Code 2.1.291; the
+unknown-session result from 2.1.292)."""
 
 from __future__ import annotations
 
@@ -27,9 +28,17 @@ stdin = sys.stdin.read()
 with open(record, "w") as f:
     json.dump({{"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd(),
                "env": {{k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "HOME")}}}}, f)
+with open(record + ".runs", "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")
 def out(event):
     print(json.dumps(event), flush=True)
 sid = "11111111-2222-3333-4444-555555555555"
+if mode == "session-gone" and "--resume" in sys.argv:
+    gone = sys.argv[sys.argv.index("--resume") + 1]
+    out({{"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 0, "session_id": gone,
+         "usage": {{"input_tokens": 0, "output_tokens": 0}}, "errors": ["No conversation found with session ID: " + gone]}})
+    print("No conversation found with session ID: " + gone, file=sys.stderr, flush=True)
+    sys.exit(1)
 if mode == "signed-out":
     print("Not logged in · Please run /login", file=sys.stderr, flush=True)
     sys.exit(1)
@@ -151,6 +160,32 @@ def test_the_next_turn_resumes_the_session(fake: dict[str, Any]) -> None:
     argv = recorded(fake)["argv"]
     assert flag(argv, "--resume") == SESSION
     assert flag(argv, "--model") == "claude-sonnet-5-5", "an unknown model falls back to the default"
+
+
+def test_a_session_claude_code_no_longer_has_starts_a_new_one(
+    fake: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_MODE", "session-gone")
+    gone = "99999999-0000-4000-8000-000000000000"
+    outcome, events = run(fake, history=[{"claudeCodeSession": gone}])
+    runs = [json.loads(line) for line in Path(str(fake["record"]) + ".runs").read_text().splitlines()]
+    assert len(runs) == 2
+    assert flag(runs[0], "--resume") == gone
+    assert "--resume" not in runs[1]
+    assert recorded(fake)["stdin"] == claude_code_chat.SESSION_GONE_NOTE + "mark the hook"
+    assert outcome["text"] == "Marked the hook."
+    assert outcome["history"] == [{"claudeCodeSession": SESSION}], "the new session replaces the lost one"
+    details = [fields["detail"] for kind, fields in events if kind == "status"]
+    assert claude_code_chat.SESSION_GONE_STATUS in details
+
+
+def test_only_a_missing_session_is_retried() -> None:
+    assert claude_code_chat.session_gone(
+        {"type": "result", "is_error": True, "errors": ["No conversation found with session ID: x"]}
+    )
+    assert not claude_code_chat.session_gone({"type": "result", "is_error": True, "errors": ["overloaded"]})
+    assert not claude_code_chat.session_gone({"type": "assistant", "errors": ["No conversation found"]})
+    assert not claude_code_chat.session_gone({"type": "result", "errors": "No conversation found"})
 
 
 def test_no_profile_folder_means_claude_codes_default(

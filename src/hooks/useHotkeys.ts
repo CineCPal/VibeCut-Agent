@@ -15,10 +15,21 @@ export function viewForShortcut(event: Pick<KeyboardEvent, "key" | "metaKey" | "
   return SHORTCUTS[event.key.toLowerCase()] ?? null;
 }
 
+/** ⌘/Ctrl+Y: the chat's past chats. */
+export function opensHistory(event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">): boolean {
+  return (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "y";
+}
+
 export function useHotkeys(): void {
   const navigate = useUiStore((s) => s.navigate);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (opensHistory(event)) {
+        event.preventDefault();
+        navigate("chat");
+        useUiStore.getState().setHistoryOpen(true);
+        return;
+      }
       const view = viewForShortcut(event);
       if (!view) return;
       event.preventDefault();

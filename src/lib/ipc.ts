@@ -18,6 +18,7 @@ import type {
 import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
 import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
 import type { ClaudeCodeStatus } from "../types/agent";
+import type { ChatSummary, SavedChat, SavedEditLog } from "../types/history";
 
 export const NAVIGATE_EVENT = "navigate";
 export const SIDECAR_EVENT = "sidecar-event";
@@ -209,4 +210,32 @@ export function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
 /** Saves the claude program and Claude Code profile folder (null: forget), then checks again. */
 export function setClaudeCode(program: string | null, configDir: string | null): Promise<ClaudeCodeStatus> {
   return invoke<ClaudeCodeStatus>("claude_code_set", { program, configDir });
+}
+
+/** Past chats, newest first (chat_store.rs, Phase 8a). */
+export function listChats(): Promise<ChatSummary[]> {
+  return invoke<ChatSummary[]>("chat_list");
+}
+
+/** A saved chat, unchecked: `parseSavedChat` checks it. */
+export function loadChatFile(id: string): Promise<unknown> {
+  return invoke<unknown>("chat_load", { id });
+}
+
+/** Files a chat and answers the list as it is now. */
+export function saveChatFile(id: string, chat: SavedChat): Promise<ChatSummary[]> {
+  return invoke<ChatSummary[]>("chat_save", { id, chat });
+}
+
+export function deleteChatFile(id: string): Promise<ChatSummary[]> {
+  return invoke<ChatSummary[]>("chat_delete", { id });
+}
+
+/** The saved edit log, unchecked, or null when there is none. */
+export function loadEditLogFile(): Promise<unknown> {
+  return invoke<unknown>("edit_log_load");
+}
+
+export function saveEditLogFile(log: SavedEditLog): Promise<void> {
+  return invoke<void>("edit_log_save", { log });
 }

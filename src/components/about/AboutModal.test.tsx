@@ -18,7 +18,7 @@ describe("AboutModal", () => {
         { name: "exiftool", path: null, version: null },
       ],
       hwAccel: { videotoolbox: true, nvenc: false },
-      storage: { config: "/Users/me/Library/Application Support/com.cj.vibecutagent", data: "/data", logs: "/logs" },
+      storage: { config: "/Users/me/Library/Application Support/com.cj.vibecutagent", data: "/data", logs: "/logs", history: "/data/history" },
       sidecar: { uvPath: "/opt/homebrew/bin/uv", pythonRoot: "/repo", installed: true, environment: null },
       loading: false,
       error: null,
@@ -42,6 +42,7 @@ describe("AboutModal", () => {
     expect(screen.getByText("Not found")).toBeInTheDocument();
     expect(within(screen.getByText("VideoToolbox (Apple)").closest("li")!).getByText("Available")).toBeInTheDocument();
     expect(screen.getByText("/data")).toBeInTheDocument();
+    expect(screen.getByText("/data/history")).toBeInTheDocument();
     expect(screen.getByText("/repo/.venv")).toBeInTheDocument();
     expect(within(screen.getByText("DaVinci Resolve").closest("li")!).getByText("Connected")).toBeInTheDocument();
     expect(within(screen.getByText("Active model: Gemini").closest("li")!).getByText("Key configured")).toBeInTheDocument();
