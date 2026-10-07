@@ -3,6 +3,7 @@ mod broll_panel;
 mod chat_store;
 mod claude_code;
 mod commands;
+mod login_item;
 mod mcp_bridge;
 mod mini_player;
 #[cfg(target_os = "macos")]
@@ -35,6 +36,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // The B-roll panel's folder picker (only `dialog:allow-open` is granted, capabilities/default.json).
         .plugin(tauri_plugin_dialog::init())
+        // "Open at login" (login_item.rs): a LaunchAgent, only when the user turns it on.
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![login_item::AT_LOGIN_ARG])))
         .manage(AppState::default())
         .manage(SidecarJobs::default())
         .manage(AgentSession::default())
@@ -61,6 +64,11 @@ pub fn run() {
             broll_panel::start(app.handle());
             // The MCP bridge (mcp_bridge.rs): an MCP client calling the agent's tools, through files.
             mcp_bridge::start(app.handle());
+            // The installed app opened by hand (Spotlight, Launchpad, the Dock) shows its window; started at
+            // login, or as a dev build, it stays in the menu bar (login_item.rs).
+            if login_item::shows_window_at_launch(cfg!(debug_assertions), std::env::args()) {
+                tray::show_main(app.handle());
+            }
             // Old waveform envelopes of the audio sync (audiosync.rs) are cleared out now and then.
             audiosync::prune_in_background(app.handle());
             Ok(())
@@ -104,6 +112,8 @@ pub fn run() {
             window_mode::set_keep_on_top,
             mini_player::mini_player_status,
             mini_player::set_mini_player,
+            login_item::open_at_login_status,
+            login_item::set_open_at_login,
             commands::media_durations,
             audiosync::sync_audio,
             audiosync::cancel_audio_sync,
@@ -141,11 +151,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building VibeCut Agent");
 
-    app.run(|app, event| {
-        if let RunEvent::Exit = event {
+    app.run(|app, event| match event {
+        // Opened again while it runs (Spotlight, Launchpad, the Dock): show the window as it was.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => tray::show_main(app),
+        RunEvent::Exit => {
             mini_player::save_on_exit(app);
             // Never leave Python processes behind.
             app.state::<SidecarJobs>().kill_all();
         }
+        _ => {}
     });
 }

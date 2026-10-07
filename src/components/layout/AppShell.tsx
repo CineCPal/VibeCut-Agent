@@ -17,11 +17,15 @@ export function AppShell() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* One line: the window's title bar already names the app, so the header carries the editors' and
+          the plan's status on the left and the window's controls on the right. */}
       <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <h1 className="text-sm font-semibold tracking-tight text-white">VibeCut Agent</h1>
-        <div className="flex items-center gap-1">
+        <h1 className="sr-only">VibeCut Agent</h1>
+        <div className="flex min-w-0 items-center gap-1.5">
           <NleStatusPill />
           <UsageMeter />
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           {keepOnTop !== null ? (
             <button
               type="button"

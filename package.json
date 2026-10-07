@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "build:panel": "vite build --config vite.panel.config.ts"
+    "build:panel": "vite build --config vite.panel.config.ts",
+    "install-app": "zsh -l scripts/install-app.sh"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

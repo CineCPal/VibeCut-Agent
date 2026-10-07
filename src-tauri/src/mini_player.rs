@@ -19,6 +19,8 @@ const FULL_MIN: (f64, f64) = (380.0, 520.0);
 /// The gap from the screen's right edge and the menu bar for a first-time bar.
 const MARGIN: f64 = 16.0;
 const MENU_BAR: f64 = 38.0;
+/// The bar's corners, like a macOS panel's. MiniPlayer.tsx rounds its border to match.
+pub const CORNER_RADIUS: f64 = 12.0;
 
 /// A window's place and size, in logical points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,6 +81,42 @@ fn save_position(app: &AppHandle, position: Option<(f64, f64)>) {
     }
 }
 
+/// Rounds the window's corners (0: square again). The window turns see-through and its content view's
+/// layer is clipped to the radius, so the corners show what's behind; the shadow follows the shape.
+/// Queued on the main thread after the decoration change that precedes it.
+fn round_corners(window: &WebviewWindow, radius: f64) {
+    #[cfg(target_os = "macos")]
+    {
+        let handle = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            use objc2::{msg_send, rc::Retained, runtime::AnyObject, runtime::Bool};
+            use objc2_app_kit::{NSColor, NSWindow};
+            let Ok(ptr) = handle.ns_window() else { return };
+            // SAFETY: Tauri's NSWindow for this webview window, used on the main thread while it lives.
+            let ns = unsafe { &*(ptr as *const NSWindow) };
+            let rounded = radius > 0.0;
+            ns.setOpaque(!rounded);
+            let background = if rounded { NSColor::clearColor() } else { NSColor::windowBackgroundColor() };
+            ns.setBackgroundColor(Some(&background));
+            if let Some(view) = ns.contentView() {
+                view.setWantsLayer(true);
+                // SAFETY: a layer-backed NSView's `layer` is a CALayer; these are its documented setters.
+                unsafe {
+                    let layer: Option<Retained<AnyObject>> = msg_send![&*view, layer];
+                    if let Some(layer) = layer {
+                        let _: () = msg_send![&*layer, setCornerRadius: radius];
+                        let _: () = msg_send![&*layer, setMasksToBounds: Bool::new(rounded)];
+                    }
+                }
+            }
+            ns.setHasShadow(true);
+            ns.invalidateShadow();
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, radius);
+}
+
 fn enter(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let full = frame_of(window).ok_or("The window's size couldn't be read")?;
     let saved = parse_position(crate::window_mode::read_file(app).get("miniPosition"));
@@ -92,9 +130,13 @@ fn enter(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let _ = window.set_min_size(Some(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT)));
     let _ = window.set_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
     let _ = window.set_position(LogicalPosition::new(x, y));
+    round_corners(window, CORNER_RADIUS);
     crate::window_mode::apply(window, true);
     let _ = window.unminimize();
     let _ = window.show();
+    // The bar takes the keyboard (its message box, ⌥⌘M), as the full window had it: the decoration
+    // change leaves it unfocused otherwise (seen live, 2026-10-07).
+    let _ = window.set_focus();
     Ok(())
 }
 
@@ -104,6 +146,7 @@ fn leave(app: &AppHandle, window: &WebviewWindow) {
         Err(_) => (None, None),
     };
     save_position(app, position);
+    round_corners(window, 0.0);
     let _ = window.set_decorations(true);
     let _ = window.set_resizable(true);
     let _ = window.set_min_size(Some(LogicalSize::new(FULL_MIN.0, FULL_MIN.1)));

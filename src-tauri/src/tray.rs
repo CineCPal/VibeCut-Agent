@@ -73,6 +73,14 @@ pub fn open_view(app: &AppHandle, view: View) {
     let _ = app.emit_to(MAIN_WINDOW, NAVIGATE_EVENT, view);
 }
 
+/// The menu-bar icon: "VA", drawn black on clear as a template image, so macOS shows it white or black to
+/// suit the menu bar (icons/tray-va.png, 36 px tall: 18 pt at @2x).
+pub fn tray_icon() -> Option<tauri::image::Image<'static>> {
+    let rgba = image::load_from_memory(include_bytes!("../icons/tray-va.png")).ok()?.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(tauri::image::Image::new_owned(rgba.into_raw(), width, height))
+}
+
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle();
     let chat = MenuItem::with_id(handle, ID_CHAT, "Open Agent Panel", true, None::<&str>)?;
@@ -124,7 +132,9 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 open_view(app, view);
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    if let Some(icon) = tray_icon() {
+        builder = builder.icon(icon).icon_as_template(true);
+    } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder.build(app)?;
@@ -144,5 +154,14 @@ mod tests {
         assert_eq!(view_for_menu_id(ID_QUIT), None);
         assert_eq!(view_for_menu_id(ID_MINI), None, "Mini Player switches the window, it opens no view");
         assert_eq!(view_for_menu_id("unknown"), None);
+    }
+
+    #[test]
+    fn the_menu_bar_icon_is_the_va_template() {
+        let icon = tray_icon().expect("icons/tray-va.png decodes");
+        assert_eq!(icon.height(), 36, "18 pt at @2x");
+        assert!(icon.width() > icon.height(), "two letters, wider than tall");
+        // A template image: only black pixels, shaped by their alpha.
+        assert!(icon.rgba().chunks(4).all(|p| p[3] == 0 || (p[0], p[1], p[2]) == (0, 0, 0)));
     }
 }

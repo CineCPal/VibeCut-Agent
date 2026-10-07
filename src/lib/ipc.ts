@@ -204,6 +204,15 @@ export function onMiniPlayer(handler: (on: boolean) => void): Promise<UnlistenFn
   return listen<boolean>(MINI_PLAYER_EVENT, (event) => handler(event.payload));
 }
 
+/** Whether the installed app opens at login (login_item.rs). A dev build refuses, with why. */
+export function getOpenAtLogin(): Promise<boolean> {
+  return invoke<boolean>("open_at_login_status");
+}
+
+export function setOpenAtLogin(on: boolean): Promise<boolean> {
+  return invoke<boolean>("set_open_at_login", { on });
+}
+
 /** A request from the MCP shim (mcp_bridge.rs), already checked by Rust. */
 export function onMcpRequest(handler: (request: McpRequest) => void): Promise<UnlistenFn> {
   return listen<McpRequest>(MCP_REQUEST_EVENT, (event) => handler(event.payload));

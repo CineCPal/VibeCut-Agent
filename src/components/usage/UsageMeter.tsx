@@ -169,7 +169,14 @@ export function UsageMeter({ compact = false }: { compact?: boolean }) {
         {pill}
       </button>
       {open ? (
-        <div id={panelId} role="dialog" aria-label="Usage" className="absolute right-0 top-full z-20 mt-1 w-72 space-y-3 rounded-md border border-border bg-surface p-3 shadow-lg">
+        // Placed against the window, not the pill: the pill sits partway along the header, and a 380 px
+        // window has no room for the popover on either side of it.
+        <div
+          id={panelId}
+          role="dialog"
+          aria-label="Usage"
+          className="fixed inset-x-3 top-12 z-20 mx-auto max-w-sm space-y-3 rounded-md border border-border bg-surface p-3 shadow-lg"
+        >
           <section className="space-y-2" aria-label="Claude plan">
             <div className="flex items-center justify-between">
               <h2 className="text-[11px] font-semibold uppercase tracking-wide text-cool-grey">Claude plan</h2>

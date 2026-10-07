@@ -96,7 +96,8 @@ export function MiniPlayer() {
     <div
       data-tauri-drag-region
       onDoubleClick={onDoubleClick}
-      className="flex h-full select-none flex-col justify-between gap-1 border border-border bg-surface px-3 py-2"
+      // Rounded like the window itself (mini_player.rs CORNER_RADIUS).
+      className="flex h-full select-none flex-col justify-between gap-1 rounded-[12px] border border-border bg-surface px-3 py-2"
       aria-label="VibeCut Agent mini player"
       role="region"
     >

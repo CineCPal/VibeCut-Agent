@@ -16,6 +16,7 @@ import { LibrarySection } from "./LibrarySection";
 import { ClaudeCodeSection } from "./ClaudeCodeSection";
 import { OutsideControlSection } from "./OutsideControlSection";
 import { PromptsSection } from "./PromptsSection";
+import { LoginItemRow } from "./LoginItemRow";
 import { Modal } from "../common/Modal";
 import { SidecarStatusRow } from "../common/SidecarStatusRow";
 import { Section } from "../common/Section";
@@ -165,6 +166,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             </span>
           </span>
         </label>
+        <LoginItemRow />
       </Section>
 
       <ApiKeysSection />

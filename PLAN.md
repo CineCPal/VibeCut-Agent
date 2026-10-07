@@ -1188,6 +1188,27 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - The Claude API at medium: the repo `.env` key returns 401 now; the app uses the Keychain's.
   - The Mini Player and the usage pill in a real window. Your own `tauri dev` was running and wasn't touched.
 
+## Installing and Launching (2026-10-07)
+- **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
+  - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
+  - quits a running installed copy with a real Quit (an Apple Event, so `RunEvent::Exit` stops the sidecars);
+  - signs with a lasting identity (`VIBECUT_SIGNING_IDENTITY`, else the first "Apple Development" one, passed as `APPLE_SIGNING_IDENTITY`). The designated requirement is then the bundle id plus that certificate, the same for every build, so the Keychain's "Always Allow" for the API keys survives updates. An ad-hoc signature changes every build and made the Keychain ask each time (seen live 2026-10-07). Tauri adds the hardened runtime, and the sidecar runs under it;
+  - copies the bundle to `~/Applications/VibeCut Agent.app` with `ditto`;
+  - opens it, unless a dev build (`target/debug/vibecut-agent`) is running.
+- **Launch behaviour (`lib.rs`):**
+  - The installed app opened by hand shows its window (`login_item::shows_window_at_launch`). A dev build, or a start with `--at-login`, stays in the menu bar.
+  - `RunEvent::Reopen` (Spotlight, Launchpad or the Dock while it runs) calls `tray::show_main`.
+- **Open at login:**
+  - `tauri-plugin-autostart` 2.7 with `MacosLauncher::LaunchAgent` and the argument `--at-login`. Its plist goes in `~/Library/LaunchAgents`.
+  - `login_item.rs` adds `open_at_login_status` / `set_open_at_login`. They are called from Rust only, so no JS capability is needed.
+  - A debug build refuses (`DEV_BUILD_REFUSAL`), since its LaunchAgent would point at `target/debug`.
+  - Settings → Window → "Open at login" (`LoginItemRow`), off by default.
+- **Checked (2026-10-07):**
+  - The script built and installed the app (ad-hoc signed, found by Spotlight) and opened it.
+  - The bundle's sidecar, Resolve and Premiere watchers ran from `python-env` in the app data folder.
+  - A second `open` kept one process.
+  - Not yet: the Open at login toggle in the installed app.
+
 ## API Keys in the Keychain (2026-10-05)
 
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
@@ -1220,6 +1241,7 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Gemini and Claude API streaming checked live with the keys. Next: the user's own try (with 8a's), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-06)* **Phases 8e–8h are built:** formatted replies with timeline-position chips, tool call cards, images with a message (all three providers; Claude Code now reads stream-json input), and saved prompts on `/`. Provider image turns checked live. Next: the user's own try in the app (8a–8h together), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-07)* **Phase 9 is built:** effort per Claude model (medium by default), the usage tracker (plan limits from Claude Code plus tokens and cost), and the Mini Player (⌥⌘M). Phases 8e–8h are committed as `890e089`. Next: the user's own try of the Mini Player (drag, expand, over a full-screen editor) and the usage pill; replace the repo `.env` Anthropic key (401); then 8a–8h's in-app checks and Resolve's "Revert & retry".
+  - *(2026-10-07)* **The app installs:** `npm run install-app` puts it in `~/Applications` (Spotlight, Launchpad, Dock), with Settings → Window → Open at login. Next: the user's try of Open at login, and keys in Settings → API keys for the installed app (it reads the Keychain, not `.env`).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1356,3 +1378,8 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
     - `useUsageStore`, and the header usage pill with its popover.
     - The About modal notes where the usage comes from. Nothing new is sent anywhere.
   - **9c:** a new `mini_player.rs` (`set_mini_player`, `mini_player_status`, the `mini-player` event, `miniPosition` in `window.json`), a tray "Mini Player" item, `core:window:allow-start-dragging`, and `MiniPlayer.tsx` on ⌥⌘M.
+- **2026-10-07 (Claude): an easy way to launch the app.**
+  - `scripts/install-app.sh` (`npm run install-app`) builds the app and installs it as `~/Applications/VibeCut Agent.app`.
+  - `RunEvent::Reopen` shows the window, and the installed app opened by hand opens its window.
+  - New `login_item.rs` with `tauri-plugin-autostart` (a LaunchAgent with `--at-login`), and Settings → Window → Open at login.
+- **2026-10-07 (Claude): the menu-bar icon is "VA"** (`icons/tray-va.png`, a template image). **The header is one line:** the title moved to the window's title bar. **The Mini Player has rounded corners** (12 pt; a see-through window with its content layer clipped) and **takes focus when it appears** (the decoration change left it unfocused, seen live). **`install-app` signs with the Apple Development identity**, so the Keychain stops asking after each update.

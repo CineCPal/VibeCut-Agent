@@ -29,11 +29,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 rustfft = "6.4.1"
 # Images sent with chat messages, filed beside the chat (chat_store.rs, Phase 8g). Already in the tree.
 base64 = "0.22"
+tauri-plugin-autostart = "2"
 
 # Lets the window into a full-screen editor's Space (window_mode.rs). Already in the tree through Tauri.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = [
-    "std", "NSWindow", "NSResponder", "NSView", "NSEvent", "NSImage", "NSPasteboard", "NSDragging",
+    "std", "NSWindow", "NSResponder", "NSView", "NSEvent", "NSColor", "NSImage", "NSPasteboard", "NSDragging",
     "NSDraggingItem", "NSDraggingSession", "NSApplication", "NSGraphics", "NSGraphicsContext",
 ] }
 # The Library's file drag (native_drag.rs), adapted from drag-rs: these are what it was built on.

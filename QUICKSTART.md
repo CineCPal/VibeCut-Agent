@@ -27,6 +27,21 @@
      ```
    - **Release builds opened from Finder** don't see `.env` or your shell variables, so use Settings.
 
+## Install the App (the easy way to launch it)
+
+```bash
+npm run install-app
+```
+This builds VibeCut Agent and installs it as **~/Applications/VibeCut Agent.app**, then opens it. The first build takes a few minutes.
+
+- **Open it** from Spotlight (⌘Space, "VibeCut Agent"), Launchpad or the Dock. Opened by hand, it shows its window. Opening it again while it runs brings the window back.
+- **Open at login:** Settings → Window → Open at login starts it in the menu bar when you log in, without a window. Only the installed app can do this.
+- **Its first launch** sets up Python in its app data folder, which takes about a minute.
+- **Signing:** the script signs with your first "Apple Development" identity (or `VIBECUT_SIGNING_IDENTITY`). macOS then sees every new build as the same app, so the Keychain asks only once ("Always Allow") before the app reads its keys. Without an identity it signs ad hoc and warns that the Keychain will ask after each update.
+- **Keys:** it doesn't read the repo's `.env`. Put the API keys in Settings → API keys, which saves them in the Keychain.
+- **Updating:** after pulling changes, run `npm run install-app` again. It quits the installed copy, replaces it and opens the new one.
+- **Don't run it alongside `npm run tauri dev`:** two copies would both watch the editors. The script won't open the app while a dev build runs.
+
 ## Running the App
 
 **Start the Desktop App (Tauri dev mode):**
@@ -134,11 +149,7 @@ Easier: `claude mcp add` it (Settings → Outside control → Copy Claude Code c
 printf '{}\n{"type":"ping","id":1}\n{"type":"end_session"}\n' | PYTHONPATH=src-python uv run python -u -m vibecut_agent session
 ```
 
-**Release build:**
-```bash
-npx tauri build --bundles app
-```
-The `.app` bundles the sidecar sources. It needs `uv` installed on the machine, and keeps its Python environment in the app data folder.
+**Release build:** `npm run install-app` (see "Install the App"), or `npx tauri build --bundles app` to build without installing. The `.app` bundles the sidecar sources. It needs `uv` installed on the machine, and keeps its Python environment in the app data folder.
 
 **Run Tests:**
 ```bash
