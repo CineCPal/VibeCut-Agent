@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { DependencyInfo, HwAccel, KeyProvider, KeyStatus, StoragePaths, View } from "../types/system";
 import type {
@@ -162,6 +162,17 @@ export function uninstallPremierePanel(): Promise<PremierePanelStatus> {
 export async function chooseFolder(title: string, defaultPath?: string): Promise<string | null> {
   const picked = await openDialog({ directory: true, multiple: false, title, ...(defaultPath ? { defaultPath } : {}) });
   return typeof picked === "string" ? picked : null;
+}
+
+/** Asks where to save a file (the Analyze tab's XML export); null if they cancelled. */
+export async function chooseSavePath(title: string, defaultPath: string, extensions: string[]): Promise<string | null> {
+  const picked = await saveDialog({ title, defaultPath, filters: [{ name: title, extensions }] });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Lets the Analyze tab's player read this clip (broll_preview.rs checks it's an existing video file). */
+export function allowPreview(path: string): Promise<void> {
+  return invoke("broll_preview_allow", { path });
 }
 
 /** Asks the user for one file with one of these extensions (none: any file); null if they cancelled. */

@@ -65,7 +65,7 @@ It is designed to run locally in the background, launching independently and int
 | command | `dependency_status` | `commands.rs` | `getDependencyStatus()` | `[{ name, path, version }]` for ffmpeg, ffprobe, exiftool, uv (PATH, then `/opt/homebrew/bin`, `/usr/local/bin`) |
 | command | `hardware_acceleration` | `commands.rs` | `getHardwareAcceleration()` | `{ videotoolbox, nvenc }` from `ffmpeg -encoders` |
 | command | `storage_paths` | `commands.rs` | `getStoragePaths()` | `{ config, data, logs }` app directories |
-| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key, or for `claude-code` the Claude Code setup as `claudeCode`, Phase 7b), `broll-analyze`, `broll-match`, `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
+| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key, or for `claude-code` the Claude Code setup as `claudeCode`, Phase 7b), `broll-analyze`, `broll-match`, `broll-export` (Phase 10: a Premiere XML from chosen segments, read from the folder cache), `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
 | command | `sidecar_send` | `sidecar.rs` | `sendToSidecar(jobId, message)` | writes one JSON line to an interactive job (`agent-session`); any `apiKey` or `claudeCode` is stripped |
 | command | `sidecar_cancel` | `sidecar.rs` | `cancelSidecar(jobId)` | SIGTERM to the process group, SIGKILL after 3 s |
 | command | `sidecar_session_status` | `sidecar.rs` | `getSessionStatus()` | `{ state: "starting" \| "ready" \| "stopped", version, python, message }` |
@@ -92,9 +92,11 @@ It is designed to run locally in the background, launching independently and int
 | event | `mcp-request` | `mcp_bridge.rs` | `onMcpRequest(cb)` | 7a: `{ id, caller, kind: list_tools \| call_tool, name?, args? }`, checked and rebuilt by Rust; refused requests (outside while Allow is off, a chat job that isn't running) never arrive |
 | event | `mcp-outside` | `mcp_bridge.rs` | `onMcpOutside(cb)` | 7a: the `mcp_status` shape, after Allow changes |
 | command | `claude_code_status` / `claude_code_set` | `claude_code.rs` | `getClaudeCodeStatus()`, `setClaudeCode(program, configDir)` | 7b: `{ program, programSaved, configDir, signedIn, email, subscription, detail }` from `claude auth status --json`; the program and profile folder are saved in `claude-code.json` |
-| event | `navigate` | `tray.rs` → main window | `onNavigate(cb)` | `"chat" \| "broll" \| "settings" \| "about"` |
+| event | `navigate` | `tray.rs` → main window | `onNavigate(cb)` | `"chat" \| "library" \| "broll" \| "settings" \| "about"` (`"broll"` is the Analyze tab) |
 | event | `sidecar-event` | `sidecar.rs` | `onSidecarEvent(cb)` | `{ jobId, command, event }`; `event` is one protocol object `{ type, ... }`. Chat: `status`, `retry`, `tool_calls`, `result`, `error`. B-roll: `starting`, `status`, `progress {fraction, phase, detail}`, `result`, `error`, `done` |
-| plugin | dialog `open` | `tauri-plugin-dialog` | `chooseFolder(title)` | the B-roll folder picker; only `dialog:allow-open` is granted |
+| plugin | dialog `open` | `tauri-plugin-dialog` | `chooseFolder(title)` | the B-roll folder picker (`dialog:allow-open`) |
+| plugin | dialog `save` | `tauri-plugin-dialog` | `chooseSavePath(title, defaultPath, extensions)` | Phase 10: where the Analyze tab's Premiere XML goes (`dialog:allow-save`) |
+| command | `broll_preview_allow` | `broll_preview.rs` | `allowPreview(path)` | Phase 10: lets the asset protocol read one clip for the Analyze tab's player, after checking it's an absolute path to an existing file with a video extension. The config's asset scope stays empty |
 | plugin | opener `revealItemInDir` | `tauri-plugin-opener` | `revealInFinder(path)` | Show in Finder for a B-roll result |
 | event | `sidecar-exit` | `sidecar.rs` | `onSidecarExit(cb)` | `{ jobId, code, cancelled, message }` |
 | event | `nle-state` | `nle.rs` | `onNleState(cb)` | `NleState`: `{ host, status: connecting \| connected \| disconnected \| error \| unavailable, message, product, version, project, timeline, timelines, reason, changedAt }` |
@@ -1188,6 +1190,51 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - The Claude API at medium: the repo `.env` key returns 401 now; the app uses the Keychain's.
   - The Mini Player and the usage pill in a real window. Your own `tauri dev` was running and wasn't touched.
 
+## Phase 10: A fuller B-Roll Analyzer (built 2026-10-07)
+
+**Why (the user):** make the Folder tab (Phase 4's analyzer, now the **Analyze** tab) sturdier and match VibeCut's own B-Roll Analyzer app (`VibeCut/src-python/broll-analyzer/app.py`): parameter controls that are remembered, several segments per clip, a way to preview a segment, and XML creation. **Decisions:** the preview plays **in the app**; the selects go to a **Premiere XML** and to **a new timeline in the connected editor** (VibeCut's FCPXML for Resolve was not ported: its own notes record that Resolve's import fails to relink). The header ("top bar") layout was left for later.
+
+The engine already supported all of this (ported in Phase 4, unused by the UI): window length, segments per clip, weights, workers, top N / minimum score, order, and `xml_export.export_xml`.
+
+**Options** (`AnalyzerOptions.tsx`, `useBrollStore`):
+- Shown: segment length (0.5–120 s), segments per clip (1–20), gap between segments (0–30 s, new `minGapSec`, passed through `pipeline.run_analysis` to `analyze_clip` / `rescore_clip`).
+- Advanced (folded): energy and brief weights (content-aware only), workers (automatic by default), Reset to defaults.
+- Typing is free; a value is clamped to `commands.py`'s ranges on Enter or blur (`cleanOptions`).
+- Remembered in localStorage (`vibecut-agent.broll`, now **version 2**). A Phase 4 save migrates with every option at its default; bad saved values are cleaned.
+
+**Results:**
+- The last finished run is kept (`lastResult`, at most 500 clips) with the options it used, so a restart still shows it. A cancelled run isn't kept.
+- When a scoring option differs from the kept run's, a bar names it and offers **Re-score**. Cached clips aren't decoded again (`rescore_clip`). Weights that weren't in use don't count.
+- Warnings and failed clips fold under "n issues".
+
+**Segments:** each clip row lists its segments as chips (`▶ 0:04–0:08 · 82`). A chip's box ticks it in or out of the selects (`excluded`, saved; reset by a new run); clicking it previews it. **Place** puts in the segment being previewed, else the best one.
+
+**Preview** (`SegmentPreview.tsx`):
+- A `<video>` pinned above the list, from `convertFileSrc(path)`, after `broll_preview_allow` (new `broll_preview.rs`). The CSP gains `media-src 'self' asset: http://asset.localhost`.
+- It loops between In and Out, starts muted (sound toggle), with Replay, previous/next segment and **Open in Source monitor** (`openInSourceMonitor`, now shared with the Library's `previewShot`).
+- Keys: Space, ←/→, R, Esc.
+- `.mov`, `.mp4` and `.m4v` play here; other formats, or a codec the web view can't decode, show the Source monitor offer instead.
+
+**Selects** (`SelectsBar.tsx`, `lib/brollSelects.ts`):
+- Include every clip, the best N, or those scoring at least a minimum; order best first or by file name; a sequence name. Clips left out are dimmed. Near-duplicates (dedupe runs) are always left out, as the analyzer's own export does.
+- A summary line: segments, clips, length.
+- **Export XML…:** the save dialog, then the new sidecar command **`broll-export`** (`commands.run_export`). It reads each clip's metadata from `.broll_analyzer_cache.json` (no decoding), takes the chosen segments, score and energy from the request, and calls `export_xml` with the sequence name. Paths must be inside the folder and analyzed; segments must be inside the clip; the output must be an absolute `.xml` path. The result offers Show in Finder.
+- **Build timeline** (`buildSelectsTimeline` in `lib/broll.ts`): `create_timeline` with the sequence name (recorded in `madeTimelines`), then `add_clips` with the segments back to back from 0, picture and sound, in batches of 50 (Premiere's limit). Every batch shares one step, so the Agent tab's **Revert** takes the clips back as one request; the new timeline itself stays, as with the agent's `create_timeline`. It's refused while a Story Editor draft is open or with no editor connected (the button says why).
+
+**Tests:**
+- Python `tests/broll/test_commands_export.py` (13): `minGapSec` reaches the analyzer; the XML has one clipitem per chosen segment in order, with the right frames; no decoding; bad requests refused.
+- Rust `broll_preview::tests`.
+- Vitest: `brollSelects.test.ts` (6), `useBrollStore.test.ts` (8), `broll.test.ts` (+6: options sent, kept run, XML export, a 60-segment build in two batches as one step, refusals), `FolderAnalyzer.test.tsx` (+8: options, kept result, ticks, Include, stale bar, preview, format fallback, export).
+
+**Tabs (the user, 2026-10-07):** the Library moved up into the main tab bar and B-Roll became Analyze, so the window has one row of tabs: **Agent ⌘1 · Library ⌘2 · Analyze ⌘3**. The Library/Folder sub-bar (`BrollPanel.tsx`) is gone, along with `useLibraryStore.view`. A new `View::Library` (`state.rs`) and a tray item **Open B-Roll Library** (`tray.rs`) open it; "Open B-Roll Analyzer" still sends `broll`, which is the Analyze tab. Each tab's tooltip says what it does. ⌘2 used to open B-Roll; it now opens the Library.
+
+**Checked live (2026-10-07), with the real sidecar on clips made with ffmpeg** (a 24 s clip blurred at 6–12 s and 16–20 s, a 12 s clip sharp only after 8 s, a 10 s mandelbrot zoom):
+- `broll-analyze` with 3 s segments, 3 per clip, 1 s gap: the blurred clip gave 1.4–4.8, 13.0–16.3 and 20.6–24.0 s, missing both blurred spans; the mostly blurred one gave only 8.6–12.0 s.
+- `broll-export` with one segment unticked, in 0.3 s: "VCA 10 selects", 4 video items back to back (336 frames), audio split per channel (mono 1 track, stereo 2, the silent clip none).
+- **Not yet:** the Analyze tab in the running app (the player on real footage, Export XML's save dialog), Build timeline in Resolve on a scratch copy, and importing the XML in Premiere.
+
+**About:** a new "B-roll analyzer · Local only" row. Nothing new is sent anywhere.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1241,6 +1288,7 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - *(2026-10-06)* **Phases 8b–8d are built:** streaming replies on all three providers, Copy/Retry/Edit (Claude Code turns now fork their session), and History search, rename and model-written names (`chat-title`). Gemini and Claude API streaming checked live with the keys. Next: the user's own try (with 8a's), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-06)* **Phases 8e–8h are built:** formatted replies with timeline-position chips, tool call cards, images with a message (all three providers; Claude Code now reads stream-json input), and saved prompts on `/`. Provider image turns checked live. Next: the user's own try in the app (8a–8h together), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-07)* **Phase 9 is built:** effort per Claude model (medium by default), the usage tracker (plan limits from Claude Code plus tokens and cost), and the Mini Player (⌥⌘M). Phases 8e–8h are committed as `890e089`. Next: the user's own try of the Mini Player (drag, expand, over a full-screen editor) and the usage pill; replace the repo `.env` Anthropic key (401); then 8a–8h's in-app checks and Resolve's "Revert & retry".
+  - *(2026-10-07)* **Phase 10 is built:** the Analyze tab's options are remembered, clips give up to 20 segments with ticks, segments preview in the app, and the selects export as a Premiere XML (`broll-export`) or build a new timeline (one Revert). Next: the user's try in the app (`npm run install-app` or `tauri dev`), Build timeline on a scratch Resolve timeline, and the XML in Premiere. The header layout was left for later.
   - *(2026-10-07)* **The app installs:** `npm run install-app` puts it in `~/Applications` (Spotlight, Launchpad, Dock), with Settings → Window → Open at login. Next: the user's try of Open at login, and keys in Settings → API keys for the installed app (it reads the Keychain, not `.env`).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
@@ -1383,3 +1431,13 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - `RunEvent::Reopen` shows the window, and the installed app opened by hand opens its window.
   - New `login_item.rs` with `tauri-plugin-autostart` (a LaunchAgent with `--at-login`), and Settings → Window → Open at login.
 - **2026-10-07 (Claude): the menu-bar icon is "VA"** (`icons/tray-va.png`, a template image). **The header is one line:** the title moved to the window's title bar. **The Mini Player has rounded corners** (12 pt; a see-through window with its content layer clipped) and **takes focus when it appears** (the decoration change left it unfocused, seen live). **`install-app` signs with the Apple Development identity**, so the Keychain stops asking after each update.
+- **2026-10-07 (Claude): Phase 10, a fuller B-Roll Analyzer (Analyze tab).**
+  - Options (segment length, segments per clip, a new gap option, weights, workers) are shown and remembered (`useBrollStore` version 2, with a migration). The last run is kept, with a Re-score bar when options change.
+  - Segment chips with ticks; an in-app player (`SegmentPreview.tsx`, new command `broll_preview_allow` in `broll_preview.rs`, CSP `media-src`); the Library's Source monitor call is shared as `openInSourceMonitor`.
+  - Selects: Include (all / best N / minimum score), order, sequence name. **Export XML…** (new sidecar command `broll-export`, `dialog:allow-save`) and **Build timeline** (`create_timeline` + batched `add_clips`, one Revert step).
+  - `minGapSec` added to `broll-analyze` and passed through `pipeline.py`.
+- **2026-10-07 (Claude): one row of tabs.** Agent · Library · Analyze (⌘1–⌘3). The Library is a top-level tab (new `library` view and tray item "Open B-Roll Library"); B-Roll is renamed Analyze, and its Library/Folder sub-bar is removed (`BrollPanel.tsx` deleted, `useLibraryStore.view` dropped). New `TabBar.test.tsx`.
+- **2026-10-07 (Claude): a shorter content-aware line.** The Analyze tab's checkbox reads "Content-aware scoring · energy, brief, search · first run ~2 GB" on one line; the full disclosure (local SigLIP 2, about 2 GB of packages, model weights from Hugging Face, offline after) moved to its tooltip. Settings and About still say where the model comes from.
+- **2026-10-07 (Claude): the brief moved under Advanced** (with the weights, content-aware only). When a brief is set, the folded Advanced heading shows it ("Advanced · brief: …"), since it still counts.
+- **2026-10-07 (Claude): Analyze tab order.** The options read: segment length / segments per clip / gap, then Content-aware scoring (and near-duplicates), then Advanced, then Analyze folder (`AnalyzerOptions` takes the content-aware controls as `contentAwareControls`).
+- **2026-10-07 (Claude): a status bar at the bottom of the window.** The agent's state dot (Ready / Working / Stopping / Error / Offline) and its model moved from the top of the Agent tab to a new `StatusBar.tsx` footer under every tab (not in the Mini Player). The Agent tab's top row keeps Revert, History and New chat, right-aligned.

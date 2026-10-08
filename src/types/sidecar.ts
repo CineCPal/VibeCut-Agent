@@ -1,7 +1,7 @@
 /** Mirrors the serde shapes in `src-tauri/src/sidecar.rs`. */
 
 /** Commands the frontend may start with `sidecar_start` (`session` and the editor watchers are started by Rust). */
-export type SidecarCommand = "health" | "chat" | "broll-analyze" | "broll-match" | "broll-spyglass" | "transcribe" | "audio-peaks" | "assemble" | "chat-title";
+export type SidecarCommand = "health" | "chat" | "broll-analyze" | "broll-match" | "broll-export" | "broll-spyglass" | "transcribe" | "audio-peaks" | "assemble" | "chat-title";
 
 /** One protocol event: a JSON object with a string `type` (see `vibecut_agent/protocol.py`). */
 export interface SidecarEvent {

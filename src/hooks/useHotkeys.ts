@@ -6,7 +6,8 @@ import type { View } from "../types/system";
 /** ⌘/Ctrl shortcuts → destinations. Escape is handled by `Modal`. */
 const SHORTCUTS: Record<string, View> = {
   "1": "chat",
-  "2": "broll",
+  "2": "library",
+  "3": "broll",
   ",": "settings",
   i: "about",
 };

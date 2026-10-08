@@ -19,7 +19,7 @@ const lib = vi.hoisted(() => ({
 vi.mock("../../lib/library", async (original) => ({ ...(await original<typeof import("../../lib/library")>()), ...lib }));
 vi.mock("../../lib/spyglassIpc", () => ({ keyframeUrl: (p: string) => `asset://localhost${p}` }));
 
-import { BrollPanel } from "./BrollPanel";
+import { LibraryPanel } from "./LibraryPanel";
 import { useLibraryStore, type LibraryShot } from "../../store/useLibraryStore";
 import { useUiStore } from "../../store/useUiStore";
 
@@ -46,7 +46,6 @@ describe("the B-roll Library panel", () => {
     lib.connectedHost.mockReturnValue("premiere");
     lib.placeBlocked.mockReturnValue(null);
     useLibraryStore.setState({
-      view: "library",
       index: { path: "/suite/spyglass_index.sqlite", source: "environment", chosen: null },
       scopes: [],
       expanded: [],
@@ -66,24 +65,21 @@ describe("the B-roll Library panel", () => {
     });
   });
 
-  it("opens the Library by default, and switches to the folder analyzer", () => {
-    render(<BrollPanel />);
+  it("opens the Library and browses the whole archive", () => {
+    render(<LibraryPanel />);
     expect(lib.openLibrary).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("2 shot(s) in the whole archive");
-    fireEvent.click(screen.getByRole("tab", { name: "Folder" }));
-    expect(useLibraryStore.getState().view).toBe("folder");
-    expect(screen.getByRole("button", { name: "Analyze folder" })).toBeInTheDocument();
   });
 
   it("shows keyframes and previews a shot when its thumbnail is double-clicked", () => {
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     expect(screen.getAllByRole("img")[0]).toHaveAttribute("src", "asset://localhost/kf/s1.jpg");
     fireEvent.doubleClick(screen.getAllByRole("img")[0]);
     expect(lib.previewShot).toHaveBeenCalledWith("s1");
   });
 
   it("lets an offline shot say which drive to attach, instead of doing nothing", () => {
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     fireEvent.doubleClick(screen.getAllByRole("img")[1]);
     expect(lib.previewShot).toHaveBeenCalledWith("s2");
     expect(screen.getByRole("button", { name: "Place s2.mov" })).toBeDisabled();
@@ -91,7 +87,7 @@ describe("the B-roll Library panel", () => {
   });
 
   it("starts a native drag of the shot's file instead of the webview's", () => {
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     const card = screen.getByRole("listitem", { name: "s1.mov, 0:02.0 to 0:06.5" });
     expect(card).toHaveAttribute("draggable", "true");
     const allowed = fireEvent.dragStart(card);
@@ -102,7 +98,7 @@ describe("the B-roll Library panel", () => {
   });
 
   it("takes VibeCut's keys on a focused card", () => {
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     const card = screen.getByRole("listitem", { name: "s1.mov, 0:02.0 to 0:06.5" });
     fireEvent.keyDown(card, { key: " " });
     fireEvent.keyDown(card, { key: "p" });
@@ -117,14 +113,14 @@ describe("the B-roll Library panel", () => {
   it("says why the editor actions are off", () => {
     lib.connectedHost.mockReturnValue(null);
     lib.placeBlocked.mockReturnValue("Connect Premiere Pro or DaVinci Resolve to place clips");
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     expect(screen.getByRole("button", { name: "Preview s1.mov in the Source monitor" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Import s1.mov" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Source, Import and Place: connect premiere pro or davinci resolve first");
   });
 
   it("searches what's typed, or browses when it's empty", () => {
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Browse" }));
     expect(lib.searchLibrary).toHaveBeenLastCalledWith("");
     fireEvent.change(screen.getByLabelText("Search B-roll"), { target: { value: "sunset" } });
@@ -134,14 +130,14 @@ describe("the B-roll Library panel", () => {
 
   it("points to Settings when there's no index", () => {
     useLibraryStore.setState({ index: null });
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Choose index in Settings…" }));
     expect(useUiStore.getState().overlay).toBe("settings");
   });
 
   it("shows the pool with its own actions", () => {
     useLibraryStore.setState({ pool: [shot("s1")] });
-    render(<BrollPanel />);
+    render(<LibraryPanel />);
     expect(screen.getByRole("button", { name: "Pool s1.mov" })).toHaveTextContent("Pooled");
     expect(screen.getByRole("button", { name: "Pool s1.mov" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Import all" }));

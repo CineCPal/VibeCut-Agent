@@ -58,6 +58,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     // The B-roll analyzer (vibecut_agent/broll): technical scoring, and the optional `energy` extra.
     CommandSpec { name: "broll-analyze", interactive: false, managed: false },
     CommandSpec { name: "broll-match", interactive: false, managed: false },
+    // A Premiere selects reel from the Analyze tab's chosen segments, read from the cache (Phase 10).
+    CommandSpec { name: "broll-export", interactive: false, managed: false },
     // The B-roll Library's text search of Spyglass's index (read only).
     CommandSpec { name: "broll-spyglass", interactive: false, managed: false },
     // Local transcription (Phase 6b): mlx-whisper, plus pyannote speaker labels when asked.

@@ -11,7 +11,8 @@ Scores are 0 to 100.
 
 request: {
     "folder": absolute path,
-    "windowSec": 4.0, "maxSegments": 1,
+    "windowSec": 4.0, "maxSegments": 1, "minGapSec": 1.0,   (the least space between two segments of
+                                                             one clip)
     "enableEnergy": false, "energyWeight": 0.35,     (0 to 1; enableEnergy turns on content-aware
                                                       scoring with the local SigLIP 2 model)
     "brief": "",               (what the editor is looking for, at most 200 characters; needs
@@ -38,6 +39,24 @@ and `relevance` are null when content-aware scoring or the brief was off for thi
 `ranked` and are left out of the XML export). `duplicates` counts them. `catalog` is only
 populated by a `"catalog": true` request: [{path, filename, durationSeconds, technicalScore}] for
 every clip this folder's cache already has a score for (nothing is decoded to answer this).
+
+    broll-export      (one JSON request on stdin)
+
+Writes a Premiere selects reel (xml_export.export_xml) from segments the editor already chose, with
+no decoding: each clip's frame rate, size, audio format and timecode come from the folder's cache,
+so every clip must have been analyzed first.
+
+request: {
+    "folder": absolute path,
+    "outputPath": absolute path ending in .xml,
+    "sequenceName": "B-Roll Selects",   (at most 120 characters)
+    "showEnergy": false,                 (whether the bin comments carry the energy score)
+    "clips": [{"path": absolute path inside the folder, "score": 0-100, "energy": 0-100 or null,
+               "segments": [{"start": s, "end": s}]}]    (in sequence order; at most 2000 clips,
+                                                          20 segments each)
+}
+
+Events: starting, status, result {exportPath, clips, segments, seconds}, error, done.
 
     broll-match       (one JSON request on stdin)
 
@@ -99,7 +118,7 @@ import sqlite3
 from typing import Any, TextIO
 
 from vibecut_agent.broll import pipeline, result_cache, semantic, spyglass_index
-from vibecut_agent.broll.analyzer import find_video_files
+from vibecut_agent.broll.analyzer import ClipResult, Segment, find_video_files
 from vibecut_agent.broll.xml_export import export_xml
 from vibecut_agent.protocol import (
     CancelFlag,
@@ -220,6 +239,7 @@ def run_analyze(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag) -
 
     window_sec = _number(request, "windowSec", pipeline.DEFAULT_WINDOW_SEC, 0.5, 120.0)
     max_segments = int(_number(request, "maxSegments", pipeline.DEFAULT_MAX_SEGMENTS, 1, 20))
+    min_gap_sec = _number(request, "minGapSec", pipeline.DEFAULT_MIN_GAP_SEC, 0.0, 30.0)
     energy_weight = _number(request, "energyWeight", pipeline.DEFAULT_ENERGY_WEIGHT, 0.0, 1.0)
     relevance_weight = _number(request, "relevanceWeight", pipeline.DEFAULT_RELEVANCE_WEIGHT, 0.0, 1.0)
     enable_energy = request.get("enableEnergy") is True
@@ -295,6 +315,7 @@ def run_analyze(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag) -
         relevance_targets=relevance_targets,
         relevance_weight=relevance_weight,
         dedupe=dedupe,
+        min_segment_gap_sec=min_gap_sec,
         on_status=lambda message: emitter.emit("status", phase="analyzing", detail=message),
         on_progress=lambda percent, message: emitter.progress(
             percent, 100, phase="analyzing", detail=message
@@ -684,7 +705,96 @@ def _spyglass_query_vectors(
     return vectors
 
 
-COMMANDS = {"analyze": run_analyze, "match": run_match, "spyglass": run_spyglass}
+MAX_EXPORT_CLIPS = 2000
+MAX_EXPORT_SEGMENTS = 20
+MAX_SEQUENCE_NAME = 120
+
+
+def _seconds(value: Any) -> float | None:
+    """A number of seconds from a request, or None (booleans aren't numbers here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _export_segments(raw: Any, duration: float, name: str) -> list[Segment]:
+    """A clip's segments for the export: each inside the clip, at least one frame-ish long."""
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_EXPORT_SEGMENTS:
+        raise RequestError(f"{name}: segments must list 1 to {MAX_EXPORT_SEGMENTS} stretches")
+    segments: list[Segment] = []
+    for seg in raw:
+        start = _seconds(seg.get("start") if isinstance(seg, dict) else None)
+        end = _seconds(seg.get("end") if isinstance(seg, dict) else None)
+        if start is None or end is None:
+            raise RequestError(f"{name}: each segment needs a start and an end in seconds")
+        # The UI rounds to milliseconds, so allow that much past the clip's end.
+        if start < 0 or end - start < 0.04 or end > duration + 0.01:
+            raise RequestError(
+                f"{name}: the segment {start}-{end} s isn't inside the clip ({duration:.2f} s)"
+            )
+        segments.append(Segment(start=start, end=min(end, duration), score=0.0))
+    return segments
+
+
+def run_export(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag) -> int:
+    folder = _folder(request)
+    output = request.get("outputPath")
+    require_absolute_paths([output], "export path")
+    if not isinstance(output, str) or not output.lower().endswith(".xml"):
+        raise RequestError("The export path must end in .xml")
+    if not os.path.isdir(os.path.dirname(output)):
+        raise RequestError(f"Not a folder: {os.path.dirname(output)}")
+    name = request.get("sequenceName", "B-Roll Selects")
+    if not isinstance(name, str) or not name.strip():
+        raise RequestError("sequenceName must be text")
+    name = " ".join(name.split())[:MAX_SEQUENCE_NAME]
+    show_energy = request.get("showEnergy") is True
+
+    raw = request.get("clips")
+    if not isinstance(raw, list) or not raw:
+        raise RequestError("clips must list at least one clip")
+    if len(raw) > MAX_EXPORT_CLIPS:
+        raise RequestError(f"At most {MAX_EXPORT_CLIPS} clips at a time")
+    paths = [c.get("path") if isinstance(c, dict) else None for c in raw]
+    _validate_files(paths, folder)
+    clip_paths = [p for p in paths if isinstance(p, str)]  # every one, once _validate_files has passed
+
+    emitter.emit("status", phase="reading", detail="Reading the analysis cache")
+    cache = result_cache.load_cache(folder)
+    clips: list[ClipResult] = []
+    for item, path in zip(raw, clip_paths, strict=True):
+        entry = cache.get(os.path.relpath(path, folder))
+        if not entry:
+            raise RequestError(f"{os.path.basename(path)} hasn't been analyzed yet; analyze the folder first")
+        clip = result_cache.result_from_entry(path, entry)
+        if clip.duration <= 0:
+            raise RequestError(f"{clip.filename} has no duration in the cache; analyze the folder again")
+        clip.segments = _export_segments(item.get("segments"), clip.duration, clip.filename)
+        clip.best_window_start, clip.best_window_end = clip.segments[0].start, clip.segments[0].end
+        score = item.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            clip.overall_score = max(0.0, min(100.0, float(score)))
+        energy = item.get("energy")
+        if isinstance(energy, (int, float)) and not isinstance(energy, bool):
+            clip.mean_energy_score = max(0.0, min(100.0, float(energy)))
+        else:
+            clip.energy_enabled = False
+        clips.append(clip)
+
+    emitter.emit("status", phase="exporting", detail="Writing the Premiere XML")
+    export_xml(clips, output, sequence_name=name, show_energy=show_energy)
+    segments = [s for c in clips for s in c.segments]
+    emitter.emit(
+        "result",
+        exportPath=output,
+        clips=len(clips),
+        segments=len(segments),
+        seconds=round(sum(s.end - s.start for s in segments), 3),
+    )
+    return 0
+
+
+COMMANDS = {"analyze": run_analyze, "match": run_match, "spyglass": run_spyglass, "export": run_export}
 
 
 def main(command: str, emitter: Emitter, stdin: TextIO, cancel: CancelFlag | None = None) -> int:

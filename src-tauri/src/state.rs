@@ -10,6 +10,8 @@ use std::sync::Mutex;
 #[serde(rename_all = "lowercase")]
 pub enum View {
     Chat,
+    Library,
+    /// The B-roll analyzer (the Analyze tab).
     Broll,
     Settings,
     About,
@@ -49,6 +51,7 @@ mod tests {
     #[test]
     fn views_serialize_lowercase() {
         assert_eq!(serde_json::to_string(&View::Broll).unwrap(), "\"broll\"");
+        assert_eq!(serde_json::to_string(&View::Library).unwrap(), "\"library\"");
         assert_eq!(serde_json::from_str::<View>("\"settings\"").unwrap(), View::Settings);
     }
 }

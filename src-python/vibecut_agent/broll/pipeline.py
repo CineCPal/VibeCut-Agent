@@ -37,6 +37,7 @@ from vibecut_agent.broll.analyzer import (
 
 DEFAULT_WINDOW_SEC = 4.0
 DEFAULT_MAX_SEGMENTS = 1
+DEFAULT_MIN_GAP_SEC = 1.0
 DEFAULT_ENERGY_WEIGHT = 0.35
 DEFAULT_RELEVANCE_WEIGHT = 0.35
 # Briefs come from a free-text field; bound them so a pasted essay can't
@@ -74,6 +75,7 @@ def analyze_clip_worker(
     energy_weight,
     relevance_targets=None,
     relevance_weight=0.0,
+    min_segment_gap_sec=DEFAULT_MIN_GAP_SEC,
 ):
     """Runs in a worker process (see `run_analysis`). Must be a plain module-level
     function -- not a method or a closure -- so it can be pickled and
@@ -94,6 +96,7 @@ def analyze_clip_worker(
             energy_weight=energy_weight,
             relevance_targets=relevance_targets,
             relevance_weight=relevance_weight,
+            min_segment_gap_sec=min_segment_gap_sec,
         )
     except Exception as e:
         return failed_result(path, e)
@@ -155,6 +158,7 @@ def run_analysis(
     relevance_targets: np.ndarray | None = None,
     relevance_weight: float = 0.0,
     dedupe: bool = False,
+    min_segment_gap_sec: float = DEFAULT_MIN_GAP_SEC,
     on_status: Callable[[str], None] | None = None,
     on_progress: Callable[[float, str], None] | None = None,
     executor_factory: Callable[..., concurrent.futures.Executor] | None = None,
@@ -207,6 +211,7 @@ def run_analysis(
                     result,
                     window_sec=window_sec,
                     max_segments=max_segments,
+                    min_segment_gap_sec=min_segment_gap_sec,
                     energy_weight=energy_weight,
                     enable_energy=enable_energy,
                     relevance_targets=relevance_targets,
@@ -256,6 +261,7 @@ def run_analysis(
                         energy_weight,
                         relevance_targets,
                         relevance_weight,
+                        min_segment_gap_sec,
                     )
                     pending[fut] = i
 

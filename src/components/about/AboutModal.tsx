@@ -93,6 +93,12 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             value={spyglass ? "Read only, local" : spyglass === null ? "No index found" : "Not checked yet"}
             detail={spyglass ? `${spyglass.path} · ${INDEX_SOURCE[spyglass.source]}` : "Rough Cut Studio Suite's Spyglass; choose it in Settings → B-roll Library"}
           />
+          <StatusRow
+            label="B-roll analyzer"
+            tone="ok"
+            value="Local only"
+            detail="Scoring, segment previews and XML exports read the footage on this Mac and upload nothing; a preview can read only the clip you play"
+          />
           <SidecarStatusRow />
           {NLE_HOSTS.map((host) => (
             <StatusRow

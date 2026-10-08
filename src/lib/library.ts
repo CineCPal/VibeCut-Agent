@@ -300,8 +300,22 @@ export function importShots(keys: string[], only?: NleHost): Promise<void> {
   });
 }
 
-/** Opens a shot in the editor's source viewer with its range marked: Premiere's Source monitor (no
- * import), or Resolve's (which shows only Media Pool clips, so it imports into the bin first). */
+/** Opens a stretch of a file in the editor's source viewer with it marked: Premiere's Source monitor (no
+ * import), or Resolve's (which shows only Media Pool clips, so it imports into the bin first). Returns what
+ * happened. Shared by the Library and the Analyze tab's preview. */
+export async function openInSourceMonitor(host: NleHost, clip: { path: string; filename: string; start: number; end: number }): Promise<string> {
+  const r = await nleCall<{ marked: boolean; atIn: boolean; imported: boolean; page?: string }>(host, "source_preview", {
+    path: clip.path,
+    inSeconds: clip.start,
+    outSeconds: clip.end,
+    ...(host === "resolve" ? { bin: BROLL_BIN } : {}),
+  });
+  if (host === "premiere") return `${clip.filename} is in the Source monitor${r.marked ? ", In and Out marked" : ""}${r.atIn ? "" : " (its playhead stayed put)"}.`;
+  const page = r.page === "edit" || r.page === "cut" ? "" : " Open the Edit page to see it.";
+  return `${clip.filename} is in the source viewer${r.imported ? ` (imported into ${BROLL_BIN})` : ""}${r.marked ? ", In and Out marked" : ""}; press Shift+I to go to its In.${page}`;
+}
+
+/** Opens a shot in the editor's source viewer with its range marked (openInSourceMonitor). */
 export function previewShot(key: string, only?: NleHost): Promise<void> {
   const shot = shotOf(key);
   const host = connectedHost(only);
@@ -309,15 +323,7 @@ export function previewShot(key: string, only?: NleHost): Promise<void> {
   return act([key], async () => {
     if (!host) throw new Error(only ? `Connect ${HOST_SHORT[only]} first` : NO_EDITOR);
     const [shot] = usableShots([key]);
-    const r = await nleCall<{ marked: boolean; atIn: boolean; imported: boolean; page?: string }>(host, "source_preview", {
-      path: shot.path,
-      inSeconds: shot.start,
-      outSeconds: shot.end,
-      ...(host === "resolve" ? { bin: BROLL_BIN } : {}),
-    });
-    if (host === "premiere") return `${shot.filename} is in the Source monitor${r.marked ? ", In and Out marked" : ""}${r.atIn ? "" : " (its playhead stayed put)"}.`;
-    const page = r.page === "edit" || r.page === "cut" ? "" : " Open the Edit page to see it.";
-    return `${shot.filename} is in the source viewer${r.imported ? ` (imported into ${BROLL_BIN})` : ""}${r.marked ? ", In and Out marked" : ""}; press Shift+I to go to its In.${page}`;
+    return openInSourceMonitor(host, shot);
   }, working);
 }
 

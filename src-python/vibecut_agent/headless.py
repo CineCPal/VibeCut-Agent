@@ -37,6 +37,13 @@ def broll_match(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("match", emitter, stdin)
 
 
+def broll_export(emitter: Emitter, stdin: TextIO) -> int:
+    """Writes a Premiere selects reel from segments chosen in the Analyze tab (Phase 10)."""
+    from vibecut_agent.broll import commands
+
+    return commands.main("export", emitter, stdin)
+
+
 def broll_spyglass(emitter: Emitter, stdin: TextIO) -> int:
     """Searches Spyglass's index (Rough Cut Studio Suite - Blair Themed), read only."""
     from vibecut_agent.broll import commands
@@ -89,6 +96,7 @@ COMMANDS: dict[str, Command] = {
     "chat": chat,
     "broll-analyze": broll_analyze,
     "broll-match": broll_match,
+    "broll-export": broll_export,
     "broll-spyglass": broll_spyglass,
     "transcribe": transcribe,
     "audio-peaks": audio_peaks,

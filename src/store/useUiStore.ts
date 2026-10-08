@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { View } from "../types/system";
 
-export type Tab = "chat" | "broll";
+/** The panels: the agent chat, the Spyglass B-roll Library, and the B-roll analyzer ("broll", the Analyze tab). */
+export type Tab = "chat" | "library" | "broll";
 export type Overlay = "settings" | "about";
 
 export interface UiState {

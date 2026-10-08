@@ -6,30 +6,16 @@ import { useAgentStore } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
-import type { AgentStatus } from "../../types/agent";
-import { AI_CHOICES } from "../../types/agent";
-import { StatusDot, type Tone } from "../common/StatusDot";
 import { ChatHistoryMenu } from "./ChatHistoryMenu";
 import { Composer, attachImages } from "./Composer";
 import { imageFiles } from "../../lib/agent/attachments";
 import { DraftBar } from "./DraftBar";
 import { MessageList, type TurnActions } from "./MessageList";
 
-const STATUS_TONE: Record<AgentStatus, Tone> = { offline: "off", idle: "ok", thinking: "warn", stopping: "warn", error: "bad" };
-const STATUS_TEXT: Record<AgentStatus, string> = {
-  offline: "Offline",
-  idle: "Ready",
-  thinking: "Working",
-  stopping: "Stopping",
-  error: "Error",
-};
-
 export function ChatPanel() {
   const messages = useAgentStore((s) => s.messages);
   const status = useAgentStore((s) => s.status);
-  const aiChoice = useAgentStore((s) => s.aiChoice);
   const activity = useAgentStore((s) => s.activity);
-  const model = AI_CHOICES.find((c) => c.id === aiChoice)?.label ?? aiChoice;
   const running = status === "thinking" || status === "stopping";
   const entries = useEditLogStore((s) => s.entries);
   const step = lastEditStep(entries);
@@ -107,11 +93,8 @@ export function ChatPanel() {
       {dropping ? (
         <p className="pointer-events-none absolute inset-x-0 top-1/2 z-10 text-center text-sm text-athletic-blue-light">Drop images to send them</p>
       ) : null}
-      <div className="flex items-center justify-between px-3 py-1.5 text-[11px]">
-        <span className="flex items-center gap-1.5">
-          <StatusDot tone={STATUS_TONE[status]} />
-          {STATUS_TEXT[status]} · <span className="font-mono">{model}</span>
-        </span>
+      {/* The agent's state and model are on the window's status bar (StatusBar). */}
+      <div className="flex items-center justify-end px-3 py-1.5 text-[11px]">
         <span className="flex items-center gap-1">
         {revertable > 0 ? (
           <button

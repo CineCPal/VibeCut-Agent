@@ -28,7 +28,6 @@ export interface LibraryShot {
 }
 
 export type LibraryMode = "browse" | "search" | "agent";
-export type BrollView = "library" | "folder";
 
 export interface LibraryNotice {
   text: string;
@@ -39,8 +38,6 @@ export interface LibraryNotice {
 export const MAX_POOL = 200;
 
 export interface LibraryState {
-  /** Which half of the B-roll tab is showing. */
-  view: BrollView;
   /** Undefined until looked for; null when this computer has no index. */
   index: SpyglassIndexInfo | null | undefined;
   /** Folders ticked as the search scope (the whole archive when none), shared with the agent's find_broll. */
@@ -65,14 +62,12 @@ export interface LibraryState {
   /** Shots with an editor action in flight, by key. */
   pending: string[];
 
-  setView: (view: BrollView) => void;
-  set: (patch: Partial<Omit<LibraryState, "set" | "setView">>) => void;
+  set: (patch: Partial<Omit<LibraryState, "set">>) => void;
 }
 
 export const useLibraryStore = create<LibraryState>()(
   persist(
     (set) => ({
-      view: "library",
       index: undefined,
       scopes: [],
       expanded: [],
@@ -89,14 +84,13 @@ export const useLibraryStore = create<LibraryState>()(
       pool: [],
       notice: null,
       pending: [],
-      setView: (view) => set({ view }),
       set: (patch) => set(patch),
     }),
     {
       name: "vibecut-agent.library",
       storage: createJSONStorage(() => localStorage),
       // Keyframe paths are allowed per run (spyglass.rs), so a remembered pool asks for them again.
-      partialize: (s) => ({ view: s.view, scopes: s.scopes, pool: s.pool.map((p) => ({ ...p, keyframe: null })) }),
+      partialize: (s) => ({ scopes: s.scopes, pool: s.pool.map((p) => ({ ...p, keyframe: null })) }),
     },
   ),
 );

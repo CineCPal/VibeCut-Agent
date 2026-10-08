@@ -4,7 +4,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 const ipc = vi.hoisted(() => ({ getKeepOnTop: vi.fn(), setKeepOnTop: vi.fn(), onKeepOnTop: vi.fn() }));
 vi.mock("../lib/ipc", () => ipc);
 vi.mock("../components/chat/ChatPanel", () => ({ ChatPanel: () => null }));
-vi.mock("../components/broll/BrollPanel", () => ({ BrollPanel: () => null }));
+vi.mock("../components/broll/LibraryPanel", () => ({ LibraryPanel: () => null }));
+vi.mock("../components/broll/FolderAnalyzer", () => ({ FolderAnalyzer: () => null }));
 vi.mock("../components/layout/NleStatusPill", () => ({ NleStatusPill: () => null }));
 
 import { toggleKeepOnTop, useKeepOnTop } from "./useKeepOnTop";

@@ -1,5 +1,6 @@
 mod audiosync;
 mod broll_panel;
+mod broll_preview;
 mod chat_store;
 mod claude_code;
 mod commands;
@@ -34,7 +35,7 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // The B-roll panel's folder picker (only `dialog:allow-open` is granted, capabilities/default.json).
+        // The B-roll folder picker and the Analyze tab's XML save dialog (`dialog:allow-open` and `dialog:allow-save`, capabilities/default.json).
         .plugin(tauri_plugin_dialog::init())
         // "Open at login" (login_item.rs): a LaunchAgent, only when the user turns it on.
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![login_item::AT_LOGIN_ARG])))
@@ -139,6 +140,7 @@ pub fn run() {
             chat_store::edit_log_load,
             chat_store::edit_log_save,
             broll_panel::broll_panel_thumbs,
+            broll_preview::broll_preview_allow,
             spyglass::find_spyglass_index,
             spyglass::spyglass_choose_index,
             spyglass::spyglass_folder_children,

@@ -22,7 +22,8 @@ describe("useHotkeys", () => {
 
   it("maps ⌘/Ctrl shortcuts to views", () => {
     expect(viewForShortcut(key("1", { metaKey: true }))).toBe("chat");
-    expect(viewForShortcut(key("2", { ctrlKey: true }))).toBe("broll");
+    expect(viewForShortcut(key("2", { ctrlKey: true }))).toBe("library");
+    expect(viewForShortcut(key("3", { metaKey: true }))).toBe("broll");
     expect(viewForShortcut(key(",", { metaKey: true }))).toBe("settings");
     expect(viewForShortcut(key("I", { metaKey: true }))).toBe("about");
   });
@@ -36,6 +37,8 @@ describe("useHotkeys", () => {
   it("navigates on keydown", () => {
     render(<Harness />);
     fireEvent.keyDown(window, { key: "2", metaKey: true });
+    expect(useUiStore.getState().tab).toBe("library");
+    fireEvent.keyDown(window, { key: "3", metaKey: true });
     expect(useUiStore.getState().tab).toBe("broll");
     fireEvent.keyDown(window, { key: ",", metaKey: true });
     expect(useUiStore.getState().overlay).toBe("settings");

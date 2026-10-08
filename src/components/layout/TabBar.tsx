@@ -1,10 +1,11 @@
 import { useRef, type KeyboardEvent } from "react";
-import { Clapperboard, MessageSquare } from "lucide-react";
+import { Library, MessageSquare, Sparkles } from "lucide-react";
 import { useUiStore, type Tab } from "../../store/useUiStore";
 
-export const TABS: { id: Tab; label: string; shortcut: string; Icon: typeof MessageSquare }[] = [
-  { id: "chat", label: "Agent", shortcut: "⌘1", Icon: MessageSquare },
-  { id: "broll", label: "B-Roll", shortcut: "⌘2", Icon: Clapperboard },
+export const TABS: { id: Tab; label: string; shortcut: string; hint: string; Icon: typeof MessageSquare }[] = [
+  { id: "chat", label: "Agent", shortcut: "⌘1", hint: "The editing agent", Icon: MessageSquare },
+  { id: "library", label: "Library", shortcut: "⌘2", hint: "Search and browse Spyglass's index of your archive", Icon: Library },
+  { id: "broll", label: "Analyze", shortcut: "⌘3", hint: "Rank the clips in a folder on disk and export the best segments (B-Roll Analyzer)", Icon: Sparkles },
 ];
 
 export const tabId = (tab: Tab) => `tab-${tab}`;
@@ -13,7 +14,7 @@ export const panelId = (tab: Tab) => `panel-${tab}`;
 export function TabBar() {
   const tab = useUiStore((s) => s.tab);
   const setTab = useUiStore((s) => s.setTab);
-  const refs = useRef<Record<Tab, HTMLButtonElement | null>>({ chat: null, broll: null });
+  const refs = useRef<Record<Tab, HTMLButtonElement | null>>({ chat: null, library: null, broll: null });
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const index = TABS.findIndex((t) => t.id === tab);
@@ -31,7 +32,7 @@ export function TabBar() {
 
   return (
     <div role="tablist" aria-label="Panels" className="flex gap-1 border-b border-border px-2" onKeyDown={onKeyDown}>
-      {TABS.map(({ id, label, shortcut, Icon }) => {
+      {TABS.map(({ id, label, shortcut, hint, Icon }) => {
         const selected = id === tab;
         return (
           <button
@@ -45,7 +46,7 @@ export function TabBar() {
             aria-selected={selected}
             aria-controls={panelId(id)}
             tabIndex={selected ? 0 : -1}
-            title={`${label} (${shortcut})`}
+            title={`${hint} (${shortcut})`}
             onClick={() => setTab(id)}
             className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition-colors ${
               selected

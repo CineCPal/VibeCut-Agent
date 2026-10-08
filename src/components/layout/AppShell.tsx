@@ -4,8 +4,10 @@ import { toggleMiniPlayer } from "../../hooks/useMiniPlayer";
 import { UsageMeter } from "../usage/UsageMeter";
 import { useUiStore } from "../../store/useUiStore";
 import { ChatPanel } from "../chat/ChatPanel";
-import { BrollPanel } from "../broll/BrollPanel";
+import { FolderAnalyzer } from "../broll/FolderAnalyzer";
+import { LibraryPanel } from "../broll/LibraryPanel";
 import { NleStatusPill } from "./NleStatusPill";
+import { StatusBar } from "./StatusBar";
 import { TabBar, panelId, tabId } from "./TabBar";
 
 const iconButton = "rounded p-1.5 text-cool-grey hover:bg-surface hover:text-athletic-blue-light";
@@ -51,8 +53,9 @@ export function AppShell() {
       </header>
       <TabBar />
       <main id={panelId(tab)} role="tabpanel" aria-labelledby={tabId(tab)} className="flex min-h-0 flex-1 flex-col">
-        {tab === "chat" ? <ChatPanel /> : <BrollPanel />}
+        {tab === "chat" ? <ChatPanel /> : tab === "library" ? <LibraryPanel /> : <FolderAnalyzer />}
       </main>
+      <StatusBar />
     </div>
   );
 }

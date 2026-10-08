@@ -75,7 +75,6 @@ const match = (id: number, over: Partial<SpyglassMatch> = {}): SpyglassMatch => 
 
 const reset = () =>
   useLibraryStore.setState({
-    view: "library",
     index: undefined,
     scopes: [],
     expanded: [],

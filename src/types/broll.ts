@@ -24,8 +24,19 @@ export interface AnalyzeResult {
   cancelled: boolean;
   failed: { path: string; message: string }[];
   warnings: string[];
+  /** The XML written by this run (the agent's `exportXmlPath`), or null. */
+  exportPath: string | null;
   ranked: RankedClip[];
   duplicates: number;
+}
+
+/** A `broll-export` result: the Premiere XML written from the chosen segments (Phase 10). */
+export interface ExportResult {
+  exportPath: string;
+  clips: number;
+  segments: number;
+  /** The selects reel's length. */
+  seconds: number;
 }
 
 /** One hit of a `match` text search. */
@@ -48,5 +59,5 @@ export interface MatchResult {
   cancelled: boolean;
   failed: { path: string; message: string }[];
   warnings: string[];
-  matches: { id: string; text: string; results: MatchHit[] }[];
+  matches: { id: string; text: string; meta?: unknown; results: MatchHit[] }[];
 }
