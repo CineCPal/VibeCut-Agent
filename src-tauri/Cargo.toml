@@ -30,6 +30,7 @@ rustfft = "6.4.1"
 # Images sent with chat messages, filed beside the chat (chat_store.rs, Phase 8g). Already in the tree.
 base64 = "0.22"
 tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
 
 # Lets the window into a full-screen editor's Space (window_mode.rs). Already in the tree through Tauri.
 [target.'cfg(target_os = "macos")'.dependencies]

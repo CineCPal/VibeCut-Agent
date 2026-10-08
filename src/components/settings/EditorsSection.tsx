@@ -6,7 +6,7 @@ import {
   nleReconnect,
   uninstallPremierePanel,
 } from "../../lib/ipc";
-import { CONNECTION_TEXT, CONNECTION_TONE, connectionDetail, panelAdvice } from "../../lib/nleStatus";
+import { CONNECTION_TEXT, CONNECTION_TONE, panelAdvice } from "../../lib/nleStatus";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import type { NleHost, PremierePanelStatus } from "../../types/nle";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
@@ -53,7 +53,7 @@ export function EditorsSection() {
   const panelCurrent = panel?.installedVersion && panel.installedVersion === panel.bundledVersion;
 
   return (
-    <Section title="Editors">
+    <Section title="Connections">
       <ul className="divide-y divide-border">
         {NLE_HOSTS.map((host) => {
           const state = hosts[host];
@@ -65,7 +65,6 @@ export function EditorsSection() {
                     label={NLE_LABELS[host]}
                     tone={CONNECTION_TONE[state.status]}
                     value={CONNECTION_TEXT[state.status]}
-                    detail={connectionDetail(state) ?? undefined}
                   />
                 </ul>
               </div>

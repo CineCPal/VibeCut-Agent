@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { getAppVersion } from "../../lib/ipc";
 import { refreshIndex } from "../../lib/library";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -6,7 +7,7 @@ import { useLibraryStore } from "../../store/useLibraryStore";
 import { INDEX_SOURCE } from "../settings/LibrarySection";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES, claudeCodeUsable } from "../../types/agent";
+import { AI_CHOICES, KEY_ENV, claudeCodeUsable } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
 import { DependencyList } from "../common/DependencyList";
 import { Modal } from "../common/Modal";
@@ -14,7 +15,6 @@ import { SidecarStatusRow } from "../common/SidecarStatusRow";
 import { Section } from "../common/Section";
 import { StatusRow } from "../common/StatusRow";
 import { CONNECTION_TEXT, CONNECTION_TONE, connectionDetail } from "../../lib/nleStatus";
-import { KEY_ENV } from "../settings/SettingsPanel";
 
 export const APP_DESCRIPTION =
   "A menu-bar AI editing assistant that works alongside Premiere Pro and DaVinci Resolve: an agent chat for multi-step timeline edits, a B-roll Library over Spyglass's index of your archive, and a B-roll analyzer for folders on disk.";
@@ -29,6 +29,9 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
   const hosts = useNleStateStore((s) => s.hosts);
   const aiChoice = useAgentStore((s) => s.aiChoice);
   const spyglass = useLibraryStore((s) => s.index);
+  const loading = useSystemStore((s) => s.loading);
+  const error = useSystemStore((s) => s.error);
+  const refresh = useSystemStore((s) => s.refresh);
   const model = AI_CHOICES.find((c) => c.id === aiChoice);
 
   useEffect(() => {
@@ -61,7 +64,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label={`Active model: ${model?.label ?? aiChoice}`}
             tone={!modelChecked ? "off" : modelKeyReady ? "ok" : "warn"}
             value={!modelChecked ? "Unknown" : modelKeyReady ? readyText : missingText}
-            detail={!model ? undefined : model.provider === "claude-code" ? "Your Claude subscription, through Claude Code" : KEY_ENV[model.provider].env}
+            detail={!model ? undefined : model.provider === "claude-code" ? "Your Claude subscription, through Claude Code" : KEY_ENV[model.provider]}
           />
           <StatusRow
             label="Claude Code (subscription)"
@@ -99,6 +102,12 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             value="Local only"
             detail="Scoring, segment previews and XML exports read the footage on this Mac and upload nothing; a preview can read only the clip you play"
           />
+          <StatusRow
+            label="Notifications"
+            tone="ok"
+            value="Local only"
+            detail="Shown by macOS when an answer finishes or a change waits for review while the window is away; nothing is sent anywhere"
+          />
           <SidecarStatusRow />
           {NLE_HOSTS.map((host) => (
             <StatusRow
@@ -112,7 +121,25 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
         </ul>
       </Section>
 
-      <Section title="Binaries">
+      <Section
+        title="Binaries"
+        action={
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-athletic-blue-light hover:text-white disabled:opacity-50"
+          >
+            <RefreshCw size={12} aria-hidden="true" className={loading ? "animate-spin" : undefined} />
+            Refresh
+          </button>
+        }
+      >
+        {error ? (
+          <p role="alert" className="mb-1 text-xs text-loss">
+            {error}
+          </p>
+        ) : null}
         <DependencyList />
       </Section>
 

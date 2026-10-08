@@ -1235,6 +1235,150 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
 
 **About:** a new "B-roll analyzer · Local only" row. Nothing new is sent anywhere.
 
+## Phase 11: Settings tabs, a queue, @-mentions, review before edits, notifications, faster first token (built 2026-10-07)
+
+**The user's picks:** the four chat features (a queue while the agent works, @-mentions, Review edits first, done notifications) and, of the optimizations, a faster first token. Asked mid-phase: Settings split into tabs, with anything About already shows taken out.
+
+### 11a: Settings in tabs
+- `SettingsPanel.tsx` is now a tab strip (ARIA tablist, ←/→/Home/End). The last tab is kept in `useUiStore.settingsTab` for the app's run.
+  - **General:** Window, Notifications.
+  - **Agent:** Agent model (model, effort, Story Editor first read), Chat (Review edits first, names), Saved prompts.
+  - **Accounts:** API keys, Claude subscription.
+  - **Editors:** Preferred editor, Connections (Reconnect, Premiere panel), Outside control.
+  - **Library:** the Spyglass index.
+- Each section is its own file: `AgentModelSection`, `ChatSection`, `WindowSection`, `PreferredEditorSection`, `NotificationsSection`.
+- `Modal` gains `toolbar` and `fill`, so the tabs sit outside the scroll and the dialog doesn't jump between tabs.
+- **Removed as About's:** the Agent sidecar section (Restart is now the ↻ on About's sidecar row, `SidecarStatusRow`), Local dependencies (Refresh is now on About's Binaries heading), and each editor's connection detail line (Settings keeps the dot and Reconnect). `KEY_ENV` for About comes from `types/agent`.
+- Section titles are unchanged, so the app's "Settings → Claude subscription"-style hints still name a section. QUICKSTART now gives the tab too.
+
+### 11b: Queue while working
+- **`useAgentStore`:** `queue` (`QueuedMessage {id, text, images, mentions}`, at most `MAX_QUEUE` = 5, not persisted) and `queuePaused`.
+- **`controller.ts`:**
+  - `submitMessage` sends now, or queues while a turn runs, Claude Code edits from outside, or messages already wait.
+  - `drainQueue` runs after each turn's `endTurn` (a `setTimeout 0`, once the result is handled) and when `outsideRunning` drops to 0.
+  - A Stop, an `error`, or the job's exit hold the queue (`pauseQueue`).
+  - `resumeQueue` is Send next. `editQueued` takes one back into an empty box.
+  - New chat and opening a chat clear it.
+- **UI:**
+  - `QueueList.tsx` above the composer: Edit, Remove, and when held, "Send next · Clear".
+  - While busy, the composer shows Queue (ListPlus) beside Stop, and Enter queues.
+  - The Mini Player queues on Return and says "n queued".
+
+### 11c: @-mentions
+- **`lib/agent/mentions.ts`:**
+  - `mentionQuery` (the `@word` before the caret).
+  - `allMentions` reads timelines, plus clips and markers from the timeline the last snapshot read. `context.ts` keeps it (`lastTimelineView` / `rememberTimelineView`), else `loadMentionTimeline` reads it once when the list opens, or uses the open draft. It also reads the pool (`p3` ids), the speakers named this connection, and the Library's results and pool. No new search runs.
+  - `matchingMentions` gives up to 8 per group, with names starting with the typed text first.
+  - `keptMentions` keeps only the `@label`s still in the text.
+  - `mentionBlock` writes the block.
+- **What the model gets:** after the snapshot, `[MENTIONED: what the user pointed at with @ in this message]` with one line each (`- @Interview A.mov = clip id "c1" (V1 0.0s–12.5s)`). `prompt.ts` has one line explaining it.
+- **Saved and carried:** `ChatMessage.mentions` is saved (checked in `parseSavedChat`) and carried by Retry, Edit and the queue.
+- **UI:**
+  - The "/" list became the shared `SuggestionList.tsx`, with group headings, used for both lists.
+  - User messages show mentions as chips (`MentionText.tsx`, a tooltip with the id).
+
+### 11d: Review edits first
+- **`toolKinds.ts`:**
+  - `CHANGING_TOOLS` (30) and `NOT_REVIEWED` (24). A test fails if any tool `executorsFor`/`toolDeclarations` gives (both editors) is in neither, so a new tool must be classified.
+  - **Reviewed:** edits, markers, timeline make/copy/switch/rename, import, link/unlink/sync, speaker roles, `send_to_*`, `discard_draft`.
+  - **Not reviewed:** reads and searches, the selection, the playhead, transcribing, the Story Editor (it only opens a draft), and the draft's own cuts, which reach the editor only through `send_to_*`.
+  - `describeChange` writes the card's line ("Delete 3 clips: A.mov, B.mov, C.mov"), with clip names from the last read timeline.
+  - `server.ts`'s `isReadTool` is unchanged on purpose: it decides what an outside client may run while the chat works, a different question.
+- **The setting:** `useAgentStore.reviewEdits` (persisted, off by default). It's in Settings → Agent → Chat and on the shield in the Agent tab's top row.
+- **`runChatTool`:**
+  - A change gets a `pending` card (`ChatToolCall.state` gains `pending` and `declined`) and waits on `review.ts` (`awaitReview` / `answerReview`).
+  - The card offers Apply, Skip, and Apply all for this request, which approves that step's later changes.
+  - Skip returns `{declined: true, error: DECLINED_ERROR}` to the model.
+  - Stop and the job ending skip whatever waits (`skipAllReviews`).
+  - A `pending` card in a saved chat loads as `declined`.
+- **Claude (subscription):**
+  - The shim gave up on a call after 120 s. `runChatTool` now calls `onWait`. The MCP server's `handleRequest` passes `mcpHold(request.id)`, and the new Rust command **`mcp_hold`** writes `replies/<id>.hold`.
+  - `AppBridge.ask` then allows `HOLD_TIMEOUT_SECONDS` (30 min) and deletes the hold with the reply.
+  - `claude_code_chat.child_env` sets `MCP_TOOL_TIMEOUT=1800000`.
+  - Stale holds are pruned with the replies (30 min).
+- Outside control (remote sessions) isn't reviewed; those sessions aren't the in-app chat.
+
+### 11e: Done notifications
+- **Plugin:** `tauri-plugin-notification` 2 and `@tauri-apps/plugin-notification`, with the capability `notification:default`.
+- **`lib/notify.ts`:**
+  - `notifyAway(title, body)` checks `getCurrentWindow().isVisible()` / `isFocused()` (default window permissions) and only notifies when the window is hidden or another app is in front.
+  - The body is the first line, Markdown stripped, at most 120 characters.
+  - Never throws.
+- **`useNotifyStore` (persisted):** `enabled` (on) and `sound` (off; macOS "Glass").
+- **Settings → General → Notifications:** turning it on asks macOS once (`enableNotifications`). A refusal points to System Settings.
+- **When:**
+  - a turn finishes with nothing left in the queue (not after a Stop);
+  - an `error`;
+  - a change waits for review.
+- **About:** a "Notifications · Local only" row.
+
+### 11f: Faster first token
+**Measured before (2026-10-07, this Mac, Claude Code 2.1.292, Work profile):**
+- **A chat job's imports:**
+  - Release env (`python-env`, 0 `.pyc`): 1.2–1.65 s.
+  - Dev `.venv`: 0.7–0.9 s.
+  - `anthropic` alone: 0.6 s, imported on the Claude Code path for `resolve_effort` only.
+- **Claude Code:**
+  - A cold turn reports `system/init` 1.3–2.3 s after it starts.
+  - Probe: it starts and connects its MCP server (the shim's `list_tools` arrives at 1.1 s) **before** reading its message. Its `init` then comes 0.05 s after the message is written.
+
+**Changes:**
+1. **Bytecode:**
+   - A release run sets `PYTHONPYCACHEPREFIX=<app data>/pycache` (`sidecar::bytecode_env`, also the MCP shim's launch) in place of `PYTHONDONTWRITEBYTECODE`. Every `.pyc`, for the packages and the bundle's sources, lives there; the signed bundle is never written.
+   - Dev runs and ResolvePython are unchanged.
+   - (`UV_COMPILE_BYTECODE` was tried and dropped: uv then re-checks bytecode on every run, +0.45 s.)
+2. **Lighter imports:**
+   - `agent/effort.py` holds the effort levels.
+   - `ChatError` and `STOPPED_NOTICE` live in `chat_steps.py`; `gemini_chat` imports them back.
+   - `headless.py` imports the chat and the watchers per command.
+   - The Claude Code path now loads none of `anthropic`, `requests` or `nle.watch` (tested in a subprocess).
+3. **Connections reused:** `claude_client._make_client` is cached per key (`lru_cache`), and Gemini uses one `requests.Session` (`gemini_chat._http_post`).
+4. **The first words go at once:** `ReplyStream` no longer holds them for 40 ms.
+5. **Snapshot:** the pool and the timeline are read side by side, and images are filed alongside.
+6. **Warm job:** the first keystroke in an empty composer (agent idle, no job) starts the chat job with no `userMessage` (`warmUp`). `chat.py` (`_converse`) waits for the first `user_message`. A send waits for a start in progress (`warming`).
+7. **Warm Claude Code:**
+   - `claude_code_chat.Launcher` keeps the next turn's `claude -p` started, with stdin open. `chat.py` calls `prepare_turn` after each turn and at a warm start.
+   - A turn with the very same arguments takes it. Any other turn (a Retry or Edit resuming an earlier session, the lost-session fallback) ends it and starts its own.
+   - `close()` ends it with the job.
+   - No model call happens until a message is written.
+8. **Timing:** `lib/agent/turnTiming.ts` marks send → timeline read → sent (new or running job) → first status → first words. It logs `[VibeCut] turn timing: …` to the console, and the status bar's Ready/Working tooltip shows the last one.
+
+**Measured after:**
+- **Imports with the prefix cache**, against the untouched release env:
+  - Claude Code path 0.11 s (was 1.2–1.65).
+  - Claude API path 0.68 s (was 1.15).
+  - The first run after an install or update pays the compile once (0.35 s / 1.9 s).
+- **`claude_code_chat.run_chat_turn` with real Claude Code** (Sonnet 5.5, low effort, a stand-in app on the bridge):
+  - **Cold:** init 1.27–1.46 s, first words 2.3–5.6 s.
+  - **Warm:** init 0.03–0.05 s, first words 1.1 s.
+- Gemini and the Claude API weren't timed end to end. The repo `.env` Anthropic key still returns 401.
+
+### Tests
+- **Python (+9):**
+  - Warm start: waits for the first message.
+  - The job's launcher: prepared at start and after a turn, closed with the job.
+  - The subscription path's imports.
+  - Launcher: takes the warm one, ends a mismatched one, `close`, no setup.
+  - `MCP_TOOL_TIMEOUT`.
+  - The shim honouring a hold past its limit.
+  - `ReplyStream`'s first words.
+- **Rust (+2, and 2 extended):** a dev run writes no bytecode, `mcp_hold`'s file; the release launch and the shim launch check the prefix.
+- **Vitest (+42), with existing tests updated:**
+  - `SettingsPanel` 3, and About's Restart and Refresh 1.
+  - Composer: queue 2, mentions 2.
+  - `mentions` 4.
+  - Controller: queue 4, mentions 2, warm start and timing 4, review 5.
+  - `toolKinds` 2, ToolCards review 2, `notify` 4, `chatHistory` 2.
+  - The store's queue 1, MiniPlayer 1, StatusBar 1, MessageList chips 1.
+- **All green:** pytest 757 (+2 skipped), cargo 130, vitest 581, ruff, mypy, eslint, tsc, clippy, `npm run build`.
+
+### Checked live
+- **The Claude Code probes and timings above.**
+- **Review with Claude Code:** a real `add_markers` call held for 130 s with `.hold`, past the shim's 120 s, then answered at 132.9 s; Claude replied "Done. I added one marker named \"Hook\" at 1 second." (134.7 s). A first run failed with "quit before answering" because the stand-in app wrote its heartbeat non-atomically; the real app uses `write_atomic`.
+- **Not yet:**
+  - The app itself: the tabs, queue, mentions, review cards and notifications. Notifications need the installed app (`npm run install-app`): macOS asks to allow them once.
+  - A review card on a scratch Resolve timeline.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1289,6 +1433,7 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
   - *(2026-10-06)* **Phases 8e–8h are built:** formatted replies with timeline-position chips, tool call cards, images with a message (all three providers; Claude Code now reads stream-json input), and saved prompts on `/`. Provider image turns checked live. Next: the user's own try in the app (8a–8h together), "Revert & retry" on a scratch Resolve timeline, then Premiere and Phase 7's live checks.
   - *(2026-10-07)* **Phase 9 is built:** effort per Claude model (medium by default), the usage tracker (plan limits from Claude Code plus tokens and cost), and the Mini Player (⌥⌘M). Phases 8e–8h are committed as `890e089`. Next: the user's own try of the Mini Player (drag, expand, over a full-screen editor) and the usage pill; replace the repo `.env` Anthropic key (401); then 8a–8h's in-app checks and Resolve's "Revert & retry".
   - *(2026-10-07)* **Phase 10 is built:** the Analyze tab's options are remembered, clips give up to 20 segments with ticks, segments preview in the app, and the selects export as a Premiere XML (`broll-export`) or build a new timeline (one Revert). Next: the user's try in the app (`npm run install-app` or `tauri dev`), Build timeline on a scratch Resolve timeline, and the XML in Premiere. The header layout was left for later.
+  - *(2026-10-07)* **Phase 11 is built:** Settings in tabs (About keeps what only reports), a message queue, @-mentions, Review edits first (with `mcp_hold` for Claude Code), done notifications, and a faster first token (bytecode kept outside the bundle, lighter imports, a warm job and a warm Claude Code). Next: the user's try in the installed app (notifications ask once), a review card on a scratch Resolve timeline, and Gemini/Claude API timings with a fresh key.
   - *(2026-10-07)* **The app installs:** `npm run install-app` puts it in `~/Applications` (Spotlight, Launchpad, Dock), with Settings → Window → Open at login. Next: the user's try of Open at login, and keys in Settings → API keys for the installed app (it reads the Keychain, not `.env`).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
@@ -1441,3 +1586,16 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
 - **2026-10-07 (Claude): the brief moved under Advanced** (with the weights, content-aware only). When a brief is set, the folded Advanced heading shows it ("Advanced · brief: …"), since it still counts.
 - **2026-10-07 (Claude): Analyze tab order.** The options read: segment length / segments per clip / gap, then Content-aware scoring (and near-duplicates), then Advanced, then Analyze folder (`AnalyzerOptions` takes the content-aware controls as `contentAwareControls`).
 - **2026-10-07 (Claude): a status bar at the bottom of the window.** The agent's state dot (Ready / Working / Stopping / Error / Offline) and its model moved from the top of the Agent tab to a new `StatusBar.tsx` footer under every tab (not in the Mini Player). The Agent tab's top row keeps Revert, History and New chat, right-aligned.
+- **2026-10-07 (Claude): Phase 11.**
+  - **11a:** Settings in five tabs (General, Agent, Accounts, Editors, Library). The sidecar section, local dependencies and the editors' detail lines moved to About (with Restart and Refresh).
+  - **11b:** a message queue (`submitMessage`, `drainQueue`, `QueueList`, the Mini Player's "n queued").
+  - **11c:** @-mentions (`mentions.ts`, `SuggestionList`, `MentionText`, the `[MENTIONED]` block, `ChatMessage.mentions`).
+  - **11d:** Review edits first (`toolKinds.ts`, `review.ts`, pending/declined cards, the shield; new Rust command `mcp_hold`, the shim's `.hold`, `MCP_TOOL_TIMEOUT`).
+  - **11e:** notifications (`tauri-plugin-notification`, `notification:default`, `notify.ts`, `useNotifyStore`, Settings → General → Notifications, an About row).
+  - **11f:**
+    - `PYTHONPYCACHEPREFIX` for release runs.
+    - `agent/effort.py`, and `ChatError` in `chat_steps.py`; lazy imports in `headless.py`.
+    - A cached Anthropic client and a Gemini session; the first words sent at once.
+    - The parallel snapshot.
+    - The warm job (a `chat` start without `userMessage`) and the warm Claude Code (`Launcher`, `prepare_turn`).
+    - `turnTiming.ts` and the status bar tooltip.

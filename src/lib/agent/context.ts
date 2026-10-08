@@ -13,6 +13,17 @@ import { useNleStateStore } from "../../store/useNleStateStore";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 
+/** The timeline the last snapshot read (Phase 11c: what @-mentions offer clips and markers from). */
+let lastView: { host: NleHost; timeline: string; view: HostTimeline } | null = null;
+
+export function lastTimelineView(host: NleHost, timeline: string): HostTimeline | null {
+  return lastView && lastView.host === host && lastView.timeline === timeline ? lastView.view : null;
+}
+
+export function rememberTimelineView(host: NleHost, timeline: string, view: HostTimeline): void {
+  lastView = { host, timeline, view };
+}
+
 export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -24,11 +35,13 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
   if (!host) return snapshotHeader(null, null);
   // Another project in the editor starts the connection (made timelines, pool ids) over.
   useConnectionStore.getState().forProject(host, useNleStateStore.getState().hosts[host].project);
-  await refreshPool(host, timeline);
+  // The pool and the timeline are read side by side (Phase 11f); the watcher answers them in turn.
+  const pool = refreshPool(host, timeline);
   let view: HostTimeline | null = null;
   let problem: string | undefined;
   const draft = draftOf(host);
   if (draft) {
+    await pool;
     // The tools work on the draft while it's open, so the agent sees the draft (VibeCut's rule).
     view = draftAsTimeline(draft, useNleStateStore.getState().hosts[host].project ?? "");
     const head = `[DRAFT of "${draft.base}", not sent yet: ${draft.changes.length} change(s) (${draft.changes.slice(-3).join("; ")}). Its clip ids are the draft's. send_to_${host} makes it a new ${host === "premiere" ? "sequence" : "timeline"}; discard_draft drops it.]`;
@@ -38,9 +51,11 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     try {
       view = await nleCall<HostTimeline>(host, "read_timeline", { timeline });
       useNleStateStore.getState().setLastTimeline({ host, timeline, fps: view.fps, startTimecode: view.startTimecode });
+      rememberTimelineView(host, timeline, view);
     } catch (error) {
       problem = `"${timeline}" couldn't be read: ${describeError(error)}`;
     }
   }
+  await pool;
   return `${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}`;
 }

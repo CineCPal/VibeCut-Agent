@@ -20,4 +20,11 @@ describe("StatusBar", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Working");
     expect(screen.getByRole("contentinfo")).toHaveTextContent(AI_CHOICES[1].label);
   });
+
+  it("says how long the last reply took to start (Phase 11f)", async () => {
+    const { useTurnTimingStore } = await import("../../lib/agent/turnTiming");
+    useTurnTimingStore.setState({ last: { marks: { context: 300, sent: 420, status: 500, firstWords: 1250 }, warm: true } });
+    render(<StatusBar />);
+    expect(screen.getByRole("status")).toHaveAttribute("title", "Last reply: first words 1.3 s · timeline read 0.3 s · sent 0.4 s (running job) · model called 0.5 s");
+  });
 });

@@ -59,6 +59,9 @@ LONG_TOOLS = frozenset(
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0
+# A call waiting for the user's review in the app (Phase 11d: the app writes `replies/<id>.hold`) may
+# wait this long for Apply or Skip.
+HOLD_TIMEOUT_SECONDS = 30 * 60
 
 INSTRUCTIONS = (
     "These tools edit the timeline open in Adobe Premiere Pro or DaVinci Resolve through the VibeCut "
@@ -151,6 +154,7 @@ class AppBridge:
             raise BridgeError(f"Couldn't reach VibeCut Agent: {exc}") from None
 
         reply_path = self.folder / "replies" / f"{request_id}.json"
+        hold_path = self.folder / "replies" / f"{request_id}.hold"
         started = time.monotonic()
         next_progress = PROGRESS_EVERY_SECONDS
         next_heartbeat = 1.0
@@ -162,12 +166,15 @@ class AppBridge:
                     raise BridgeError(f"VibeCut Agent's reply couldn't be read: {exc}") from None
                 finally:
                     reply_path.unlink(missing_ok=True)
+                    hold_path.unlink(missing_ok=True)
                 if not isinstance(reply, dict):
                     raise BridgeError("VibeCut Agent's reply wasn't an object")
                 if reply.get("ok") is not True:
                     raise BridgeError(str(reply.get("error") or "VibeCut Agent refused the request"))
                 return reply.get("result")
             waited = time.monotonic() - started
+            if timeout < HOLD_TIMEOUT_SECONDS and hold_path.exists():
+                timeout = HOLD_TIMEOUT_SECONDS  # the user is reviewing this change in the app
             if waited >= timeout:
                 what = f"{name}" if name else kind
                 raise BridgeError(

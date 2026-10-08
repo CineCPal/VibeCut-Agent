@@ -6,9 +6,11 @@ interface StatusRowProps {
   tone: Tone;
   value: string;
   detail?: ReactNode;
+  /** A small button after the value (About's sidecar Restart). */
+  action?: ReactNode;
 }
 
-export function StatusRow({ label, tone, value, detail }: StatusRowProps) {
+export function StatusRow({ label, tone, value, detail, action }: StatusRowProps) {
   return (
     <li className="flex flex-col gap-0.5 py-1.5">
       <div className="flex items-center justify-between gap-3">
@@ -16,6 +18,7 @@ export function StatusRow({ label, tone, value, detail }: StatusRowProps) {
         <span className="flex items-center gap-1.5 text-xs">
           <StatusDot tone={tone} />
           {value}
+          {action}
         </span>
       </div>
       {detail ? <div className="truncate font-mono text-[11px] text-cool-grey">{detail}</div> : null}

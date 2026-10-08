@@ -10,7 +10,7 @@
  *   into an "outside" step, so one Revert undoes a run. While an in-app turn is running, outside calls
  *   that change anything are refused; reads go through.
  */
-import { getMcpStatus, mcpReply, onMcpOutside, onMcpRequest } from "../ipc";
+import { getMcpStatus, mcpHold, mcpReply, onMcpOutside, onMcpRequest } from "../ipc";
 import { newId } from "../id";
 import { refreshAgentStatus } from "../agent/availability";
 import { describeError, snapshotFor } from "../agent/context";
@@ -119,7 +119,8 @@ export async function handleRequest(request: McpRequest): Promise<McpReply> {
     if (request.caller === OUTSIDE_CALLER) return await queuedOutside(name, args);
     const bridged = await bridgeTool(name);
     if (bridged) return bridged;
-    const outcome = await runChatTool(request.caller, name, args);
+    // A change waiting for review (Phase 11d): the shim lets this call wait for the user.
+    const outcome = await runChatTool(request.caller, name, args, () => void mcpHold(request.id).catch(() => undefined));
     if (!outcome) return { ok: false, error: "That VibeCut Agent chat has ended." };
     return { ok: true, result: outcome.result, summary: outcome.summary };
   } catch (error) {

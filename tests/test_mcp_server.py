@@ -223,6 +223,36 @@ def test_no_reply_times_out_and_progress_is_reported(folder: Path, monkeypatch: 
     assert len(waits) >= 2
 
 
+def test_a_call_held_for_review_outlasts_its_usual_limit(folder: Path) -> None:
+    """Phase 11d: the app marks a change waiting for the user with `replies/<id>.hold`; the shim then
+    waits past the call's own limit until the answer comes, and clears the hold with it."""
+    answered: dict[str, Any] = {}
+
+    def hold_then_answer(request: dict[str, Any]) -> dict[str, Any] | None:
+        replies = folder / "replies"
+        (replies / f"{request['id']}.hold").write_text("", encoding="utf-8")
+
+        def later() -> None:
+            time.sleep(1.0)  # past the 0.5 s limit below: the user took their time
+            reply = {"id": request["id"], "ok": True, "result": {"applied": True}}
+            (replies / f"{request['id']}.json").write_text(json.dumps(reply), encoding="utf-8")
+            answered["id"] = request["id"]
+
+        threading.Thread(target=later, daemon=True).start()
+        return None
+
+    fake = FakeApp(folder, hold_then_answer)
+
+    async def go() -> Any:
+        return await AppBridge(folder, "job-1").ask("call_tool", 0.5, name="delete_clips", args={})
+
+    try:
+        assert run(go) == {"applied": True}
+    finally:
+        fake.stop()
+    assert not (folder / "replies" / f"{answered['id']}.hold").exists()
+
+
 def test_an_app_that_quits_mid_call_is_reported(folder: Path) -> None:
     fake = FakeApp(folder, lambda r: None)
 

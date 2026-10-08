@@ -42,8 +42,10 @@ class ReplyStream:
             return
         self._waiting.append(delta)
         self._waiting_chars += len(delta)
+        first = not self._started
         self._started = True
-        if self._waiting_chars >= FLUSH_CHARS or self._clock() - self._last_flush >= FLUSH_SECONDS:
+        # The first words of a reply (or after a tool call) go out at once (Phase 11f).
+        if first or self._waiting_chars >= FLUSH_CHARS or self._clock() - self._last_flush >= FLUSH_SECONDS:
             self.flush()
 
     def flush(self) -> None:

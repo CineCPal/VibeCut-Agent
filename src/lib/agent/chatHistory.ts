@@ -16,7 +16,7 @@ import { rewindOf } from "./rewind";
 import { useAgentStore, type AgentState } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
 import { parseSavedEditLog, savedEditLog, useEditLogStore } from "../../store/useEditLogStore";
-import type { ChatAttachment, ChatMessage, ChatProvider, ChatToolCall } from "../../types/agent";
+import type { ChatAttachment, ChatMention, ChatMessage, ChatProvider, ChatToolCall } from "../../types/agent";
 import { AI_CHOICES } from "../../types/agent";
 import type { SavedChat } from "../../types/history";
 
@@ -91,8 +91,16 @@ function isToolCall(value: unknown): value is ChatToolCall {
   const v = value as Record<string, unknown>;
   return (
     typeof v.name === "string" && typeof v.args === "string" && (v.result === undefined || typeof v.result === "string") &&
-    (v.state === "running" || v.state === "done" || v.state === "failed")
+    (v.state === "running" || v.state === "done" || v.state === "failed" || v.state === "pending" || v.state === "declined")
   );
+}
+
+const MENTION_KINDS = new Set(["timeline", "clip", "marker", "media", "speaker", "shot"]);
+
+function isMention(value: unknown): value is ChatMention {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return MENTION_KINDS.has(v.kind as string) && typeof v.label === "string" && typeof v.ref === "string" && (v.detail === undefined || typeof v.detail === "string");
 }
 
 /** A chat read back from disk, checked; null when it isn't one. Malformed messages are left out. */
@@ -119,7 +127,15 @@ export function parseSavedChat(value: unknown): SavedChat | null {
       if (m.tool === undefined) return m;
       const { tool, ...rest } = m;
       if (!isToolCall(tool)) return rest;
+      // A change still waiting for Apply when the app quit was never made (Phase 11d).
+      if (tool.state === "pending") return { ...rest, tool: { ...tool, state: "declined" as const } };
       return { ...rest, tool: tool.state === "running" ? { ...tool, state: "done" as const } : tool };
+    })
+    .map((m) => {
+      if (m.mentions === undefined) return m;
+      const { mentions, ...rest } = m;
+      const kept = Array.isArray(mentions) ? mentions.filter(isMention) : [];
+      return kept.length ? { ...rest, mentions: kept } : rest;
     });
   if (messages.length === 0) return null;
   const provider = PROVIDERS.includes(v.provider as ChatProvider) ? (v.provider as ChatProvider) : null;

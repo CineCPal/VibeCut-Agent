@@ -4,10 +4,15 @@ import type { View } from "../types/system";
 /** The panels: the agent chat, the Spyglass B-roll Library, and the B-roll analyzer ("broll", the Analyze tab). */
 export type Tab = "chat" | "library" | "broll";
 export type Overlay = "settings" | "about";
+/** Settings' tabs (Phase 11a). */
+export type SettingsTab = "general" | "agent" | "accounts" | "editors" | "library";
 
 export interface UiState {
   tab: Tab;
   overlay: Overlay | null;
+  /** The Settings tab shown last; Settings opens on it again (for this run of the app). */
+  settingsTab: SettingsTab;
+  setSettingsTab: (tab: SettingsTab) => void;
   /** Keep on Top of Editors, as Rust last reported it; null until known. */
   keepOnTop: boolean | null;
   /** Whether the window is the Mini Player (Phase 9c), as Rust last reported it. */
@@ -27,6 +32,8 @@ export interface UiState {
 export const useUiStore = create<UiState>()((set) => ({
   tab: "chat",
   overlay: null,
+  settingsTab: "agent",
+  setSettingsTab: (settingsTab) => set({ settingsTab }),
   keepOnTop: null,
   miniPlayer: false,
   setMiniPlayerState: (miniPlayer) => set({ miniPlayer }),

@@ -189,6 +189,22 @@ describe("chat history (Phase 8a)", () => {
     expect(parsed?.messages[1]).not.toHaveProperty("attachments");
   });
 
+  it("keeps a message's @-mentions and drops malformed ones (Phase 11c)", () => {
+    const good = { kind: "clip", label: "Interview A", ref: "c1", detail: "V1" };
+    const parsed = parseSavedChat({
+      ...savedChat("x"),
+      messages: [{ ...msg("u", "user", "trim @Interview A"), mentions: [good, { kind: "song", label: "x", ref: "y" }] }, { ...msg("v", "user", "again"), mentions: "nope" }],
+    });
+    expect(parsed?.messages[0].mentions).toEqual([good]);
+    expect(parsed?.messages[1]).not.toHaveProperty("mentions");
+  });
+
+  it("a change still waiting for Apply when the app quit loads as declined (Phase 11d)", () => {
+    const tool = { name: "delete_clips", args: "{}", state: "pending" };
+    const parsed = parseSavedChat({ ...savedChat("x"), messages: [msg("u", "user", "go"), { ...msg("t", "tool", "Delete 1 clip"), tool }] });
+    expect(parsed?.messages[1].tool?.state).toBe("declined");
+  });
+
   it("saves the chat a moment after it changes, once, and keeps the list Rust answers", async () => {
     stop = startChatHistory();
     await settle();

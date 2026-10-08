@@ -234,6 +234,11 @@ export function mcpReply(id: string, reply: McpReply): Promise<void> {
   return invoke("mcp_reply", { id, reply });
 }
 
+/** Tells the shim a request waits for the user's review (Phase 11d), so it waits longer than usual. */
+export function mcpHold(id: string): Promise<void> {
+  return invoke("mcp_hold", { id });
+}
+
 export function getMcpStatus(): Promise<McpStatus> {
   return invoke<McpStatus>("mcp_status");
 }

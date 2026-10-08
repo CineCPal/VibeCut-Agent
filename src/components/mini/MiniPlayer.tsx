@@ -1,9 +1,9 @@
 import { useRef, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { Maximize2, SendHorizontal, Square } from "lucide-react";
+import { ListPlus, Maximize2, SendHorizontal, Square } from "lucide-react";
 import { toggleMiniPlayer } from "../../hooks/useMiniPlayer";
 import { CONNECTION_TONE } from "../../lib/nleStatus";
-import { sendEditedMessage, sendUserMessage, stopTurn } from "../../lib/agent/controller";
-import { useAgentStore } from "../../store/useAgentStore";
+import { sendEditedMessage, stopTurn, submitMessage } from "../../lib/agent/controller";
+import { MAX_QUEUE, useAgentStore } from "../../store/useAgentStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
 import { NLE_LABELS } from "../../types/nle";
@@ -51,13 +51,18 @@ export function MiniPlayer() {
   const images = useAgentStore((s) => s.pendingImages);
   const editing = useAgentStore((s) => s.editingMessageId);
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
+  const queued = useAgentStore((s) => s.queue.length);
+  const mentions = useAgentStore((s) => s.draftMentions);
   const host = useNleStateStore(selectActiveHost);
   const hostState = useNleStateStore((s) => (host ? s.hosts[host] : null));
   const inputRef = useRef<HTMLInputElement>(null);
 
   const busy = status === "thinking" || status === "stopping";
   const blocked = composerBlockReason(status, statusDetail, outsideRunning);
-  const canSend = !blocked && (draft.trim().length > 0 || images.length > 0);
+  // While a turn runs, Return queues the message (Phase 11b), as in the full window.
+  const offline = status === "offline" || status === "error";
+  const queueing = busy || outsideRunning || queued > 0;
+  const canSend = !offline && !(queueing && (queued >= MAX_QUEUE || editing)) && (draft.trim().length > 0 || images.length > 0);
   const line = nowLine(messages, activity, busy);
   const where = host && hostState ? `${NLE_LABELS[host]}${hostState.timeline ? ` · ${hostState.timeline}` : ""}` : "No editor connected";
 
@@ -68,14 +73,17 @@ export function MiniPlayer() {
     const sent = images;
     setDraft("");
     useAgentStore.getState().setPendingImages([]);
+    useAgentStore.getState().setDraftMentions([]);
     if (editing) {
       useAgentStore.getState().setEditing(null);
-      void sendEditedMessage(text, sent).catch((error: unknown) => {
+      void sendEditedMessage(text, sent, mentions).catch((error: unknown) => {
         useAgentStore.getState().addMessage({ role: "error", text: error instanceof Error ? error.message : String(error) });
         if (!useAgentStore.getState().draft) setDraft(text);
       });
     } else {
-      void sendUserMessage(text, sent);
+      void submitMessage(text, sent, mentions).then((outcome) => {
+        if (!outcome && !useAgentStore.getState().draft) setDraft(text);
+      });
     }
   };
 
@@ -122,23 +130,33 @@ export function MiniPlayer() {
           id="mini-message"
           ref={inputRef}
           className="min-w-0 flex-1 rounded-md border border-border bg-canvas px-2 py-1 text-xs text-white placeholder:text-cool-grey disabled:opacity-60"
-          placeholder={blocked ?? (editing ? "Edit your last message…" : "Ask VibeCut…")}
+          placeholder={queueing && !offline ? "Queue a message…" : (blocked ?? (editing ? "Edit your last message…" : "Ask VibeCut…"))}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
-          disabled={Boolean(blocked) && !busy}
+          disabled={offline}
           title={images.length ? `${images.length} image${images.length === 1 ? "" : "s"} will go with it` : undefined}
         />
         {images.length ? <span className="font-mono text-[10px] text-cool-grey">+{images.length}</span> : null}
-        {busy ? (
-          <button type="button" className={iconButton} onClick={() => void stopTurn()} disabled={status === "stopping"} aria-label="Stop" title="Stop">
-            <Square size={14} aria-hidden="true" />
+        {queued ? (
+          <span className="shrink-0 font-mono text-[10px] text-cool-grey" title="Sent in order when the agent finishes; expand to edit them">
+            {queued} queued
+          </span>
+        ) : null}
+        {queueing ? (
+          <button type="submit" className={iconButton} disabled={!canSend} aria-label="Queue" title={queued >= MAX_QUEUE ? `At most ${MAX_QUEUE} can wait` : "Queue (Return)"}>
+            <ListPlus size={14} aria-hidden="true" />
           </button>
         ) : (
           <button type="submit" className={iconButton} disabled={!canSend} aria-label="Send" title="Send (Return)">
             <SendHorizontal size={14} aria-hidden="true" />
           </button>
         )}
+        {busy ? (
+          <button type="button" className={iconButton} onClick={() => void stopTurn()} disabled={status === "stopping"} aria-label="Stop" title="Stop">
+            <Square size={14} aria-hidden="true" />
+          </button>
+        ) : null}
       </form>
     </div>
   );

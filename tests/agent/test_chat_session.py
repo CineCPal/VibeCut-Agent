@@ -89,7 +89,7 @@ def run_chat(monkeypatch, stdin, capture):
 
 
 def test_a_text_only_reply_ends_the_session_on_an_explicit_end_session(monkeypatch):
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: text_response("The cut looks good."))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: text_response("The cut looks good."))
     stdin = FakeStdin(
         [
             json.dumps(
@@ -117,7 +117,7 @@ def test_a_tool_call_round_trips_through_sidecar_send_style_stdin_lines(monkeypa
     # session asks for them.
     monkeypatch.setattr(gemini_chat.uuid, "uuid4", lambda: uuid.UUID(int=1))
     responses = [function_call_response("split_at_playhead", {}), text_response("Split at the playhead.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: responses.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: responses.pop(0))
 
     stdin = FakeStdin(
         [
@@ -172,7 +172,7 @@ def test_tool_results_can_be_sent_back_out_of_order(monkeypatch):
         bodies.append(json.loads(data))
         return responses.pop(0)
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     stdin = FakeStdin(
         [
             json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "do both"}),
@@ -194,7 +194,7 @@ def test_tool_results_can_be_sent_back_out_of_order(monkeypatch):
 
 def test_a_second_user_message_runs_another_turn_on_the_same_process(monkeypatch):
     responses = [text_response("First done."), text_response("Second done.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: responses.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: responses.pop(0))
 
     stdin = FakeStdin(
         [
@@ -223,7 +223,7 @@ def test_a_second_user_message_runs_another_turn_on_the_same_process(monkeypatch
 
 def test_idle_timeout_ends_the_session_quietly_with_no_error(monkeypatch):
     monkeypatch.setattr(chat_module, "CHAT_IDLE_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: text_response("Done."))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: text_response("Done."))
     # No end_session queued — the session must exit on its own once the idle timeout elapses, not hang.
     stdin = FakeStdin(
         [json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi"})]
@@ -240,7 +240,7 @@ def test_end_session_ends_the_session_immediately(monkeypatch):
     monkeypatch.setattr(
         chat_module, "CHAT_IDLE_TIMEOUT_SECONDS", 5.0
     )  # would time out slowly if end_session were ignored
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: text_response("Done."))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: text_response("Done."))
     stdin = FakeStdin(
         [
             json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi"}),
@@ -256,7 +256,7 @@ def test_end_session_ends_the_session_immediately(monkeypatch):
 
 def test_missing_api_key_errors_without_calling_gemini(monkeypatch):
     called = []
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: called.append(1))
     stdin = FakeStdin(
         [json.dumps({"apiKey": "", "toolDeclarations": [], "history": [], "userMessage": "hi"})]
     )
@@ -295,7 +295,7 @@ def test_abort_turn_ends_the_turn_but_keeps_the_session_for_the_next_message(mon
             return function_call_response("split_at_playhead", {})
         return text_response("Second turn answer.")
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
 
     class AnsweringEmitter(Emitter):
         """Plays the app: answers tool calls as they arrive, and sends the next message after a result."""
@@ -334,7 +334,7 @@ def test_abort_turn_ends_the_turn_but_keeps_the_session_for_the_next_message(mon
 
 
 def test_a_late_abort_turn_between_turns_is_ignored(monkeypatch):
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: text_response("ok"))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: text_response("ok"))
     stdin = FakeStdin(
         [
             json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi"}),
@@ -364,7 +364,7 @@ def test_a_claude_session_runs_claudes_loop_with_claudes_call_ids(monkeypatch):
         ],
     )
     called_gemini = []
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: called_gemini.append(1))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: called_gemini.append(1))
     stdin = FakeStdin(
         [
             json.dumps(
@@ -501,7 +501,7 @@ def test_images_go_to_gemini_as_inline_data_ahead_of_the_text(monkeypatch):
         bodies.append(json.loads(k["data"]))
         return text_response("A red square.")
 
-    monkeypatch.setattr(gemini_chat.requests, "post", post)
+    monkeypatch.setattr(gemini_chat, "_http_post", post)
     stdin = FakeStdin(
         [
             json.dumps(
@@ -570,7 +570,7 @@ def test_images_go_to_claude_as_image_blocks(monkeypatch):
 )
 def test_bad_attachments_are_refused_before_any_call(monkeypatch, attachments, says):
     called = []
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: called.append(1))
     stdin = FakeStdin(
         [json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi", "attachments": attachments})]
     )
@@ -591,3 +591,75 @@ def test_an_image_over_the_limit_is_refused():
     with pytest.raises(RequestError, match="over 3.75 MB"):
         parse_images([{"mime": "image/jpeg", "data": big}])
     assert parse_images(None) == []
+
+
+# --- Faster first token (Phase 11f) ------------------------------------------------------------------
+
+
+def test_a_warm_start_waits_for_the_first_message(monkeypatch):
+    """The app starts the job as the user begins typing: no userMessage, so no turn until one comes."""
+    calls = []
+
+    def fake_turn(**kwargs):
+        calls.append(kwargs["user_message"])
+        return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
+
+    monkeypatch.setattr(gemini_chat, "run_chat_turn", fake_turn)
+    stdin = FakeStdin(
+        [
+            json.dumps({"apiKey": "k", "toolDeclarations": [], "history": []}),
+            json.dumps({"type": "user_message", "userMessage": "hello", "history": []}),
+            json.dumps({"type": "end_session"}),
+        ]
+    )
+    capture = Capture()
+
+    assert run_chat(monkeypatch, stdin, capture) == 0
+    assert calls == ["hello"]
+    assert len(capture.of_type("result")) == 1
+
+
+def test_claude_code_starts_the_next_turn_ahead_and_ends_it_with_the_job(monkeypatch):
+    from vibecut_agent.agent import claude_code_chat
+
+    prepared = []
+    closed = []
+    turns = []
+
+    def fake_turn(*args, **kwargs):
+        turns.append(kwargs["launcher"])
+        return {"text": "ok", "history": [{"claudeCodeSession": "s2"}], "usage": None, "aborted": False,
+                "outOfSteps": False}
+
+    monkeypatch.setattr(claude_code_chat, "run_chat_turn", fake_turn)
+    monkeypatch.setattr(claude_code_chat, "prepare_turn", lambda launcher, setup, model, system, history, *rest: prepared.append(history))
+    monkeypatch.setattr(claude_code_chat.Launcher, "close", lambda self: closed.append(self))
+    request = {"provider": "claude-code", "claudeCode": {}, "toolDeclarations": [],
+               "history": [{"claudeCodeSession": "s1"}]}
+    stdin = FakeStdin(
+        [
+            json.dumps(request),
+            json.dumps({"type": "user_message", "userMessage": "go", "history": [{"claudeCodeSession": "s1"}]}),
+            json.dumps({"type": "end_session"}),
+        ]
+    )
+
+    assert run_chat(monkeypatch, stdin, Capture()) == 0
+    # Warm at the start for the session the app sent, then for the one the turn left.
+    assert prepared == [[{"claudeCodeSession": "s1"}], [{"claudeCodeSession": "s2"}]]
+    assert closed == turns, "the job's own launcher, ended with the job"
+
+
+def test_the_subscription_path_loads_neither_the_sdk_nor_requests():
+    """`anthropic` alone is ~0.6 s of a cold start; the Claude Code path doesn't need it (Phase 11f)."""
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    code = (
+        "import sys, vibecut_agent.headless, vibecut_agent.agent.chat, vibecut_agent.agent.claude_code_chat;"
+        "print(sorted(m for m in ('anthropic', 'requests', 'vibecut_agent.nle.watch') if m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env)
+    assert out.stdout.strip() == "[]"

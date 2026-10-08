@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageList } from "./MessageList";
+import { ToolGroup } from "./ToolCards";
 import type { ChatMessage, ChatToolCall } from "../../types/agent";
 
 const card = (id: string, state: ChatToolCall["state"], text = `did ${id}`): ChatMessage => ({
@@ -41,5 +42,29 @@ describe("tool cards (Phase 8f)", () => {
     render(<MessageList messages={[user, card("1", "done"), { id: "n", role: "tool", text: "Retrying with Gemini", createdAt: 1 }, card("2", "done")]} activity={null} />);
     expect(screen.getByText("Retrying with Gemini")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /1 tool call/ })).toHaveLength(2);
+  });
+});
+
+describe("review cards (Phase 11d)", () => {
+  it("a change waiting for review offers Apply, Skip and Apply all, and keeps its group open", async () => {
+    const review = await import("../../lib/agent/review");
+    const pending = review.awaitReview("w1");
+    render(
+      <ToolGroup
+        live={false}
+        messages={[{ id: "w1", role: "tool", text: "Delete 2 clips: A.mov, B.mov", createdAt: 1, tool: { name: "delete_clips", args: "{}", state: "pending" } }]}
+      />,
+    );
+    expect(screen.getByLabelText("Waiting for you")).toBeInTheDocument();
+    expect(screen.getByText("Delete 2 clips: A.mov, B.mov")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Apply all for this request" }));
+    await expect(pending).resolves.toBe("all");
+  });
+
+  it("a skipped change says so", () => {
+    render(<ToolGroup live={false} messages={[{ id: "w2", role: "tool", text: "Add markers (1)", createdAt: 1, tool: { name: "add_markers", args: "{}", state: "declined" } }]} />);
+    fireEvent.click(screen.getByRole("button", { name: /1 tool call/ }));
+    expect(screen.getByText("Skipped: Add markers (1)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
   });
 });

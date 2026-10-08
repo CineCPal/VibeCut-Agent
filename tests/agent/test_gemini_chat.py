@@ -65,7 +65,7 @@ class Recorder:
 
 
 def test_a_text_only_response_ends_the_loop_at_once(monkeypatch):
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: text_response("Hi there."))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: text_response("Hi there."))
     rec = Recorder()
 
     outcome = run_turn(rec)
@@ -82,7 +82,7 @@ def test_one_tool_call_triggers_one_emit_and_blocked_read(monkeypatch):
         function_call_response(("trim_clip_end", {"clipId": "c1", "rawSourceOut": 4.2})),
         text_response("Done."),
     ]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: calls.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: calls.pop(0))
     rec = Recorder(results=[{"summary": "Trimmed"}])
 
     outcome = run_turn(rec)
@@ -102,7 +102,7 @@ def test_multiple_parallel_calls_in_one_response_are_all_collected_and_answered(
         ("split_at_playhead", {}), ("set_clip_volume", {"clipIds": ["c1"], "volume": 0.5})
     )
     seq = [batch, text_response("Both done.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
     rec = Recorder(results=["ok1", "ok2"])
 
     outcome = run_turn(rec)
@@ -132,7 +132,7 @@ def test_the_last_step_turns_function_calling_off_and_its_own_answer_ends_the_tu
         bodies.append(json.loads(data))
         return replies.pop(0)
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     rec = Recorder()
 
     outcome = run_turn(rec, max_iterations=3)
@@ -148,7 +148,7 @@ def test_the_last_step_turns_function_calling_off_and_its_own_answer_ends_the_tu
 
 
 def test_a_function_call_on_the_last_step_is_dropped_and_the_notice_answers(monkeypatch):
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: function_call_response(("noop", {})))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: function_call_response(("noop", {})))
     rec = Recorder()
 
     outcome = run_turn(rec, max_iterations=3)
@@ -166,7 +166,7 @@ def test_five_steps_before_the_end_the_model_hears_how_many_are_left(monkeypatch
         bodies.append(json.loads(data))
         return replies.pop(0)
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
 
     outcome = run_turn(Recorder(), max_iterations=6)
 
@@ -181,7 +181,7 @@ def test_the_same_failing_call_twice_is_marked_the_second_time(monkeypatch):
         function_call_response(("noop", {"a": 1})),
         text_response("No."),
     ]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: replies.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: replies.pop(0))
     rec = Recorder(results=[{"error": "Nope"}, {"error": "Nope"}])
 
     outcome = run_turn(rec)
@@ -219,7 +219,7 @@ def test_the_key_is_sent_as_a_header_never_the_body(monkeypatch):
         seen["body"] = json.loads(data)
         return text_response("ok")
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     run_turn(Recorder())
 
     assert seen["headers"]["x-goog-api-key"] == "secret-key"
@@ -246,7 +246,7 @@ def test_a_retryable_failure_calls_on_retry_before_succeeding(monkeypatch):
 
     monkeypatch.setattr(gemini_chat, "_wait_before_retry", fake_wait_before_retry)
     responses = [FakeResponse(429, text="rate limited"), text_response("ok")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: responses.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: responses.pop(0))
 
     retries = []
     run_turn(Recorder(), on_retry=lambda *args: retries.append(args))
@@ -269,7 +269,7 @@ def test_usage_is_summed_over_every_call_in_the_turn(monkeypatch):
         with_usage(function_call_response(("split_at_playhead", {})), 1000, 0, 20, 5),
         with_usage(text_response("Done."), 1100, 900, 10),
     ]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
 
     outcome = run_turn(Recorder())
 
@@ -290,7 +290,7 @@ def test_abort_before_handing_out_calls_drops_the_unanswered_response(monkeypatc
         posts.append(1)
         return function_call_response(("split_at_playhead", {}))
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     rec = Recorder()
 
     # Not before the first call; yes once its response is coming in.
@@ -311,7 +311,7 @@ def test_abort_after_a_batch_stops_before_the_next_model_call(monkeypatch):
         posts.append(1)
         return function_call_response(("split_at_playhead", {}))
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     rec = Recorder()
 
     outcome = run_turn(rec, should_abort=lambda: rec.reads > 0)
@@ -324,7 +324,7 @@ def test_abort_after_a_batch_stops_before_the_next_model_call(monkeypatch):
 
 def test_a_blocked_response_answers_instead_of_ending_the_session(monkeypatch):
     blocked = FakeResponse(200, {"candidates": [{"finishReason": "SAFETY"}]})
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: blocked)
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: blocked)
 
     outcome = run_turn(Recorder())
 
@@ -334,14 +334,14 @@ def test_a_blocked_response_answers_instead_of_ending_the_session(monkeypatch):
 
 def test_a_prompt_block_reason_is_reported(monkeypatch):
     blocked = FakeResponse(200, {"promptFeedback": {"blockReason": "OTHER"}})
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: blocked)
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: blocked)
 
     assert "OTHER" in run_turn(Recorder())["text"]
 
 
 def test_a_transient_500_is_retried(monkeypatch):
     seq = [FakeResponse(500, text="internal"), text_response("Recovered.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
 
     assert run_turn(Recorder())["text"] == "Recovered."
 
@@ -357,7 +357,7 @@ class ReorderingRecorder(Recorder):
 def test_results_may_arrive_in_any_order_but_history_follows_the_call_order(monkeypatch):
     batch = function_call_response(("split_at_playhead", {}), ("set_clip_volume", {}), ("ripple_delete", {}))
     seq = [batch, text_response("Done.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
     rec = ReorderingRecorder()
 
     outcome = run_turn(rec)
@@ -375,7 +375,7 @@ def test_results_may_arrive_in_any_order_but_history_follows_the_call_order(monk
 
 
 def test_a_result_for_an_unknown_call_id_fails_the_turn(monkeypatch):
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: function_call_response(("noop", {})))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: function_call_response(("noop", {})))
     rec = Recorder()
     rec.read_tool_result = lambda: {"type": "tool_result", "id": "not-a-call", "result": "ok"}
 
@@ -385,7 +385,7 @@ def test_a_result_for_an_unknown_call_id_fails_the_turn(monkeypatch):
 
 def test_a_duplicate_result_fails_the_turn(monkeypatch):
     monkeypatch.setattr(
-        gemini_chat.requests, "post", lambda *a, **k: function_call_response(("a", {}), ("b", {}))
+        gemini_chat, "_http_post", lambda *a, **k: function_call_response(("a", {}), ("b", {}))
     )
     rec = Recorder()
     original = rec.read_tool_result
@@ -404,7 +404,7 @@ def test_a_duplicate_result_fails_the_turn(monkeypatch):
 def test_a_model_supplied_call_id_is_echoed_on_its_response(monkeypatch):
     parts = [{"functionCall": {"id": "gemini-call-7", "name": "noop", "args": {}}}]
     seq = [FakeResponse(200, {"candidates": [{"content": {"parts": parts}}]}), text_response("ok")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
 
     outcome = run_turn(Recorder())
 
@@ -422,7 +422,7 @@ def test_thought_signatures_are_kept_verbatim_in_history_and_resent(monkeypatch)
         bodies.append(json.loads(data))
         return seq.pop(0)
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
 
     outcome = run_turn(Recorder())
 
@@ -432,8 +432,8 @@ def test_thought_signatures_are_kept_verbatim_in_history_and_resent(monkeypatch)
 
 def test_a_non_200_body_reflecting_the_key_is_scrubbed(monkeypatch):
     monkeypatch.setattr(
-        gemini_chat.requests,
-        "post",
+        gemini_chat,
+        "_http_post",
         lambda *a, **k: FakeResponse(400, text="proxy says: bad header x-goog-api-key=secret-key"),
     )
 
@@ -459,7 +459,7 @@ def test_the_answer_streams_and_its_chunks_are_gathered_into_one_reply(monkeypat
         seen["url"], seen["stream"] = url, stream
         return FakeResponse(200, chunks=chunks)
 
-    monkeypatch.setattr(gemini_chat.requests, "post", fake_post)
+    monkeypatch.setattr(gemini_chat, "_http_post", fake_post)
     rec = Recorder()
 
     outcome = run_turn(rec)
@@ -484,7 +484,7 @@ def test_signed_and_call_parts_are_kept_as_sent_and_text_before_a_call_breaks(mo
         ],
     )
     seq = [first, text_response("Done.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
     rec = Recorder()
 
     outcome = run_turn(rec)
@@ -510,7 +510,7 @@ def test_a_dropped_stream_is_retried_from_the_start_and_the_streamed_text_reset(
             raise gemini_chat.requests.ConnectionError("reset by peer")
 
     seq = [Dropped(200), text_response("Whole answer.")]
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: seq.pop(0))
     rec = Recorder()
 
     outcome = run_turn(rec)
@@ -525,7 +525,7 @@ def test_a_dropped_stream_is_retried_from_the_start_and_the_streamed_text_reset(
 
 def test_an_error_inside_the_stream_fails_the_turn_without_the_key(monkeypatch):
     bad = FakeResponse(200, chunks=[{"error": {"code": 400, "message": "bad secret-key"}}])
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: bad)
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: bad)
 
     with pytest.raises(gemini_chat.ChatError) as exc_info:
         run_turn(Recorder())
@@ -538,7 +538,7 @@ def test_an_error_inside_the_stream_fails_the_turn_without_the_key(monkeypatch):
 def test_stop_while_streaming_drops_the_partial_answer_and_closes_the_stream(monkeypatch):
     chunks = [{"candidates": [{"content": {"parts": [{"text": f"w{n} "}]}}]} for n in range(5)]
     response = FakeResponse(200, chunks=chunks)
-    monkeypatch.setattr(gemini_chat.requests, "post", lambda *a, **k: response)
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: response)
     checks = {"n": 0}
 
     def should_abort():

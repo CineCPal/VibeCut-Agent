@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageList, type TurnActions } from "./MessageList";
+import { MentionText } from "./MentionText";
 import type { ChatMessage } from "../../types/agent";
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m", role: "assistant", text: "", createdAt: 1, ...over });
@@ -52,5 +53,25 @@ describe("MessageList", () => {
     expect(screen.getByRole("button", { name: /Retry/ })).toHaveAttribute("title", turn.blocked);
     rerender(<MessageList messages={[msg({ id: "u", role: "user", text: "go" }), msg({ id: "a", status: "pending", text: "…" })]} activity={null} turn={turn} />);
     expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+});
+
+describe("mention chips (Phase 11c)", () => {
+  it("shows each @-mention in a user message as a chip naming what it points at", () => {
+    render(
+      <p>
+        <MentionText
+          text="Trim @Interview A long and @Hook"
+          mentions={[
+            { kind: "clip", label: "Interview A", ref: "c1" },
+            { kind: "clip", label: "Interview A long", ref: "c2", detail: "V1" },
+            { kind: "marker", label: "Hook", ref: "m1" },
+          ]}
+        />
+      </p>,
+    );
+    expect(screen.getByText("@Interview A long")).toHaveAttribute("title", "Clip: c2 · V1");
+    expect(screen.getByText("@Hook")).toHaveAttribute("title", "Marker: m1");
+    expect(screen.getByText("@Hook").closest("p")).toHaveTextContent("Trim @Interview A long and @Hook");
   });
 });

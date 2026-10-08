@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Pencil, RotateCcw, Wrench } from "lucide-react";
 import { ACTION_BUTTON, CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
+import { MentionText } from "./MentionText";
 import { ToolGroup } from "./ToolCards";
 import type { ChatAttachment, ChatMessage, ChatToolCall } from "../../types/agent";
 import { attachmentUrl } from "../../lib/agent/attachments";
@@ -121,7 +122,13 @@ function Row({ message, onEdit, editBlocked }: { message: ChatMessage; onEdit?: 
         ) : null}
       </header>
       {message.attachments?.length ? <SentImages attachments={message.attachments} /> : null}
-      {message.role === "assistant" ? <Markdown text={message.text} /> : <p className="whitespace-pre-wrap break-words">{message.text}</p>}
+      {message.role === "assistant" ? (
+        <Markdown text={message.text} />
+      ) : (
+        <p className="whitespace-pre-wrap break-words">
+          <MentionText text={message.text} mentions={message.mentions} />
+        </p>
+      )}
     </article>
   );
 }

@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({ setMiniPlayer: vi.fn(async (on: boolean) => on), getClaudeCodeUsage: vi.fn() }));
 vi.mock("../../lib/ipc", () => ipc);
-const controller = vi.hoisted(() => ({ sendUserMessage: vi.fn(async () => true), sendEditedMessage: vi.fn(async () => undefined), stopTurn: vi.fn(async () => undefined) }));
+const controller = vi.hoisted(() => ({ submitMessage: vi.fn(async (..._a: unknown[]): Promise<"sent" | "queued" | false> => "sent"), sendEditedMessage: vi.fn(async () => undefined), stopTurn: vi.fn(async () => undefined) }));
 vi.mock("../../lib/agent/controller", () => controller);
 
 import { MiniPlayer, nowLine, plainLine } from "./MiniPlayer";
@@ -23,7 +23,7 @@ describe("MiniPlayer", () => {
     const hosts = initialHosts();
     hosts.resolve = nleState("resolve");
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
-    useAgentStore.setState({ messages: [msg("user", "hi"), msg("assistant", "**Cut** the [second take](x) at `01:02:14:00`.")], status: "idle", statusDetail: null, activity: null, draft: "", pendingImages: [], editingMessageId: null });
+    useAgentStore.setState({ messages: [msg("user", "hi"), msg("assistant", "**Cut** the [second take](x) at `01:02:14:00`.")], status: "idle", statusDetail: null, activity: null, draft: "", pendingImages: [], editingMessageId: null, queue: [], queuePaused: false, draftMentions: [] });
     useUiStore.setState({ miniPlayer: true });
     useUsageStore.setState({ plan: { status: "allowed", fiveHour: { used: 0.42 }, weekly: { used: 0.03 } }, planAt: 1, days: {}, chats: {} });
     useMcpStore.setState({ outsideRunning: 0 });
@@ -52,7 +52,7 @@ describe("MiniPlayer", () => {
     const box = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(box, { target: { value: "add a marker" } });
     fireEvent.submit(box.closest("form")!);
-    expect(controller.sendUserMessage).toHaveBeenCalledWith("add a marker", []);
+    expect(controller.submitMessage).toHaveBeenCalledWith("add a marker", [], []);
     expect(useAgentStore.getState().draft).toBe("");
   });
 
@@ -63,6 +63,17 @@ describe("MiniPlayer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(controller.stopTurn).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
+  it("queues with Return while a turn runs, and says how many wait (Phase 11b)", () => {
+    useAgentStore.setState({ status: "thinking", activity: "Calling Claude…", queue: [{ id: "q1", text: "next", images: [], mentions: [] }] });
+    render(<MiniPlayer />);
+    expect(screen.getByText("1 queued")).toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "Message" });
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: "and then this" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(controller.submitMessage).toHaveBeenCalledWith("and then this", [], []);
   });
 
   it("expands from its button and from a double-click on the bar, not on its controls", () => {

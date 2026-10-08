@@ -71,20 +71,24 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
     """Runs the whole conversation; see the module docstring. ``channel`` yields the later stdin lines
     (a LineChannel in production)."""
     from vibecut_agent.agent.attachments import parse_images
-    from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, clamp_max_steps
-    from vibecut_agent.agent.gemini_chat import ChatError
+    from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, ChatError, clamp_max_steps
 
     # From here on the key is scrubbed from every error event and printed traceback.
     register_secret(request.get("apiKey"))
     provider = provider_of(request)
+    prepare_next: Callable[[list[Any]], None] | None = None
+    on_end: Callable[[], None] = _nothing
     if provider == "claude-code":
         # Claude (subscription), Phase 7b: no key; Rust put the Claude Code setup in `claudeCode`.
         from vibecut_agent.agent import claude_code_chat
 
         setup = request.get("claudeCode")
+        # Phase 11f: the next turn's Claude Code is started as soon as this one ends (and at a warm
+        # start), so the user's next message skips Claude Code's start-up.
+        launcher = claude_code_chat.Launcher()
 
         def subscription_turn(**turn: Any) -> dict[str, Any]:
-            return claude_code_chat.run_chat_turn(
+            outcome = claude_code_chat.run_chat_turn(
                 setup,
                 turn["model"],
                 turn["system_instruction"],
@@ -95,9 +99,19 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
                 should_abort=turn["should_abort"],
                 max_iterations=turn["max_iterations"],
                 effort=turn.get("effort"),
+                launcher=launcher,
+            )
+            prepare_subscription_turn(outcome["history"])
+            return outcome
+
+        def prepare_subscription_turn(history: list[Any]) -> None:
+            claude_code_chat.prepare_turn(
+                launcher, setup, model, system_instruction, history, max_steps, request.get("effort")
             )
 
+        prepare_next = prepare_subscription_turn
         run_chat_turn: Callable[..., dict[str, Any]] = subscription_turn
+        on_end = launcher.close
         api_key = ""
     else:
         if provider == "claude":
@@ -200,7 +214,29 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
         )
         return True
 
-    if not run_one_turn(request.get("userMessage"), request.get("history") or [], request.get("attachments")):
+    try:
+        return _converse(request, next_message, run_one_turn, prepare_next)
+    finally:
+        on_end()
+
+
+def _nothing() -> None:
+    pass
+
+
+def _converse(
+    request: dict[str, Any],
+    next_message: Callable[..., dict[str, Any] | None],
+    run_one_turn: Callable[[Any, Any, Any], bool],
+    prepare_next: Callable[[list[Any]], None] | None,
+) -> int:
+    """The first message (none in a warm start: Phase 11f, the app starts the job as the user begins
+    typing), then each later one until ``end_session`` or the idle timeout."""
+    if request.get("userMessage") is None:
+        history = request.get("history") or []
+        if prepare_next is not None and isinstance(history, list):
+            prepare_next(history)
+    elif not run_one_turn(request.get("userMessage"), request.get("history") or [], request.get("attachments")):
         return 1
 
     while True:

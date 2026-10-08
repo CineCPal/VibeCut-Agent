@@ -39,6 +39,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // "Open at login" (login_item.rs): a LaunchAgent, only when the user turns it on.
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![login_item::AT_LOGIN_ARG])))
+        // Phase 11e: a local notification when a turn ends or a change waits for review while the window
+        // is hidden or behind another app (`notification:default`). Nothing leaves the Mac.
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .manage(SidecarJobs::default())
         .manage(AgentSession::default())
@@ -123,6 +126,7 @@ pub fn run() {
             broll_panel::broll_panel_publish,
             broll_panel::broll_panel_status,
             mcp_bridge::mcp_reply,
+            mcp_bridge::mcp_hold,
             mcp_bridge::mcp_status,
             mcp_bridge::mcp_set_outside_allowed,
             mcp_bridge::mcp_client_setup,

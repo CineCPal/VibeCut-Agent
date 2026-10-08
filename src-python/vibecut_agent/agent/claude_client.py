@@ -14,6 +14,7 @@ header, and every error text is scrubbed of it before it leaves this module.
 
 from __future__ import annotations
 
+import functools
 import random
 import time
 from collections.abc import Callable
@@ -21,20 +22,15 @@ from typing import Any
 
 import anthropic
 
-from vibecut_agent.agent.gemini_chat import ChatError
+from vibecut_agent.agent.chat_steps import ChatError
+from vibecut_agent.agent.effort import OPUS, SONNET
 from vibecut_agent.agent.gemini_client import OnRetry
 from vibecut_agent.agent.redact import scrub
 
-OPUS = "claude-opus-5-5"
-SONNET = "claude-sonnet-5-5"
 MODELS = (OPUS, SONNET)
 DEFAULT_MODEL = SONNET
 
-# How long Claude thinks (`output_config.effort`, and Claude Code's `--effort`). Both models take all five.
-# The chat's default is "medium" for both (Phase 9a): Opus 5.5's own default, and Sonnet 5.5's
-# recommended start for multi-step tool use. Settings → Agent model can change it per model.
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-EFFORT = {OPUS: "medium", SONNET: "medium"}
+# How long Claude thinks: see effort.py.
 
 MAX_ATTEMPTS = 4
 BASE_DELAY_SECONDS = 2.0
@@ -54,14 +50,11 @@ def resolve_model(model: str | None) -> str:
     return model if model in MODELS else DEFAULT_MODEL
 
 
-def resolve_effort(effort: object, model: str) -> str:
-    """The effort to run `model` at: a known level as asked, else the model's default."""
-    return effort if isinstance(effort, str) and effort in EFFORT_LEVELS else EFFORT.get(model, "medium")
-
-
+@functools.lru_cache(maxsize=4)
 def _make_client(api_key: str, timeout: float) -> anthropic.Anthropic:
     # A float timeout applies per phase (connect, each read), so a long streamed turn is fine as long
-    # as events keep arriving.
+    # as events keep arriving. One client per key and timeout for the job's life (Phase 11f), so every
+    # step of a turn, and every turn of a chat, reuses its connections instead of a new TLS handshake.
     return anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=timeout)
 
 

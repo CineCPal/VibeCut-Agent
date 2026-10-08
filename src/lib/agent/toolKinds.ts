@@ -1,0 +1,138 @@
+/**
+ * Which tools change the editor or project (Phase 11d): with Review edits first on, each of these
+ * waits for the user's Apply. Every tool the agent has is listed here or in NOT_REVIEWED, and a test
+ * fails when a new one is in neither, so a new tool can't slip past review unnoticed.
+ *
+ * Not reviewed: reads and searches; the selection and the playhead; transcribing (it writes only a
+ * transcript beside the media); the Story Editor (it only opens a draft); and the draft's own cuts
+ * (remove_time_ranges, rearrange_sections, the transcript-line cuts), which reach the editor only
+ * through send_to_*, which is reviewed.
+ */
+import { lastTimelineView } from "./context";
+import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
+
+export const CHANGING_TOOLS = new Set([
+  "add_clips",
+  "delete_clips",
+  "set_clips_enabled",
+  "set_clip_levels",
+  "set_clip_fade",
+  "split_clip",
+  "trim_clip_start",
+  "trim_clip_end",
+  "slip_clip",
+  "move_clip",
+  "nest_clips",
+  "duck_music",
+  "revert_timeline_edits",
+  "add_markers",
+  "update_marker",
+  "remove_markers",
+  "create_timeline",
+  "duplicate_timeline",
+  "switch_timeline",
+  "rename_timeline",
+  "import_media",
+  "link_clips",
+  "unlink_clips",
+  "sync_clips",
+  "sync_and_place",
+  "slip_into_sync",
+  "set_speaker_roles",
+  "send_to_premiere",
+  "send_to_resolve",
+  "discard_draft",
+]);
+
+export const NOT_REVIEWED = new Set([
+  "describe_spyglass_folder",
+  "find_broll",
+  "find_filler_words",
+  "find_silences",
+  "get_clip_info",
+  "get_playhead_time",
+  "get_transcript",
+  "list_markers",
+  "list_media_pool",
+  "list_speakers",
+  "list_spyglass_folders",
+  "list_timeline_clips",
+  "list_timelines",
+  "search_media_pool",
+  "search_transcript",
+  "select_clip",
+  "select_media_assets",
+  "set_playhead_time",
+  "transcribe_clips",
+  "run_story_editor",
+  "remove_time_ranges",
+  "rearrange_sections",
+  "remove_transcript_lines",
+  "remove_speaker_lines",
+]);
+
+export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);
+
+const VERB: Record<string, string> = {
+  add_clips: "Add clips",
+  delete_clips: "Delete",
+  set_clips_enabled: "Turn on/off",
+  set_clip_levels: "Change the level of",
+  set_clip_fade: "Fade",
+  split_clip: "Split",
+  trim_clip_start: "Trim the start of",
+  trim_clip_end: "Trim the end of",
+  slip_clip: "Slip",
+  move_clip: "Move",
+  nest_clips: "Nest",
+  duck_music: "Duck the music under",
+  revert_timeline_edits: "Revert earlier edits",
+  add_markers: "Add markers",
+  update_marker: "Change a marker",
+  remove_markers: "Remove markers",
+  create_timeline: "Create a timeline",
+  duplicate_timeline: "Copy a timeline",
+  switch_timeline: "Switch to another timeline",
+  rename_timeline: "Rename a timeline",
+  import_media: "Import media",
+  link_clips: "Link",
+  unlink_clips: "Unlink",
+  sync_clips: "Sync",
+  sync_and_place: "Sync and place",
+  slip_into_sync: "Slip into sync",
+  set_speaker_roles: "Set speaker names and roles",
+  send_to_premiere: "Send the draft to Premiere as a new sequence",
+  send_to_resolve: "Send the draft to Resolve as a new timeline",
+  discard_draft: "Discard the draft",
+};
+
+/** Clip names for ids, from the timeline last read, else the ids themselves. */
+function clipNames(ids: string[]): string[] {
+  const nle = useNleStateStore.getState();
+  const host = selectActiveHost(nle);
+  const timeline = host ? nle.hosts[host].timeline : null;
+  const view = host && timeline ? lastTimelineView(host, timeline) : null;
+  const names = new Map(view?.tracks.flatMap((t) => t.clips.map((c) => [c.id, c.name] as const)) ?? []);
+  return ids.map((id) => names.get(id) ?? id);
+}
+
+const listed = (items: string[], max = 3) =>
+  items.length <= max ? items.join(", ") : `${items.slice(0, max).join(", ")} and ${items.length - max} more`;
+
+/** A plain line for a review card: what the change does, and to what. */
+export function describeChange(name: string, args: unknown): string {
+  const verb = VERB[name] ?? name;
+  const a = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
+  const strings = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+  const ids = [...strings(a.clipIds), ...(typeof a.clipId === "string" ? [a.clipId] : [])];
+  const count = (key: string) => (Array.isArray(a[key]) ? (a[key] as unknown[]).length : 0);
+  if (ids.length) {
+    const names = clipNames(ids);
+    return `${verb} ${ids.length === 1 ? "" : `${ids.length} clips: `}${listed(names)}`;
+  }
+  for (const key of ["clips", "markers", "paths", "markerIds"]) {
+    if (count(key)) return `${verb} (${count(key)})`;
+  }
+  const named = [a.name, a.newName, a.timeline].find((v): v is string => typeof v === "string" && v.length > 0);
+  return named ? `${verb}: ${named}` : verb;
+}

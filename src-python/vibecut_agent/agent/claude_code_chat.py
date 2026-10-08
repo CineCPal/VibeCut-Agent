@@ -14,6 +14,11 @@ differences:
   written (``stream_event`` lines), which go to the app through streaming.ReplyStream.
 - Plan limits (Phase 9b): Claude Code reports the subscription's 5-hour and weekly windows as
   ``rate_limit_event`` lines; each goes to the app as ``rate_limit {limits}`` (see plan_limits).
+- The next turn's Claude Code is started ahead of time (Phase 11f, ``Launcher``): Claude Code starts and
+  connects VibeCut's MCP server before it reads its message (checked live on 2.1.292: the shim's
+  tool list is asked for at once, and ``system/init`` comes 0.05 s after the message instead of
+  1.6–2.3 s after the start), so a turn whose arguments match the warm one skips all of that. No model
+  call happens until a message is written, so a warm process costs the plan nothing.
 - Claude Code keeps the conversation itself. ``history`` is ``[{"claudeCodeSession": <id>}]`` and the
   next turn resumes that session. Each turn forks it (``--fork-session``, Phase 8c): the turn answers under
   a new id and leaves the session it started from as it was, so the app can retry or edit the last
@@ -38,9 +43,8 @@ from collections.abc import Callable
 from typing import Any
 
 from vibecut_agent.agent.attachments import claude_blocks
-from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE
-from vibecut_agent.agent.claude_client import resolve_effort
-from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
+from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE, STOPPED_NOTICE, ChatError
+from vibecut_agent.agent.effort import resolve_effort
 from vibecut_agent.agent.streaming import ReplyStream
 
 SERVER_NAME = "vibecut"
@@ -56,6 +60,9 @@ DROPPED_ENV = (
     "CLAUDE_CODE_USE_VERTEX",
 )
 POLL_SECONDS = 0.2
+# Claude Code's own limit on one MCP tool call, in ms. A change waiting for the user's review in the app
+# (Phase 11d) can take minutes; the shim holds such a call for up to 30 minutes.
+MCP_TOOL_TIMEOUT_MS = 30 * 60 * 1000
 # After Stop: SIGINT, then SIGTERM, then SIGKILL, this long apart.
 STOP_GRACE_SECONDS = 5.0
 STDERR_KEEP_CHARS = 4000
@@ -153,6 +160,7 @@ def child_env(setup: dict[str, Any], base: dict[str, str] | None = None) -> dict
     env.pop("CLAUDE_CONFIG_DIR", None)
     if isinstance(setup.get("configDir"), str) and setup["configDir"]:
         env["CLAUDE_CONFIG_DIR"] = setup["configDir"]
+    env["MCP_TOOL_TIMEOUT"] = str(MCP_TOOL_TIMEOUT_MS)
     return env
 
 
@@ -306,6 +314,89 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
             continue
 
 
+class _Running:
+    """A started ``claude -p``: its stdout lines queued as they come (None at the end), and the tail of
+    its stderr."""
+
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        self.process = process
+        self.lines: queue.Queue[bytes | None] = queue.Queue()
+        self.stderr_parts: list[str] = []
+        threading.Thread(target=self._pump_stdout, daemon=True).start()
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
+
+    def _pump_stdout(self) -> None:
+        assert self.process.stdout is not None
+        for raw in self.process.stdout:
+            self.lines.put(raw)
+        self.lines.put(None)
+
+    def _pump_stderr(self) -> None:
+        assert self.process.stderr is not None
+        for raw in self.process.stderr:
+            self.stderr_parts.append(raw.decode("utf-8", "replace"))
+            while sum(len(p) for p in self.stderr_parts) > STDERR_KEEP_CHARS and len(self.stderr_parts) > 1:
+                self.stderr_parts.pop(0)
+
+
+class Launcher:
+    """Starts Claude Code for a chat job's turns, keeping at most one started ahead (Phase 11f).
+
+    ``warm(args)`` starts a ``claude -p`` with its stdin left open. The next ``start(args)`` with the
+    very same arguments takes it; any other arguments (a Retry or Edit resumes an earlier session; a new
+    session; the lost-session fallback) end it and start a new one, so a warm process can never answer
+    for the wrong session. ``close()`` ends it when the job ends. It's in the sidecar's process group,
+    like every Claude Code this module starts, so it can't outlive the job either way."""
+
+    def __init__(self, popen: Popen = subprocess.Popen) -> None:
+        self._popen = popen
+        self._warm: tuple[list[str], _Running] | None = None
+
+    def _spawn(self, args: list[str], setup: dict[str, Any]) -> _Running:
+        try:
+            process = self._popen(
+                args,
+                cwd=setup["workDir"],
+                env=child_env(setup),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise ChatError(f"Couldn't start Claude Code ({setup['program']}): {exc}") from None
+        return _Running(process)
+
+    def start(self, args: list[str], setup: dict[str, Any]) -> _Running:
+        warm, self._warm = self._warm, None
+        if warm is not None:
+            warm_args, running = warm
+            if warm_args == args and running.process.poll() is None:
+                return running
+            _discard(running)
+        return self._spawn(args, setup)
+
+    def warm(self, args: list[str], setup: dict[str, Any]) -> None:
+        self.close()
+        try:
+            self._warm = (args, self._spawn(args, setup))
+        except ChatError:
+            self._warm = None
+
+    @property
+    def warm_args(self) -> list[str] | None:
+        return self._warm[0] if self._warm else None
+
+    def close(self) -> None:
+        warm, self._warm = self._warm, None
+        if warm is not None:
+            _discard(warm[1])
+
+
+def _discard(running: _Running) -> None:
+    """Ends a warm Claude Code that won't be used, without making the caller wait for it."""
+    threading.Thread(target=_stop, args=(running.process,), daemon=True).start()
+
+
 # A saved session Claude Code no longer has (cleaned up, another profile, a reinstall): the turn starts a
 # new one, and Claude is told it can't see the earlier part (PLAN.md, Phase 8a).
 SESSION_GONE_STATUS = "Couldn't resume the earlier Claude Code session; starting a new one…"
@@ -367,29 +458,53 @@ def run_chat_turn(
     popen: Popen = subprocess.Popen,
     images: list[dict[str, str]] | None = None,
     effort: str | None = None,
+    launcher: Launcher | None = None,
 ) -> dict[str, Any]:
     """Runs one turn through Claude Code, end to end. Raises ChatError when it can't. ``images`` go
-    ahead of the text as image blocks in the stream-json user line (Phase 8g)."""
+    ahead of the text as image blocks in the stream-json user line (Phase 8g). ``launcher`` is the job's
+    (Phase 11f): a turn whose Claude Code it already started takes that one."""
     setup = check_setup(setup)
     reply = ReplyStream(emit)
     if not user_message or not user_message.strip():
         raise ChatError("The chat message was empty.")
+    launcher = launcher or Launcher(popen)
     resolved_model = model if model in MODELS else DEFAULT_MODEL
     session = session_of(history)
     os.makedirs(setup["workDir"], exist_ok=True)
     try:
         return _run_once(
             setup, resolved_model, system_instruction, session, history,
-            user_line(images, user_message), reply, should_abort, max_iterations, popen, effort,
+            user_line(images, user_message), reply, should_abort, max_iterations, launcher, effort,
         )
     except _SessionGone:
         reply.reset()
         reply.emit("status", detail=SESSION_GONE_STATUS)
         return _run_once(
             setup, resolved_model, system_instruction, None, [],
-            user_line(images, user_message, note=SESSION_GONE_NOTE), reply, should_abort, max_iterations, popen,
-            effort,
+            user_line(images, user_message, note=SESSION_GONE_NOTE), reply, should_abort, max_iterations,
+            launcher, effort,
         )
+
+
+def prepare_turn(
+    launcher: Launcher,
+    setup: Any,
+    model: str | None,
+    system_instruction: str,
+    history: list[Any],
+    max_iterations: int = DEFAULT_MAX_STEPS,
+    effort: str | None = None,
+) -> None:
+    """Starts the Claude Code that a turn with these arguments will take (Phase 11f). Quietly does
+    nothing when it can't: the turn then starts its own and reports why."""
+    try:
+        setup = check_setup(setup)
+        os.makedirs(setup["workDir"], exist_ok=True)
+    except (ChatError, OSError):
+        return
+    resolved_model = model if model in MODELS else DEFAULT_MODEL
+    args = build_args(setup, resolved_model, system_instruction, max_iterations, session_of(history), effort)
+    launcher.warm(args, setup)
 
 
 def _run_once(
@@ -402,43 +517,15 @@ def _run_once(
     stream: ReplyStream,
     should_abort: Callable[[], bool],
     max_iterations: int,
-    popen: Popen,
+    launcher: Launcher,
     effort: str | None = None,
 ) -> dict[str, Any]:
     """One ``claude -p`` for the turn. Raises _SessionGone when ``session`` can't be resumed."""
     emit = stream.emit
     resuming = session is not None
     args = build_args(setup, resolved_model, system_instruction, max_iterations, session, effort)
-    try:
-        process = popen(
-            args,
-            cwd=setup["workDir"],
-            env=child_env(setup),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except OSError as exc:
-        raise ChatError(f"Couldn't start Claude Code ({setup['program']}): {exc}") from None
-
-    lines: queue.Queue[bytes | None] = queue.Queue()
-    stderr_parts: list[str] = []
-
-    def pump_stdout() -> None:
-        assert process.stdout is not None
-        for raw in process.stdout:
-            lines.put(raw)
-        lines.put(None)
-
-    def pump_stderr() -> None:
-        assert process.stderr is not None
-        for raw in process.stderr:
-            stderr_parts.append(raw.decode("utf-8", "replace"))
-            while sum(len(p) for p in stderr_parts) > STDERR_KEEP_CHARS and len(stderr_parts) > 1:
-                stderr_parts.pop(0)
-
-    threading.Thread(target=pump_stdout, daemon=True).start()
-    threading.Thread(target=pump_stderr, daemon=True).start()
+    running = launcher.start(args, setup)
+    process, lines, stderr_parts = running.process, running.lines, running.stderr_parts
     try:
         assert process.stdin is not None
         process.stdin.write(user_message)

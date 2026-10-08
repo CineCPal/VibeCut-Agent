@@ -37,6 +37,8 @@ from vibecut_agent.agent.attachments import claude_blocks
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
+    STOPPED_NOTICE,
+    ChatError,
     RepeatFailures,
     budget_note,
     is_last_step,
@@ -44,13 +46,12 @@ from vibecut_agent.agent.chat_steps import (
 from vibecut_agent.agent.claude_client import (
     FALLBACK_BETA,
     add_usage,
-    resolve_effort,
     resolve_model,
     send,
     text_of,
 )
 from vibecut_agent.agent.claude_schema import to_claude_tools
-from vibecut_agent.agent.gemini_chat import STOPPED_NOTICE, ChatError
+from vibecut_agent.agent.effort import resolve_effort
 from vibecut_agent.agent.gemini_client import OnRetry
 from vibecut_agent.agent.redact import scrub
 from vibecut_agent.agent.streaming import ReplyStream

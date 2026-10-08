@@ -46,7 +46,18 @@ describe("useAgentStore", () => {
       effort: { opus: "medium", sonnet: "medium" },
       chatId: useAgentStore.getState().chatId,
       autoTitles: true,
+      reviewEdits: false,
     });
+  });
+
+  it("queues at most five messages, in order, and a new chat drops them (Phase 11b)", () => {
+    for (let i = 0; i < 6; i++) useAgentStore.getState().enqueue({ text: `m${i}`, images: [], mentions: [] });
+    expect(useAgentStore.getState().queue.map((m) => m.text)).toEqual(["m0", "m1", "m2", "m3", "m4"]);
+    expect(useAgentStore.getState().dequeue()?.text).toBe("m0");
+    useAgentStore.getState().setQueuePaused(true);
+    useAgentStore.getState().clear();
+    expect(useAgentStore.getState()).toMatchObject({ queue: [], queuePaused: false });
+    expect(JSON.parse(localStorage.getItem("vibecut-agent.agent") ?? "{}").state.queue).toBeUndefined();
   });
 
   it("keeps each Claude model's effort, medium by default, and only known levels (Phase 9a)", () => {

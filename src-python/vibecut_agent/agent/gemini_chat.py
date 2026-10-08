@@ -28,6 +28,8 @@ from vibecut_agent.agent.attachments import gemini_parts
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
+    STOPPED_NOTICE,
+    ChatError,
     RepeatFailures,
     budget_note,
     is_last_step,
@@ -53,11 +55,16 @@ DEFAULT_MODEL = "gemini-flash-latest"
 # left alone for the one-shot Story Editor/Auto-Cut calls.
 CHAT_RETRYABLE_STATUSES = RETRYABLE_STATUSES | {500, 502, 504}
 
-STOPPED_NOTICE = "Stopped by the user. Edits made before stopping are still applied."
+_session: requests.Session | None = None
 
 
-class ChatError(GeminiError):
-    """A chat turn could not be completed."""
+def _http_post(*args: Any, **kwargs: Any) -> requests.Response:
+    """One `requests.Session` for the job's life (Phase 11f): every model call of a chat reuses its
+    connection instead of a new TLS handshake."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+    return _session.post(*args, **kwargs)
 
 
 def _post(
@@ -88,7 +95,7 @@ def _post(
         if attempt > 1 and reply:
             reply.reset()
         try:
-            resp = requests.post(
+            resp = _http_post(
                 url,
                 headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 data=json.dumps(body),

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
-vi.mock("../../lib/ipc", () => ({ getAppVersion: vi.fn().mockResolvedValue("0.1.0") }));
+const ipc = vi.hoisted(() => ({ getAppVersion: vi.fn().mockResolvedValue("0.1.0"), restartSession: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../../lib/ipc", () => ipc);
 
 import { AboutModal } from "./AboutModal";
 import { useSystemStore } from "../../store/useSystemStore";
@@ -53,6 +54,17 @@ describe("AboutModal", () => {
     }
     // Phase 7b: the subscription path and its MCP bridge are disclosed too.
     expect(screen.getByText(/^Your own Claude Code .* calls api\.anthropic\.com .* MCP bridge \(files, no network port\)$/)).toBeInTheDocument();
+  });
+
+  it("restarts the sidecar and refreshes the binaries (moved here from Settings)", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    useSystemStore.setState({ refresh });
+    render(<AboutModal onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart the agent sidecar" }));
+    expect(ipc.restartSession).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Version 0.1.0")).toBeInTheDocument();
   });
 
   it("closes on Escape", () => {

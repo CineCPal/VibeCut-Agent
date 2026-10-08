@@ -18,14 +18,15 @@ def make():
     return stream, events, clock
 
 
-def test_deltas_are_joined_until_time_or_size_says_send():
+def test_the_first_words_go_at_once_then_deltas_are_joined_until_time_or_size_says_send():
     stream, events, clock = make()
     stream.text("Hel")
+    assert events == [("reply_delta", {"text": "Hel"})]
     stream.text("lo")
-    assert events == []
+    assert events == [("reply_delta", {"text": "Hel"})]
     clock.now += FLUSH_SECONDS
     stream.text(" there")
-    assert events == [("reply_delta", {"text": "Hello there"})]
+    assert events[-1] == ("reply_delta", {"text": "lo there"})
     stream.text("x" * FLUSH_CHARS)
     assert events[-1] == ("reply_delta", {"text": "x" * FLUSH_CHARS})
 
@@ -33,8 +34,13 @@ def test_deltas_are_joined_until_time_or_size_says_send():
 def test_any_other_event_goes_after_the_waiting_text():
     stream, events, _ = make()
     stream.text("Looking")
+    stream.text(" now")
     stream.emit("status", detail="Running x…")
-    assert events == [("reply_delta", {"text": "Looking"}), ("status", {"detail": "Running x…"})]
+    assert events == [
+        ("reply_delta", {"text": "Looking"}),
+        ("reply_delta", {"text": " now"}),
+        ("status", {"detail": "Running x…"}),
+    ]
 
 
 def test_a_break_sends_the_text_then_the_break_and_only_after_something_was_said():
@@ -51,11 +57,12 @@ def test_a_reset_drops_the_waiting_text():
     stream, events, _ = make()
     stream.reset()
     assert events == []
-    stream.text("half an ans")
+    stream.text("half ")
+    stream.text("an ans")
     stream.reset()
-    assert events == [("reply_reset", {})]
+    assert events == [("reply_delta", {"text": "half "}), ("reply_reset", {})]
     stream.flush()
-    assert events == [("reply_reset", {})]
+    assert events[-1] == ("reply_reset", {})
 
 
 def test_empty_deltas_are_ignored():

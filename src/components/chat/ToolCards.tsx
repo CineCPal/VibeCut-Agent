@@ -3,13 +3,16 @@
  * Each card opens to show the call's arguments and result.
  */
 import { useId, useState } from "react";
-import { AlertTriangle, Check, ChevronRight, Loader2, Wrench } from "lucide-react";
+import { AlertTriangle, Ban, Check, ChevronRight, Clock, Loader2, Wrench } from "lucide-react";
+import { answerReview } from "../../lib/agent/review";
 import { CopyButton } from "./CopyButton";
 import type { ChatMessage, ChatToolCall } from "../../types/agent";
 
 function StateIcon({ state }: { state: ChatToolCall["state"] }) {
   if (state === "running") return <Loader2 size={11} className="shrink-0 animate-spin text-athletic-blue-light" aria-label="Running" />;
   if (state === "failed") return <AlertTriangle size={11} className="shrink-0 text-loss" aria-label="Failed" />;
+  if (state === "pending") return <Clock size={11} className="shrink-0 text-warning" aria-label="Waiting for you" />;
+  if (state === "declined") return <Ban size={11} className="shrink-0 text-cool-grey" aria-label="Skipped" />;
   return <Check size={11} className="shrink-0 text-profit" aria-label="Done" />;
 }
 
@@ -44,9 +47,32 @@ function ToolCard({ message }: { message: ChatMessage & { tool: ChatToolCall } }
         </span>
         <span className="min-w-0">
           <span className="font-mono text-athletic-blue-light">{tool.name}</span>
-          {message.text !== tool.name ? <span className={`ml-1.5 break-words ${tool.state === "failed" ? "text-loss" : "text-cool-grey"}`}>{message.text}</span> : null}
+          {message.text !== tool.name ? (
+            <span className={`ml-1.5 break-words ${tool.state === "failed" ? "text-loss" : tool.state === "pending" ? "text-white" : "text-cool-grey"}`}>
+              {tool.state === "declined" ? `Skipped: ${message.text}` : message.text}
+            </span>
+          ) : null}
         </span>
       </button>
+      {tool.state === "pending" ? (
+        // Review edits first (Phase 11d): the change waits here for the user.
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border/70 px-2 py-1.5" role="group" aria-label={`Review ${tool.name}`}>
+          <button type="button" onClick={() => answerReview(message.id, "apply")} className="rounded bg-athletic-blue px-2 py-0.5 text-[11px] text-white hover:bg-athletic-blue/80">
+            Apply
+          </button>
+          <button type="button" onClick={() => answerReview(message.id, "skip")} className="rounded border border-border px-2 py-0.5 text-[11px] text-warm-grey hover:text-white">
+            Skip
+          </button>
+          <button
+            type="button"
+            onClick={() => answerReview(message.id, "all")}
+            title="Apply this and the rest of this request's changes without asking"
+            className="rounded px-1.5 py-0.5 text-[11px] text-athletic-blue-light hover:text-white"
+          >
+            Apply all for this request
+          </button>
+        </div>
+      ) : null}
       {open ? (
         <div id={detailsId} className="flex flex-col gap-1 border-t border-border/70 px-2 py-1.5">
           <Detail label="Arguments" text={tool.args} />
@@ -61,7 +87,7 @@ function ToolCard({ message }: { message: ChatMessage & { tool: ChatToolCall } }
 export function ToolGroup({ messages, live }: { messages: (ChatMessage & { tool: ChatToolCall })[]; live: boolean }) {
   const [chosen, setChosen] = useState<boolean | null>(null);
   const listId = useId();
-  const running = messages.some((m) => m.tool.state === "running");
+  const running = messages.some((m) => m.tool.state === "running" || m.tool.state === "pending");
   const open = chosen ?? (live || running);
   const failed = messages.filter((m) => m.tool.state === "failed").length;
   return (

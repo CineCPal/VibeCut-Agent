@@ -1,5 +1,5 @@
 import { useState, type DragEvent } from "react";
-import { SquarePen, Undo2 } from "lucide-react";
+import { ShieldCheck, ShieldOff, SquarePen, Undo2 } from "lucide-react";
 import { lastTurnEdits, newConversation, retryLastTurn, rewindBlockReason, startEditingLastMessage } from "../../lib/agent/controller";
 import { revertLastRequest } from "../../lib/agent/edits";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -24,6 +24,7 @@ export function ChatPanel() {
   const earlier = revertable > 0 && entries.some((e) => e.id === step[0] && e.fromEarlierRun);
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
   const saveError = useChatHistoryStore((s) => s.saveError);
+  const reviewEdits = useAgentStore((s) => s.reviewEdits);
   const [reverting, setReverting] = useState(false);
   // Images dragged over the chat (Phase 8g): an outline while over it, then into the composer.
   const [dropping, setDropping] = useState(false);
@@ -96,6 +97,22 @@ export function ChatPanel() {
       {/* The agent's state and model are on the window's status bar (StatusBar). */}
       <div className="flex items-center justify-end px-3 py-1.5 text-[11px]">
         <span className="flex items-center gap-1">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={reviewEdits}
+          aria-label="Review edits before they're made"
+          onClick={() => useAgentStore.getState().setReviewEdits(!reviewEdits)}
+          title={
+            reviewEdits
+              ? "Review edits first is on: each change to the timeline or project waits for your Apply. Click to let the agent edit straight away."
+              : "Review edits first is off: the agent edits straight away (Revert undoes a request). Click to approve each change first."
+          }
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${reviewEdits ? "text-athletic-blue-light" : "text-cool-grey"} hover:text-white`}
+        >
+          {reviewEdits ? <ShieldCheck size={12} aria-hidden="true" /> : <ShieldOff size={12} aria-hidden="true" />}
+          {reviewEdits ? "Review on" : "Review off"}
+        </button>
         {revertable > 0 ? (
           <button
             type="button"

@@ -455,6 +455,22 @@ pub struct SidecarExit {
     pub message: Option<String>,
 }
 
+/// Where Python keeps bytecode (Phase 11f). A release build (`environment`, the venv in app data) keeps
+/// every `.pyc` in a `pycache` folder beside that venv (`PYTHONPYCACHEPREFIX`): for its packages and for
+/// the bundle's own sources alike, so the signed bundle is never written to. Before, nothing was
+/// compiled and kept, and every job compiled `anthropic`, pydantic and the rest from source (about
+/// 0.5–1.5 s of a chat job's start, measured 2026-10-07). A dev run writes none (its `.venv` was
+/// compiled by uv; `src-python` stays free of `__pycache__`).
+pub fn bytecode_env(environment: Option<&Path>) -> (String, String) {
+    match environment {
+        Some(environment) => (
+            "PYTHONPYCACHEPREFIX".into(),
+            environment.with_file_name("pycache").to_string_lossy().into_owned(),
+        ),
+        None => ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+    }
+}
+
 /// The program, arguments and environment for one run, kept separate from spawning for tests.
 pub struct Launch {
     pub program: PathBuf,
@@ -465,21 +481,21 @@ pub struct Launch {
 
 impl Launch {
     /// The environment every run gets: the allow-listed variables, a usable PATH, and the package on
-    /// PYTHONPATH. No .pyc files, so a release build never writes into its signed bundle.
-    fn base_envs(root: &Path) -> Vec<(String, String)> {
+    /// PYTHONPATH. Bytecode: see `bytecode_env`.
+    fn base_envs(root: &Path, environment: Option<&Path>) -> Vec<(String, String)> {
         let home = std::env::var("HOME").ok();
         let mut envs: Vec<(String, String)> = std::env::vars().filter(|(name, _)| passes_to_child(name)).collect();
         envs.push(("PATH".into(), child_path(home.as_deref(), std::env::var("PATH").ok().as_deref())));
         envs.push(("PYTHONPATH".into(), root.join("src-python").to_string_lossy().into_owned()));
         envs.push(("PYTHONUNBUFFERED".into(), "1".into()));
         envs.push(("PYTHONIOENCODING".into(), "utf-8".into()));
-        envs.push(("PYTHONDONTWRITEBYTECODE".into(), "1".into()));
+        envs.push(bytecode_env(environment));
         envs
     }
 
     /// A command run by uv in the project's locked environment, with the extras it needs.
     pub fn for_command(root: &Path, environment: Option<&Path>, command: &str, extras: &[&str]) -> Launch {
-        let mut envs = Launch::base_envs(root);
+        let mut envs = Launch::base_envs(root, environment);
         if let Some(environment) = environment {
             envs.push(("UV_PROJECT_ENVIRONMENT".into(), environment.to_string_lossy().into_owned()));
         }
@@ -496,7 +512,7 @@ impl Launch {
             program: resolve_python(),
             args: vec!["-u".into(), "-B".into(), script.to_string_lossy().into_owned()],
             cwd: root.to_path_buf(),
-            envs: Launch::base_envs(root),
+            envs: Launch::base_envs(root, None),
         }
     }
 
@@ -962,8 +978,19 @@ mod tests {
         let env = |name: &str| launch.envs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
         assert_eq!(env("PYTHONPATH"), Some("/r/src-python"));
         assert_eq!(env("UV_PROJECT_ENVIRONMENT"), Some("/data/python-env"));
+        // Phase 11f: a release run keeps its bytecode beside the venv, never in the bundle.
+        assert_eq!(env("PYTHONPYCACHEPREFIX"), Some("/data/pycache"));
+        assert_eq!(env("PYTHONDONTWRITEBYTECODE"), None);
         assert_eq!(env("GEMINI_API_KEY"), None);
         assert_eq!(launch.cwd, PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn a_dev_run_writes_no_bytecode() {
+        let launch = Launch::for_command(Path::new("/r"), None, "health", &[]);
+        let env = |name: &str| launch.envs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(env("PYTHONDONTWRITEBYTECODE"), Some("1"));
+        assert_eq!(env("PYTHONPYCACHEPREFIX"), None);
     }
 
     #[test]

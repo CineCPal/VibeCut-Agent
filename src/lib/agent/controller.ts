@@ -17,6 +17,11 @@ import { cancelSidecar, onSidecarEvent, onSidecarExit, sendToSidecar, startSidec
 import { newId } from "../id";
 import { refreshAgentStatus } from "./availability";
 import { describeError, snapshotFor } from "./context";
+import { dropTiming, markTiming, startTiming } from "./turnTiming";
+import { keptMentions, mentionBlock } from "./mentions";
+import { awaitReview, skipAllReviews } from "./review";
+import { describeChange, needsReview } from "./toolKinds";
+import { notifyAway } from "../notify";
 import { revertLastRequest } from "./edits";
 import { MAX_IMAGES, attachmentOf, loadImages, saveImages } from "./attachments";
 import { systemInstruction } from "./prompt";
@@ -26,7 +31,7 @@ import { useAgentStore } from "../../store/useAgentStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
-import type { ChatProvider, ChatUsage, PendingImage } from "../../types/agent";
+import type { ChatMention, ChatProvider, ChatUsage, PendingImage } from "../../types/agent";
 import { AI_CHOICES, familyOf, type AiChoiceId } from "../../types/agent";
 import type { PlanLimits, PlanWindow } from "../../types/usage";
 import { useUsageStore } from "../../store/useUsageStore";
@@ -98,10 +103,20 @@ function settleLiveReply(): void {
 function endTurn(): void {
   useAgentStore.getState().setStatus("idle");
   refreshAgentStatus();
+  // The next queued message goes once this turn's events are all handled (Phase 11b).
+  setTimeout(() => void drainQueue(), 0);
+}
+
+/** A failed or stopped turn holds the queue (Phase 11b): what was queued may depend on it. */
+function pauseQueue(): void {
+  const store = useAgentStore.getState();
+  if (store.queue.length) store.setQueuePaused(true);
 }
 
 /** Ends the job on our side: the next message starts a new one. */
 function sessionEnded(): void {
+  pauseQueue();
+  skipAllReviews();
   settleLiveReply();
   context = null;
   useAgentStore.getState().endSession();
@@ -114,57 +129,109 @@ export function imageOnlyText(count: number): string {
   return count === 1 ? "(image)" : "(images)";
 }
 
-/**
- * Sends one user message to the agent, with any images (Phase 8g: filed beside the chat first). Does
- * nothing unless the agent is idle. True when it was sent.
- */
-export async function sendUserMessage(text: string, images: PendingImage[] = []): Promise<boolean> {
+/** What a chat job for the current model, effort and editor is started with, and the key that says
+ * whether a running job still fits (a change starts a new one). */
+function jobPlan() {
   const store = useAgentStore.getState();
-  const words = text.trim() || (images.length ? imageOnlyText(images.length) : "");
-  // An outside client (MCP, Phase 7a) is editing: one driver at a time. The composer says so too.
-  if (!words || images.length > MAX_IMAGES || store.status !== "idle" || useMcpStore.getState().outsideRunning > 0) return false;
-  store.setStatus("thinking");
-  if (images.length) {
-    store.setActivity("Saving the images…");
-    try {
-      await saveImages(store.chatId, images);
-    } catch (error) {
-      useAgentStore.getState().setActivity(null);
-      useAgentStore.getState().addMessage({ role: "error", text: `Couldn't keep the image${images.length === 1 ? "" : "s"} to send: ${describeError(error)}` });
-      endTurn();
-      return false;
-    }
-  }
-  const step = useAgentStore.getState().addMessage({
-    role: "user",
-    text: words,
-    status: "done",
-    ...(images.length ? { attachments: images.map(attachmentOf) } : {}),
-  });
-  useAgentStore.getState().setActivity("Reading the timeline…");
-
   const nle = useNleStateStore.getState();
   const host = selectActiveHost(nle);
   const timeline = host ? nle.hosts[host].timeline : null;
   const choice = AI_CHOICES.find((c) => c.id === store.aiChoice) ?? AI_CHOICES[0];
-  const userMessage = `${await snapshotFor(host, timeline)}\n\n${words}`;
   // Settings' effort for this Claude model (Phase 9a). A change starts a new job, like a model switch.
   const family = familyOf(choice);
   const effort = family ? store.effort[family] : null;
   const key = `${choice.id}:${effort ?? "-"}:${host ?? "none"}`;
+  const chatProvider = choice.chatProvider;
+  const history = store.historyProvider === chatProvider ? store.history : [];
+  const request = {
+    provider: chatProvider,
+    ...(choice.model ? { model: choice.model } : {}),
+    ...(effort ? { effort } : {}),
+    systemInstruction: systemInstruction(host),
+    toolDeclarations: host ? toolDeclarations(host) : [],
+    history,
+  };
+  return { host, timeline, choice, key, history, request };
+}
+
+/** A job being started ahead of a message (Phase 11f); a send waits for it rather than racing it. */
+let warming: Promise<void> | null = null;
+
+/**
+ * Starts the chat job before the message is sent (Phase 11f), as the user begins typing: the sidecar's
+ * start (and, on Claude (subscription), Claude Code's own) happens while they type. Does nothing unless
+ * the agent is idle with no job, or when the model can't be used (the composer says why).
+ */
+export function warmUp(): void {
+  const store = useAgentStore.getState();
+  if (store.status !== "idle" || store.jobId || warming || useMcpStore.getState().outsideRunning > 0) return;
+  const plan = jobPlan();
+  const jobId = newId().replace(/[^\w-]/g, "").slice(0, 64);
+  store.setSession(jobId, plan.key);
+  provider = plan.choice.chatProvider;
+  warming = startSidecar(jobId, "chat", plan.request)
+    .catch(() => {
+      // Quietly: the message will start its own job and report why that fails.
+      if (useAgentStore.getState().jobId === jobId) useAgentStore.getState().endSession();
+    })
+    .finally(() => {
+      warming = null;
+    });
+}
+
+/**
+ * Sends one user message to the agent, with any images (Phase 8g: filed beside the chat first). Does
+ * nothing unless the agent is idle. True when it was sent.
+ */
+export async function sendUserMessage(text: string, images: PendingImage[] = [], mentions: ChatMention[] = []): Promise<boolean> {
+  const store = useAgentStore.getState();
+  const words = text.trim() || (images.length ? imageOnlyText(images.length) : "");
+  const pointed = keptMentions(words, mentions);
+  // An outside client (MCP, Phase 7a) is editing: one driver at a time. The composer says so too.
+  if (!words || images.length > MAX_IMAGES || store.status !== "idle" || useMcpStore.getState().outsideRunning > 0) return false;
+  startTiming();
+  store.setStatus("thinking");
+  const step = store.addMessage({
+    role: "user",
+    text: words,
+    status: "done",
+    ...(images.length ? { attachments: images.map(attachmentOf) } : {}),
+    ...(pointed.length ? { mentions: pointed } : {}),
+  });
+  useAgentStore.getState().setActivity(images.length ? "Saving the images and reading the timeline…" : "Reading the timeline…");
+
+  const { host, timeline, choice, key } = jobPlan();
+  // The images are filed while the timeline is read (Phase 11f): neither waits for the other.
+  const [saved, snapshot] = await Promise.all([
+    images.length ? saveImages(store.chatId, images).then(() => null, (error: unknown) => error) : Promise.resolve(null),
+    snapshotFor(host, timeline),
+  ]);
+  if (saved !== null) {
+    useAgentStore.getState().removeMessage(step);
+    useAgentStore.getState().setActivity(null);
+    useAgentStore.getState().addMessage({ role: "error", text: `Couldn't keep the image${images.length === 1 ? "" : "s"} to send: ${describeError(saved)}` });
+    dropTiming();
+    endTurn();
+    return false;
+  }
+  markTiming("context");
+  const block = mentionBlock(pointed);
+  const userMessage = `${snapshot}${block ? `\n\n${block}` : ""}\n\n${words}`;
   context = host ? { host, timeline, step, stepText: words } : null;
   provider = choice.chatProvider;
   turnChoice = choice.id;
   useAgentStore.getState().setActivity(`Calling ${PROVIDER_LABEL[provider]}…`);
+  if (warming) await warming;
 
   const current = useAgentStore.getState();
-  const history = current.historyProvider === provider ? current.history : [];
+  const { history, request } = jobPlan();
   const attachments = images.length ? { attachments: images.map(({ mime, data }) => ({ mime, data })) } : {};
   // What Retry and Edit go back to (Phase 8c). Claude Code's turn forks its session, so this one stays.
   current.setLastTurn({ userMessageId: step, history, historyProvider: history.length ? provider : null });
   if (current.jobId && current.sessionKey === key) {
     try {
       await sendToSidecar(current.jobId, { type: "user_message", userMessage, history, ...attachments });
+      markTiming("sent", true);
       return true;
     } catch {
       // The job died between turns; start a new one below.
@@ -179,20 +246,65 @@ export async function sendUserMessage(text: string, images: PendingImage[] = [])
   const jobId = newId().replace(/[^\w-]/g, "").slice(0, 64);
   useAgentStore.getState().setSession(jobId, key);
   try {
-    await startSidecar(jobId, "chat", {
-      provider,
-      ...(choice.model ? { model: choice.model } : {}),
-      ...(effort ? { effort } : {}),
-      systemInstruction: systemInstruction(host),
-      toolDeclarations: host ? toolDeclarations(host) : [],
-      history,
-      userMessage,
-      ...attachments,
-    });
+    await startSidecar(jobId, "chat", { ...request, userMessage, ...attachments });
+    markTiming("sent", false);
   } catch (error) {
     useAgentStore.getState().addMessage({ role: "error", text: describeError(error) });
+    dropTiming();
     sessionEnded();
   }
+  return true;
+}
+
+/**
+ * Sends a message now, or queues it while a turn runs (Phase 11b). "queued" when it waits its turn;
+ * false when it can't go either way (the queue is full, or the agent can't chat).
+ */
+export async function submitMessage(text: string, images: PendingImage[] = [], mentions: ChatMention[] = []): Promise<"sent" | "queued" | false> {
+  const store = useAgentStore.getState();
+  if (!text.trim() && !images.length) return false;
+  const busy = store.status === "thinking" || store.status === "stopping" || useMcpStore.getState().outsideRunning > 0;
+  if (busy || store.queue.length) {
+    if (store.status === "offline" || store.status === "error") return false;
+    return store.enqueue({ text, images, mentions: keptMentions(text, mentions) }) ? "queued" : false;
+  }
+  return (await sendUserMessage(text, images, mentions)) ? "sent" : false;
+}
+
+let draining = false;
+
+/** Sends the next queued message when the agent is free and the queue isn't held. */
+export async function drainQueue(): Promise<void> {
+  const store = useAgentStore.getState();
+  if (draining || store.queuePaused || !store.queue.length || store.status !== "idle" || useMcpStore.getState().outsideRunning > 0) return;
+  const next = store.dequeue();
+  if (!next) return;
+  draining = true;
+  try {
+    if (!(await sendUserMessage(next.text, next.images, next.mentions))) {
+      // It couldn't go (the agent went offline): it goes back first in line and the queue holds.
+      useAgentStore.setState((s) => ({ queue: [next, ...s.queue], queuePaused: true }));
+    }
+  } finally {
+    draining = false;
+  }
+}
+
+/** "Send next" on a held queue: lets it go again. */
+export function resumeQueue(): void {
+  useAgentStore.getState().setQueuePaused(false);
+  void drainQueue();
+}
+
+/** Takes a queued message back into the composer to change it (only when the composer is empty). */
+export function editQueued(id: string): boolean {
+  const store = useAgentStore.getState();
+  const message = store.queue.find((m) => m.id === id);
+  if (!message || store.draft.trim() || store.pendingImages.length || store.editingMessageId) return false;
+  store.removeQueued(id);
+  store.setDraft(message.text);
+  store.setPendingImages(message.images);
+  store.setDraftMentions(message.mentions);
   return true;
 }
 
@@ -265,6 +377,7 @@ export function startEditingLastMessage(): boolean {
   const images = message.attachments ?? [];
   store.setDraft(images.length && message.text === imageOnlyText(images.length) ? "" : message.text);
   store.setPendingImages([]);
+  store.setDraftMentions(message.mentions ?? []);
   store.setEditing(message.id);
   if (images.length) {
     const chatId = store.chatId;
@@ -285,27 +398,33 @@ export function cancelEditing(): void {
   store.setEditing(null);
   store.setDraft("");
   store.setPendingImages([]);
+  store.setDraftMentions([]);
 }
 
 /** Retry: the last message again, with its images, from where it started. */
 export async function retryLastTurn(): Promise<void> {
   // The images are read back first: if they can't be, nothing has been taken back yet.
-  const images = await loadImages(useAgentStore.getState().chatId, lastTurnMessage()?.attachments);
+  const message = lastTurnMessage();
+  const images = await loadImages(useAgentStore.getState().chatId, message?.attachments);
+  const mentions = message?.mentions ?? [];
   const text = await rewindLastTurn();
-  await sendUserMessage(text, images);
+  await sendUserMessage(text, images, mentions);
 }
 
 /** Edit: the last message replaced with `text` and `images`, from where it started. */
-export async function sendEditedMessage(text: string, images: PendingImage[] = []): Promise<void> {
+export async function sendEditedMessage(text: string, images: PendingImage[] = [], mentions: ChatMention[] = []): Promise<void> {
   if (!text.trim() && !images.length) return;
   await rewindLastTurn();
-  await sendUserMessage(text, images);
+  await sendUserMessage(text, images, mentions);
 }
 
 /** Stop: the sidecar ends the turn at its next check; tools already running finish first. */
 export async function stopTurn(): Promise<void> {
   const { jobId, status } = useAgentStore.getState();
   if (!jobId || status !== "thinking") return;
+  pauseQueue();
+  // A change waiting for review is skipped (Phase 11d); the turn then winds down.
+  skipAllReviews();
   useAgentStore.getState().setStatus("stopping");
   useAgentStore.getState().setActivity("Stopping…");
   try {
@@ -328,19 +447,46 @@ export async function newConversation(next?: SavedChat): Promise<void> {
   else useAgentStore.getState().clear();
 }
 
+/** The request whose remaining changes the user chose Apply all for (Phase 11d). */
+let approvedStep: string | null = null;
+
+export const DECLINED_ERROR = "The user declined this change. Don't make it again unless they ask; carry on with the rest, or ask what they'd like instead.";
+
 /**
  * Runs one tool call for the running chat job's turn: under its context (so edits join its backup and
  * Revert group), with its transcript line, and refused once Stop was pressed. Also how a chat job's
  * calls that arrive through the MCP bridge are run (Phase 7b). Null: `jobId` isn't the running job.
+ *
+ * With Review edits first on (Phase 11d), a call that changes the editor waits on its card for Apply
+ * or Skip; `onWait` is told first (the MCP bridge then lets Claude Code's call wait that long).
  */
-export async function runChatTool(jobId: string, name: string, args: unknown): Promise<ToolOutcome | null> {
+export async function runChatTool(jobId: string, name: string, args: unknown, onWait?: () => void): Promise<ToolOutcome | null> {
   if (useAgentStore.getState().jobId !== jobId) return null;
   const executors = context ? executorsFor(context) : {};
   const stopping = useAgentStore.getState().status === "stopping";
   useAgentStore.getState().setActivity(`Running ${name}…`);
   if (stopping) return { summary: "", result: { error: "Stopped by the user before this ran" } };
-  // The card shows while the call runs (Phase 8f), then takes its summary and result.
-  const card = useAgentStore.getState().addMessage({ role: "tool", text: `Running ${name}…`, tool: { name, args: toolDetail(args), state: "running" } });
+  let card: string;
+  if (useAgentStore.getState().reviewEdits && needsReview(name) && !(context && approvedStep === context.step)) {
+    const summary = describeChange(name, args);
+    card = useAgentStore.getState().addMessage({ role: "tool", text: summary, tool: { name, args: toolDetail(args), state: "pending" } });
+    useAgentStore.getState().setActivity("Waiting for you to review a change…");
+    onWait?.();
+    notifyAway("VibeCut Agent is waiting for you", summary);
+    const decision = await awaitReview(card);
+    if (decision === "skip") {
+      const result = { declined: true, error: DECLINED_ERROR };
+      useAgentStore.getState().updateMessage(card, { tool: { name, args: toolDetail(args), result: toolDetail(result), state: "declined" } });
+      return { summary: "", result };
+    }
+    if (decision === "all" && context) approvedStep = context.step;
+    if (useAgentStore.getState().jobId !== jobId) return null;
+    useAgentStore.getState().setActivity(`Running ${name}…`);
+    useAgentStore.getState().updateMessage(card, { text: `Running ${name}…`, tool: { name, args: toolDetail(args), state: "running" } });
+  } else {
+    // The card shows while the call runs (Phase 8f), then takes its summary and result.
+    card = useAgentStore.getState().addMessage({ role: "tool", text: `Running ${name}…`, tool: { name, args: toolDetail(args), state: "running" } });
+  }
   const outcome = await runTool(executors, name, args);
   const failed = typeof outcome.result === "object" && outcome.result !== null && "error" in outcome.result;
   useAgentStore.getState().updateMessage(card, {
@@ -398,6 +544,7 @@ export function startAgentService(): () => void {
       switch (event.type) {
         case "reply_delta":
           if (typeof event.text !== "string" || !event.text) break;
+          markTiming("firstWords");
           if (liveReplyId && store.messages.some((m) => m.id === liveReplyId)) store.appendToMessage(liveReplyId, event.text);
           else liveReplyId = store.addMessage({ role: "assistant", text: event.text, status: "pending" });
           break;
@@ -412,6 +559,7 @@ export function startAgentService(): () => void {
           if (Array.isArray(event.calls)) void answerToolCalls(jobId, event.calls as ToolCall[]);
           break;
         case "status":
+          markTiming("status");
           if (typeof event.detail === "string" && event.detail) store.setActivity(event.detail);
           break;
         case "rate_limit": {
@@ -444,22 +592,38 @@ export function startAgentService(): () => void {
           if (event.outOfSteps === true) {
             store.addMessage({ role: "tool", text: "The agent used its step budget for this message; send another to continue." });
           }
+          if (text) markTiming("firstWords");
+          dropTiming();
           const usage = parseUsage(event.usage);
           if (usage && turnChoice) useUsageStore.getState().addTurn(turnChoice, store.chatId, usage);
           store.finishTurn(Array.isArray(event.history) ? event.history : store.history, provider, usage);
+          // Phase 11e: told when it's done, unless more queued messages follow or it was stopped.
+          if (event.aborted !== true && !useAgentStore.getState().queue.length) {
+            notifyAway("VibeCut Agent finished", text || (event.outOfSteps === true ? "It used its step budget; send another message to continue." : "Done."));
+          }
           endTurn();
           break;
         }
         case "error": {
           // The sidecar exits right after a genuine failure; nothing more follows on this job.
+          dropTiming();
           settleLiveReply();
-          store.addMessage({ role: "error", text: typeof event.message === "string" ? event.message : "The agent reported an error" });
+          const message = typeof event.message === "string" ? event.message : "The agent reported an error";
+          store.addMessage({ role: "error", text: message });
+          notifyAway("VibeCut Agent hit a problem", message);
           sessionEnded();
           break;
         }
         default:
           break;
       }
+    }),
+  );
+
+  // A queued message waits while Claude Code edits from outside (Phase 7a), then goes.
+  unlisteners.push(
+    useMcpStore.subscribe((state, previous) => {
+      if (previous.outsideRunning > 0 && state.outsideRunning === 0) void drainQueue();
     }),
   );
 

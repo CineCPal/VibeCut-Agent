@@ -7,6 +7,8 @@
 //! - `requests/<id>.json`: one request from the shim, renamed into place. Read here, checked, deleted
 //!   and handed to the frontend as an `mcp-request` event (src/lib/mcp/server.ts).
 //! - `replies/<id>.json`: the answer, written by the frontend through `mcp_reply`; the shim deletes it.
+//! - `replies/<id>.hold`: the call waits for the user's review (Phase 11d, `mcp_hold`), so the shim
+//!   lets it wait up to 30 minutes instead of its usual limit; the shim deletes it with the answer.
 //! - `agent-alive.json`: stamped here every second with whether outside control is allowed, so the
 //!   shim can tell "the app isn't running" from "outside control is off".
 //!
@@ -155,6 +157,11 @@ fn write_reply(dir: &Path, id: &str, reply: &Value) -> Result<(), String> {
     write_atomic(&dir.join("replies"), &format!("{id}.json"), &bytes)
 }
 
+/// Marks a request as waiting for the user (Phase 11d): an empty `replies/<id>.hold`.
+fn write_hold(dir: &Path, id: &str) -> Result<(), String> {
+    write_atomic(&dir.join("replies"), &format!("{id}.hold"), b"")
+}
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -262,6 +269,15 @@ pub fn start(app: &AppHandle) {
     let _ = std::thread::Builder::new().name("mcp-bridge".into()).spawn(move || serve(app, dir));
 }
 
+/// Tells the shim a request is waiting for the user's review (Phase 11d).
+#[tauri::command]
+pub fn mcp_hold(id: String) -> Result<(), String> {
+    if !valid_id(&id) {
+        return Err("Not a request id".into());
+    }
+    write_hold(&bridge_dir()?, &id)
+}
+
 /// Writes the frontend's answer to a request.
 #[tauri::command]
 pub fn mcp_reply(id: String, reply: Value) -> Result<(), String> {
@@ -289,7 +305,7 @@ pub struct ShimLaunch {
 pub fn shim_launch(uv: &Path, root: &Path, environment: Option<&Path>, bridge_override: Option<&Path>) -> ShimLaunch {
     let mut env = vec![
         ("PYTHONPATH".to_string(), root.join("src-python").to_string_lossy().into_owned()),
-        ("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string()),
+        crate::sidecar::bytecode_env(environment),
     ];
     if let Some(environment) = environment {
         env.push(("UV_PROJECT_ENVIRONMENT".into(), environment.to_string_lossy().into_owned()));
@@ -481,6 +497,15 @@ mod tests {
     }
 
     #[test]
+    fn a_hold_is_an_empty_file_beside_where_the_reply_will_go() {
+        let dir = temp_dir("hold");
+        write_hold(&dir, "r1").unwrap();
+        assert_eq!(std::fs::read(dir.join("replies/r1.hold")).unwrap(), b"");
+        assert!(mcp_hold("../escape".into()).is_err(), "only a request id names a hold");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn outside_control_is_off_unless_saved_on() {
         assert!(!parse_outside_allowed(None));
         assert!(!parse_outside_allowed(Some("not json")));
@@ -501,6 +526,7 @@ mod tests {
         assert_eq!(launch.args.last().map(String::as_str), Some("mcp"));
         assert!(launch.args.contains(&"--locked".to_string()));
         assert_eq!(launch.env[0].0, "PYTHONPATH");
+        assert_eq!(launch.env[1], ("PYTHONPYCACHEPREFIX".to_string(), "/Users/me/Library/Application Support/com.cj.vibecutagent/pycache".to_string()));
         assert_eq!(launch.env[2].0, "UV_PROJECT_ENVIRONMENT");
         let line = claude_add_command(&launch);
         assert!(line.starts_with("claude mcp add --scope user -e "));

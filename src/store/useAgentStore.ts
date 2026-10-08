@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, StoryFirstPass } from "../types/agent";
+import type { AgentStatus, AiChoiceId, ChatMention, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, QueuedMessage, StoryFirstPass } from "../types/agent";
 import { AI_CHOICES, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
@@ -22,6 +22,15 @@ export interface AgentState {
   draft: string;
   /** Images in the composer, to go with the next message (Phase 8g). */
   pendingImages: PendingImage[];
+  /** What the composer's text points at with @ (Phase 11c); the ones still in the text go with it. */
+  draftMentions: ChatMention[];
+  /** Messages sent while the agent was busy, in order (Phase 11b). Not remembered: a queue only lasts
+   * while a turn runs. */
+  queue: QueuedMessage[];
+  /** The queue waits after a Stop or an error, until the user sends the next one or clears it. */
+  queuePaused: boolean;
+  /** Whether a tool that changes the timeline or project waits for Apply (Phase 11d). Remembered. */
+  reviewEdits: boolean;
   /** The running `chat` sidecar job, and what it was started for ("<provider>:<host>"). */
   jobId: string | null;
   sessionKey: string | null;
@@ -52,6 +61,15 @@ export interface AgentState {
   setEffort: (family: ClaudeFamily, level: EffortLevel) => void;
   setDraft: (draft: string) => void;
   setPendingImages: (images: PendingImage[]) => void;
+  setDraftMentions: (mentions: ChatMention[]) => void;
+  /** Adds a message to the queue; false when it's full (MAX_QUEUE). */
+  enqueue: (message: Omit<QueuedMessage, "id">) => boolean;
+  /** Takes the next queued message off the queue. */
+  dequeue: () => QueuedMessage | null;
+  removeQueued: (id: string) => void;
+  setQueuePaused: (paused: boolean) => void;
+  clearQueue: () => void;
+  setReviewEdits: (on: boolean) => void;
   setSession: (jobId: string, sessionKey: string) => void;
   /** The sidecar's job ended (or never started): the next message starts a new one. */
   endSession: () => void;
@@ -71,6 +89,8 @@ export interface AgentState {
 }
 
 export const AGENT_OFFLINE_DETAIL = "Agent sidecar not running";
+/** How many messages can wait their turn (Phase 11b). */
+export const MAX_QUEUE = 5;
 
 export const useAgentStore = create<AgentState>()(
   persist(
@@ -84,6 +104,10 @@ export const useAgentStore = create<AgentState>()(
       effort: { opus: DEFAULT_EFFORT, sonnet: DEFAULT_EFFORT },
       draft: "",
       pendingImages: [],
+      draftMentions: [],
+      queue: [],
+      queuePaused: false,
+      reviewEdits: false,
       jobId: null,
       sessionKey: null,
       history: [],
@@ -120,6 +144,29 @@ export const useAgentStore = create<AgentState>()(
       },
       setDraft: (draft) => set({ draft }),
       setPendingImages: (pendingImages) => set({ pendingImages }),
+      setDraftMentions: (draftMentions) => set({ draftMentions }),
+      enqueue: (message) => {
+        let added = false;
+        set((state) => {
+          if (state.queue.length >= MAX_QUEUE) return {};
+          added = true;
+          return { queue: [...state.queue, { ...message, id: newId() }] };
+        });
+        return added;
+      },
+      dequeue: () => {
+        let next: QueuedMessage | null = null;
+        set((state) => {
+          if (!state.queue.length) return {};
+          next = state.queue[0];
+          return { queue: state.queue.slice(1) };
+        });
+        return next;
+      },
+      removeQueued: (id) => set((state) => ({ queue: state.queue.filter((m) => m.id !== id), queuePaused: state.queue.length > 1 && state.queuePaused })),
+      setQueuePaused: (queuePaused) => set({ queuePaused }),
+      clearQueue: () => set({ queue: [], queuePaused: false }),
+      setReviewEdits: (reviewEdits) => set({ reviewEdits: reviewEdits === true }),
       setSession: (jobId, sessionKey) => set({ jobId, sessionKey }),
       endSession: () => set({ jobId: null, sessionKey: null, activity: null }),
       finishTurn: (history, provider, usage) => set({ history, historyProvider: provider, usage, activity: null }),
@@ -143,7 +190,7 @@ export const useAgentStore = create<AgentState>()(
           };
         }),
       clear: () =>
-        set({ chatId: newId(), messages: [], draft: "", pendingImages: [], history: [], historyProvider: null, usage: null, activity: null, lastTurn: null, editingMessageId: null, customTitle: null, autoTitle: null }),
+        set({ chatId: newId(), messages: [], draft: "", pendingImages: [], draftMentions: [], queue: [], queuePaused: false, history: [], historyProvider: null, usage: null, activity: null, lastTurn: null, editingMessageId: null, customTitle: null, autoTitle: null }),
       loadChat: (chat) =>
         set({
           chatId: chat.id,
@@ -152,6 +199,9 @@ export const useAgentStore = create<AgentState>()(
           historyProvider: chat.provider,
           draft: "",
           pendingImages: [],
+          draftMentions: [],
+          queue: [],
+          queuePaused: false,
           usage: null,
           activity: null,
           jobId: null,
@@ -171,6 +221,7 @@ export const useAgentStore = create<AgentState>()(
         effort: state.effort,
         chatId: state.chatId,
         autoTitles: state.autoTitles,
+        reviewEdits: state.reviewEdits,
       }),
     },
   ),

@@ -17,6 +17,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from vibecut_agent.agent.gemini_client import GeminiError
+
+STOPPED_NOTICE = "Stopped by the user. Edits made before stopping are still applied."
+
+
+class ChatError(GeminiError):
+    """A chat turn could not be completed. Here rather than in gemini_chat (which re-exports it) so the
+    other providers don't import `requests` for it (Phase 11f)."""
+
+
 DEFAULT_MAX_STEPS = 80
 MIN_MAX_STEPS = 10
 MAX_MAX_STEPS = 150

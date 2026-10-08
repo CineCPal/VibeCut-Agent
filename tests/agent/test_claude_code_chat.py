@@ -409,3 +409,78 @@ def test_lockdown_problems_are_named() -> None:
         )
         is None
     )
+
+
+# --- The next turn started ahead (Phase 11f) ---------------------------------------------------------
+
+
+class CountingPopen:
+    def __init__(self) -> None:
+        self.started: list[list[str]] = []
+
+    def __call__(self, args: list[str], **kw: Any) -> Any:
+        import subprocess
+
+        self.started.append(args)
+        return subprocess.Popen(args, **kw)
+
+
+def test_a_warm_claude_code_answers_the_turn_it_was_started_for(fake: dict[str, Any]) -> None:
+    popen = CountingPopen()
+    launcher = claude_code_chat.Launcher(popen)
+    history = [{"claudeCodeSession": SESSION}]
+    claude_code_chat.prepare_turn(launcher, fake["setup"], "claude-opus-5-5", "You edit timelines.", history)
+    assert len(popen.started) == 1
+    assert not fake["record"].exists(), "it waits for its message"
+
+    outcome, _ = run(fake, history=history, launcher=launcher)
+
+    assert len(popen.started) == 1, "the turn took the warm one"
+    assert outcome["text"] == "Marked the hook."
+    assert sent_blocks(recorded(fake)) == [{"type": "text", "text": "mark the hook"}]
+    assert launcher.warm_args is None
+
+
+def test_a_turn_with_other_arguments_ends_the_warm_one(fake: dict[str, Any]) -> None:
+    popen = CountingPopen()
+    launcher = claude_code_chat.Launcher(popen)
+    claude_code_chat.prepare_turn(
+        launcher, fake["setup"], "claude-opus-5-5", "You edit timelines.", [{"claudeCodeSession": "later"}]
+    )
+    warm = popen.started[0]
+
+    # A Retry resumes the session from before the last turn instead.
+    outcome, _ = run(fake, history=[{"claudeCodeSession": SESSION}], launcher=launcher)
+
+    assert len(popen.started) == 2
+    assert flag(warm, "--resume") == "later"
+    assert flag(recorded(fake)["argv"], "--resume") == SESSION
+    assert outcome["text"] == "Marked the hook."
+
+
+def test_closing_the_launcher_ends_the_warm_claude_code(fake: dict[str, Any]) -> None:
+    import subprocess
+
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def popen(args: list[str], **kw: Any) -> subprocess.Popen[bytes]:
+        processes.append(subprocess.Popen(args, **kw))
+        return processes[-1]
+
+    launcher = claude_code_chat.Launcher(popen)
+    claude_code_chat.prepare_turn(launcher, fake["setup"], None, "s", [])
+    launcher.close()
+    processes[0].wait(timeout=10)
+    assert not fake["record"].exists(), "it never got a message"
+
+
+def test_claude_code_lets_a_tool_call_wait_for_the_users_review() -> None:
+    """Phase 11d: a change waiting for Apply in the app can take minutes."""
+    env = claude_code_chat.child_env({"program": "claude"}, base={})
+    assert env["MCP_TOOL_TIMEOUT"] == str(30 * 60 * 1000)
+
+
+def test_preparing_without_a_setup_does_nothing() -> None:
+    launcher = claude_code_chat.Launcher()
+    claude_code_chat.prepare_turn(launcher, None, None, "s", [])
+    assert launcher.warm_args is None

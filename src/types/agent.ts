@@ -10,7 +10,8 @@ export interface ChatToolCall {
   /** The call's arguments and its result as pretty JSON, each cut to TOOL_DETAIL_CHARS. */
   args: string;
   result?: string;
-  state: "running" | "done" | "failed";
+  /** pending: waiting for the user's Apply or Skip (Review edits first, Phase 11d); declined: skipped. */
+  state: "running" | "done" | "failed" | "pending" | "declined";
 }
 
 /** An image sent with a user message (Phase 8g). Its bytes are filed beside the chat (`chat_attachment_*`). */
@@ -29,6 +30,26 @@ export interface PendingImage extends ChatAttachment {
   dataUrl: string;
 }
 
+/** What a user can point at with @ in the composer (Phase 11c). */
+export type MentionKind = "timeline" | "clip" | "marker" | "media" | "speaker" | "shot";
+
+/** One @-mention: `label` is what the message shows after the @; `ref` and `detail` are what the model is
+ * told exactly (a clip's id and place, a Library shot's file and range). */
+export interface ChatMention {
+  kind: MentionKind;
+  label: string;
+  ref: string;
+  detail?: string;
+}
+
+/** A message sent while the agent was busy, waiting its turn (Phase 11b). */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  images: PendingImage[];
+  mentions: ChatMention[];
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -39,6 +60,8 @@ export interface ChatMessage {
   tool?: ChatToolCall;
   /** Images sent with a user message. */
   attachments?: ChatAttachment[];
+  /** What a user message pointed at with @ (Phase 11c). */
+  mentions?: ChatMention[];
 }
 
 /**

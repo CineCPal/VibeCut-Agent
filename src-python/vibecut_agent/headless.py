@@ -11,15 +11,17 @@ from collections.abc import Callable
 from typing import TextIO
 
 from vibecut_agent import health, session
-from vibecut_agent.agent.chat import run_chat
 from vibecut_agent.agent.redact import scrub
-from vibecut_agent.nle.watch import PremiereAdapter, ResolveAdapter, watch
 from vibecut_agent.protocol import Emitter, LineChannel, RequestError, read_line_request
 
 Command = Callable[[Emitter, TextIO], int]
 
 
 def chat(emitter: Emitter, stdin: TextIO) -> int:
+    # Imported per command (Phase 11f): a chat job doesn't load the editors' watchers, and a watcher doesn't
+    # load the chat.
+    from vibecut_agent.agent.chat import run_chat
+
     request = read_line_request(stdin)
     return run_chat(request, emitter, LineChannel(stdin))
 
@@ -80,12 +82,16 @@ def chat_title(emitter: Emitter, stdin: TextIO) -> int:
 
 
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
+    from vibecut_agent.nle.watch import PremiereAdapter, watch
+
     read_line_request(stdin)
     return watch(PremiereAdapter(), LineChannel(stdin), emitter)
 
 
 def resolve_watch(emitter: Emitter, stdin: TextIO) -> int:
     """Runs under Resolve's own Python (see sidecar.rs), which can load its scripting module."""
+    from vibecut_agent.nle.watch import ResolveAdapter, watch
+
     read_line_request(stdin)
     return watch(ResolveAdapter(), LineChannel(stdin), emitter)
 

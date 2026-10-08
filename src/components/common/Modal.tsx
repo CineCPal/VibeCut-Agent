@@ -8,10 +8,14 @@ interface ModalProps {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** Shown under the header, outside the scrolling body (Settings' tabs). */
+  toolbar?: ReactNode;
+  /** Fills the window's height, so the dialog doesn't jump as its content changes (Settings' tabs). */
+  fill?: boolean;
 }
 
 /** An accessible dialog: labelled, focus-trapped, closes on Escape or backdrop, restores focus. */
-export function Modal({ title, onClose, children }: ModalProps) {
+export function Modal({ title, onClose, children, toolbar, fill = false }: ModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -70,7 +74,7 @@ export function Modal({ title, onClose, children }: ModalProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="flex max-h-full w-full max-w-md flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl"
+        className={`flex max-h-full w-full max-w-md flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl${fill ? " h-full" : ""}`}
       >
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 id={titleId} className="text-sm font-semibold text-white">
@@ -85,7 +89,8 @@ export function Modal({ title, onClose, children }: ModalProps) {
             <X size={16} aria-hidden="true" />
           </button>
         </header>
-        <div className="overflow-y-auto px-4 py-4 text-sm">{children}</div>
+        {toolbar}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-sm">{children}</div>
       </div>
     </div>
   );

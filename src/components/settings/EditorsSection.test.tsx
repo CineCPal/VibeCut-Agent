@@ -34,10 +34,10 @@ describe("EditorsSection", () => {
     ipc.getPremierePanelStatus.mockResolvedValue(panel());
   });
 
-  it("shows each editor's state with a reason", async () => {
+  it("shows each editor's state, leaving the reason to About", async () => {
     render(<EditorsSection />);
     await act(async () => undefined);
-    expect(screen.getByText("Install it from Settings > Editors")).toBeInTheDocument();
+    expect(screen.queryByText("Install it from Settings > Editors")).not.toBeInTheDocument();
     expect(screen.getByText("Not installed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reconnect DaVinci Resolve" })).toBeDisabled();
   });

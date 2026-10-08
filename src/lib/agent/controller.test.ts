@@ -20,7 +20,13 @@ vi.mock("../ipc", () => ipc);
 
 import {
   cancelEditing,
+  editQueued,
   newConversation,
+  resumeQueue,
+  runChatTool,
+  DECLINED_ERROR,
+  submitMessage,
+  warmUp,
   retryLastTurn,
   rewindBlockReason,
   rewindLastTurn,
@@ -33,6 +39,8 @@ import {
   toolDetail,
 } from "./controller";
 import { useEditLogStore } from "../../store/useEditLogStore";
+import { describeTiming, useTurnTimingStore } from "./turnTiming";
+import { answerReview } from "./review";
 import { clearAttachmentCache } from "./attachments";
 import type { PendingImage } from "../../types/agent";
 import { useMcpStore } from "../../store/useMcpStore";
@@ -75,7 +83,7 @@ describe("agent controller", () => {
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
     useSidecarStore.setState({ session: { state: "ready", version: "0.1.0", python: "3.14.0", message: null } });
     useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
-    useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "" });
+    useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "", draftMentions: [], queue: [], queuePaused: false, reviewEdits: false });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
     useMcpStore.setState({ outsideRunning: 0 });
     useUsageStore.setState({ plan: null, planAt: null, days: {}, chats: {} });
@@ -504,6 +512,190 @@ describe("agent controller", () => {
       await twoTurns();
       await newConversation();
       expect(agent().lastTurn).toBeNull();
+    });
+  });
+
+  describe("the queue (Phase 11b)", () => {
+    const sentTexts = () => agent().messages.filter((m) => m.role === "user").map((m) => m.text);
+
+    it("queues while a turn runs and sends each in order as turns end", async () => {
+      expect(await submitMessage("first")).toBe("sent");
+      expect(await submitMessage("second")).toBe("queued");
+      expect(await submitMessage("third")).toBe("queued");
+      expect(sentTexts()).toEqual(["first"]);
+      event({ type: "result", text: "One.", history: [] });
+      await vi.waitFor(() => expect(sentTexts()).toEqual(["first", "second"]));
+      expect(agent().queue.map((m) => m.text)).toEqual(["third"]);
+      event({ type: "result", text: "Two.", history: [] });
+      await vi.waitFor(() => expect(sentTexts()).toEqual(["first", "second", "third"]));
+      expect(agent().queue).toEqual([]);
+    });
+
+    it("holds the queue after a Stop or an error until Send next", async () => {
+      await submitMessage("first");
+      await submitMessage("second");
+      await stopTurn();
+      expect(agent().queuePaused).toBe(true);
+      event({ type: "result", text: "", aborted: true, history: [] });
+      await flush();
+      expect(sentTexts()).toEqual(["first"]);
+      resumeQueue();
+      await vi.waitFor(() => expect(sentTexts()).toEqual(["first", "second"]));
+      event({ type: "error", message: "boom" });
+      expect(agent().queue).toEqual([]);
+    });
+
+    it("holds at most five, waits for outside edits, and a new chat clears it", async () => {
+      await submitMessage("first");
+      for (let i = 0; i < 5; i++) expect(await submitMessage(`q${i}`)).toBe("queued");
+      expect(await submitMessage("one too many")).toBe(false);
+      useMcpStore.setState({ outsideRunning: 1 });
+      event({ type: "result", text: "One.", history: [] });
+      await flush();
+      expect(sentTexts()).toEqual(["first"]);
+      useMcpStore.setState({ outsideRunning: 0 });
+      await vi.waitFor(() => expect(sentTexts()).toEqual(["first", "q0"]));
+      event({ type: "result", text: "Two.", history: [] });
+      await flush();
+      useAgentStore.setState({ status: "idle" });
+      await newConversation();
+      expect(agent().queue).toEqual([]);
+    });
+
+    it("takes a queued message back to edit only into an empty box", async () => {
+      await submitMessage("first");
+      await submitMessage("second");
+      const id = agent().queue[0].id;
+      useAgentStore.setState({ draft: "typing" });
+      expect(editQueued(id)).toBe(false);
+      useAgentStore.setState({ draft: "" });
+      expect(editQueued(id)).toBe(true);
+      expect(agent().draft).toBe("second");
+      expect(agent().queue).toEqual([]);
+    });
+  });
+
+  describe("@-mentions (Phase 11c)", () => {
+    const shot = { kind: "clip" as const, label: "Interview A", ref: "c7", detail: "V1 1.0s–5.0s" };
+
+    it("tells the model what was pointed at, and keeps only the mentions still in the text", async () => {
+      await sendUserMessage("Trim @Interview A", [], [shot, { kind: "timeline", label: "Gone", ref: "Gone" }]);
+      const request = ipc.startSidecar.mock.calls[0][2];
+      expect(request.userMessage).toContain('[MENTIONED: what the user pointed at with @ in this message]\n- @Interview A = clip id "c7" (V1 1.0s–5.0s)\n\nTrim @Interview A');
+      expect(request.userMessage).not.toContain("Gone");
+      expect(agent().messages[0].mentions).toEqual([shot]);
+    });
+
+    it("Retry sends the mentions again", async () => {
+      await sendUserMessage("Trim @Interview A", [], [shot]);
+      event({ type: "result", text: "Done.", history: [] });
+      await retryLastTurn();
+      expect(ipc.sendToSidecar.mock.calls.at(-1)?.[1].userMessage).toContain("- @Interview A = clip id");
+    });
+  });
+
+  describe("faster first token (Phase 11f)", () => {
+    it("a warm-up starts the job without a message, and the message then goes to it", async () => {
+      warmUp();
+      warmUp();
+      expect(ipc.startSidecar).toHaveBeenCalledTimes(1);
+      const [jobId, , request] = ipc.startSidecar.mock.calls[0];
+      expect(request.userMessage).toBeUndefined();
+      expect(request.toolDeclarations.length).toBeGreaterThan(0);
+      await sendUserMessage("hello");
+      expect(ipc.startSidecar).toHaveBeenCalledTimes(1);
+      expect(ipc.sendToSidecar).toHaveBeenCalledWith(jobId, expect.objectContaining({ type: "user_message", userMessage: expect.stringMatching(/\n\nhello$/) }));
+    });
+
+    it("doesn't warm up while busy or with a job running", async () => {
+      await sendUserMessage("hello");
+      warmUp();
+      expect(ipc.startSidecar).toHaveBeenCalledTimes(1);
+    });
+
+    it("reads the pool and the timeline side by side", async () => {
+      const order: string[] = [];
+      ipc.nleCall.mockImplementation(async (_host: string, command: string) => {
+        order.push(`start ${command}`);
+        await flush();
+        order.push(`end ${command}`);
+        if (command === "read_timeline") return TIMELINE;
+        if (command === "read_media_pool") return { bins: [], clips: [], timelines: [], truncated: false, selection: { timeline: [], pool: [] } };
+        throw new Error(`unexpected ${command}`);
+      });
+      await sendUserMessage("hello");
+      expect(order.slice(0, 2)).toEqual(["start read_media_pool", "start read_timeline"]);
+    });
+
+    it("times the turn to its first words", async () => {
+      await sendUserMessage("hello");
+      event({ type: "status", detail: "Calling Gemini…" });
+      event({ type: "reply_delta", text: "Hi" });
+      const last = useTurnTimingStore.getState().last;
+      expect(last?.warm).toBe(false);
+      expect(Object.keys(last?.marks ?? {}).sort()).toEqual(["context", "firstWords", "sent", "status"]);
+      expect(describeTiming(last!)).toMatch(/^first words \d+\.\d s · timeline read/);
+    });
+  });
+
+  describe("Review edits first (Phase 11d)", () => {
+    const cards = () => agent().messages.filter((m) => m.tool);
+    const markerCall = { id: "t1", name: "add_markers", args: { markers: [{ time: 1, name: "Hook" }] } };
+
+    beforeEach(() => useAgentStore.setState({ reviewEdits: true }));
+
+    it("a change waits on its card; Apply runs it", async () => {
+      await sendUserMessage("mark the hook");
+      event({ type: "tool_calls", calls: [markerCall] });
+      await flush();
+      expect(cards()[0]).toMatchObject({ text: "Add markers (1)", tool: { state: "pending" } });
+      expect(ipc.nleCall).not.toHaveBeenCalledWith("resolve", "add_markers", expect.anything());
+      expect(answerReview(cards()[0].id, "apply")).toBe(true);
+      await vi.waitFor(() => expect(cards()[0].tool?.state).toBe("done"));
+      expect(ipc.sendToSidecar).toHaveBeenCalledWith(agent().jobId, expect.objectContaining({ type: "tool_result", id: "t1", result: expect.objectContaining({ added: expect.any(Array) }) }));
+    });
+
+    it("Skip tells the model the user declined, and nothing is run", async () => {
+      await sendUserMessage("mark the hook");
+      event({ type: "tool_calls", calls: [markerCall] });
+      await flush();
+      answerReview(cards()[0].id, "skip");
+      await vi.waitFor(() => expect(cards()[0].tool?.state).toBe("declined"));
+      expect(ipc.sendToSidecar).toHaveBeenCalledWith(agent().jobId, { type: "tool_result", id: "t1", result: { declined: true, error: DECLINED_ERROR } });
+      expect(ipc.nleCall).not.toHaveBeenCalledWith("resolve", "add_markers", expect.anything());
+    });
+
+    it("Apply all lets the rest of that request through; reads never ask; Stop skips what waits", async () => {
+      await sendUserMessage("mark twice");
+      event({ type: "tool_calls", calls: [markerCall, { ...markerCall, id: "t2" }, { id: "t3", name: "list_markers", args: {} }] });
+      await flush();
+      answerReview(cards()[0].id, "all");
+      await vi.waitFor(() => expect(cards().map((c) => c.tool?.state)).toEqual(["done", "done", expect.stringMatching(/done|failed/)]));
+      event({ type: "result", text: "Done.", history: [] });
+
+      await sendUserMessage("one more");
+      event({ type: "tool_calls", calls: [{ ...markerCall, id: "t4" }] });
+      await flush();
+      expect(cards().at(-1)?.tool?.state).toBe("pending");
+      await stopTurn();
+      await vi.waitFor(() => expect(cards().at(-1)?.tool?.state).toBe("declined"));
+    });
+
+    it("with review off, changes run at once", async () => {
+      useAgentStore.setState({ reviewEdits: false });
+      await sendUserMessage("mark the hook");
+      event({ type: "tool_calls", calls: [markerCall] });
+      await vi.waitFor(() => expect(cards()[0].tool?.state).toBe("done"));
+    });
+
+    it("tells the MCP bridge to hold a call from Claude Code while it waits", async () => {
+      await sendUserMessage("mark the hook");
+      const onWait = vi.fn();
+      const pending = runChatTool(agent().jobId!, "add_markers", markerCall.args, onWait);
+      await flush();
+      expect(onWait).toHaveBeenCalledTimes(1);
+      answerReview(cards()[0].id, "apply");
+      expect((await pending)?.summary).toMatch(/Added 1 marker/);
     });
   });
 });
