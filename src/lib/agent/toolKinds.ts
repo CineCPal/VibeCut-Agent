@@ -57,6 +57,8 @@ export const CHANGING_TOOLS = new Set([
   "rename_clips",
   // Phase 13d: levels set through set_clip_levels.
   "normalize_loudness",
+  // Phase 14c.
+  "cut_to_beats",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -102,6 +104,7 @@ export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);
 
 const VERB: Record<string, string> = {
   add_clips: "Add clips",
+  cut_to_beats: "Cut to the beat with shots",
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",
   set_clip_levels: "Change the level of",
@@ -172,7 +175,7 @@ export function describeChange(name: string, args: unknown): string {
     const names = clipNames(ids);
     return `${verb} ${ids.length === 1 ? "" : `${ids.length} clips: `}${listed(names)}`;
   }
-  for (const key of ["clips", "markers", "paths", "markerIds", "renames"]) {
+  for (const key of ["clips", "shots", "markers", "paths", "markerIds", "renames"]) {
     if (count(key)) return `${verb} (${count(key)})`;
   }
   const named = [a.name, a.newName, a.timeline].find((v): v is string => typeof v === "string" && v.length > 0);

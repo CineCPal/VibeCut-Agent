@@ -86,6 +86,7 @@ describe("agent tools", () => {
       "normalize_loudness",
       "find_beats",
       "review_edit",
+      "cut_to_beats",
     ]);
     // The same tools, sending the draft to each one's own editor.
     expect(names("resolve")).toEqual(names("premiere").map((n) => (n === "send_to_premiere" ? "send_to_resolve" : n)));

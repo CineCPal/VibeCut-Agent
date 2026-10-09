@@ -237,26 +237,15 @@ export function audioExecutors(context: ToolContext): Record<string, Executor> {
       const id = optStr(args, "clipId");
       if (!id) throw new Error("clipId must be a music clip on the timeline");
       const view = await connectedView(context);
-      const [sound] = soundClips(view, [id]);
-      const clip = sound.clip;
-      const start = Math.max(clip.start, optNum(args, "start") ?? clip.start);
-      const end = Math.min(clip.end, optNum(args, "end") ?? clip.end);
-      if (!(end > start)) throw new Error(`start–end must overlap ${clip.id} (${clock(clip.start)}–${clock(clip.end)})`);
-      const part = filePart(clip, start, end);
-      const job = await runJob("media-beats", `Find the beats of "${clip.name}"`, { path: clip.filePath, start: Math.max(0, Math.min(part.from, part.to)), end: Math.max(part.from, part.to) });
-      const found = job?.result as { bpm: number | null; confidence: number; beats: number[]; maybeDoubleTime?: number } | undefined;
-      if (!found) throw new Error(job?.error ?? "The beats couldn't be found");
-      const speed = clip.speed ?? 1;
-      const toTimeline = (s: number) => round1000(speed < 0 ? clip.start + ((clip.sourceIn ?? 0) - s) / Math.abs(speed) : clip.start + (s - (clip.sourceIn ?? 0)) / (speed || 1));
-      const beats = found.beats.map(toTimeline).filter((t) => t >= start && t < end).sort((a, b) => a - b);
-      const bpm = found.bpm === null ? null : round1(found.bpm * Math.abs(speed || 1));
+      const found = await beatsOf(view, id, optNum(args, "start"), optNum(args, "end"));
+      const { clip, bpm, beats } = found;
       return {
         summary: bpm ? `Found ${beats.length} beats in "${clip.name}" at ${bpm} BPM (confidence ${found.confidence})` : `No steady beat in "${clip.name}"`,
         result: {
           clipId: clip.id,
           bpm,
           confidence: found.confidence,
-          ...(found.maybeDoubleTime ? { maybeDoubleTime: round1(found.maybeDoubleTime * Math.abs(speed || 1)) } : {}),
+          ...(found.maybeDoubleTime ? { maybeDoubleTime: found.maybeDoubleTime } : {}),
           beats,
           ...(found.confidence < 0.3 ? { note: "Low confidence: the music may have no steady pulse." } : {}),
         },
@@ -266,6 +255,45 @@ export function audioExecutors(context: ToolContext): Record<string, Executor> {
 }
 
 const round1000 = (n: number) => Math.round(n * 1000) / 1000;
+
+export interface Beats {
+  /** The sound clip measured (a picture's id gives its linked sound). */
+  clip: HostClip;
+  /** The range searched, in timeline seconds (within the clip). */
+  start: number;
+  end: number;
+  bpm: number | null;
+  confidence: number;
+  maybeDoubleTime?: number;
+  /** Timeline seconds, sorted, within [start, end). */
+  beats: number[];
+}
+
+/** The beats of a music clip on the timeline (the `media-beats` job), as timeline times through the
+ * clip's speed: find_beats, and cut_to_beats (Phase 14c). */
+export async function beatsOf(view: HostTimeline, id: string, from?: number, to?: number): Promise<Beats> {
+  const [sound] = soundClips(view, [id]);
+  const clip = sound.clip;
+  const start = Math.max(clip.start, from ?? clip.start);
+  const end = Math.min(clip.end, to ?? clip.end);
+  if (!(end > start)) throw new Error(`start–end must overlap ${clip.id} (${clock(clip.start)}–${clock(clip.end)})`);
+  const part = filePart(clip, start, end);
+  const job = await runJob("media-beats", `Find the beats of "${clip.name}"`, { path: clip.filePath, start: Math.max(0, Math.min(part.from, part.to)), end: Math.max(part.from, part.to) });
+  const found = job?.result as { bpm: number | null; confidence: number; beats: number[]; maybeDoubleTime?: number } | undefined;
+  if (!found) throw new Error(job?.error ?? "The beats couldn't be found");
+  const speed = clip.speed ?? 1;
+  const toTimeline = (s: number) => round1000(speed < 0 ? clip.start + ((clip.sourceIn ?? 0) - s) / Math.abs(speed) : clip.start + (s - (clip.sourceIn ?? 0)) / (speed || 1));
+  const beats = found.beats.map(toTimeline).filter((t) => t >= start && t < end).sort((a, b) => a - b);
+  return {
+    clip,
+    start,
+    end,
+    bpm: found.bpm === null ? null : round1(found.bpm * Math.abs(speed || 1)),
+    confidence: found.confidence,
+    ...(found.maybeDoubleTime ? { maybeDoubleTime: round1(found.maybeDoubleTime * Math.abs(speed || 1)) } : {}),
+    beats,
+  };
+}
 
 /** The ground rule the system prompt gains (Phase 13d). */
 export const AUDIO_INSTRUCTION = `- You can hear levels and rhythm: measure_loudness (EBU R128 per clip) before judging or setting

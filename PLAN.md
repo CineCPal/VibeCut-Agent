@@ -1775,6 +1775,27 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **Gemini** (repo key): "high · framing · 9.0 s: severely out of focus" and "medium · continuity · 5.0 s: abrupt jump cut on identical framing". It also noted the burned-in timecode.
 - **Claude Code** (2.1.292, Work profile, Sonnet): the same two, plus the jarring cut into the soft shot and "no product shown". The lockdown check passed with the stream-json input.
 
+### 14c: Cut to the beat
+**Tool** `cut_to_beats {musicClipId, shots: [{clipId | filePath, sourceIn?, sourceOut?}], start?, end?, everyBeats? (1/2/4/8, default 2), offsetFrames?, videoTrack?}` (`src/lib/agent/beatTools.ts`). It's a reviewed edit (`CHANGING_TOOLS`), refused while drafting, and in `LONG_TOOLS`.
+- **The beats:** `beatsOf` is factored out of `find_beats` (`audioTools.ts`) and gives timeline times through the music clip's speed.
+  - It refuses under 0.3 confidence, or with fewer than 2 beats.
+- **The slots** (`beatSlots`): every Nth beat, moved by `offsetFrames` and snapped to frames.
+  - The last slot closes N beats on, at the median beat spacing, or at the range end if that comes first.
+  - Slots under 2 frames are dropped. At most 150 per call.
+- **The shots** (`fillSlots`): taken in turn, each keeping a cursor through its usable range.
+  - **Range:** the given in/out, else a pool clip's marked In/Out, else the whole file. The length comes from the pool, else `media-info`.
+  - **Short shots:** a shot shorter than a slot is passed over. A slot nothing fits stays empty and is reported.
+  - **Placing:** pool ids become paths through `filesOf`, so `add_clips` needed no change; the planned `clipSpec` change wasn't needed.
+- **The track** (`freeVideoTrack`): the lowest video track with nothing on it over the stretch. If there's none, `add_track` makes one at the top in the same step.
+- **One Revert:** everything is placed through `addClips` as picture only, in batches of 50 under the request's step, so one backup and one Revert undo it all, the new track included.
+- **Prompt:** `BEAT_INSTRUCTION` says to use it rather than placing clips one by one. The review card reads "Cut to the beat with shots (n)".
+
+**Tests** (`beatTools.test.ts`, 9):
+- slots at 1, 2 and 4 beats, the closing slot, snapping, the offset and slivers;
+- shots in turn, advancing and starting again, too-short shots, empty slots;
+- the free track;
+- the tool end to end: the pool's marked range, picture only, one backup and step; a new top track and two batches of a 64-shot cut; 2× music giving 240 BPM and cuts every 0.5 s; refusals (no steady beat, too many, a bad step, drafting).
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2059,3 +2080,6 @@ The user asked what other skills the agent should have. Of four groups (delivera
   - The `critique` command (`review/critic.py`, ported from VibeCut's `gemini_critic.py`) runs on any of the chat's providers. Its model calls now take images, and Claude Code gets them over stream-json.
   - `review_edit` runs the critic by default, merging its notes with the automatic check.
   - Checked live with Gemini and Claude Code. See "Phase 14" → 14b.
+- **2026-10-09 (Claude): Phase 14c: cut to the beat.**
+  - `cut_to_beats` lays shots into the slots between every Nth beat of a music clip, on a free or new video track, with one Revert.
+  - `beatsOf` is shared with `find_beats`. See "Phase 14" → 14c.

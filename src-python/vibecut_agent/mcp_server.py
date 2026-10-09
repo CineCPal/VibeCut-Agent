@@ -61,6 +61,7 @@ LONG_TOOLS = frozenset(
         "normalize_loudness",
         "find_beats",
         "review_edit",
+        "cut_to_beats",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0
