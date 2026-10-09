@@ -1599,3 +1599,6 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
     - The parallel snapshot.
     - The warm job (a `chat` start without `userMessage`) and the warm Claude Code (`Launcher`, `prepare_turn`).
     - `turnTiming.ts` and the status bar tooltip.
+- **2026-10-08 (Claude): Fix: `rearrange_sections` left zero-length clips that Premiere refused.**
+  - `arrangeSections` (src/vibecut/lib/connect/hostDraft.ts) snapped the sections to frames but compared them with the clips' own edges, which Premiere reports rounded to the millisecond. A clip ending a fraction of a frame into a section left a sliver that snapped to zero length. The rebuild refused it with "must end after it starts". Seen while sorting a 94-clip B-roll selects sequence by clip name.
+  - Clips are now compared on frame-snapped edges, and any piece under half a frame is dropped. `remove_time_ranges` and the transcript cuts go through the same function, so they get the fix too. Test: "leaves no zero-length clip …" in hostDraft.test.ts.

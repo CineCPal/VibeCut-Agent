@@ -120,6 +120,33 @@ describe("arrangeSections", () => {
       ["Hook", 5],
     ]);
   });
+
+  it("leaves no zero-length clip where a clip's edge sits a fraction of a frame off a section's", () => {
+    // Premiere's times come rounded to the millisecond, so a cut at frame 75 (3 s) reads 3.0004.
+    const off: HostTimeline = {
+      ...SNAPSHOT,
+      tracks: [
+        {
+          type: "video",
+          index: 1,
+          name: "",
+          enabled: true,
+          clips: [
+            { id: "c1", name: "A.mov", start: 0, end: 3.0004, enabled: true, sourceIn: 0, sourceOut: 3.0004, filePath: "/m/A.mov" },
+            { id: "c2", name: "B.mov", start: 3.0004, end: 10, enabled: true, sourceIn: 0, sourceOut: 6.9996, filePath: "/m/B.mov" },
+          ],
+        },
+      ],
+    };
+    const d = arrangeSections(draftFromSnapshot(off), [
+      { start: 3, end: 10 },
+      { start: 0, end: 3 },
+    ]);
+    expect(d.video[0].clips.map((c) => [c.sourceName, c.start, c.end])).toEqual([
+      ["B.mov", 0, 7],
+      ["A.mov", 7, 10],
+    ]);
+  });
 });
 
 describe("placeClip", () => {

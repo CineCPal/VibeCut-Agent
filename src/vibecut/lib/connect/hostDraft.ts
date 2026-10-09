@@ -210,10 +210,15 @@ export function arrangeSections(draft: HostDraft, sections: TimeRange[], change?
     let cursor = 0;
     for (const section of checked) {
       for (const clip of track.clips) {
-        if (clip.end <= section.start || clip.start >= section.end) continue;
+        // On frames, as the sections are: Premiere's times come rounded to the millisecond, and a clip
+        // ending a fraction of a frame into a section would leave a zero-length piece the rebuild refuses.
+        if (snap(clip.end, fps) <= section.start || snap(clip.start, fps) >= section.end) continue;
         const cut = piece(clip, section.start, section.end);
         const shift = cursor - section.start;
-        clips.push({ ...cut, start: snap(cut.start + shift, fps), end: snap(cut.end + shift, fps) });
+        const start = snap(cut.start + shift, fps);
+        const end = snap(cut.end + shift, fps);
+        if (end - start < 0.5 / fps) continue;
+        clips.push({ ...cut, start, end });
       }
       cursor = snap(cursor + section.end - section.start, fps);
     }
