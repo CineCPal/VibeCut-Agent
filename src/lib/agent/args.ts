@@ -1,4 +1,7 @@
 /** Checked access to a tool call's arguments, ported from VibeCut's chatArgs.ts. */
+import type { ToolFinding } from "../../types/agent";
+
+export type { ToolFinding };
 
 export type Args = Record<string, unknown>;
 
@@ -11,11 +14,12 @@ export interface ToolImage {
 }
 
 /** One executed tool call: `summary` is shown in the chat, `result` goes back to the model, and so do
- * `images` (shown on the tool's card too). */
+ * `images` (shown on the tool's card too). `findings` are only shown on the card. */
 export interface ToolOutcome {
   summary: string;
   result: unknown;
   images?: ToolImage[];
+  findings?: ToolFinding[];
 }
 
 export type Executor = (args: Args) => Promise<ToolOutcome>;

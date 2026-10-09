@@ -67,4 +67,26 @@ describe("review cards (Phase 11d)", () => {
     expect(screen.getByText("Skipped: Add markers (1)")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
   });
+
+  it("shows a review's findings as rows with a position to jump to (Phase 14a)", () => {
+    const review: ChatMessage = {
+      ...card("r", "done", "Reviewed the cut: 2 problem(s)"),
+      tool: {
+        name: "review_edit",
+        args: "{}",
+        state: "done",
+        findings: [
+          { time: 10, severity: "high", text: "A flash frame.", source: "check" },
+          { time: 83.4, severity: "low", text: "The opening drags.", source: "critic" },
+        ],
+      },
+    };
+    render(<MessageList messages={[user, review]} activity={null} />);
+    fireEvent.click(screen.getByRole("button", { name: /1 tool call/ }));
+    const rows = screen.getByRole("list", { name: "What the review found" });
+    expect(rows.querySelectorAll("li")).toHaveLength(2);
+    expect(screen.getByText("A flash frame.")).toBeInTheDocument();
+    expect(screen.getByText("Critic:")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Move the playhead to 1:23.4/ })).toBeInTheDocument();
+  });
 });

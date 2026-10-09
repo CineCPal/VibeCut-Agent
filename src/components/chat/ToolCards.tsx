@@ -7,8 +7,10 @@ import { AlertTriangle, Ban, Check, ChevronRight, Clock, Loader2, Wrench } from 
 import { answerReview } from "../../lib/agent/review";
 import { CopyButton } from "./CopyButton";
 import { SentImage } from "./ChatImage";
+import { TimecodeChip } from "./Markdown";
+import { positionLabel } from "../../lib/agent/timecode";
 import { useAgentStore } from "../../store/useAgentStore";
-import type { ChatMessage, ChatToolCall } from "../../types/agent";
+import type { ChatMessage, ChatToolCall, ToolFinding } from "../../types/agent";
 
 function StateIcon({ state }: { state: ChatToolCall["state"] }) {
   if (state === "running") return <Loader2 size={11} className="shrink-0 animate-spin text-athletic-blue-light" aria-label="Running" />;
@@ -42,6 +44,26 @@ function ToolImages({ message }: { message: ChatMessage }) {
   );
 }
 
+const SEVERITY_STYLE: Record<ToolFinding["severity"], string> = { high: "text-loss", medium: "text-warning", low: "text-cool-grey" };
+
+/** What a review found (Phase 14a): one row each, with a chip that moves the playhead there. */
+function Findings({ findings }: { findings: ToolFinding[] }) {
+  return (
+    <ul className="flex max-h-56 flex-col gap-0.5 overflow-auto border-t border-border/70 px-2 py-1.5 text-[11px]" aria-label="What the review found">
+      {findings.map((f, i) => (
+        <li key={i} className="flex items-baseline gap-1">
+          <TimecodeChip seconds={f.time}>{positionLabel(f.time)}</TimecodeChip>
+          <span className={`shrink-0 text-[10px] uppercase ${SEVERITY_STYLE[f.severity]}`}>{f.severity}</span>
+          <span className="min-w-0 break-words text-warm-grey">
+            {f.source === "critic" ? <span className="mr-1 text-athletic-blue-light">Critic:</span> : null}
+            {f.text}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ToolCard({ message }: { message: ChatMessage & { tool: ChatToolCall } }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
@@ -69,6 +91,7 @@ function ToolCard({ message }: { message: ChatMessage & { tool: ChatToolCall } }
         </span>
       </button>
       {message.attachments?.length ? <ToolImages message={message} /> : null}
+      {tool.findings?.length ? <Findings findings={tool.findings} /> : null}
       {tool.state === "pending" ? (
         // Review edits first (Phase 11d): the change waits here for the user.
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border/70 px-2 py-1.5" role="group" aria-label={`Review ${tool.name}`}>

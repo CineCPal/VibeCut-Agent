@@ -83,6 +83,8 @@ export const NOT_REVIEWED = new Set([
   // Phase 13d: measuring only.
   "measure_loudness",
   "find_beats",
+  // Phase 14a: reports only.
+  "review_edit",
   "search_media_pool",
   "search_transcript",
   "select_clip",

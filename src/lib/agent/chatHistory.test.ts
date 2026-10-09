@@ -179,6 +179,20 @@ describe("chat history (Phase 8a)", () => {
     expect(parsed?.messages[2].text).toBe("Old line");
   });
 
+  it("keeps a review's findings on its card, and drops a card whose findings are malformed (Phase 14a)", () => {
+    const findings = [{ time: 4.2, severity: "medium", text: "A cut inside a word.", source: "check" }];
+    const parsed = parseSavedChat({
+      ...savedChat("x"),
+      messages: [
+        msg("u", "user", "go"),
+        { ...msg("t1", "tool", "Reviewed"), tool: { name: "review_edit", args: "{}", state: "done", findings } },
+        { ...msg("t2", "tool", "Reviewed again"), tool: { name: "review_edit", args: "{}", state: "done", findings: [{ time: "soon" }] } },
+      ],
+    });
+    expect(parsed?.messages[1].tool?.findings).toEqual(findings);
+    expect(parsed?.messages[2]).not.toHaveProperty("tool");
+  });
+
   it("keeps a message's images and drops malformed ones (Phase 8g)", () => {
     const good = { id: "i1", name: "a.png", mime: "image/png", width: 2, height: 2, bytes: 9 };
     const parsed = parseSavedChat({

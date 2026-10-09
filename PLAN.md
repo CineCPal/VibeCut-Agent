@@ -1689,6 +1689,58 @@ Read only, through `PremiereBridge`/`PremiereHost`, on the user's "Best B-Roll S
 
 **Still to check:** the user's own try in the app: Notes (⌘⇧N), tool cards with frames, and remembering across a new chat.
 
+## Phase 14: An agent that checks its work, cuts for social and to the beat (2026-10-09)
+
+The user asked what other skills the agent should have. Of four groups (deliverables, review & QC, social & music, a saved prompt pack) they picked the last three. Captions and renders are left for later. The parts:
+- 14a: `review_edit`, the automatic check;
+- 14b: the vision critic;
+- 14c: cut to the beat;
+- 14d: vertical, square and 4:5 versions;
+- 14e: the prompt pack.
+
+### 14a: `review_edit`, the automatic check
+**Ported verbatim** into `src/vibecut/` from VibeCut, with their tests:
+- `editLint.ts`: black, flash frames, cuts inside a word, level jumps, clipping, out of sync;
+- `transitions.ts`, `trackState.ts`, `playback/envelope.ts` and `types/export.ts`.
+
+`lib/export/flatten.ts` is cut down to `buildVideoSegments` and `clipHasOwnAudio`, without the grade keys. That keeps out VibeCut's 665-line colour graph, which the lint never uses.
+
+**`src/lib/agent/reviewTools.ts`:**
+- `lintTimeline` is VibeCut's `hostLintTimeline` over this repo's `HostTimeline`:
+  - each file is one asset by `fileKey`;
+  - link groups come from `linkGroups`;
+  - the connection's sync offsets go on the picture's asset;
+  - picture items are silent.
+- `withWordsAndPeaks` reads the transcripts (`read_transcript`) and one `audio-peaks` job for the heard files, best effort.
+- **Delivery checks** (`deliveryChecks`, pure):
+  - `offline` clips;
+  - `switched_off` clips, and tracks that are off with clips on them;
+  - `past_end`: a short last stretch at least 2 s after the edit ends (at most 10 s, or 20% of the edit);
+  - `no_sound`: picture with nothing heard under it for 1 s or more. It only runs when the timeline has sound at all, and a clip at -60 dB or lower counts as silent.
+- **With `targetLufs`:** `loudnessFindings` reports each heard clip in the range that plays (measured plus its level) more than 1 LU off, or peaks over -1 dBTP. It uses `measure` (now exported from `audioTools.ts`), for up to 32 clips.
+- **Ordering:** findings are in time order, with at most 60 kept, the most severe first.
+- **Repeats:** VibeCut's memo is ported. The same review of an unchanged timeline within 10 minutes answers from the last one, with `UNCHANGED_REVIEW_NOTE`.
+
+**Tool** `review_edit {startTime?, endTime?, targetLufs?}`:
+- Read only (`NOT_REVIEWED`), and it works on a draft.
+- MCP `isReadTool` now takes `review_`, and the tool is in `LONG_TOOLS`.
+- The prompt gains `REVIEW_INSTRUCTION`: review after a substantial edit, pass the target before a delivery, and call it once per batch.
+
+**The card:**
+- `ToolOutcome.findings` reaches `ChatToolCall.findings`. `ToolFinding` lives in `types/agent.ts`.
+- `ToolCards` lists them, each with a `TimecodeChip` that moves the playhead, the severity, and "Critic:" for 14b's notes.
+- Saved chats keep them (`isFinding` in `chatHistory.ts`). A card with malformed findings becomes a plain line.
+
+**Tests:**
+- `reviewTools.test.ts` (11):
+  - the lint's view: links, a silent picture, offline media, sync offsets;
+  - each delivery check and its range;
+  - loudness after level, and true peak;
+  - ordering and the cap;
+  - the tool end to end: a cut inside "hello", a flash frame and black found; the loudness range in file time; the memo and a fresh review after a change; refusals.
+- The ported `editLint`, `transitions` and `trackState` tests.
+- `ToolCards` (findings rows) and `chatHistory` (findings kept or dropped).
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1966,3 +2018,6 @@ Read only, through `PremiereBridge`/`PremiereHost`, on the user's "Best B-Roll S
 - **2026-10-09 (Claude): Phase 13a checked live in Premiere (panel 0.9.1).**
   - The playhead and the user's In/Out read back correctly.
   - Unset marks read -400000 s, which was handled but described wrongly; the comments are fixed and a test added.
+- **2026-10-09 (Claude): Phase 14a: `review_edit`, the automatic check.**
+  - VibeCut's edit lint is ported verbatim, with the delivery checks a QC needs: offline, switched off, strays past the end, picture with no sound, and loudness or true peak against a target.
+  - Findings show on the tool card as positions to jump to. See "Phase 14" → 14a.

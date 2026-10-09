@@ -492,7 +492,7 @@ export async function runChatTool(jobId: string, name: string, args: unknown, on
   const failed = typeof outcome.result === "object" && outcome.result !== null && "error" in outcome.result;
   useAgentStore.getState().updateMessage(card, {
     text: outcome.summary || name,
-    tool: { name, args: toolDetail(args), result: toolDetail(outcome.result), state: failed ? "failed" : "done" },
+    tool: { name, args: toolDetail(args), result: toolDetail(outcome.result), state: failed ? "failed" : "done", ...(outcome.findings?.length ? { findings: outcome.findings } : {}) },
     ...(outcome.images?.length ? { attachments: await saveToolImages(useAgentStore.getState().chatId, name, outcome.images).catch(() => []) } : {}),
   });
   if (useAgentStore.getState().jobId === jobId && useAgentStore.getState().status === "thinking") {

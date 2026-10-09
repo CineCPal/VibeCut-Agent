@@ -24,6 +24,7 @@ import { poolExecutors, poolToolDeclarations } from "./poolTools";
 import { visionExecutors, visionToolDeclarations } from "./visionTools";
 import { notesExecutors, notesToolDeclarations } from "./notesTools";
 import { audioExecutors, audioToolDeclarations } from "./audioTools";
+import { reviewExecutors, reviewToolDeclarations } from "./reviewTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -57,6 +58,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...visionToolDeclarations(host),
     ...notesToolDeclarations(),
     ...audioToolDeclarations(host),
+    ...reviewToolDeclarations(host),
   ];
 }
 
@@ -292,6 +294,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...visionExecutors(context),
     ...notesExecutors(context),
     ...audioExecutors(context),
+    ...reviewExecutors(context),
     ...draftExecutors(context),
     ...timingExecutors(context),
     ...poolExecutors(context),

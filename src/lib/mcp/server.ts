@@ -47,7 +47,7 @@ const INSTRUCTIONS_DECLARATION: ToolDeclaration = {
 
 /** Tools that only read: allowed from outside even while the in-app chat is running. */
 export function isReadTool(name: string): boolean {
-  return name === CONTEXT_TOOL || name === INSTRUCTIONS_TOOL || /^(list|get|find|describe|search|look_at|measure)_/.test(name);
+  return name === CONTEXT_TOOL || name === INSTRUCTIONS_TOOL || /^(list|get|find|describe|search|look_at|measure|review)_/.test(name);
 }
 
 function activeEditor(): { host: NleHost; timeline: string | null } | null {

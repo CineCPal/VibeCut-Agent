@@ -91,7 +91,17 @@ function isToolCall(value: unknown): value is ChatToolCall {
   const v = value as Record<string, unknown>;
   return (
     typeof v.name === "string" && typeof v.args === "string" && (v.result === undefined || typeof v.result === "string") &&
-    (v.state === "running" || v.state === "done" || v.state === "failed" || v.state === "pending" || v.state === "declined")
+    (v.state === "running" || v.state === "done" || v.state === "failed" || v.state === "pending" || v.state === "declined") &&
+    (v.findings === undefined || (Array.isArray(v.findings) && v.findings.every(isFinding)))
+  );
+}
+
+function isFinding(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Record<string, unknown>;
+  return (
+    typeof f.time === "number" && (f.end === undefined || typeof f.end === "number") && typeof f.text === "string" &&
+    (f.severity === "high" || f.severity === "medium" || f.severity === "low") && (f.source === "check" || f.source === "critic")
   );
 }
 

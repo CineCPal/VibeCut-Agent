@@ -4,6 +4,17 @@ export type ChatRole = "user" | "assistant" | "system" | "tool" | "error";
 
 export type ChatMessageStatus = "pending" | "done" | "error";
 
+/** A problem a review found (Phase 14a), shown on the tool's card as a position the user can jump to. */
+export interface ToolFinding {
+  /** Timeline seconds. */
+  time: number;
+  end?: number;
+  severity: "high" | "medium" | "low";
+  text: string;
+  /** "check": the automatic check; "critic": the vision critic. */
+  source: "check" | "critic";
+}
+
 /** One tool call, shown as a card (Phase 8f). Its message's `text` is the one-line summary. */
 export interface ChatToolCall {
   name: string;
@@ -12,6 +23,8 @@ export interface ChatToolCall {
   result?: string;
   /** pending: waiting for the user's Apply or Skip (Review edits first, Phase 11d); declined: skipped. */
   state: "running" | "done" | "failed" | "pending" | "declined";
+  /** What a review found (Phase 14a), each a position the user can jump to. */
+  findings?: ToolFinding[];
 }
 
 /** An image sent with a user message (Phase 8g). Its bytes are filed beside the chat (`chat_attachment_*`). */

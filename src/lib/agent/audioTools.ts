@@ -80,7 +80,8 @@ export function soundBetween(view: HostTimeline, start: number, end: number): He
     );
 }
 
-async function measure(parts: Heard[]): Promise<Level[]> {
+/** Each part's EBU R128 loudness (the `media-loudness` job), in the order given. */
+export async function measure(parts: Heard[]): Promise<Level[]> {
   if (parts.length > MAX_MEASURED) throw new Error(`At most ${MAX_MEASURED} clips can be measured at once; give fewer clipIds or a shorter range`);
   const ranges = parts.map((p) => ({ path: p.clip.filePath!, start: Math.max(0, p.from), end: p.to > p.from ? p.to : undefined }));
   const job = await runJob("media-loudness", `Measure the loudness of ${parts.length} clip(s)`, { ranges });
