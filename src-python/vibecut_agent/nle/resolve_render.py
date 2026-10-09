@@ -177,6 +177,9 @@ def _start(host: Any, args: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
     if project.SaveAsNewRenderPreset(preset):
         saved["preset"] = preset
     try:
+        # A known starting point (Phase 15b): a Deliver page left on audio only made Resolve 21.1 render
+        # no picture whatever ExportVideo was set to; loading a built-in preset cleared it (seen live).
+        project.LoadRenderPreset(BASE_PRESET)
         if not project.SetCurrentRenderFormatAndCodec(plan["format"], plan["codec"]):
             raise HostError(
                 f"Resolve didn't accept {plan['format']}/{plan['codec']} as the render format"
@@ -201,7 +204,7 @@ def _start(host: Any, args: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
         job = project.AddRenderJob()
         if not job:
             raise HostError("Resolve didn't add the render job")
-        if not project.StartRendering([job], False):
+        if not _started(project, job):
             project.DeleteRenderJob(job)
             raise HostError("Resolve didn't start the render")
     except HostError:
@@ -218,6 +221,20 @@ def _start(host: Any, args: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
         "seconds": seconds,
     }
     return {"jobId": job, "path": final, "seconds": seconds}
+
+
+# Resolve's own H.264 preset, loaded before each job's settings (see _start).
+BASE_PRESET = "H.264 Master"
+# Right after a render ends, Resolve 21.1 sometimes refuses to start the next one (seen live, Phase 15b:
+# an AAC render straight after a WAV one; the same pair worked when run again), so it is asked again.
+START_RETRY_S = 1.0
+
+
+def _started(project: Any, job: str) -> bool:
+    if project.StartRendering([job], False):
+        return True
+    time.sleep(START_RETRY_S)
+    return bool(project.StartRendering([job], False))
 
 
 def render_video(host: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -255,25 +272,28 @@ def render_video(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_audio(host: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """{timeline, format: wav | aac, range?, name?} -> {jobId, path, seconds}. aac is an .m4a; wav is
-    24-bit, taken out of a small ProRes Proxy movie Resolve renders alongside (removed afterwards)."""
+    """{timeline, format: wav | aac, range?, name?} -> {jobId, path, seconds}. Both are copied out of a
+    small movie Resolve renders alongside (removed afterwards): wav, 24-bit, from a ProRes Proxy movie;
+    aac, as an .m4a, from an H.264 one."""
     fmt = args.get("format", "wav")
     if fmt not in AUDIO_FORMATS:
         raise HostError(f"format must be one of {', '.join(AUDIO_FORMATS)}")
     _project, timeline = host._timeline(args)
     plan: dict[str, Any]
+    width, height = _timeline_size(timeline)
+    width, height = CARRIER_WIDTH, _even(CARRIER_WIDTH * height / width)
     if fmt == "aac":
-        width, height = _timeline_size(timeline)
+        # Changed from VibeCut (Phase 15b, seen live): an audio-only job (ExportVideo False) left Resolve
+        # 21.1 rendering every later job without picture, even jobs that read IsExportVideo True. So the
+        # AAC comes out of a small H.264 carrier, as the WAV does, and video export is never switched off.
         plan = {
-            "format": "mp4", "codec": "H264", "audio": "aac", "video": False,
-            "rendered": ".mp4", "final": ".m4a", "finish": "rename",
+            "format": "mp4", "codec": "H264", "audio": "aac", "video": True,
+            "rendered": ".mp4", "final": ".m4a", "finish": "audio",
         }  # fmt: skip
     else:
-        width, height = _timeline_size(timeline)
-        width, height = CARRIER_WIDTH, _even(CARRIER_WIDTH * height / width)
         plan = {
             "format": "mov", "codec": "ProRes422P", "audio": "lpcm", "video": True,
-            "rendered": ".mov", "final": ".wav", "finish": "wav",
+            "rendered": ".mov", "final": ".wav", "finish": "audio",
         }  # fmt: skip
     plan.update(
         width=width, height=height, extensions=(plan["rendered"], plan["final"])
@@ -322,7 +342,7 @@ def _end(
     _restore(host._resolve, project, timeline, record["saved"])
     if state == "done":
         try:
-            if record["finish"] == "wav":
+            if record["finish"] == "audio":
                 extract_wav(record["rendered"], record["path"])
             elif record["finish"] == "rename":
                 os.replace(record["rendered"], record["path"])

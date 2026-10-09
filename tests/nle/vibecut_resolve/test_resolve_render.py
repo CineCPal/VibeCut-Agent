@@ -85,6 +85,12 @@ class RenderProject(FakeProject):
         return True
 
     def LoadRenderPreset(self, name):
+        if name == "H.264 Master":
+            # Resolve's own preset (Phase 15b): it resets the Deliver page, video on.
+            self.base_loads = getattr(self, "base_loads", 0) + 1
+            self.format = {"format": "mov", "codec": "H264"}
+            self.settings = {"TargetDir": self.settings.get("TargetDir"), "ExportVideo": True, "ExportAudio": True}
+            return True
         fmt, kept = self.presets[name]
         self.format = dict(fmt)
         self.settings = {"TargetDir": self.settings.get("TargetDir"), **kept}
@@ -312,19 +318,34 @@ def test_bad_requests_are_refused_before_anything_changes(setup):
     assert project.jobs == {} and project.presets == {} and project.added == 0
 
 
-def test_aac_is_an_m4a_without_picture(setup, renders):
+def test_aac_is_an_m4a_copied_out_of_a_small_h264_carrier(setup, renders, monkeypatch):
+    # Changed from VibeCut (Phase 15b): an audio-only job left Resolve 21.1 rendering later jobs
+    # without picture, so video export is never switched off.
     host, _resolve, project, _timeline = setup
+    taken = []
+
+    def fake_extract(carrier, out):
+        taken.append((os.path.basename(carrier), os.path.basename(out)))
+        with open(out, "w") as f:
+            f.write("m4a")
+        os.remove(carrier)
+
+    monkeypatch.setattr(resolve_render, "extract_wav", fake_extract)
     started = run_command(
         host, "render_audio", {"timeline": "Interview: cut 2", "format": "aac"}
     )
-    settings = project.jobs[started["jobId"]]["settings"]
-    assert (settings["ExportVideo"], settings["AudioCodec"]) == (False, "aac")
+    job = project.jobs[started["jobId"]]
+    settings = job["settings"]
+    assert job["format"] == {"format": "mp4", "codec": "H264"}
+    assert (settings["ExportVideo"], settings["AudioCodec"], settings["FormatWidth"]) == (True, "aac", 640)
     assert started["path"].endswith("Interview cut 2.m4a")
+    assert project.base_loads == 1, "each render starts from Resolve's H.264 Master"
     project.finish(started["jobId"])
     assert (
         run_command(host, "render_status", {"jobId": started["jobId"]})["state"]
         == "done"
     )
+    assert taken == [("Interview cut 2.mp4", "Interview cut 2.m4a")]
     assert sorted(os.listdir(renders / "Doc Final")) == ["Interview cut 2.m4a"]
 
 
@@ -444,3 +465,27 @@ def test_cancel_waits_for_resolve_to_stop_before_cleaning_up(renders, monkeypatc
         "codec": "H264",
     }
     assert os.listdir(renders / "Doc Final") == []
+
+
+def test_a_render_resolve_wont_start_at_once_is_asked_again(setup, monkeypatch):
+    # Phase 15b, seen live: right after a render, StartRendering sometimes answers False once.
+    host, _resolve, project, _timeline = setup
+    monkeypatch.setattr(resolve_render, "START_RETRY_S", 0)
+    real = project.StartRendering
+    tries = []
+
+    def once_refused(jobs, interactive):
+        tries.append(jobs)
+        return False if len(tries) == 1 else real(jobs, interactive)
+
+    monkeypatch.setattr(project, "StartRendering", once_refused)
+    started = run_command(host, "render_video", {"timeline": "Interview: cut 2", "preset": "720p"})
+    assert len(tries) == 2 and project.jobs[started["jobId"]]["status"] == "Rendering"
+    project.finish(started["jobId"])
+    assert run_command(host, "render_status", {"jobId": started["jobId"]})["state"] == "done"
+    # Refused twice: the job is taken off again.
+    monkeypatch.setattr(project, "StartRendering", lambda jobs, interactive: False)
+    with pytest.raises(HostError, match="didn't start the render"):
+        run_command(host, "render_video", {"timeline": "Interview: cut 2", "name": "again"})
+    assert project.jobs == {}
+

@@ -1967,11 +1967,31 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Flaky (seen this phase):** `test_mcp_server.py`'s `test_outside_callers_are_refused_while_outside_control_is_off` and `test_a_call_held_for_review_outlasts_its_usual_limit` failed together once in three full runs and passed 6 of 6 on their own. They're timing-sensitive under load, and likely the unidentified flake noted under 12a.
 
+### Checked live in Resolve (2026-10-09, Resolve Studio 21.1, "VibeCut 7a")
+**Setup:** the Phase 14 harness: the app's own tools against a real `resolve-watch`. The test media was "VCA15_talk.mov", testsrc2 with speech from macOS `say` (8.6 s).
+
+**15a:** `create_captions` (english, 42 characters, 1 line) made 5 subtitles on ST1 in about 2.5 s, with the words right ("We opened the bakery in 1999." … "and for the people."). Revert removed them and the track.
+
+**15b:**
+- 720p over 0–4 s gave 1280x720 H.264 with AAC, 4.07 s long.
+- WAV gave 24-bit 48 kHz stereo, 8.6 s.
+- AAC gave a `.m4a`.
+- Stop cancelled a ProRes render and left no partial file.
+
+**Found and fixed: an audio-only job broke later video renders.** VibeCut's AAC render set `ExportVideo: False`.
+- **What happened:** after it, Resolve 21.1 rendered every later job without picture, even ProRes, and even jobs whose `GetRenderJobList` read `IsExportVideo: True` and `H.264`. Saving and loading the Deliver preset didn't clear it, and it changed the scratch project's Deliver page to video off with an `APVYUV422_10` codec. Loading Resolve's own "H.264 Master" preset cleared it.
+- **The fix** (`resolve_render.py`):
+  - AAC now comes out of a small H.264 carrier (640 px wide) copied to `.m4a` by ffmpeg, as WAV does, so video export is never switched off;
+  - each job first loads `BASE_PRESET` ("H.264 Master"), so a Deliver page left on audio only by anyone can't make a picture-less render;
+  - `StartRendering` is asked once more after 1 s when it refuses right after a render ended (seen once live: AAC straight after WAV; the same pair worked on the next run).
+- **Checked live after the fix:** AAC, then 720p (with picture, 1280x720), then WAV, then Stop. The Deliver page was left video on, H.264.
+- **Tests:** `test_aac_is_an_m4a_copied_out_of_a_small_h264_carrier` and `test_a_render_resolve_wont_start_at_once_is_asked_again`. The fake knows the built-in preset.
+
+**Left as it is:** "VibeCut 7a"'s Deliver page is now Resolve's H.264 Master with its target folder at `~/Movies/VibeCut Renders/VibeCut 7a`. What it held before these runs isn't known, and the earlier VibeCut checks used the same folder.
+
+**Cleanup:** the test timelines, their backups, the test clip and every "VCA 15 live" render file were deleted. 28 timelines remain, with "Timeline 28" current. The older Bakery renders in that folder were left alone.
+
 ### Still to check (live)
-- **Resolve, on a scratch timeline:**
-  - `create_captions` with Revert;
-  - `export_video` 1080p, and `export_audio` wav (through the carrier) and aac;
-  - Stop during a render, and Deliver settings put back.
 - **Premiere:** update the panel to 0.11.0, then a caption track and a Media Encoder render.
 
 ## Installing and Launching (2026-10-07)
@@ -2290,3 +2310,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
     - Captions: `create_captions`, through Resolve's own subtitles or a Premiere caption track.
     - Renders: `export_video` and `export_audio`, through Resolve's Deliver queue or Adobe Media Encoder, with progress and Stop.
   - Premiere panel 0.11.0. Not checked live yet. See "Phase 15".
+- **2026-10-09 (Claude): Phase 15 checked live in Resolve; a render fix.**
+  - Captions, 720p, WAV, AAC and Stop all held.
+  - VibeCut's audio-only AAC job left Resolve rendering no picture afterwards, so AAC now comes from an H.264 carrier and every job starts from "H.264 Master". A refused start is tried once more.
+  - See "Phase 15" → "Checked live in Resolve".
