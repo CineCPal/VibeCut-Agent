@@ -82,6 +82,19 @@ def test_an_answer_comes_from_structured_output_with_no_tools_and_no_key(setup: 
     assert seen["profile"] == setup["configDir"]
 
 
+def test_content_blocks_go_in_as_one_stream_json_user_line(setup: dict[str, Any]) -> None:
+    # Phase 14b: the critic's stills reach Claude Code as image blocks.
+    blocks = [{"type": "text", "text": "Stills:"}, {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}]
+    assert run_json(setup, "claude-sonnet-5-5", "Review.", blocks, SCHEMA) == {"picks": [1, 3]}
+    seen = recorded(setup)
+    assert flag(seen["argv"], "--input-format") == "stream-json"
+    line = json.loads(seen["stdin"])
+    assert line == {"type": "user", "message": {"role": "user", "content": blocks}}
+    # Plain text still goes in as it is, with no input format.
+    run_json(setup, "claude-sonnet-5-5", "Pick.", "1 hi", SCHEMA)
+    assert "--input-format" not in recorded(setup)["argv"]
+
+
 def test_errors_are_explained(setup: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FAKE_MODE", "signed-out")
     with pytest.raises(ClaudeCodeJsonError, match="isn't signed in"):

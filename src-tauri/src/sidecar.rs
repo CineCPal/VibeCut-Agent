@@ -75,6 +75,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "assemble", interactive: false, managed: false },
     // A short name for a chat from its first message and answer, with the chat's model (Phase 8d).
     CommandSpec { name: "chat-title", interactive: false, managed: false },
+    // The vision critic's notes on a cut, with the chat's model (Phase 14b).
+    CommandSpec { name: "critique", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -261,7 +263,7 @@ pub fn set_extraction_key(request: &mut Value, gemini_key: Option<&str>) {
 /// The commands that call a model with the chat's provider: the chat itself, the Story Editor, and the
 /// chat's name (Phase 8d).
 pub fn needs_llm_key(command: &str) -> bool {
-    matches!(command, "chat" | "assemble" | "chat-title")
+    matches!(command, "chat" | "assemble" | "chat-title" | "critique")
 }
 
 /// Puts the Hugging Face token into a `transcribe` request, or takes out any the UI sent.
@@ -1050,6 +1052,9 @@ mod tests {
         let title = prepare_request("chat-title", json!({"provider": "claude-code", "apiKey": "ui"}), None, None, Some(setup.clone())).unwrap();
         assert_eq!(title["claudeCode"], setup, "a chat's name comes from its own provider (8d)");
         assert!(title.get("apiKey").is_none());
+        let critic = prepare_request("critique", json!({"provider": "claude-code", "apiKey": "ui"}), None, None, Some(setup.clone())).unwrap();
+        assert_eq!(critic["claudeCode"], setup, "the critic runs on the subscription too (14b)");
+        assert!(critic.get("apiKey").is_none());
         assert!(story.get("extractionKey").is_none());
         let later = prepare_request("", json!({"type": "user_message", "claudeCode": {"program": "/bin/rm"}}), None, None, None).unwrap();
         assert!(later.get("claudeCode").is_none(), "a later line can't name a program");
@@ -1079,6 +1084,9 @@ mod tests {
         assert!(prepare_request("chat-title", json!({}), None, Some("c-key"), None).is_err());
         assert!(prepare_request("assemble", json!({}), None, Some("c-key"), None).is_err());
         assert!(prepare_request("transcribe", json!({"apiKey": "ui"}), Some("g-key"), None, None).unwrap().get("apiKey").is_none());
+        // The critic runs on the chat's provider (Phase 14b).
+        assert_eq!(prepare_request("critique", json!({"provider": "claude", "apiKey": "ui"}), Some("g-key"), Some("c-key"), None).unwrap()["apiKey"], "c-key");
+        assert_eq!(prepare_request("critique", json!({}), Some("g-key"), None, None).unwrap()["apiKey"], "g-key");
     }
 
     #[test]

@@ -11,7 +11,8 @@
 
 `gemini_json`, `claude_json` and `claude_code_json_answer` are the general calls (any system, user text
 and schema); the first pass over long footage (extract.py) uses them too. All return the parsed
-response dict, or raise StoryModelError.
+response dict, or raise StoryModelError. The user turn is text, or (Phase 14b, the critic) Gemini-shaped
+parts (`{"text"}` / `{"inline_data": {mime_type, data}}`) with images, which each call converts.
 """
 
 from __future__ import annotations
@@ -46,14 +47,26 @@ CLAUDE_CODE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 CLAUDE_CODE_DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
+# The user turn: plain text, or Gemini-shaped parts that may carry images.
+UserTurn = str | list[dict[str, Any]]
+
+
 class StoryModelError(Exception):
     """The model couldn't give a story cut."""
+
+
+def gemini_user_parts(user: UserTurn) -> list[dict[str, Any]]:
+    return [{"text": user}] if isinstance(user, str) else user
+
+
+def claude_user_content(user: UserTurn) -> str | list[dict[str, Any]]:
+    return user if isinstance(user, str) else claude_client.to_claude_content(user)
 
 
 def gemini_json(
     api_key: str,
     system: str,
-    user_text: str,
+    user_text: UserTurn,
     schema: dict[str, Any],
     model: str | None = None,
     on_retry: OnRetry = None,
@@ -65,7 +78,7 @@ def gemini_json(
         raise StoryModelError("No Gemini API key was provided.")
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+        "contents": [{"role": "user", "parts": gemini_user_parts(user_text)}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": schema,
@@ -130,7 +143,7 @@ def gemini_story(
 def claude_json(
     api_key: str,
     system: str,
-    user_text: str,
+    user_text: UserTurn,
     schema: dict[str, Any],
     model: str | None = None,
     on_retry: OnRetry = None,
@@ -145,7 +158,7 @@ def claude_json(
         "model": chosen,
         "max_tokens": max_tokens,
         "system": system,
-        "messages": [{"role": "user", "content": user_text}],
+        "messages": [{"role": "user", "content": claude_user_content(user_text)}],
         "output_config": {
             "effort": effort,
             "format": {"type": "json_schema", "schema": strict_schema(schema)},
@@ -200,7 +213,7 @@ def claude_story(
 def claude_code_json_answer(
     setup: Any,
     system: str,
-    user_text: str,
+    user_text: UserTurn,
     schema: dict[str, Any],
     model: str | None = None,
     effort: str = "high",
@@ -211,7 +224,13 @@ def claude_code_json_answer(
     chosen = model if model in CLAUDE_CODE_MODELS else CLAUDE_CODE_DEFAULT_MODEL
     try:
         return claude_code_json.run_json(
-            setup, chosen, system, user_text, strict_schema(schema), effort=effort, should_abort=should_abort
+            setup,
+            chosen,
+            system,
+            user_text if isinstance(user_text, str) else claude_client.to_claude_content(user_text),
+            strict_schema(schema),
+            effort=effort,
+            should_abort=should_abort,
         )
     except claude_code_json.ClaudeCodeJsonError as e:
         raise StoryModelError(str(e)) from None

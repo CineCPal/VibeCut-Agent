@@ -109,6 +109,13 @@ def chat_title(emitter: Emitter, stdin: TextIO) -> int:
     return titles.main(stdin, emitter)
 
 
+def critique(emitter: Emitter, stdin: TextIO) -> int:
+    """The vision critic: a picture editor's notes on the cut from its stills (Phase 14b)."""
+    from vibecut_agent.review import critic
+
+    return critic.main(stdin, emitter)
+
+
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
     from vibecut_agent.nle.watch import PremiereAdapter, watch
 
@@ -140,6 +147,7 @@ COMMANDS: dict[str, Command] = {
     "media-beats": media_beats,
     "assemble": assemble,
     "chat-title": chat_title,
+    "critique": critique,
     "premiere-watch": premiere_watch,
     "resolve-watch": resolve_watch,
 }

@@ -1741,6 +1741,40 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - The ported `editLint`, `transitions` and `trackState` tests.
 - `ToolCards` (findings rows) and `chatHistory` (findings kept or dropped).
 
+### 14b: The vision critic
+**Python** (`src-python/vibecut_agent/review/critic.py`, a new package, bundled): the `critique` sidecar command, ported from VibeCut's `gemini_critic.py` and its headless `run_critique`.
+- **Kept verbatim:** the rubric, the schema, the finding clean-up (`findings_from`), the captions and the parts. The sentence about editor-rendered stills is dropped, since there are none here.
+- **Frames:** read with `media/frames.py`'s `grab` (384 px JPEGs, 4 at a time) and sent inline, never written to disk. An unreadable frame is left out and counted in `framesFailed`.
+- **Providers:** any of the chat's three, through `story/models.py`, at medium effort (Gemini at temperature 0.3).
+  - The general calls now take Gemini-shaped parts as well as text: `gemini_user_parts` for Gemini, `claude_user_content` (`to_claude_content`) for the Claude API.
+  - Claude Code: `claude_code_json.run_json` takes content blocks and then runs with `--input-format stream-json`, one user line, as the chat does (8g). Text-only runs (the Story Editor, the first pass, titles) are unchanged, and the lockdown check is the same.
+- **Rust:** `critique` is in `COMMANDS` and `needs_llm_key`, so the key or the Claude Code setup is injected as for `chat-title`.
+
+**App** (`reviewTools.ts`): `review_edit` gains `visual` (default true) and `brief` (default: the user's last message).
+- **Stills:** VibeCut's `sampleFrames`, verbatim, over `visibleVideo`: two frames in from each end of every visible shot, plus the middle of shots over 4 s, at most 24. Titles have no file and are skipped.
+- **The words:** `transcriptExcerpt` (verbatim) over the heard clips' `laneLines`, with the speakers' saved names.
+- **The rest of the request:** the timeline layout from `timelineLines`, the automatic check's findings, and the chat's provider and model.
+- **Merging:** the critic's notes join the check's in the result (`critic: {overall, findings, stillsSeen}`, or `{skipped: why}`), the summary, and the card (as "Critic:" rows, with the fix).
+- **Failure:** a failed critic leaves the automatic check standing and says why.
+- **Context:** the stills never enter the chat, so they don't count against the 8-image budget.
+- **About** now says that review_edit's critic sends stills and what is said, for each provider.
+
+**Tests:**
+- `tests/review/test_critic.py` (9):
+  - well-formed findings only;
+  - parts and captions;
+  - frame checks;
+  - each provider's request carrying the images: Gemini `inline_data`, Claude image blocks at medium effort, Claude Code blocks with the converted schema;
+  - failures without the key;
+  - real ffmpeg frames.
+- `test_claude_code_json.py`: blocks go in as one stream-json line, and text doesn't.
+- `sidecar.rs`: key and setup injection for `critique`.
+- `reviewTools.test.ts`: the request (model, brief, stills, words, check), the merged result and card rows, and a failed critic.
+
+**Checked live (2026-10-09), on generated media** (testsrc2 twice across a cut at 5 s, then a heavily blurred shot), with the real `critique` command:
+- **Gemini** (repo key): "high · framing · 9.0 s: severely out of focus" and "medium · continuity · 5.0 s: abrupt jump cut on identical framing". It also noted the burned-in timecode.
+- **Claude Code** (2.1.292, Work profile, Sonnet): the same two, plus the jarring cut into the soft shot and "no product shown". The lockdown check passed with the stream-json input.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2021,3 +2055,7 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **2026-10-09 (Claude): Phase 14a: `review_edit`, the automatic check.**
   - VibeCut's edit lint is ported verbatim, with the delivery checks a QC needs: offline, switched off, strays past the end, picture with no sound, and loudness or true peak against a target.
   - Findings show on the tool card as positions to jump to. See "Phase 14" → 14a.
+- **2026-10-09 (Claude): Phase 14b: the vision critic.**
+  - The `critique` command (`review/critic.py`, ported from VibeCut's `gemini_critic.py`) runs on any of the chat's providers. Its model calls now take images, and Claude Code gets them over stream-json.
+  - `review_edit` runs the critic by default, merging its notes with the automatic check.
+  - Checked live with Gemini and Claude Code. See "Phase 14" → 14b.

@@ -54,11 +54,18 @@ def check_setup(setup: Any) -> dict[str, Any]:
 
 
 def build_args(
-    setup: dict[str, Any], model: str, system: str, schema: dict[str, Any], effort: str | None
+    setup: dict[str, Any],
+    model: str,
+    system: str,
+    schema: dict[str, Any],
+    effort: str | None,
+    blocks: bool = False,
 ) -> list[str]:
     args = [
         setup["program"],
         "-p",
+        # Content blocks (with images, Phase 14b) arrive as one stream-json user line, as in the chat (8g).
+        *(["--input-format", "stream-json"] if blocks else []),
         "--output-format",
         "stream-json",
         "--verbose",
@@ -107,14 +114,15 @@ def run_json(
     setup: Any,
     model: str,
     system: str,
-    user_text: str,
+    user_text: str | list[dict[str, Any]],
     schema: dict[str, Any],
     effort: str | None = None,
     should_abort: Callable[[], bool] = lambda: False,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     popen: Popen = subprocess.Popen,
 ) -> dict[str, Any]:
-    """Runs Claude Code once with `user_text` on stdin and returns its schema-checked object.
+    """Runs Claude Code once with `user_text` on stdin and returns its schema-checked object. Text goes
+    in as it is; a list of Claude content blocks (text and images) goes in as one stream-json user line.
 
     `schema` is plain JSON Schema (claude_schema.strict_schema converts the Story Editor's). Raises
     ClaudeCodeJsonError, with "Stopped" when `should_abort` turned true first."""
@@ -122,7 +130,7 @@ def run_json(
     os.makedirs(setup["workDir"], exist_ok=True)
     try:
         process = popen(
-            build_args(setup, model, system, schema, effort),
+            build_args(setup, model, system, schema, effort, blocks=not isinstance(user_text, str)),
             cwd=setup["workDir"],
             env=child_env(setup),
             stdin=subprocess.PIPE,
@@ -150,7 +158,11 @@ def run_json(
     threading.Thread(target=pump_stderr, daemon=True).start()
     try:
         assert process.stdin is not None
-        process.stdin.write(user_text.encode("utf-8"))
+        if isinstance(user_text, str):
+            process.stdin.write(user_text.encode("utf-8"))
+        else:
+            line = {"type": "user", "message": {"role": "user", "content": user_text}}
+            process.stdin.write((json.dumps(line) + "\n").encode("utf-8"))
         process.stdin.close()
     except OSError:
         pass  # it died at once; reported below from its exit

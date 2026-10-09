@@ -11,6 +11,8 @@ import { deliveryChecks, forgetLastReview, lintTimeline, loudnessFindings, order
 import { executorsFor, runTool, type ToolContext } from "./tools";
 import { fileKey } from "./transcriptTools";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
+import { useAgentStore } from "../../store/useAgentStore";
+import { AI_CHOICES } from "../../types/agent";
 import type { HostClip, HostTimeline, HostTrack } from "../../types/timeline";
 
 const clip = (id: string, start: number, end: number, over: Partial<HostClip> = {}): HostClip => ({
@@ -126,6 +128,15 @@ describe("delivery checks", () => {
   });
 });
 
+const CRITIC = {
+  overall: "The opening drags.",
+  findings: [
+    { time: 11, severity: "high", category: "continuity", issue: "A jump cut on the same framing.", suggestedFix: "Cover it with B-roll." },
+    { time: "bad", issue: "dropped" },
+  ],
+  framesSent: 6,
+};
+
 describe("review_edit", () => {
   const context: ToolContext = { host: "resolve", timeline: "Main", step: "s1", stepText: "check it" };
   let view: HostTimeline;
@@ -145,20 +156,21 @@ describe("review_edit", () => {
       throw new Error(`unexpected ${command}`);
     });
     tauri.invoke.mockImplementation(async (command: string) => {
-      if (command === "read_transcript") return { segments: [{ start: 3.5, end: 5, text: "hello there", speaker: "S1", words: [{ text: "hello", start: 4, end: 4.5 }, { text: "there", start: 4.6, end: 5 }] }] };
+      if (command === "read_transcript") return { segments: [{ start: 3.5, end: 5, text: "hello there", speaker: "S1", words: [{ text: "hello", start: 4, end: 4.5 }, { text: "there", start: 4.6, end: 5 }] }], speakers: ["S1"], speakerLabels: { S1: "Ana" }, excludedSpeakers: [] };
       return null;
     });
     jobs.runJob.mockImplementation(async (command: string, _label: string, request: { ranges?: unknown[] }) => {
       // Loud enough everywhere that the cut inside the word is heard.
       if (command === "audio-peaks") return { result: { peaks: { "/m/int.mov": { peaksPerSecond: 100, mins: Array(3000).fill(-0.3), maxes: Array(3000).fill(0.3) } } } };
       if (command === "media-loudness") return { result: { levels: (request.ranges ?? []).map((_, index) => ({ index, integratedLufs: -20, loudnessRange: 3, truePeakDb: -6, maxShortTermLufs: -17 })) } };
+      if (command === "critique") return { status: "done", result: CRITIC };
       throw new Error(`unexpected job ${command}`);
     });
   });
 
   it("reports the lint's and the delivery findings, with clip ids, as rows for the card", async () => {
-    const out = await runTool(executorsFor(context), "review_edit", {});
-    const result = out.result as { automaticCheck: { category: string; time: number; clipIds: string[] }[] };
+    const out = await runTool(executorsFor(context), "review_edit", { visual: false });
+    const result = out.result as { automaticCheck: { category: string; time: number; clipIds: string[] }[]; critic: unknown };
     const cats = result.automaticCheck.map((f) => f.category);
     expect(cats).toEqual(expect.arrayContaining(["mid_word_cut", "flash_frame", "black"]));
     expect(result.automaticCheck.find((f) => f.category === "mid_word_cut")).toMatchObject({ time: 4.2 });
@@ -166,12 +178,13 @@ describe("review_edit", () => {
     expect(out.summary).toMatch(/problem\(s\) found by the automatic check/);
     expect(out.findings?.length).toBe(result.automaticCheck.length);
     expect(out.findings?.[0]).toMatchObject({ source: "check" });
-    // No loudness target: nothing is measured.
+    // No loudness target and no critic: nothing else runs.
     expect(jobs.runJob.mock.calls.map((c) => c[0])).toEqual(["audio-peaks"]);
+    expect(result.critic).toEqual({ skipped: "not requested" });
   });
 
   it("measures loudness against a target and keeps to the range", async () => {
-    const out = await runTool(executorsFor(context), "review_edit", { startTime: 12, endTime: 20, targetLufs: -14 });
+    const out = await runTool(executorsFor(context), "review_edit", { startTime: 12, endTime: 20, targetLufs: -14, visual: false });
     const result = out.result as { automaticCheck: { category: string; time: number; clipIds: string[] }[] };
     expect(result.automaticCheck.map((f) => f.category)).toEqual(["loudness"]);
     expect(result.automaticCheck[0]).toMatchObject({ time: 12, clipIds: ["a2"] });
@@ -186,11 +199,45 @@ describe("review_edit", () => {
     const again = await runTool(executors, "review_edit", {});
     expect(again.summary).toMatch(/unchanged since the last review/);
     expect((again.result as { note: string }).note).toBe(UNCHANGED_REVIEW_NOTE);
-    expect(jobs.runJob).toHaveBeenCalledTimes(1);
+    // The peaks and the critic ran once.
+    expect(jobs.runJob).toHaveBeenCalledTimes(2);
     view = { ...view, tracks: view.tracks.map((t) => (t.type === "video" ? { ...t, clips: t.clips.filter((c) => c.id !== "flash") } : t)) };
     const fresh = await runTool(executors, "review_edit", {});
     expect(fresh.summary).not.toMatch(/unchanged/);
     expect((fresh.result as { automaticCheck: { category: string }[] }).automaticCheck.map((f) => f.category)).not.toContain("flash_frame");
+  });
+
+  it("asks the critic with the chat's model, stills either side of each cut, the words and the check's findings", async () => {
+    useAgentStore.setState({ aiChoice: "claude-code-sonnet-5-5", messages: [{ id: "u", role: "user", text: "Tighten the opening", createdAt: 1, status: "done" }] });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    const call = jobs.runJob.mock.calls.find((c) => c[0] === "critique");
+    const request = call?.[2] as { provider: string; model?: string; frames: { path: string; time: number; sourceTime: number; label: string }[]; brief: string; transcript: string; snapshot: string; lint: unknown[] };
+    const choice = AI_CHOICES.find((c) => c.id === "claude-code-sonnet-5-5")!;
+    expect(request.provider).toBe(choice.chatProvider);
+    expect(request.model).toBe(choice.model);
+    expect(request.brief).toBe("Tighten the opening");
+    // v1 (0–10), the flash (too short for two frames) and v2 (11–20, from 11 s of the file).
+    expect(request.frames.map((f) => f.label)).toEqual(["shot 1, first frame", "shot 1, middle", "shot 1, last frame", "shot 2, only frame", "shot 3, first frame", "shot 3, middle", "shot 3, last frame"]);
+    expect(request.frames[4]).toMatchObject({ path: "/m/int.mov", time: 11.08, sourceTime: 11.08 });
+    expect(request.transcript).toContain("hello there");
+    expect(request.snapshot).toContain("V1");
+    expect(request.lint.length).toBeGreaterThan(0);
+    const result = out.result as { critic: { overall: string; findings: { time: number }[]; stillsSeen: number } };
+    expect(result.critic).toEqual({ overall: "The opening drags.", findings: [CRITIC.findings[0]], stillsSeen: 6 });
+    expect(out.summary).toMatch(/1 note\(s\) from the critic \(6 stills\)\. The opening drags\./);
+    const critic = out.findings?.filter((f) => f.source === "critic");
+    expect(critic).toEqual([{ time: 11, severity: "high", text: "A jump cut on the same framing. Fix: Cover it with B-roll.", source: "critic" }]);
+  });
+
+  it("keeps the automatic check when the critic fails, saying why", async () => {
+    jobs.runJob.mockImplementation(async (command: string) => {
+      if (command === "critique") return { status: "error", error: "No Gemini API key was provided." };
+      return { result: {} };
+    });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    expect(out.summary).toMatch(/the critic couldn't run: No Gemini API key/);
+    expect((out.result as { critic: unknown }).critic).toEqual({ skipped: "No Gemini API key was provided." });
+    expect((out.result as { automaticCheck: unknown[] }).automaticCheck.length).toBeGreaterThan(0);
   });
 
   it("refuses a backwards range and an impossible target", async () => {
