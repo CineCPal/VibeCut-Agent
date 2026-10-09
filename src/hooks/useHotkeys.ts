@@ -27,6 +27,11 @@ export function togglesMiniPlayer(event: Pick<KeyboardEvent, "code" | "metaKey" 
   return (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey && event.code === "KeyM";
 }
 
+/** ⌘⇧N (Ctrl+Shift+N): the project's notes (Phase 13c). */
+export function opensNotes(event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">): boolean {
+  return (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "n";
+}
+
 export function useHotkeys(): void {
   const navigate = useUiStore((s) => s.navigate);
   useEffect(() => {
@@ -45,6 +50,12 @@ export function useHotkeys(): void {
         expand();
         navigate("chat");
         useUiStore.getState().setHistoryOpen(true);
+        return;
+      }
+      if (opensNotes(event)) {
+        event.preventDefault();
+        expand();
+        useUiStore.getState().openOverlay("notes");
         return;
       }
       const view = viewForShortcut(event);

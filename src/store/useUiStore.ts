@@ -3,7 +3,8 @@ import type { View } from "../types/system";
 
 /** The panels: the agent chat, the Spyglass B-roll Library, and the B-roll analyzer ("broll", the Analyze tab). */
 export type Tab = "chat" | "library" | "broll";
-export type Overlay = "settings" | "about";
+/** "notes": the project's notes (Phase 13c, ⌘⇧N); not a tray destination, so not a `View`. */
+export type Overlay = "settings" | "about" | "notes";
 /** Settings' tabs (Phase 11a). */
 export type SettingsTab = "general" | "agent" | "accounts" | "editors" | "library";
 

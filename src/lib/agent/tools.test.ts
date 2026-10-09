@@ -80,6 +80,8 @@ describe("agent tools", () => {
       "look_at_clip",
       "look_at_timeline",
       "look_at_media",
+      "remember_note",
+      "forget_note",
     ]);
     // The same tools, sending the draft to each one's own editor.
     expect(names("resolve")).toEqual(names("premiere").map((n) => (n === "send_to_premiere" ? "send_to_resolve" : n)));

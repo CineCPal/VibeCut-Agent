@@ -1592,6 +1592,38 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - **Claude Code** (2.1.292, Work profile, Sonnet): it went through the real MCP shim (`python -m vibecut_agent mcp`) with a scratch stand-in app on the bridge folder. Answer: "Frame 1 (0.5s) is red, and frame 2 (3.0s) is green."
 - **Claude API:** not checked live; the repo `.env` key still returns 401.
 
+### 13c: Project memory
+**Store** (`project_notes.rs`, commands `project_notes_get` / `project_notes_set`):
+- One Markdown file per editor project in `<app data>/projects/`, named `<editor>-<slug>-<FNV-1a 64 hex>.md`. A project is its editor plus the name the editor gives it.
+- At most 16 KB, written atomically, in a folder only the user can read. Saving empty notes removes the file.
+
+**Snapshot** (`context.ts`): the notes come first, read beside the timeline and pool.
+- With notes: `[PROJECT NOTES for "<project>" …]` … `[END PROJECT NOTES]`. Without any: one line saying how to start them.
+- Failing to read the notes leaves the block out, never the snapshot. The MCP `get_editor_context` gets the notes too.
+
+**Tools** (`notesTools.ts`; not reviewed, since they don't touch the editor):
+- `remember_note {section: brief|people|style|deliverables|decisions, text}` adds `- text (date)` under `## Section`.
+  - The section is made in that order when missing; the user's own text and headings are kept.
+  - A line already there (ignoring case and spaces) isn't added twice. Lines are under 300 characters, and full notes refuse more.
+- `forget_note {text}` removes the one line containing every word of `text`. When several match, it lists them; an emptied heading goes too.
+- The pure text functions are in `src/lib/projectNotes.ts`.
+
+**Prompt:** follow the notes without being told again; `remember_note` lasting facts and preferences the user states ("the client is…", "always…", "never…", deadlines), and say so. Never save guesses or one-off requests.
+
+**UI:**
+- **Notes** in the status bar, or ⌘⇧N, opens `ProjectNotesModal` (a new overlay `"notes"`): a plain Markdown textarea for the project open now.
+- It saves on Save, on ⌘S and on close, with a size check. It's disabled when no project is open.
+
+**Tests:**
+- `project_notes.rs`: names, round trip, the cap.
+- `projectNotes.test.ts`: sections and order, de-duplication, matching, removal, the snapshot block, ⌘⇧N, both tools.
+- `ProjectNotesModal.test.tsx`.
+- `context.test.ts`: the whole snapshot with notes, [SOURCES], [TRANSCRIPTS] and [B-ROLL], and notes that can't be read.
+
+**Checked live (Gemini, 2026-10-09):** with the real tool declarations and rule:
+- "The client is Rosa's Bakery and they never want whip pans. Also, make this cut 60 seconds for Instagram." gave three `remember_note` calls (brief, style, deliverables), and the reply said what was saved.
+- "Add a marker at 10 seconds for now." saved nothing.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1657,7 +1689,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
-  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot) and 13b (it sees footage: `look_at_*` contact sheets) are done. 13c (project notes) and 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
+  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot), 13b (it sees footage: `look_at_*` contact sheets) and 13c (project notes, ⌘⇧N) are done. 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1856,3 +1888,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
   - Tool results can carry images to Claude, Gemini and Claude Code (MCP `ImageContent`); the history keeps a note in their place.
   - Budget: 8 images per request. Tool cards show what the agent saw.
   - Checked live with Gemini and Claude Code. See "Phase 13" → 13b.
+- **2026-10-09 (Claude): Phase 13c: project memory.**
+  - A Markdown notes file per editor project (`project_notes.rs`), first in every snapshot.
+  - `remember_note` / `forget_note` change it, and the user edits it in Notes (status bar, ⌘⇧N).
+  - Checked live with Gemini. See "Phase 13" → 13c.

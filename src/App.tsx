@@ -3,6 +3,7 @@ import { AboutModal } from "./components/about/AboutModal";
 import { AppShell } from "./components/layout/AppShell";
 import { MiniPlayer } from "./components/mini/MiniPlayer";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
+import { ProjectNotesModal } from "./components/notes/ProjectNotesModal";
 import { useAgent } from "./hooks/useAgent";
 import { startChatHistory } from "./lib/agent/chatHistory";
 import { startChatTitles } from "./lib/agent/chatTitles";
@@ -57,6 +58,7 @@ function App() {
       <AppShell />
       {overlay === "settings" ? <SettingsPanel onClose={closeOverlay} /> : null}
       {overlay === "about" ? <AboutModal onClose={closeOverlay} /> : null}
+      {overlay === "notes" ? <ProjectNotesModal onClose={closeOverlay} /> : null}
     </>
   );
 }

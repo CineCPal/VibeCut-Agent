@@ -75,6 +75,9 @@ export const NOT_REVIEWED = new Set([
   "look_at_clip",
   "look_at_media",
   "look_at_timeline",
+  // Phase 13c: the project's notes in the app, not the editor or project.
+  "remember_note",
+  "forget_note",
   "search_media_pool",
   "search_transcript",
   "select_clip",

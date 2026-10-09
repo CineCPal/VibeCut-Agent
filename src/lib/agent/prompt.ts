@@ -2,6 +2,7 @@ import type { NleHost } from "../../types/nle";
 import { PREMIERE_MARKER_COLORS, RESOLVE_MARKER_COLORS } from "./tools";
 import { BROLL_SCOPE_INSTRUCTION } from "./spyglassTools";
 import { VISION_INSTRUCTION } from "./visionTools";
+import { NOTES_INSTRUCTION } from "./notesTools";
 import { projectInstruction } from "./projectTools";
 import { transcriptInstruction } from "./transcriptTools";
 import { draftInstruction } from "./draft";
@@ -87,6 +88,7 @@ ${syncInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}
 ${VISION_INSTRUCTION}
+${NOTES_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.
 - Reply with a short, plain-language summary of what you did once you are done. Replies are shown as
   Markdown: use short lists or a small table where they help, not headings for a few lines.

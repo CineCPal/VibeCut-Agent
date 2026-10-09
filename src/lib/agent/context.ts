@@ -9,6 +9,7 @@ import { poolContext, refreshPool } from "./projectTools";
 import { draftOf } from "./draft";
 import { filesOf, learnFacts, sourcesContext } from "./mediaInfo";
 import { libraryContext, transcriptsContext } from "./awareness";
+import { loadNotes, notesContext } from "../projectNotes";
 import { draftAsTimeline } from "../../vibecut/lib/connect/hostDraft";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useNleStateStore } from "../../store/useNleStateStore";
@@ -36,7 +37,10 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
   useNleStateStore.getState().setLastTimeline(null);
   if (!host) return snapshotHeader(null, null);
   // Another project in the editor starts the connection (made timelines, pool ids) over.
-  useConnectionStore.getState().forProject(host, useNleStateStore.getState().hosts[host].project);
+  const project = useNleStateStore.getState().hosts[host].project;
+  useConnectionStore.getState().forProject(host, project);
+  // The project's notes come first (Phase 13c), read beside everything else.
+  const notes = project ? loadNotes(host, project).then((text) => `${notesContext(project, text)}\n\n`, () => "") : Promise.resolve("");
   // The pool and the timeline are read side by side (Phase 11f); the watcher answers them in turn.
   const pool = refreshPool(host, timeline);
   let view: HostTimeline | null = null;
@@ -47,7 +51,7 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     // The tools work on the draft while it's open, so the agent sees the draft (VibeCut's rule).
     view = draftAsTimeline(draft, useNleStateStore.getState().hosts[host].project ?? "");
     const head = `[DRAFT of "${draft.base}", not sent yet: ${draft.changes.length} change(s) (${draft.changes.slice(-3).join("; ")}). Its clip ids are the draft's. send_to_${host} makes it a new ${host === "premiere" ? "sequence" : "timeline"}; discard_draft drops it.]`;
-    return `${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
+    return `${await notes}${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
   }
   if (timeline) {
     try {
@@ -59,7 +63,7 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     }
   }
   await pool;
-  return `${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
+  return `${await notes}${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
 }
 
 /** Phase 13a's lines after the pool: the files' formats, their transcripts, and what find_broll searches.

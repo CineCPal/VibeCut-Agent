@@ -11,6 +11,7 @@ mod mini_player;
 mod native_drag;
 mod nle;
 mod premiere_panel;
+mod project_notes;
 mod secrets;
 mod sidecar;
 mod spyglass;
@@ -143,6 +144,8 @@ pub fn run() {
             chat_store::chat_attachment_load,
             chat_store::edit_log_load,
             chat_store::edit_log_save,
+            project_notes::project_notes_get,
+            project_notes::project_notes_set,
             broll_panel::broll_panel_thumbs,
             broll_preview::broll_preview_allow,
             spyglass::find_spyglass_index,
