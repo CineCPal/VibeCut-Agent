@@ -13,7 +13,8 @@ export interface McpRequest {
 }
 
 /** The answer written back for the shim (`id` is added by Rust). */
-export type McpReply = { ok: true; result: unknown; summary?: string } | { ok: false; error: string };
+/** `images`: a tool's frames for the model (Phase 13b), as `{mime, data}` base64. */
+export type McpReply = { ok: true; result: unknown; summary?: string; images?: { mime: string; data: string }[] } | { ok: false; error: string };
 
 export interface McpStatus {
   outsideAllowed: boolean;

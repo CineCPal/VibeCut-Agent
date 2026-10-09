@@ -6,6 +6,8 @@ import { useId, useState } from "react";
 import { AlertTriangle, Ban, Check, ChevronRight, Clock, Loader2, Wrench } from "lucide-react";
 import { answerReview } from "../../lib/agent/review";
 import { CopyButton } from "./CopyButton";
+import { SentImage } from "./ChatImage";
+import { useAgentStore } from "../../store/useAgentStore";
 import type { ChatMessage, ChatToolCall } from "../../types/agent";
 
 function StateIcon({ state }: { state: ChatToolCall["state"] }) {
@@ -24,6 +26,18 @@ function Detail({ label, text }: { label: string; text: string }) {
         <CopyButton text={text} label={`Copy ${label.toLowerCase()}`} />
       </div>
       <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-canvas p-1.5 font-mono text-[11px] text-warm-grey">{text}</pre>
+    </div>
+  );
+}
+
+/** The frames a tool showed the model (Phase 13b), so the user sees what it saw. */
+function ToolImages({ message }: { message: ChatMessage }) {
+  const chatId = useAgentStore((s) => s.chatId);
+  return (
+    <div className="flex flex-wrap gap-1.5 border-t border-border/70 px-2 py-1.5" aria-label={`What ${message.tool?.name ?? "the tool"} showed the agent`}>
+      {(message.attachments ?? []).map((a) => (
+        <SentImage key={a.id} chatId={chatId} attachment={a} size="max-h-48 max-w-full" />
+      ))}
     </div>
   );
 }
@@ -54,6 +68,7 @@ function ToolCard({ message }: { message: ChatMessage & { tool: ChatToolCall } }
           ) : null}
         </span>
       </button>
+      {message.attachments?.length ? <ToolImages message={message} /> : null}
       {tool.state === "pending" ? (
         // Review edits first (Phase 11d): the change waits here for the user.
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border/70 px-2 py-1.5" role="group" aria-label={`Review ${tool.name}`}>

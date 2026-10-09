@@ -8,6 +8,7 @@
 import { loadChatAttachment, saveChatAttachment } from "../ipc";
 import { newId } from "../id";
 import type { ChatAttachment, PendingImage } from "../../types/agent";
+import type { ToolImage } from "./args";
 
 export const MAX_IMAGES = 4;
 export const MAX_EDGE = 1568;
@@ -171,4 +172,17 @@ export async function addImagesTo(
     }
   }
   return problems.length ? problems.join(". ") : null;
+}
+
+/** A tool's images (Phase 13b), filed beside the chat like a message's, for its card to show. */
+export async function saveToolImages(chatId: string, tool: string, images: ToolImage[]): Promise<ChatAttachment[]> {
+  const saved: ChatAttachment[] = [];
+  for (const [i, image] of images.entries()) {
+    const id = `tool-${newId()}`;
+    await saveChatAttachment(chatId, id, image.mime, image.data);
+    remember(`${chatId}/${id}`, `data:${image.mime};base64,${image.data}`);
+    const bytes = Math.floor((image.data.length * 3) / 4);
+    saved.push({ id, name: images.length > 1 ? `${tool} ${i + 1}` : tool, mime: image.mime, width: image.width, height: image.height, bytes });
+  }
+  return saved;
 }

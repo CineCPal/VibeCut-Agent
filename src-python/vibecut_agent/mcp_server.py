@@ -32,6 +32,7 @@ import mcp_types as types
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+from vibecut_agent.agent.attachments import tool_images
 from vibecut_agent.agent.claude_schema import to_claude_tool
 
 SERVER_NAME = "vibecut"
@@ -142,6 +143,18 @@ class AppBridge:
         on_wait: OnWait | None = None,
     ) -> Any:
         """Sends one request and waits for its reply's `result`. Raises BridgeError on any failure."""
+        reply = await self.ask_reply(kind, timeout, name, args, on_wait)
+        return reply.get("result")
+
+    async def ask_reply(
+        self,
+        kind: str,
+        timeout: float,
+        name: str | None = None,
+        args: dict[str, Any] | None = None,
+        on_wait: OnWait | None = None,
+    ) -> dict[str, Any]:
+        """`ask`, with the whole reply: its `result` and any `images` (Phase 13b)."""
         self.check_reachable()
         request_id = uuid.uuid4().hex
         request: dict[str, Any] = {"id": request_id, "caller": self.caller, "kind": kind}
@@ -171,7 +184,7 @@ class AppBridge:
                     raise BridgeError("VibeCut Agent's reply wasn't an object")
                 if reply.get("ok") is not True:
                     raise BridgeError(str(reply.get("error") or "VibeCut Agent refused the request"))
-                return reply.get("result")
+                return reply
             waited = time.monotonic() - started
             if timeout < HOLD_TIMEOUT_SECONDS and hold_path.exists():
                 timeout = HOLD_TIMEOUT_SECONDS  # the user is reviewing this change in the app
@@ -209,9 +222,14 @@ def tools_from(result: Any) -> list[types.Tool]:
     return tools
 
 
-def text_result(payload: Any, is_error: bool) -> types.CallToolResult:
+def text_result(payload: Any, is_error: bool, images: Any = None) -> types.CallToolResult:
+    """The result as text, then any images it came with (look_at_clip's frames, Phase 13b)."""
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    return types.CallToolResult(content=[types.TextContent(text=text)], is_error=is_error)
+    content: list[Any] = [types.TextContent(text=text)]
+    content += [
+        types.ImageContent(data=i["data"], mime_type=i["mime"]) for i in tool_images({"images": images})
+    ]
+    return types.CallToolResult(content=content, is_error=is_error)
 
 
 def build_server(bridge: AppBridge) -> Server[Any]:
@@ -235,11 +253,12 @@ def build_server(bridge: AppBridge) -> Server[Any]:
                 print(f"vibecut mcp: progress not sent: {exc}", file=sys.stderr)
 
         try:
-            result = await bridge.ask("call_tool", timeout, name=name, args=args, on_wait=on_wait)
+            reply = await bridge.ask_reply("call_tool", timeout, name=name, args=args, on_wait=on_wait)
         except BridgeError as exc:
             return text_result({"error": str(exc)}, is_error=True)
+        result = reply.get("result")
         is_error = isinstance(result, dict) and "error" in result
-        return text_result(result, is_error=is_error)
+        return text_result(result, is_error=is_error, images=reply.get("images"))
 
     return Server(
         SERVER_NAME,

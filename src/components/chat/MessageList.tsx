@@ -1,11 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { AlertTriangle, Pencil, RotateCcw, Wrench } from "lucide-react";
 import { ACTION_BUTTON, CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { MentionText } from "./MentionText";
 import { ToolGroup } from "./ToolCards";
+import { SentImage } from "./ChatImage";
 import type { ChatAttachment, ChatMessage, ChatToolCall } from "../../types/agent";
-import { attachmentUrl } from "../../lib/agent/attachments";
 import { useAgentStore } from "../../store/useAgentStore";
 
 const ROLE_LABEL: Record<"user" | "assistant" | "system", string> = { user: "You", assistant: "Agent", system: "System" };
@@ -27,30 +27,6 @@ export interface TurnActions {
   edits: number;
   onRetry: () => void;
   onEdit: () => void;
-}
-
-/** One image sent with a message (Phase 8g), read back from beside the chat. */
-function SentImage({ chatId, attachment }: { chatId: string; attachment: ChatAttachment }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    let live = true;
-    attachmentUrl(chatId, attachment)
-      .then((u) => live && setUrl(u))
-      .catch(() => live && setMissing(true));
-    return () => {
-      live = false;
-    };
-  }, [chatId, attachment]);
-  const label = `${attachment.name} · ${attachment.width}×${attachment.height}`;
-  if (missing) {
-    return <span className="flex h-16 items-center rounded border border-white/30 px-2 text-[11px] text-white/70">{attachment.name} (no longer on disk)</span>;
-  }
-  return url ? (
-    <img src={url} alt={attachment.name} title={label} className="max-h-32 max-w-[12rem] rounded border border-white/30 object-contain" />
-  ) : (
-    <span aria-label={`Loading ${attachment.name}`} className="block h-16 w-16 animate-pulse rounded bg-white/10" />
-  );
 }
 
 function SentImages({ attachments }: { attachments: ChatAttachment[] }) {

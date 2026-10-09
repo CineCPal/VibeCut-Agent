@@ -77,6 +77,9 @@ describe("agent tools", () => {
       "find_broll",
       "list_spyglass_folders",
       "describe_spyglass_folder",
+      "look_at_clip",
+      "look_at_timeline",
+      "look_at_media",
     ]);
     // The same tools, sending the draft to each one's own editor.
     expect(names("resolve")).toEqual(names("premiere").map((n) => (n === "send_to_premiere" ? "send_to_resolve" : n)));

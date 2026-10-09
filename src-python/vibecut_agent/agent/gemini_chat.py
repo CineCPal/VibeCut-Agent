@@ -24,7 +24,12 @@ from typing import Any
 
 import requests
 
-from vibecut_agent.agent.attachments import gemini_parts
+from vibecut_agent.agent.attachments import (
+    gemini_parts,
+    gemini_tool_parts,
+    tool_images,
+    without_tool_images_gemini,
+)
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
@@ -118,7 +123,9 @@ def _post(
                 raise last_error
 
             if resp.status_code != 200:
-                raise ChatError(f"Gemini API returned HTTP {resp.status_code}: {scrub(resp.text, api_key)[:500]}")
+                raise ChatError(
+                    f"Gemini API returned HTTP {resp.status_code}: {scrub(resp.text, api_key)[:500]}"
+                )
 
             try:
                 return _read_stream(resp, reply, should_abort, api_key)
@@ -207,7 +214,12 @@ def _add_part(parts: list[dict[str, Any]], part: dict[str, Any]) -> None:
     """Adds one streamed part. Text that only continues the text before it is joined to it; a part with
     anything else (a function call, a thought signature) is kept exactly as sent, since the model needs
     those back verbatim."""
-    if parts and _plain_text(part) and _plain_text(parts[-1]) and bool(part.get("thought")) == bool(parts[-1].get("thought")):
+    if (
+        parts
+        and _plain_text(part)
+        and _plain_text(parts[-1])
+        and bool(part.get("thought")) == bool(parts[-1].get("thought"))
+    ):
         parts[-1] = {**parts[-1], "text": parts[-1]["text"] + part["text"]}
     else:
         parts.append(dict(part))
@@ -292,7 +304,8 @@ def run_chat_turn(
     def finish(text: str, aborted: bool = False, out_of_steps: bool = False) -> dict[str, Any]:
         return {
             "text": text,
-            "history": contents,
+            # A tool's images were for this turn only (Phase 13b).
+            "history": without_tool_images_gemini(contents),
             "usage": usage,
             "aborted": aborted,
             "outOfSteps": out_of_steps,
@@ -376,6 +389,7 @@ def _collect_tool_results(
     A result for an unknown id, or a second result for the same id, is a caller bug and fails the turn."""
     pending = set(call_ids)
     results: dict[str, Any] = {}
+    images: dict[str, list[dict[str, str]]] = {}
     while pending:
         message = read_tool_result()
         result_id = message.get("id")
@@ -385,8 +399,11 @@ def _collect_tool_results(
             raise ChatError(f"Tool result for unknown call id {result_id!r}")
         pending.discard(result_id)
         results[result_id] = message.get("result")
+        images[result_id] = tool_images(message)
 
     parts = []
+    # A tool's images follow all the functionResponse parts, each lot named (Phase 13b).
+    after: list[dict[str, Any]] = []
     for call_id, call in zip(call_ids, calls):
         result = (
             repeats.annotate(call.get("name"), call.get("args"), results[call_id])
@@ -398,7 +415,8 @@ def _collect_tool_results(
         if call.get("id"):
             response["id"] = call["id"]
         parts.append({"functionResponse": response})
-    return parts
+        after.extend(gemini_tool_parts(str(call.get("name")), images[call_id]))
+    return parts + after
 
 
 def _add_usage(usage: dict[str, int], data: dict[str, Any]) -> None:

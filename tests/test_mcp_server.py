@@ -286,3 +286,26 @@ def test_the_caller_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) 
     assert mcp_server.caller_from_env() == "abc-123"
     monkeypatch.setenv(mcp_server.CALLER_ENV, "../../etc")
     assert mcp_server.caller_from_env() == "outside"
+
+
+def test_a_tools_images_reach_claude_code_as_image_content(folder: Path) -> None:
+    """Phase 13b: look_at_clip's sheet comes back next to the result's text."""
+    frame = {"mime": "image/jpeg", "data": "aGVsbG8="}
+    fake = FakeApp(folder, lambda r: {"ok": True, "result": {"shown": "a sheet"}, "images": [frame]})
+    try:
+        server = build_server(AppBridge(folder, "job-1"))
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                return await client.call_tool("look_at_clip", {"clipId": "v1"})
+
+        result = run(go)
+    finally:
+        fake.stop()
+    assert result.is_error is False
+    assert json.loads(result.content[0].text) == {"shown": "a sheet"}
+    assert (result.content[1].type, result.content[1].data, result.content[1].mime_type) == (
+        "image",
+        "aGVsbG8=",
+        "image/jpeg",
+    )

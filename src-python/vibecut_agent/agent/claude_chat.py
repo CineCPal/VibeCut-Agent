@@ -33,7 +33,12 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from vibecut_agent.agent.attachments import claude_blocks
+from vibecut_agent.agent.attachments import (
+    claude_blocks,
+    claude_tool_content,
+    tool_images,
+    without_tool_images_claude,
+)
 from vibecut_agent.agent.chat_steps import (
     DEFAULT_MAX_STEPS,
     OUT_OF_STEPS_NOTICE,
@@ -101,8 +106,11 @@ def _no_answer_notice(message: dict[str, Any]) -> str | None:
     return None
 
 
-def _tool_result_block(call_id: str, result: Any) -> dict[str, Any]:
-    content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+def _tool_result_block(
+    call_id: str, result: Any, images: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    content = claude_tool_content(text, images or [])
     block: dict[str, Any] = {"type": "tool_result", "tool_use_id": call_id, "content": content}
     if isinstance(result, dict) and "error" in result:
         block["is_error"] = True
@@ -120,6 +128,7 @@ def _collect_tool_results(
     call_ids = [str(call.get("id")) for call in calls]
     pending = set(call_ids)
     results: dict[str, Any] = {}
+    images: dict[str, list[dict[str, str]]] = {}
     while pending:
         message = read_tool_result()
         result_id = message.get("id")
@@ -129,12 +138,14 @@ def _collect_tool_results(
             raise ChatError(f"Tool result for unknown call id {result_id!r}")
         pending.discard(result_id)
         results[result_id] = message.get("result")
+        images[result_id] = tool_images(message)
     return [
         _tool_result_block(
             call_id,
             repeats.annotate(call.get("name"), call.get("input"), results[call_id])
             if repeats
             else results[call_id],
+            images[call_id],
         )
         for call_id, call in zip(call_ids, calls)
     ]
@@ -193,7 +204,8 @@ def run_chat_turn(
     def finish(text: str, aborted: bool = False, out_of_steps: bool = False) -> dict[str, Any]:
         return {
             "text": text,
-            "history": messages,
+            # A tool's images were for this turn only (Phase 13b).
+            "history": without_tool_images_claude(messages),
             "usage": usage,
             "aborted": aborted,
             "outOfSteps": out_of_steps,

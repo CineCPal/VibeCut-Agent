@@ -14,7 +14,8 @@ import { getMcpStatus, mcpHold, mcpReply, onMcpOutside, onMcpRequest } from "../
 import { newId } from "../id";
 import { refreshAgentStatus } from "../agent/availability";
 import { describeError, snapshotFor } from "../agent/context";
-import { runChatTool } from "../agent/controller";
+import { runChatTool, withImagesKept } from "../agent/controller";
+import type { ToolOutcome } from "../agent/args";
 import { systemInstruction } from "../agent/prompt";
 import { executorsFor, runTool, toolDeclarations, type ToolDeclaration } from "../agent/tools";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -46,7 +47,7 @@ const INSTRUCTIONS_DECLARATION: ToolDeclaration = {
 
 /** Tools that only read: allowed from outside even while the in-app chat is running. */
 export function isReadTool(name: string): boolean {
-  return name === CONTEXT_TOOL || name === INSTRUCTIONS_TOOL || /^(list|get|find|describe|search)_/.test(name);
+  return name === CONTEXT_TOOL || name === INSTRUCTIONS_TOOL || /^(list|get|find|describe|search|look_at|measure)_/.test(name);
 }
 
 function activeEditor(): { host: NleHost; timeline: string | null } | null {
@@ -88,9 +89,14 @@ async function callOutside(name: string, args: Record<string, unknown>): Promise
   const editor = activeEditor();
   if (!editor) return { ok: false, error: NO_EDITOR };
   const context = { host: editor.host, timeline: editor.timeline, step: outsideStep(Date.now()), stepText: OUTSIDE_LABEL };
-  const outcome = await runTool(executorsFor(context), name, args);
+  const outcome = withImagesKept(await runTool(executorsFor(context), name, args), name, context.step);
   if (outcome.summary) agent.addMessage({ role: "tool", text: `${OUTSIDE_LABEL}: ${outcome.summary}` });
-  return { ok: true, result: outcome.result, summary: outcome.summary };
+  return { ok: true, result: outcome.result, summary: outcome.summary, ...imagesOf(outcome) };
+}
+
+/** A tool's images as the MCP shim passes them on (Phase 13b). */
+function imagesOf(outcome: ToolOutcome): { images?: { mime: string; data: string }[] } {
+  return outcome.images?.length ? { images: outcome.images.map(({ mime, data }) => ({ mime, data })) } : {};
 }
 
 /** Outside calls run one at a time, in the order they arrived, like the chat's own. */
@@ -122,7 +128,7 @@ export async function handleRequest(request: McpRequest): Promise<McpReply> {
     // A change waiting for review (Phase 11d): the shim lets this call wait for the user.
     const outcome = await runChatTool(request.caller, name, args, () => void mcpHold(request.id).catch(() => undefined));
     if (!outcome) return { ok: false, error: "That VibeCut Agent chat has ended." };
-    return { ok: true, result: outcome.result, summary: outcome.summary };
+    return { ok: true, result: outcome.result, summary: outcome.summary, ...imagesOf(outcome) };
   } catch (error) {
     return { ok: false, error: describeError(error) };
   }

@@ -2,10 +2,20 @@
 
 export type Args = Record<string, unknown>;
 
-/** One executed tool call: `summary` is shown in the chat, `result` goes back to the model. */
+/** An image a tool returns for the model to look at (Phase 13b): base64 JPEG/PNG and its size. */
+export interface ToolImage {
+  mime: string;
+  data: string;
+  width: number;
+  height: number;
+}
+
+/** One executed tool call: `summary` is shown in the chat, `result` goes back to the model, and so do
+ * `images` (shown on the tool's card too). */
 export interface ToolOutcome {
   summary: string;
   result: unknown;
+  images?: ToolImage[];
 }
 
 export type Executor = (args: Args) => Promise<ToolOutcome>;

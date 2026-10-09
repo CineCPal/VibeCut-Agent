@@ -1552,6 +1552,46 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - `tests/media/test_info.py`: ffprobe facts, plus a real ffmpeg file and a missing one.
 - `test_premiere.py` and `test_resolve.py`: the playhead and the marks, unset marks, a closed timeline, an older panel.
 
+### 13b: Sees the footage
+**Tools** (`visionTools.ts`; read only, not reviewed, work on a draft too):
+- `look_at_clip`: `{clipId, times? (timeline s), count? (default 6)}`. Frames of a video clip, with timeline time mapped to file time through the clip's source in and speed (a reversed clip counts back).
+- `look_at_timeline`: `{times? | start/end + count (default 8)}`. Without times or a range, it uses the In–Out marks, else the whole timeline.
+  - At each time it reads the clip on the highest video track that's on (clip on, with a file).
+  - Moments with no picture come back as `gaps` ("black").
+- `look_at_media`: `{clipId (pool "p3") | filePath, times? (file s) | start/end + count}`. The length comes from the pool, else from `media-info`.
+- **What each returns:** a contact sheet (one image), plus a result naming each numbered frame (label, file, file time) and any frame it couldn't read. Every description says the frames are source pictures, without the editor's effects, grade or titles.
+
+**Engine:** `media-frames` (`media/frames.py`).
+- Up to 12 shots `{path, time, label}`. ffmpeg seeks fast to each frame (4 at a time), and a time past the end gives the last frame, reported as such.
+- Pillow tiles them into one JPEG at most 1536 px wide (1–4 columns), each frame numbered over its label; a frame it couldn't read is a grey tile. Each image is kept under 3.75 MB.
+- `sheet: false` gives up to 4 separate frames.
+
+**Budget** (`turnImages.ts`): 2 images per call and 8 per request (`context.step`).
+- The tools refuse before reading frames once the budget is used up.
+- `withImagesKept` (controller) trims a result to the budget and says so in `imagesWithheld`.
+
+**Images in tool results:**
+- `ToolOutcome.images` → the controller sends `tool_result {…, images}`.
+- **Claude API:** the `tool_result` content becomes `[text, image…]` (`attachments.claude_tool_content`).
+- **Gemini:** `inline_data` parts follow the turn's `functionResponse` parts, each lot introduced by "The images <tool> returned:" (`gemini_tool_parts`).
+- **Claude Code:** `McpReply.images` goes through the bridge, and the shim (`mcp_server.ask_reply`, `text_result`) adds `ImageContent` blocks.
+- **History:** a turn's returned history replaces tool images with `TOOL_IMAGES_NOTE` (`without_tool_images_*`), so they aren't resent with every message. The user's own images stay.
+- **Bad images:** a bad or extra image is dropped (`tool_images`), and the call still stands.
+- **MCP:** `isReadTool` counts `look_at_*` and `measure_*`, so outside clients can use them while a chat runs.
+
+**Cards:** a tool card shows the images it returned. They're filed beside the chat like 8g attachments (`saveToolImages`, ids `tool-…`), and `SentImage` moved to `components/chat/ChatImage.tsx`.
+
+**Tests:**
+- `visionTools.test.ts`: spreading, file-time mapping with speed and reverse, the picture seen, each tool, refusals, the budget and holding images back.
+- `tests/media/test_frames.py`: real ffmpeg, i.e. pixel colours, the sheet, past the end, a missing file, and nothing readable.
+- `tests/agent/test_tool_images.py`: Claude and Gemini requests carry the images, the history keeps the note, and the user's images stay.
+- `test_mcp_server.py`: `ImageContent` reaches the client.
+
+**Checked live (2026-10-09):**
+- **Gemini** (repo key): a red-then-green test clip's sheet went back from a stand-in `look_at_clip`. Answer: "frame 1 is red … frame 2 is green". The history came back without the image.
+- **Claude Code** (2.1.292, Work profile, Sonnet): it went through the real MCP shim (`python -m vibecut_agent mcp`) with a scratch stand-in app on the bridge folder. Answer: "Frame 1 (0.5s) is red, and frame 2 (3.0s) is green."
+- **Claude API:** not checked live; the repo `.env` key still returns 401.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1617,7 +1657,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
-  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot) is done. 13b (frames and contact sheets in tool results), 13c (project notes) and 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
+  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot) and 13b (it sees footage: `look_at_*` contact sheets) are done. 13c (project notes) and 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1811,3 +1851,8 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
   - The first line has the playhead and the In/Out marks (Premiere panel 0.9.1; Resolve `GetMarkInOut`).
   - New `[SOURCES]` (the `media-info` command), `[TRANSCRIPTS]` and `[B-ROLL]` lines, fps on pool lines, and a `get_edit_log` tool.
   - New package `vibecut_agent/media/`, bundled in `tauri.conf.json`. See "Phase 13" → 13a.
+- **2026-10-09 (Claude): Phase 13b: the agent sees footage.**
+  - New tools `look_at_clip`, `look_at_timeline` and `look_at_media`, backed by the `media-frames` command (contact sheets).
+  - Tool results can carry images to Claude, Gemini and Claude Code (MCP `ImageContent`); the history keeps a note in their place.
+  - Budget: 8 images per request. Tool cards show what the agent saw.
+  - Checked live with Gemini and Claude Code. See "Phase 13" → 13b.

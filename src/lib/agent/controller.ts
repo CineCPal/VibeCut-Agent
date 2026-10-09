@@ -23,7 +23,8 @@ import { awaitReview, skipAllReviews } from "./review";
 import { describeChange, needsReview } from "./toolKinds";
 import { notifyAway } from "../notify";
 import { revertLastRequest } from "./edits";
-import { MAX_IMAGES, attachmentOf, loadImages, saveImages } from "./attachments";
+import { MAX_IMAGES, attachmentOf, loadImages, saveImages, saveToolImages } from "./attachments";
+import { MAX_TURN_IMAGES, takeImages } from "./turnImages";
 import { systemInstruction } from "./prompt";
 import { executorsFor, runTool, toolDeclarations, type ToolContext } from "./tools";
 import type { ToolOutcome } from "./args";
@@ -487,16 +488,29 @@ export async function runChatTool(jobId: string, name: string, args: unknown, on
     // The card shows while the call runs (Phase 8f), then takes its summary and result.
     card = useAgentStore.getState().addMessage({ role: "tool", text: `Running ${name}…`, tool: { name, args: toolDetail(args), state: "running" } });
   }
-  const outcome = await runTool(executors, name, args);
+  const outcome = withImagesKept(await runTool(executors, name, args), name, context?.step ?? jobId);
   const failed = typeof outcome.result === "object" && outcome.result !== null && "error" in outcome.result;
   useAgentStore.getState().updateMessage(card, {
     text: outcome.summary || name,
     tool: { name, args: toolDetail(args), result: toolDetail(outcome.result), state: failed ? "failed" : "done" },
+    ...(outcome.images?.length ? { attachments: await saveToolImages(useAgentStore.getState().chatId, name, outcome.images).catch(() => []) } : {}),
   });
   if (useAgentStore.getState().jobId === jobId && useAgentStore.getState().status === "thinking") {
     useAgentStore.getState().setActivity(`Calling ${PROVIDER_LABEL[provider]}…`);
   }
   return outcome;
+}
+
+/** A tool's images, cut to what the request has left of its budget (turnImages.ts); the result says
+ * when some were held back. */
+export function withImagesKept(outcome: ToolOutcome, name: string, step: string): ToolOutcome {
+  const images = outcome.images ?? [];
+  if (!images.length) return outcome;
+  const allowed = takeImages(step, images.length);
+  if (allowed === images.length) return outcome;
+  const note = `${images.length - allowed} of ${name}'s ${images.length} image(s) weren't shown: this request has used its ${MAX_TURN_IMAGES} images. Work from what you've seen, or ask the user.`;
+  const result = typeof outcome.result === "object" && outcome.result !== null ? { ...outcome.result, imagesWithheld: note } : { result: outcome.result, imagesWithheld: note };
+  return { ...outcome, result, images: images.slice(0, allowed) };
 }
 
 /** A tool call's arguments or result as a card shows them: pretty JSON, cut to TOOL_DETAIL_CHARS. */
@@ -516,7 +530,8 @@ async function answerToolCalls(jobId: string, calls: ToolCall[]): Promise<void> 
     const outcome = await runChatTool(jobId, call.name, call.args);
     if (!outcome) return;
     try {
-      await sendToSidecar(jobId, { type: "tool_result", id: call.id, result: outcome.result });
+      const images = outcome.images?.length ? { images: outcome.images.map(({ mime, data }) => ({ mime, data })) } : {};
+      await sendToSidecar(jobId, { type: "tool_result", id: call.id, result: outcome.result, ...images });
     } catch (error) {
       // The sidecar died between asking and now: the turn can't continue.
       useAgentStore.getState().addMessage({

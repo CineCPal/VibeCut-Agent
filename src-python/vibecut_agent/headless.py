@@ -74,6 +74,13 @@ def media_info(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-info", info.run, stdin, emitter)
 
 
+def media_frames(emitter: Emitter, stdin: TextIO) -> int:
+    """Frames of media files, alone or as one contact sheet, for the agent to look at (Phase 13b)."""
+    from vibecut_agent.media import commands, frames
+
+    return commands.main("media-frames", frames.run, stdin, emitter)
+
+
 def assemble(emitter: Emitter, stdin: TextIO) -> int:
     """The Story Editor: a story cut from transcripts (and a B-roll catalog) with the chat's model."""
     from vibecut_agent.story import commands
@@ -114,6 +121,7 @@ COMMANDS: dict[str, Command] = {
     "transcribe": transcribe,
     "audio-peaks": audio_peaks,
     "media-info": media_info,
+    "media-frames": media_frames,
     "assemble": assemble,
     "chat-title": chat_title,
     "premiere-watch": premiere_watch,
