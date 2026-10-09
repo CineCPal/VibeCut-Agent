@@ -133,3 +133,34 @@ def test_prepare_clears_leftovers(tmp_path):
     PremiereBridge(tmp_path).prepare()
     assert list((tmp_path / "jobs").iterdir()) == []
     assert (tmp_path / "replies").is_dir()
+
+
+TPS = 254016000000
+
+
+def test_timeline_says_where_the_playhead_and_marks_are():
+    """Phase 13a (panel 0.9.1): the playhead on the open sequence, and In/Out when set."""
+    raw = {**sequence(), "playheadTicks": str(4 * TPS), "inTicks": str(2 * TPS), "outTicks": str(6 * TPS)}
+    t = timeline(raw)
+    assert t["playhead"] == 4.0
+    assert t["inOut"] == {"in": 2.0, "out": 6.0}
+
+
+def test_unset_marks_and_a_closed_sequence_say_nothing():
+    end = sequence()["endTicks"]
+    # Premiere reads an unset In as 0 and an unset Out as the end.
+    assert "inOut" not in timeline({**sequence(), "inTicks": "0", "outTicks": end})
+    # Only an Out: from the start.
+    assert timeline({**sequence(), "inTicks": "0", "outTicks": str(5 * TPS)})["inOut"] == {
+        "in": 0.0,
+        "out": 5.0,
+    }
+    # Only an In (Out past the end or before the In): to the end.
+    assert timeline({**sequence(), "inTicks": str(3 * TPS), "outTicks": "-1"})["inOut"] == {
+        "in": 3.0,
+        "out": 10.0,
+    }
+    closed = timeline({**sequence(), "isActive": False, "playheadTicks": str(TPS)})
+    assert "playhead" not in closed
+    # An older panel sends neither.
+    assert "playhead" not in timeline(sequence()) and "inOut" not in timeline(sequence())

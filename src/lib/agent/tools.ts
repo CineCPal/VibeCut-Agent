@@ -11,6 +11,8 @@ import type { NleHost } from "../../types/nle";
 import type { HostMarker, HostTimeline } from "../../types/timeline";
 import { type Args, bool, clock, type Executor, num, optNum, optStr, strArray, type ToolOutcome } from "./args";
 import { editExecutors, editToolDeclarations } from "./editTools";
+import { editLogFor } from "./edits";
+import { useEditLogStore } from "../../store/useEditLogStore";
 import { SPYGLASS_EXECUTORS, SPYGLASS_TOOLS } from "./spyglassTools";
 import { projectExecutors, projectToolDeclarations } from "./projectTools";
 import { transcriptExecutors, transcriptToolDeclarations } from "./transcriptTools";
@@ -119,8 +121,13 @@ function readToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "get_playhead_time",
-      description: `Returns ${editor}'s playhead position in seconds on the open ${timeline}.`,
+      description: `Returns ${editor}'s playhead position in seconds on the open ${timeline}. The snapshot already says where it was when the user wrote; call this only when it may have moved since.`,
       parameters: { type: "OBJECT", properties: {} },
+    },
+    {
+      name: "get_edit_log",
+      description: `Lists every direct edit and project change you made in ${editor} (this session and, after a restart, before it), oldest first, grouped by the user's request: editId, time, tool, ${timeline}, summary, whether it was reverted, and the backup. The snapshot shows only the latest few; use this to answer "what did you change?" or to pick editIds for revert_timeline_edits. lastStep=true: only the latest request's.`,
+      parameters: { type: "OBJECT", properties: { lastStep: { type: "BOOLEAN" } } },
     },
     {
       name: "set_playhead_time",
@@ -263,6 +270,11 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     get_playhead_time: async () => {
       const { time } = await call<{ time: number }>("get_playhead");
       return { summary: `${editor}'s playhead is at ${clock(time)}`, result: { time } };
+    },
+
+    get_edit_log: async (args) => {
+      const log = editLogFor(useEditLogStore.getState().entries, { host, lastStep: bool(args, "lastStep") });
+      return { summary: `Read the edit log: ${log.total} edit(s), ${log.live} not reverted`, result: log };
     },
 
     set_playhead_time: async (args) => {

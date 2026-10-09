@@ -6,6 +6,7 @@
  * and this app's `transcribe` share them), read by Rust (transcript.rs). Speakers' names and roles the
  * agent saves are kept for the connection (useConnectionStore), as VibeCut keeps them.
  */
+import { forgetTranscriptStatus } from "./awareness";
 import { invoke } from "@tauri-apps/api/core";
 import { runJob } from "../jobs";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -263,6 +264,7 @@ export function transcriptExecutors(context: ToolContext): Record<string, Execut
       });
       const result = (job?.result ?? {}) as { files?: TranscribedFile[]; failed?: { path: string; message: string }[] };
       const done = result.files ?? [];
+      forgetTranscriptStatus(done.map((f) => f.path));
       if (!done.length) throw new Error(job?.error ?? result.failed?.[0]?.message ?? "Transcription didn't finish");
       return {
         summary: `Transcribed ${done.length} file(s)${done.some((f) => f.fromCache) ? ` (${done.filter((f) => f.fromCache).length} already were)` : ""}${result.failed?.length ? `; ${result.failed.length} failed` : ""}`,

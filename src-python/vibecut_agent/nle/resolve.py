@@ -18,6 +18,7 @@ Facts this relies on (checked against Resolve Studio 21.1 by VibeCut):
 
 from __future__ import annotations
 
+import contextlib
 import math
 import re
 import sys
@@ -179,6 +180,34 @@ def _linked(item: Any) -> list[Any]:
     ]
 
 
+def _whereabouts(timeline: Any, fps: float, length: int, is_current: bool) -> dict[str, Any]:
+    """The playhead (only on the open timeline) and the In/Out marks (Phase 13a). `GetMarkInOut()`
+    gives {"video": {"in", "out"}, "audio": ...} in frames from the timeline's start, Out included
+    (VibeCut's resolve_render.py); the picture's marks win, an absent one is the start or end."""
+    found: dict[str, Any] = {}
+    if is_current:
+        # A snapshot without the playhead is still a snapshot.
+        with contextlib.suppress(Exception):
+            frames = timecode_to_frames(timeline.GetCurrentTimecode(), fps) - timecode_to_frames(
+                timeline.GetStartTimecode(), fps
+            )
+            found["playhead"] = _seconds(max(0, frames), fps)
+    try:
+        marks = timeline.GetMarkInOut() or {}
+    except Exception:  # noqa: BLE001 - older Resolve: no marks to report
+        marks = {}
+    picture = marks.get("video") or {}
+    sound = marks.get("audio") or {}
+    first = picture.get("in", sound.get("in"))
+    last = picture.get("out", sound.get("out"))
+    if first is not None or last is not None:
+        first = max(0, int(first)) if first is not None else 0
+        last = min(length, int(last) + 1) if last is not None else length
+        if last > first:
+            found["inOut"] = {"in": _seconds(first, fps), "out": _seconds(last, fps)}
+    return found
+
+
 class ResolveHost:
     def __init__(self, resolve: Any) -> None:
         self._resolve = resolve
@@ -229,16 +258,19 @@ class ResolveHost:
         for kind in ("video", "audio", "subtitle"):
             for index in range(1, int(timeline.GetTrackCount(kind) or 0) + 1):
                 tracks.append(self._read_track(timeline, kind, index, start, fps, is_current))
-        return {
+        length = int(timeline.GetEndFrame()) - start
+        out: dict[str, Any] = {
             "project": project.GetName(),
             "timeline": timeline.GetName(),
             "fps": fps,
             "startTimecode": timeline.GetStartTimecode(),
-            "duration": _seconds(int(timeline.GetEndFrame()) - start, fps),
+            "duration": _seconds(length, fps),
             "isCurrent": is_current,
             "tracks": tracks,
             "markers": self._markers(timeline, fps),
         }
+        out.update(_whereabouts(timeline, fps, length, is_current))
+        return out
 
     def _read_track(
         self, timeline: Any, kind: str, index: int, start: int, fps: float, is_current: bool

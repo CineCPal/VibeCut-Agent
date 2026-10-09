@@ -95,7 +95,11 @@ const HOST_NOUN: Record<NleHost, string> = { premiere: "Premiere sequence", reso
 export function snapshotHeader(host: NleHost | null, timeline: HostTimeline | null, problem?: string): string {
   if (!host) return "[No editor connected: Premiere Pro and DaVinci Resolve are both closed or unreachable.]";
   if (!timeline) return `[${HOST_NOUN[host]}: ${problem ?? "none open (create_timeline makes one)"}]`;
-  const head = `[${HOST_NOUN[host]} "${timeline.timeline}" in project "${timeline.project}", ${timeline.fps} fps, ${clock(timeline.duration)} long, starts at ${timeline.startTimecode}]`;
+  const where = [
+    timeline.playhead !== undefined ? `playhead at ${clock(timeline.playhead)}` : null,
+    timeline.inOut ? `In ${clock(timeline.inOut.in)} – Out ${clock(timeline.inOut.out)} marked` : null,
+  ].filter(Boolean);
+  const head = `[${HOST_NOUN[host]} "${timeline.timeline}" in project "${timeline.project}", ${timeline.fps} fps, ${clock(timeline.duration)} long, starts at ${timeline.startTimecode}${where.length ? `; ${where.join(", ")}` : ""}]`;
   const edits = editLogContext();
   return [head, ...timelineLines(timeline), ...(edits ? [edits] : [])].join("\n");
 }

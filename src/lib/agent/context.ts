@@ -7,6 +7,8 @@ import { nleCall } from "../ipc";
 import { snapshotHeader } from "./snapshot";
 import { poolContext, refreshPool } from "./projectTools";
 import { draftOf } from "./draft";
+import { filesOf, learnFacts, sourcesContext } from "./mediaInfo";
+import { libraryContext, transcriptsContext } from "./awareness";
 import { draftAsTimeline } from "../../vibecut/lib/connect/hostDraft";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useNleStateStore } from "../../store/useNleStateStore";
@@ -45,7 +47,7 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     // The tools work on the draft while it's open, so the agent sees the draft (VibeCut's rule).
     view = draftAsTimeline(draft, useNleStateStore.getState().hosts[host].project ?? "");
     const head = `[DRAFT of "${draft.base}", not sent yet: ${draft.changes.length} change(s) (${draft.changes.slice(-3).join("; ")}). Its clip ids are the draft's. send_to_${host} makes it a new ${host === "premiere" ? "sequence" : "timeline"}; discard_draft drops it.]`;
-    return `${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}`;
+    return `${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
   }
   if (timeline) {
     try {
@@ -57,5 +59,22 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     }
   }
   await pool;
-  return `${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}`;
+  return `${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
+}
+
+/** Phase 13a's lines after the pool: the files' formats, their transcripts, and what find_broll searches.
+ * Each is best effort: a failure leaves its line out, never the snapshot. */
+async function awarenessFor(host: NleHost, view: HostTimeline | null): Promise<string> {
+  const lines: string[] = [];
+  if (view) {
+    const [, transcripts] = await Promise.all([
+      learnFacts(filesOf(view)).catch(() => undefined),
+      transcriptsContext(host, view).catch(() => null),
+    ]);
+    const sources = sourcesContext(view);
+    if (sources) lines.push(sources);
+    if (transcripts) lines.push(transcripts);
+  }
+  lines.push(libraryContext());
+  return `\n\n${lines.join("\n")}`;
 }

@@ -274,6 +274,8 @@ class FakeTimeline:
         self.markers: dict[int, dict[str, Any]] = {}
         self.is_open = True
         self.timecode = "01:00:00:00"
+        # GetMarkInOut's answer: {"video": {"in", "out"}, "audio": ...}, frames from the start, Out included.
+        self.marks: dict[str, dict[str, int]] = {}
 
     def GetName(self) -> str:
         return self.name
@@ -328,6 +330,9 @@ class FakeTimeline:
 
     def GetCurrentTimecode(self) -> str:
         return self.timecode
+
+    def GetMarkInOut(self) -> dict[str, dict[str, int]]:
+        return {kind: dict(mark) for kind, mark in self.marks.items()}
 
     def SetCurrentTimecode(self, timecode: str) -> bool:
         self.timecode = timecode

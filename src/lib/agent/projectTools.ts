@@ -76,6 +76,7 @@ function poolLine(clip: HostPoolClip, alias: string, selected: boolean, words: P
     clip.type,
     clip.duration !== undefined ? clock(clip.duration) : null,
     clip.resolution ?? null,
+    clip.fps ? `${clip.fps} fps` : null,
     clip.markIn !== undefined && clip.markOut !== undefined ? `in ${clock(clip.markIn)}–${clock(clip.markOut)}` : null,
     clip.clipColor ? `${words.colorTag} ${clip.clipColor}` : null,
     clip.flags?.length ? `flags ${clip.flags.join("/")}` : null,

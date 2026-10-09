@@ -1519,6 +1519,39 @@ Every change read back as asked.
 
 **Cleanup:** "VCA 12 live", its backup and an unused "VCA 12 test" copy were deleted, along with the imported test clip. "Timeline 28" is current again.
 
+## Phase 13: An agent that sees, hears and remembers (2026-10-09)
+
+The user wants the agent to be more aware of the timeline, media and project. They chose all four parts:
+- 13a: a sharper snapshot;
+- 13b: seeing the footage;
+- 13c: project memory;
+- 13d: hearing the audio.
+
+Each part ships on its own. The engines for 13a, 13b and 13d live in one package, `vibecut_agent/media/`, with one-shot sidecar commands run through `media/commands.py`, and read files with the local ffmpeg only.
+
+### 13a: A sharper snapshot
+**The first line** now says where the user is: `…; playhead at 72.2s, In 30.0s – Out 120.0s marked`.
+- **Premiere** (panel 0.9.1): `vcReadSequence` adds `playheadTicks` (open sequence only), `inTicks` and `outTicks`. `premiere.timeline` (`_whereabouts`) leaves out an unset In (0) and an unset Out (the end, or nothing past it). An older panel sends neither, and nothing breaks.
+- **Resolve:** `read_timeline` adds the playhead (`GetCurrentTimecode`, open timeline only) and `GetMarkInOut()`. The picture's marks win; Out is included, as in VibeCut's `resolve_render.py`.
+- `HostTimeline` gains `playhead?` and `inOut?`. The prompt says "here" or "this shot" means the playhead, and the marked part means In–Out. `get_playhead_time` is only for after the playhead may have moved.
+
+**New lines after the pool** (`context.ts` `awarenessFor`). Each is best effort: a failure drops the line, never the snapshot.
+- **`[SOURCES]`** (`mediaInfo.ts`): each file on the timeline (up to 40), e.g. `"A.mov": h264 3840x2160 23.976 fps · aac 2 ch 48 kHz · 12:03`.
+  - **Engine:** the new `media-info` command (`media/info.py`, ffprobe; up to 64 files). Cover art is skipped.
+  - **Caching:** each file is read once a session. The snapshot waits at most 1.5 s for new files; the rest show "(format not read yet)" until a later message. A file that failed is tried again after a minute.
+- **`[TRANSCRIPTS]`** (`awareness.ts`): which heard files (sound on, clip on) have a transcript, with their speakers' names and roles, and which don't yet.
+  - **Caching:** a transcribed file is read once. `transcribe_clips` forgets the files it wrote.
+- **`[B-ROLL]`:** what `find_broll` searches: the Library's ticked folders, or the whole archive. It reads only the store, never Spyglass.
+
+**Also:**
+- Pool lines show each clip's fps.
+- **New tool `get_edit_log`** (read only, works while drafting): every edit and project change, oldest first and grouped by request, with editId, time, tool, timeline, summary, reverted or live, and backup. `lastStep=true` gives the latest request's only. Capped at the newest 100 (`edits.ts` `editLogFor`).
+
+**Tests:**
+- `awareness.test.ts`: the first line, [SOURCES] (read once, never holds up the snapshot, the limit), [TRANSCRIPTS] (heard files only, names and roles, caching, forgetting), [B-ROLL], `get_edit_log`.
+- `tests/media/test_info.py`: ffprobe facts, plus a real ffmpeg file and a missing one.
+- `test_premiere.py` and `test_resolve.py`: the playhead and the marks, unset marks, a closed timeline, an older panel.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1584,6 +1617,7 @@ Every change read back as asked.
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
+  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot) is done. 13b (frames and contact sheets in tool results), 13c (project notes) and 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1773,3 +1807,7 @@ Every change read back as asked.
   - **Fix:** the rebuild now places each piece from the project's own items into an emptied copy and checks every piece. The panel looks up each clip again before moving or removing it.
   - **Checked:** the user's 180-clip resequence, confirmed by their screenshot.
   - **Also:** one Python test failed once and then passed in three full runs; it hasn't been identified.
+- **2026-10-09 (Claude): Phase 13a: a sharper snapshot.**
+  - The first line has the playhead and the In/Out marks (Premiere panel 0.9.1; Resolve `GetMarkInOut`).
+  - New `[SOURCES]` (the `media-info` command), `[TRANSCRIPTS]` and `[B-ROLL]` lines, fps on pool lines, and a `get_edit_log` tool.
+  - New package `vibecut_agent/media/`, bundled in `tauri.conf.json`. See "Phase 13" → 13a.

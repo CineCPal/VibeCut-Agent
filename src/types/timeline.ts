@@ -51,4 +51,8 @@ export interface HostTimeline {
   isCurrent: boolean;
   tracks: HostTrack[];
   markers: HostMarker[];
+  /** Seconds from the start; only on the timeline open in the editor (Phase 13a). */
+  playhead?: number;
+  /** The timeline's In and Out marks in seconds, when either is set (Phase 13a). */
+  inOut?: { in: number; out: number };
 }

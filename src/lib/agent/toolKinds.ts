@@ -63,6 +63,7 @@ export const NOT_REVIEWED = new Set([
   "find_filler_words",
   "find_silences",
   "get_clip_info",
+  "get_edit_log",
   "get_playhead_time",
   "get_transcript",
   "list_markers",

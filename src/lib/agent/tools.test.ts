@@ -20,6 +20,7 @@ describe("agent tools", () => {
       "update_marker",
       "remove_markers",
       "get_playhead_time",
+      "get_edit_log",
       "set_playhead_time",
       "add_clips",
       "delete_clips",

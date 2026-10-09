@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.9.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.9.1"
 	ExtensionBundleName="VibeCut Agent Connect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<!-- VibeCut Agent's link to Premiere Pro (PLAN.md, Phase 3), adapted from VibeCut's
 	     com.vibecut.connect. A hidden panel that starts with Premiere, takes one request file at a
@@ -10,8 +10,8 @@
 	     Agent B-roll (Window, Extensions): the B-roll Library inside Premiere, from which shots can be
 	     dragged into the Project panel or the timeline, as VibeCut's own B-roll panel does. -->
 	<ExtensionList>
-		<Extension Id="com.vibecutagent.connect.panel" Version="0.9.0" />
-		<Extension Id="com.vibecutagent.connect.broll" Version="0.9.0" />
+		<Extension Id="com.vibecutagent.connect.panel" Version="0.9.1" />
+		<Extension Id="com.vibecutagent.connect.broll" Version="0.9.1" />
 	</ExtensionList>
 	<ExecutionEnvironment>
 		<HostList>

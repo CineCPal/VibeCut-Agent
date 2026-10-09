@@ -337,13 +337,27 @@ function vcReadSequence(args) {
     for (var s = 0; s < sequence.audioTracks.numTracks; s++) {
       audio.push(vcReadTrack(sequence.audioTracks[s], true, false));
     }
+    var active = vcIsActive(sequence);
+    // Phase 13a: where the user is. The playhead only on the open sequence; In and Out as Premiere
+    // has them (an unset In reads 0 and an unset Out the end; premiere.py leaves those out).
+    var where = {};
+    try {
+      if (active) where.playheadTicks = String(sequence.getPlayerPosition().ticks);
+      where.inTicks = String(sequence.getInPointAsTime().ticks);
+      where.outTicks = String(sequence.getOutPointAsTime().ticks);
+    } catch (e) {
+      where = {};
+    }
     return {
       project: vcProjectName(app.project),
       name: sequence.name,
       timebase: String(sequence.timebase),
       zeroPoint: String(sequence.zeroPoint),
       endTicks: String(sequence.end),
-      isActive: vcIsActive(sequence),
+      isActive: active,
+      playheadTicks: where.playheadTicks,
+      inTicks: where.inTicks,
+      outTicks: where.outTicks,
       video: video,
       audio: audio,
       markers: vcMarkers(sequence)

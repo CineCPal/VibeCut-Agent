@@ -74,3 +74,24 @@ def test_unknown_timeline_and_rate(host):
     assert frame_rate(FakeTimeline("x", fps="29.97 DF")) == 29.97
     with pytest.raises(HostError, match="frame rate"):
         frame_rate(FakeTimeline("x", fps=""))
+
+
+def test_read_timeline_says_where_the_playhead_and_marks_are(host, interview):
+    """Phase 13a: the playhead on the open timeline; In/Out from GetMarkInOut, Out included."""
+    interview.timecode = "01:00:04:00"
+    interview.marks = {"video": {"in": 48, "out": 239}, "audio": {"in": 0, "out": 2399}}
+    t = host.read_timeline({"timeline": "Interview"})
+    assert t["playhead"] == 4.0
+    # The picture's marks win; the Out frame is included, so the range ends a frame later.
+    assert t["inOut"] == {"in": 2.0, "out": 10.0}
+
+
+def test_only_an_out_and_no_marks(host, interview):
+    interview.marks = {"video": {"out": 95}}
+    assert host.read_timeline({"timeline": "Interview"})["inOut"] == {"in": 0.0, "out": 4.0}
+    interview.marks = {}
+    assert "inOut" not in host.read_timeline({"timeline": "Interview"})
+
+
+def test_a_timeline_not_open_has_no_playhead(host):
+    assert "playhead" not in host.read_timeline({"timeline": "Other"})

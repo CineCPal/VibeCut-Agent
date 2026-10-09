@@ -221,7 +221,7 @@ def timeline(raw: dict[str, Any]) -> dict[str, Any]:
     tracks = [_track(t, "video", i + 1) for i, t in enumerate(raw.get("video", []))]
     tracks += [_track(t, "audio", i + 1) for i, t in enumerate(raw.get("audio", []))]
     number_channels(tracks)
-    return {
+    out: dict[str, Any] = {
         "project": raw.get("project", ""),
         "timeline": raw["name"],
         "fps": fps,
@@ -231,6 +231,33 @@ def timeline(raw: dict[str, Any]) -> dict[str, Any]:
         "tracks": tracks,
         "markers": sorted((marker(m) for m in raw.get("markers", [])), key=lambda m: m["time"]),
     }
+    out.update(_whereabouts(raw))
+    return out
+
+
+def _ticks(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _whereabouts(raw: dict[str, Any]) -> dict[str, Any]:
+    """The playhead and the In/Out marks (Phase 13a, panel 0.9.1; an older panel sends neither).
+    Premiere reads an unset In as 0 and an unset Out as the end (or nothing past it): those aren't marks."""
+    found: dict[str, Any] = {}
+    end = _ticks(raw.get("endTicks")) or 0
+    playhead = _ticks(raw.get("playheadTicks"))
+    if playhead is not None and raw.get("isActive"):
+        found["playhead"] = seconds(max(0, playhead))
+    first, last = _ticks(raw.get("inTicks")), _ticks(raw.get("outTicks"))
+    if first is not None and last is not None:
+        first = max(0, first)
+        if last <= first or last > end:
+            last = end
+        if (first > 0 or last < end) and last > first:
+            found["inOut"] = {"in": seconds(first), "out": seconds(last)}
+    return found
 
 
 def timeline_name(args: dict[str, Any]) -> str:

@@ -67,6 +67,13 @@ def audio_peaks(emitter: Emitter, stdin: TextIO) -> int:
     return peaks.main(stdin, emitter)
 
 
+def media_info(emitter: Emitter, stdin: TextIO) -> int:
+    """Codec, size, rate and channels of media files, for the snapshot's [SOURCES] (Phase 13a)."""
+    from vibecut_agent.media import commands, info
+
+    return commands.main("media-info", info.run, stdin, emitter)
+
+
 def assemble(emitter: Emitter, stdin: TextIO) -> int:
     """The Story Editor: a story cut from transcripts (and a B-roll catalog) with the chat's model."""
     from vibecut_agent.story import commands
@@ -106,6 +113,7 @@ COMMANDS: dict[str, Command] = {
     "broll-spyglass": broll_spyglass,
     "transcribe": transcribe,
     "audio-peaks": audio_peaks,
+    "media-info": media_info,
     "assemble": assemble,
     "chat-title": chat_title,
     "premiere-watch": premiere_watch,

@@ -289,3 +289,40 @@ export function editLogContext(entries: EditEntry[] = useEditLogStore.getState()
   const when = entries.some((e) => e.fromEarlierRun) ? "this session and before the app last restarted" : "this session";
   return `Your direct timeline edits ${when}: ${entries.length} (${live.length} not reverted)${recent.length ? `; latest: ${recent.join(" | ")}` : ""}`;
 }
+
+/** The most get_edit_log returns, newest kept. */
+export const EDIT_LOG_LIMIT = 100;
+
+/** get_edit_log's answer (Phase 13a): every edit, oldest first, grouped by the request it was for. */
+export function editLogFor(entries: EditEntry[], options: { lastStep?: boolean; host?: NleHost } = {}): Record<string, unknown> {
+  let list = options.host ? entries.filter((e) => e.host === options.host) : entries;
+  if (options.lastStep && list.length) {
+    const step = list[list.length - 1].step;
+    list = list.filter((e) => e.step === step);
+  }
+  const kept = list.slice(-EDIT_LOG_LIMIT);
+  const requests: { request: string; edits: Record<string, unknown>[] }[] = [];
+  kept.forEach((e, i) => {
+    const row: Record<string, unknown> = {
+      editId: e.id,
+      at: new Date(e.at).toISOString(),
+      tool: e.tool,
+      [e.pool ? "project" : "timeline"]: e.pool ? true : e.timeline,
+      summary: e.summary,
+      status: e.reverted ? "reverted" : "live",
+      ...(e.backup ? { backup: e.backup } : {}),
+      ...(e.fromEarlierRun ? { beforeRestart: true } : {}),
+      ...(e.reverted && (e.reverted.changedSince || e.reverted.failed) ? { revertLeft: e.reverted.changedSince + e.reverted.failed } : {}),
+    };
+    const last = requests[requests.length - 1];
+    const request = e.stepText.length > 160 ? `${e.stepText.slice(0, 160)}…` : e.stepText;
+    if (last && kept[i - 1]?.step === e.step) last.edits.push(row);
+    else requests.push({ request, edits: [row] });
+  });
+  return {
+    total: list.length,
+    live: list.filter((e) => !e.reverted).length,
+    ...(list.length > kept.length ? { omitted: `${list.length - kept.length} older edit(s)` } : {}),
+    requests,
+  };
+}
