@@ -23,6 +23,7 @@ import { timingExecutors, timingToolDeclarations } from "./timingTools";
 import { poolExecutors, poolToolDeclarations } from "./poolTools";
 import { visionExecutors, visionToolDeclarations } from "./visionTools";
 import { notesExecutors, notesToolDeclarations } from "./notesTools";
+import { audioExecutors, audioToolDeclarations } from "./audioTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -55,6 +56,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...SPYGLASS_TOOLS,
     ...visionToolDeclarations(host),
     ...notesToolDeclarations(),
+    ...audioToolDeclarations(host),
   ];
 }
 
@@ -289,6 +291,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...transcriptExecutors(context),
     ...visionExecutors(context),
     ...notesExecutors(context),
+    ...audioExecutors(context),
     ...draftExecutors(context),
     ...timingExecutors(context),
     ...poolExecutors(context),

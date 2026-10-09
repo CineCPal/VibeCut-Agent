@@ -57,6 +57,9 @@ LONG_TOOLS = frozenset(
         "send_to_premiere",
         "send_to_resolve",
         "find_silences",
+        "measure_loudness",
+        "normalize_loudness",
+        "find_beats",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0

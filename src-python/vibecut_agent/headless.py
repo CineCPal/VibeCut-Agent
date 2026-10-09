@@ -81,6 +81,20 @@ def media_frames(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-frames", frames.run, stdin, emitter)
 
 
+def media_loudness(emitter: Emitter, stdin: TextIO) -> int:
+    """EBU R128 loudness of parts of media files (Phase 13d)."""
+    from vibecut_agent.media import commands, loudness
+
+    return commands.main("media-loudness", loudness.run, stdin, emitter)
+
+
+def media_beats(emitter: Emitter, stdin: TextIO) -> int:
+    """The tempo and beats of a piece of music (Phase 13d)."""
+    from vibecut_agent.media import beats, commands
+
+    return commands.main("media-beats", beats.run, stdin, emitter)
+
+
 def assemble(emitter: Emitter, stdin: TextIO) -> int:
     """The Story Editor: a story cut from transcripts (and a B-roll catalog) with the chat's model."""
     from vibecut_agent.story import commands
@@ -122,6 +136,8 @@ COMMANDS: dict[str, Command] = {
     "audio-peaks": audio_peaks,
     "media-info": media_info,
     "media-frames": media_frames,
+    "media-loudness": media_loudness,
+    "media-beats": media_beats,
     "assemble": assemble,
     "chat-title": chat_title,
     "premiere-watch": premiere_watch,

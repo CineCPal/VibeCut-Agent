@@ -1624,6 +1624,40 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - "The client is Rosa's Bakery and they never want whip pans. Also, make this cut 60 seconds for Instagram." gave three `remember_note` calls (brief, style, deliverables), and the reply said what was saved.
 - "Add a marker at 10 seconds for now." saved nothing.
 
+### 13d: Hears the audio
+**Tools** (`audioTools.ts`):
+- `measure_loudness` (read; not reviewed): EBU R128 per sound clip — integrated LUFS, loudness range, true peak, loudest 3 s — plus each clip's level now.
+  - **Which clips:** `clipIds` (a picture's id measures its linked sound), or `start`/`end`; without either, the In–Out or the whole timeline, every heard clip (track and clip on), cut to the range.
+  - **Up to 32 clips.** Each is its own file over the part it plays (through speed and reverse), before its level, fades and the mix; the description says so.
+- `normalize_loudness` (an edit, reviewed, refused while drafting): `{clipIds, targetLufs (default -14; -16, -23, -24 named), maxTruePeak (-1 dBTP; null for none)}`.
+  - Each clip's level becomes `target − measured`, held to ±20 dB, and lowered so its true peak stays under the ceiling. The result says which clips fell short, and silent clips are skipped.
+  - It applies through `editExecutors.set_clip_levels`, so the change gets one backup and one Revert.
+- `find_beats` (read): `{clipId, start?, end?}` gives BPM, confidence, beats as timeline times (through the clip's speed), and `maybeDoubleTime` under 95 BPM.
+  - **Change from the plan:** it doesn't add markers itself, because `add_markers` isn't in the edit log. The model calls `add_markers` (reviewed) for the beats it wants.
+
+**Engines:**
+- `media-loudness` (`media/loudness.py`): up to 32 ranges, 4 at a time. ffmpeg `ebur128=peak=true:framelog=verbose` at `-v verbose`, parsing the summary and the per-frame `S:` lines. The first sound stream is measured, and silence gives `null`.
+- `media-beats` (`media/beats.py`): numpy over `peaks.decode` (8 kHz mono).
+  - **Method:** a spectral-flux onset envelope (512/128), tempo by autocorrelation between 60 and 200 BPM weighted toward 120, and Ellis's dynamic-programming beat tracker.
+  - **Limits:** 4 s to 20 min per call. Outputs are cast to Python floats (numpy 2 keeps float32, which the protocol would write as a string; caught by a test).
+
+**MCP:** the three tools get the 15-minute timeout (`LONG_TOOLS`).
+
+**Tests:**
+- `audioTools.test.ts`: file parts through speed and reverse, linked sound, heard clips in a range, the level maths, each tool, `set_clip_levels` with one backup, refusal while drafting, beats onto the timeline at 2× speed.
+- `tests/media/test_loudness.py`: a real -23 LUFS tone within 0.5, silence, a missing file, the parser.
+- `tests/media/test_beats.py`: 90, 120 and 128 BPM click tracks within 1 BPM and beats within 40 ms, 174 → 87 with `maybeDoubleTime`, noise below 0.3, a part of a file.
+
+**Measured while building:** synthetic clicks gave 89.8, 120.4 and 128.5 BPM, with median beat error 10–14 ms.
+
+### Phase 13: still to check live
+- **Resolve** (it was closed during this session; the user approved scratch checks):
+  - the playhead and In/Out in a real snapshot (`read_timeline` through `resolve-watch`);
+  - `look_at_clip` on a real clip;
+  - `normalize_loudness` and its Revert, plus `find_beats` with markers, on a "VCA 13" scratch timeline.
+- **Premiere:** Update panel (0.9.1) and restart Premiere, then the playhead and In/Out read back.
+- **In the app:** the user's own try. The Notes window (⌘⇧N), tool cards with frames, and a chat that remembers across a new chat.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1689,7 +1723,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
-  - *(2026-10-09)* **Phase 13 is under way** ("an agent that sees, hears and remembers"): 13a (a sharper snapshot), 13b (it sees footage: `look_at_*` contact sheets) and 13c (project notes, ⌘⇧N) are done. 13d (loudness and beats) follow. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
+  - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Next: the live checks in "Phase 13: still to check live" (Resolve was closed), then the user's own try. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1892,3 +1926,6 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
   - A Markdown notes file per editor project (`project_notes.rs`), first in every snapshot.
   - `remember_note` / `forget_note` change it, and the user edits it in Notes (status bar, ⌘⇧N).
   - Checked live with Gemini. See "Phase 13" → 13c.
+- **2026-10-09 (Claude): Phase 13d: the agent hears loudness and beats.**
+  - `measure_loudness`, `normalize_loudness` (through `set_clip_levels`, one Revert) and `find_beats`, on the new `media-loudness` and `media-beats` commands.
+  - Phase 13 is built. Its live checks in Resolve and Premiere are listed under "Phase 13: still to check live".

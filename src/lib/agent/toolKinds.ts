@@ -55,6 +55,8 @@ export const CHANGING_TOOLS = new Set([
   "set_clip_labels",
   "set_clip_metadata",
   "rename_clips",
+  // Phase 13d: levels set through set_clip_levels.
+  "normalize_loudness",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -78,6 +80,9 @@ export const NOT_REVIEWED = new Set([
   // Phase 13c: the project's notes in the app, not the editor or project.
   "remember_note",
   "forget_note",
+  // Phase 13d: measuring only.
+  "measure_loudness",
+  "find_beats",
   "search_media_pool",
   "search_transcript",
   "select_clip",
