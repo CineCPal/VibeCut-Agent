@@ -1856,6 +1856,34 @@ The user asked what other skills the agent should have. Of four groups (delivera
 
 **Cleanup:** the test timelines, their backups and the test media were deleted. 28 timelines remain, and "Timeline 28" is current.
 
+### 14e: The saved prompt pack
+**Ten new starters** (`PACK_14` in `src/store/usePromptStore.ts`), using the Phase 12–14 tools:
+- `/qc`: review_edit at a target, no critic, no changes;
+- `/notes`: review_edit with the critic, for a brief;
+- `/loudness-check`;
+- `/describe-footage`: look_at_media, then set_clip_metadata;
+- `/beat-markers`;
+- `/beat-cut`: find_broll, then cut_to_beats;
+- `/social-cutdown`: a draft at a length, then make_social_version;
+- `/client-brief`: questions, then remember_note;
+- `/chapters`;
+- `/whats-changed`: get_edit_log.
+
+`{{…}}` marks what to type over.
+
+**Existing users:** the store is now version 2. Its `migrate` (`addPack14`) adds the pack once to a store saved before. It skips any name the user already has, keeps their own prompts as they are, and doesn't bring back a starter they deleted earlier.
+
+**Tests** (`usePromptStore.test.ts`): names valid and unique, bodies within the limit, the pack's order, the migration (once, the user's own `/qc` kept, deleted starters stay deleted), and "cut" now matching `/rough-cut`, `/beat-cut` and `/social-cutdown`.
+
+### Phase 14: still to check
+- **The user's own try in the app:**
+  - `/qc` and `/notes` on a real cut, with the findings card and its timecode chips;
+  - `/beat-cut`;
+  - `/social-cutdown`;
+  - the new starters showing up after an update.
+- **Premiere:** update the panel to 0.10.0 (Settings → Editors → Update panel), restart Premiere, then ask for a 9:16 version. Auto Reframe Sequence was not checked from here.
+- **The critic on the Claude API:** the repo `.env` key still returns 401.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1922,6 +1950,14 @@ The user asked what other skills the agent should have. Of four groups (delivera
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
   - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Checked live in Resolve and (13a's playhead and In/Out) in Premiere the same day. Next: the user's own try in the app.
+  - *(2026-10-09)* **Phase 14 is built** (the user picked Review & QC, Social & music and a prompt pack; captions and renders are left for later):
+    - 14a: `review_edit`, VibeCut's edit lint plus delivery checks;
+    - 14b: the vision critic on all three providers;
+    - 14c: `cut_to_beats`;
+    - 14d: `make_social_version` (Premiere panel 0.10.0);
+    - 14e: ten new saved prompts.
+
+    14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2149,3 +2185,6 @@ The user asked what other skills the agent should have. Of four groups (delivera
     - Premiere: Auto Reframe Sequence, in panel 0.10.0.
   - The snapshot shows each timeline's frame size.
   - Probed and checked live in Resolve with 14a and 14c. See "Phase 14" → 14d and "checked live".
+- **2026-10-09 (Claude): Phase 14e: ten new saved prompts** for the review, sound, beat, social and memory tools.
+  - Existing users get them once, through a version 2 migration of the prompt store.
+  - Phase 14 is built. See "Phase 14" → 14e and "still to check".

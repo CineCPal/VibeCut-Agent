@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { STARTER_PROMPTS, matchingPrompts, nameProblem, usePromptStore } from "./usePromptStore";
+import { MAX_BODY_CHARS, NAME_PATTERN, PACK_14, STARTER_PROMPTS, addPack14, matchingPrompts, nameProblem, usePromptStore } from "./usePromptStore";
 
 const store = () => usePromptStore.getState();
 
@@ -46,7 +46,28 @@ describe("saved prompts (Phase 8h)", () => {
   it("lists names that start with the query first, then ones that contain it", () => {
     const names = matchingPrompts(store().prompts, "t").map((p) => p.name);
     expect(names[0]).toBe(names.find((n) => n.startsWith("t")) ?? names[0]);
-    expect(matchingPrompts(store().prompts, "cut").map((p) => p.name)).toEqual(["rough-cut"]);
+    expect(matchingPrompts(store().prompts, "cut").map((p) => p.name)).toEqual(["rough-cut", "beat-cut", "social-cutdown"]);
     expect(matchingPrompts(store().prompts, "")).toHaveLength(STARTER_PROMPTS.length);
+  });
+
+  it("ships the Phase 14e pack: valid, unique names and bodies that fit (Phase 14e)", () => {
+    const names = STARTER_PROMPTS.map((p) => p.name);
+    expect(new Set(names).size).toBe(names.length);
+    for (const p of STARTER_PROMPTS) {
+      expect(p.name).toMatch(NAME_PATTERN);
+      expect(p.body.length).toBeLessThanOrEqual(MAX_BODY_CHARS);
+    }
+    expect(PACK_14.map((p) => p.name)).toEqual(["qc", "notes", "loudness-check", "describe-footage", "beat-markers", "beat-cut", "social-cutdown", "client-brief", "chapters", "whats-changed"]);
+    expect(names.slice(-PACK_14.length)).toEqual(PACK_14.map((p) => p.name));
+  });
+
+  it("gives a store saved before the pack the new starters once, keeping the user's own (Phase 14e)", () => {
+    const saved = { prompts: [{ id: "a", name: "rough-cut", body: "Mine." }, { id: "b", name: "qc", body: "My own QC." }] };
+    const migrated = addPack14(saved, 1).prompts as { name: string; body: string }[];
+    // A starter deleted before (find-silences) isn't brought back; a prompt the user already calls /qc stays theirs.
+    expect(migrated.map((p) => p.name)).toEqual(["rough-cut", "qc", ...PACK_14.map((p) => p.name).filter((n) => n !== "qc")]);
+    expect(migrated.find((p) => p.name === "qc")?.body).toBe("My own QC.");
+    expect(addPack14({ prompts: migrated }, 2).prompts).toEqual(migrated);
+    expect(addPack14(undefined, 1).prompts).toHaveLength(PACK_14.length);
   });
 });
