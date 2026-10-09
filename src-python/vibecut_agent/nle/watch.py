@@ -85,7 +85,7 @@ class PremiereAdapter:
         self._prepared = False
         # The direct edits, plus the B-roll Library's import and source preview (media.py).
         self._edits = {
-            **premiere_edits(),
+            **premiere_edits(self.bridge.folder / "imports"),
             **premiere_media(),
             **premiere_project(self.bridge.folder / "imports"),
         }

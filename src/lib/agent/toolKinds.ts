@@ -61,6 +61,8 @@ export const CHANGING_TOOLS = new Set([
   "cut_to_beats",
   // Phase 14d: a new timeline, as duplicate_timeline is.
   "make_social_version",
+  // Phase 15a: a caption or subtitle track, reverted like any edit (Premiere's is deleted by hand).
+  "create_captions",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -89,6 +91,9 @@ export const NOT_REVIEWED = new Set([
   "find_beats",
   // Phase 14a: reports only.
   "review_edit",
+  // Phase 15b: renders write a new file and leave the timeline as it was (only when the user asks).
+  "export_video",
+  "export_audio",
   "search_media_pool",
   "search_transcript",
   "select_clip",
@@ -108,6 +113,7 @@ const VERB: Record<string, string> = {
   add_clips: "Add clips",
   cut_to_beats: "Cut to the beat with shots",
   make_social_version: "Make a social version",
+  create_captions: "Add captions",
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",
   set_clip_levels: "Change the level of",

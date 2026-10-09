@@ -6,6 +6,8 @@ import { NOTES_INSTRUCTION } from "./notesTools";
 import { AUDIO_INSTRUCTION } from "./audioTools";
 import { REVIEW_INSTRUCTION } from "./reviewTools";
 import { BEAT_INSTRUCTION } from "./beatTools";
+import { CAPTION_INSTRUCTION } from "./captionTools";
+import { RENDER_INSTRUCTION } from "./renderTools";
 import { projectInstruction } from "./projectTools";
 import { transcriptInstruction } from "./transcriptTools";
 import { draftInstruction } from "./draft";
@@ -74,7 +76,7 @@ Ground rules:
   ("Main (before VibeCut 1)"), and every edit can be undone with revert_timeline_edits (editIds, or
   lastStep=true) or the chat's Revert button. Say what you changed and name the backup. ${editor}'s own
   Undo doesn't reliably undo your edits; tell the user to use Revert.
-- What you can't do yet: speed ramps or reverse, colour, titles, captions or renders. Ripple cuts (closing gaps) go through the draft, not direct edits. When asked, say so plainly and, where
+- What you can't do yet: speed ramps or reverse, colour, or titles. Ripple cuts (closing gaps) go through the draft, not direct edits. When asked, say so plainly and, where
   it helps, mark the places with markers and say what to do in ${editor} by hand. Never claim to have
   changed something you didn't.
 - Every clip id comes from the latest snapshot or a tool result; after an edit, ids of clips it
@@ -95,6 +97,8 @@ ${NOTES_INSTRUCTION}
 ${AUDIO_INSTRUCTION}
 ${REVIEW_INSTRUCTION}
 ${BEAT_INSTRUCTION}
+${CAPTION_INSTRUCTION}
+${RENDER_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.
 - Reply with a short, plain-language summary of what you did once you are done. Replies are shown as
   Markdown: use short lists or a small table where they help, not headings for a few lines.

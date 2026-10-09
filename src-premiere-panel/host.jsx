@@ -1957,3 +1957,135 @@ function vcDeleteBin(args) {
     return { deleted: bin.deleteBin() === true };
   }, args);
 }
+
+// args: {timeline, path, name} (VibeCut's 13h; ported in Phase 15a). Imports VibeCut's SRT into the VibeCut bin, names it
+// `name` and makes a caption track of it from the sequence's start (createCaptionTrack, checked in the
+// 13h probe). Premiere's scripting can't remove a caption track again.
+function vcCaptionTrack(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var item = vcProjectItemFor(a.path, "VibeCut");
+    item.name = a.name;
+    var made = sequence.createCaptionTrack(item, 0, Sequence.CAPTION_FORMAT_SUBTITLE);
+    if (!made) {
+      vcRefuse("Premiere didn't make the caption track");
+    }
+    return { created: true, item: item.name };
+  }, args);
+}
+
+// ---------------------------------------------------------------------- renders (VibeCut's Phase 7c; ported in Phase 15b)
+
+// Writes one of a render's state files, <stateDir>/<jobId>.<kind>.json: "progress" ({fraction}),
+// or "done" ({path}) and "failed" ({error}), which are written once and never replaced. Media Encoder
+// runs its event handlers interleaved and out of order (checked live, 7c): a progress handler that
+// started first can finish after "done", and two handlers sharing a temporary file lose each other's
+// writes. So each write has its own temporary file, and the end of a job has a file of its own.
+var vcRenderWrites = 0;
+
+function vcWriteRenderState(stateDir, jobId, kind, state) {
+  var folder = new Folder(stateDir);
+  if (!folder.exists) {
+    folder.create();
+  }
+  var name = String(jobId).replace(/[^\w-]/g, "") + "." + kind + ".json";
+  vcRenderWrites++;
+  var tmpName = name + "." + new Date().getTime() + "-" + vcRenderWrites + "-" + Math.floor(Math.random() * 1e9) + ".tmp";
+  var tmp = new File(stateDir + "/" + tmpName);
+  tmp.encoding = "UTF-8";
+  tmp.open("w");
+  tmp.write(vcJson(state));
+  tmp.close();
+  var target = new File(stateDir + "/" + name);
+  if (target.exists) {
+    target.remove();
+  }
+  if (!tmp.rename(name)) {
+    tmp.remove();
+  }
+}
+
+// Media Encoder's events for every job queued from here. Binding again replaces nothing that matters:
+// each handler only writes its job's own files.
+function vcBindRenderEvents(stateDir) {
+  app.encoder.bind("onEncoderJobProgress", function (jobId, progress) {
+    vcWriteRenderState(stateDir, jobId, "progress", { fraction: Number(progress) || 0 });
+  });
+  app.encoder.bind("onEncoderJobComplete", function (jobId, outputPath) {
+    vcWriteRenderState(stateDir, jobId, "done", { path: String(outputPath) });
+  });
+  app.encoder.bind("onEncoderJobError", function (jobId, errorMessage) {
+    vcWriteRenderState(stateDir, jobId, "failed", { error: String(errorMessage) });
+  });
+}
+
+// args: {timeline, out, preset, workArea (0 the whole sequence, 1 In to Out), inSeconds?, outSeconds?,
+// stateDir}. Queues the sequence in Media Encoder and starts its batch. With inSeconds/outSeconds the
+// sequence's In and Out are set for the job and put back straight after it is queued; without them,
+// workArea 1 uses the sequence's own. bridge.js checks out, preset and stateDir.
+function vcEncode(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var ranged = typeof a.inSeconds === "number";
+    var markedIn = sequence.getInPointAsTime();
+    var markedOut = sequence.getOutPointAsTime();
+    var seconds = sequence.end ? Number(sequence.end) / VC_TICKS_PER_SECOND : 0;
+    if (ranged) {
+      seconds = a.outSeconds - a.inSeconds;
+    } else if (a.workArea === 1) {
+      // Premiere reads an In or Out that isn't set as -400000.
+      if (markedIn.seconds < 0 || markedOut.seconds < 0) {
+        vcRefuse("Mark an In and an Out on \"" + sequence.name + "\" in Premiere first");
+      }
+      seconds = markedOut.seconds - markedIn.seconds;
+    }
+    if (!app.encoder.launchEncoder()) {
+      vcRefuse("Adobe Media Encoder didn't start; it renders for Premiere");
+    }
+    app.encoder.setSidecarXMPEnabled(0);
+    vcBindRenderEvents(a.stateDir);
+    var jobId;
+    if (ranged) {
+      sequence.setInPoint(a.inSeconds);
+      sequence.setOutPoint(a.outSeconds);
+    }
+    try {
+      jobId = app.encoder.encodeSequence(sequence, a.out, a.preset, a.workArea, 1);
+    } finally {
+      if (ranged) {
+        sequence.setInPoint(markedIn.ticks);
+        sequence.setOutPoint(markedOut.ticks);
+      }
+    }
+    if (!jobId || jobId === "0") {
+      vcRefuse("Media Encoder didn't take the render");
+    }
+    app.encoder.startBatch();
+    return { jobId: String(jobId), seconds: Math.round(seconds * 1000) / 1000 };
+  }, args);
+}
+
+// Stops Media Encoder's batch through its own scripting (CEP's encoder has no stop; 7c.0 probe). That
+// pauses every job in Media Encoder's queue, not only VibeCut's.
+function vcEncodeCancel(args) {
+  return vcAnswer(function () {
+    if (!BridgeTalk.isRunning("ame")) {
+      return { stopped: false };
+    }
+    var bt = new BridgeTalk();
+    bt.target = "ame";
+    bt.body = "app.getEncoderHost().stopBatch();";
+    var answer = null;
+    bt.onResult = function (m) {
+      answer = String(m.body);
+    };
+    bt.onError = function (m) {
+      answer = "error " + m.body;
+    };
+    bt.send(15);
+    if (answer === null || answer.indexOf("error") === 0) {
+      vcRefuse("Media Encoder didn't stop" + (answer ? ": " + answer : ""));
+    }
+    return { stopped: true };
+  }, args);
+}

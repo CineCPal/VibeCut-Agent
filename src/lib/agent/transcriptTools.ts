@@ -154,6 +154,13 @@ async function heardView(context: ToolContext): Promise<HeardView> {
   return { view, clips, transcripts, untranscribed: untranscribed.sort() };
 }
 
+/** What is said on the connected timeline (or draft), line by line in timeline time, and the heard files
+ * with no transcript yet (Phase 15a's captions). */
+export async function heardLines(context: ToolContext): Promise<{ lines: ReturnType<typeof laneLines>; untranscribed: string[] }> {
+  const { clips, transcripts, untranscribed } = await heardView(context);
+  return { lines: laneLines(clips.heard, transcripts, clips.assetsById), untranscribed };
+}
+
 /** The line tools' view of the connected timeline: its lines, and cuts into the draft. */
 function lineTarget(context: ToolContext): LineTarget {
   return {

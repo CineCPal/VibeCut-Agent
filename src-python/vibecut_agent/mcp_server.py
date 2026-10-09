@@ -62,6 +62,9 @@ LONG_TOOLS = frozenset(
         "find_beats",
         "review_edit",
         "cut_to_beats",
+        "create_captions",
+        "export_video",
+        "export_audio",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0

@@ -25,7 +25,13 @@ def _organize(module: Any) -> dict[str, Call]:
 
 def premiere_project(imports: Path | None = None) -> dict[str, Call]:
     """`imports` is the bridge folder's imports/, the only folder the panel imports a sequence from."""
-    from vibecut_agent.nle import premiere_organize, premiere_pool, premiere_project, premiere_rebuild
+    from vibecut_agent.nle import (
+        premiere_organize,
+        premiere_pool,
+        premiere_project,
+        premiere_rebuild,
+        premiere_render,
+    )
 
     calls: dict[str, Call] = {
         "create_timeline": premiere_project.create_timeline,
@@ -44,11 +50,22 @@ def premiere_project(imports: Path | None = None) -> dict[str, Call]:
     if imports is not None:
         # A draft becomes a new sequence (Phase 6b): Premiere XML imported by the panel.
         calls["rebuild"] = lambda host, args: premiere_rebuild.rebuild(host, args, imports)
+    # Phase 15b: renders through Adobe Media Encoder; their states are in the bridge folder.
+    calls["render_video"] = lambda host, args: premiere_render.render_video(host, args, imports)
+    calls["render_audio"] = lambda host, args: premiere_render.render_audio(host, args, imports)
+    calls["render_status"] = premiere_render.render_status
+    calls["cancel_render"] = premiere_render.cancel_render
     return calls
 
 
 def resolve_project() -> dict[str, Call]:
-    from vibecut_agent.nle import resolve_organize, resolve_pool, resolve_project, resolve_rebuild
+    from vibecut_agent.nle import (
+        resolve_organize,
+        resolve_pool,
+        resolve_project,
+        resolve_rebuild,
+        resolve_render,
+    )
 
     return {
         "create_timeline": resolve_project.create_timeline,
@@ -63,5 +80,10 @@ def resolve_project() -> dict[str, Call]:
         "search_media_pool": resolve_pool.search_media_pool,
         # A draft becomes a new timeline (Phase 6b): OTIO imported into the Media Pool.
         "rebuild": resolve_rebuild.rebuild,
+        # Phase 15b: renders through the Deliver queue.
+        "render_video": resolve_render.render_video,
+        "render_audio": resolve_render.render_audio,
+        "render_status": resolve_render.render_status,
+        "cancel_render": resolve_render.cancel_render,
         **_organize(resolve_organize),
     }

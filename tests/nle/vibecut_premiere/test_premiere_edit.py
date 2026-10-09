@@ -9,6 +9,7 @@ import pytest
 
 from tests.nle.compat import run_command
 from tests.nle.fakes import TB_25
+from vibecut_agent.nle import premiere_edit
 from vibecut_agent.nle.premiere import TICKS_PER_SECOND, HostError, PremiereHost
 from vibecut_agent.nle.premiere_edit import gain
 
@@ -775,3 +776,26 @@ def test_nest_says_what_to_check_when_premiere_answers_with_nothing(setup):
     premiere.nest_range = lambda a: None
     with pytest.raises(HostError, match="didn't say what it nested"):
         call(host, "nest_clips", start=0, end=3)
+
+
+# ------------------------------------------------------------------------------- captions (13h; ported in Phase 15a)
+
+
+def test_captions_become_an_srt_caption_track_and_a_revert_says_to_delete_it_in_premiere(setup, tmp_path):
+    host, premiere, _ = setup
+    # The watcher passes the bridge's imports/ folder (edits.py premiere_edits), as for rebuild.
+    imports = tmp_path / "imports"
+    made = []
+    premiere.caption_track = lambda a: made.append(a) or {"created": True, "item": a["name"]}
+    result = premiere_edit.create_captions(host, {"timeline": "Main", "cues": [{"start": 0.5, "end": 2.25, "text": "Hi,  I'm Daniel."}, {"start": 3661, "end": 3662.5, "text": "Bye."}], "name": "Main captions"}, imports)
+    (change,) = result["changes"]
+    assert (change["kind"], change["count"], change["name"]) == ("captions", 2, "Main captions")
+    with open(made[0]["path"], encoding="utf-8") as f:
+        assert f.read() == "1\n00:00:00,500 --> 00:00:02,250\nHi, I'm Daniel.\n\n2\n01:01:01,000 --> 01:01:02,500\nBye.\n\n"
+    assert made[0]["name"] == "Main captions"
+    reverted = revert(host, result)
+    assert reverted["failed"] == [{"name": "Main captions", "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere"}]
+    with pytest.raises(HostError, match="end after its start"):
+        premiere_edit.create_captions(host, {"timeline": "Main", "cues": [{"start": 2, "end": 1, "text": "x"}]}, imports)
+    with pytest.raises(HostError, match="no folder for caption files"):
+        call(host, "create_captions", cues=[{"start": 0, "end": 1, "text": "x"}])

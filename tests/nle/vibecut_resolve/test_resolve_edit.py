@@ -701,3 +701,33 @@ def captioning(host, timeline, made=True):
 
     timeline.CreateSubtitlesFromAudio = create
     return seen
+
+
+# The tests the 13h helper above was ported for (Phase 15a).
+
+
+def test_captions_come_from_resolves_transcription_and_revert_with_their_track(edit):
+    host, timeline, project, _c = edit
+    project.current = timeline
+    seen = captioning(host, timeline)
+    result = call(host, "create_captions", language="english", charsPerLine=32, lines=2)
+    (change,) = result["changes"]
+    assert (change["kind"], change["count"], change["trackName"], change["newTracks"]) == ("captions", 2, "ST1", [["subtitle", 1]])
+    assert seen == {
+        "SUBTITLE_LANGUAGE": "AUTO_CAPTION_ENGLISH", "SUBTITLE_CAPTION_PRESET": "AUTO_CAPTION_SUBTITLE_DEFAULT",
+        "SUBTITLE_CHARS_PER_LINE": 32, "SUBTITLE_LINE_BREAK": "AUTO_CAPTION_LINE_DOUBLE", "SUBTITLE_GAP": 0,
+    }  # fmt: skip
+    reverted = call(host, "revert_timeline_changes", changes=result["changes"])
+    assert [r["kind"] for r in reverted["reverted"]] == ["captions"]
+    assert timeline.tracks["subtitle"] == []
+
+
+def test_captions_refused_off_the_open_timeline_with_a_bad_language_and_when_none_are_made(edit):
+    host, timeline, project, _c = edit
+    captioning(host, timeline, made=False)
+    with pytest.raises(HostError, match="isn't the timeline open"):
+        call(host, "create_captions")
+    project.current = timeline
+    with pytest.raises(HostError, match="language must be"):
+        call(host, "create_captions", language="klingon")
+    assert call(host, "create_captions")["refused"][0]["reason"].startswith("Resolve made no subtitles")

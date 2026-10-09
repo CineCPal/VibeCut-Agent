@@ -6,7 +6,7 @@ import type { NleHost } from "./nle";
  * to `revert_timeline_changes`; only the fields the app reads are typed, the rest ride along.
  */
 export interface TimelineChange {
-  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions";
+  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions" | "captions";
   name?: string;
   itemId?: string;
   itemIds?: string[];
@@ -39,6 +39,9 @@ export interface TimelineChange {
   action?: string;
   /** "trackOptions" (12d): each switch, [before, after]. */
   options?: Record<string, [boolean, boolean]>;
+  /** "captions" (Phase 15a): how many, and the track they're on. */
+  count?: number;
+  trackName?: string;
   [key: string]: unknown;
 }
 

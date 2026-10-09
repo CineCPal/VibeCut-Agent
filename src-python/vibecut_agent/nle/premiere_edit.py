@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import math
 import os
+import secrets
+from pathlib import Path
 from typing import Any
 
 from vibecut_agent.nle.premiere import (
@@ -549,6 +551,48 @@ def nest_clips(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------------------- captions (13h)
 
 MAX_CUES = 5000
+
+
+def _srt_time(t: float) -> str:
+    ms = max(0, round(t * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def srt_text(cues: list[dict[str, Any]]) -> str:
+    return "".join(f"{n}\n{_srt_time(c['start'])} --> {_srt_time(c['end'])}\n{c['text']}\n\n" for n, c in enumerate(cues, 1))
+
+
+def create_captions(host: Any, args: dict[str, Any], imports: Path | None = None) -> dict[str, Any]:
+    """{timeline, cues: [{start, end, text}] (sequence seconds), name} -> an SRT of the cues in the
+    bridge's imports/ folder, imported and made a caption track from the sequence's start
+    (createCaptionTrack, VibeCut's 13h probe). Premiere's scripting can't remove a caption track, so a
+    revert says to delete it there. Ported from VibeCut (Phase 15a); the imports folder is passed in, as
+    for rebuild."""
+    timeline = host._name(args)
+    raw = args.get("cues")
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_CUES:
+        raise HostError(f"cues must list 1 to {MAX_CUES} captions")
+    cues = []
+    for i, cue in enumerate(raw):
+        if not isinstance(cue, dict):
+            raise HostError(f"cues[{i}] must be an object")
+        start, end = _number(cue.get("start"), f"cues[{i}].start", 0), _number(cue.get("end"), f"cues[{i}].end", 0)
+        text = cue.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 300 or end <= start:
+            raise HostError(f"cues[{i}] needs text (at most 300 characters) and an end after its start")
+        cues.append({"start": start, "end": end, "text": " ".join(text.split())})
+    given = args.get("name")
+    name = given.strip() if isinstance(given, str) and given.strip() else f"{timeline} captions"
+    name = name[:120].replace("/", "-")
+    if imports is None:
+        raise HostError("This Premiere connection has no folder for caption files")
+    folder = os.fspath(imports)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"captions-{secrets.token_hex(4)}.srt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(srt_text(cues))
+    host._send("caption_track", {"timeline": timeline, "path": path, "name": name})
+    return {"changes": [{"kind": "captions", "name": name, "count": len(cues), "trackName": "a caption track", "path": path}], "refused": []}
 
 
 # ------------------------------------------------------------------------------- switches and levels
@@ -1185,6 +1229,8 @@ REVERTIBLE = (
     "added", "deleted", "enabled", "level", "reshaped", "fade", "duck", "split", "link",
     # Phase 12b-12d, as VibeCut reverts them.
     "speed", "transition", "track", "trackOptions",
+    # Phase 15a: Premiere can't remove a caption track from a script, so a revert reports it.
+    "captions",
 )  # fmt: skip
 
 
@@ -1285,6 +1331,8 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 changed_since.append({"name": label, "reason": "it was changed since"})
             else:
                 failed.append({"name": label, "reason": "Premiere didn't put it back"})
+        elif kind == "captions":
+            failed.append({"name": label, "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere"})
         elif kind == "split":
             from vibecut_agent.nle import premiere_timing
 

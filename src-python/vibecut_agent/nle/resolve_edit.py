@@ -515,6 +515,62 @@ CAPTION_LANGUAGES = (
 )  # fmt: skip
 
 
+def _subtitles(timeline: Any) -> dict[str, tuple[int, Any]]:
+    found: dict[str, tuple[int, Any]] = {}
+    for index in range(1, int(timeline.GetTrackCount("subtitle") or 0) + 1):
+        for item in timeline.GetItemListInTrack("subtitle", index) or []:
+            found[item.GetUniqueId()] = (index, item)
+    return found
+
+
+def create_captions(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, language, charsPerLine, lines} -> Resolve's own transcription of the timeline as
+    subtitles (`CreateSubtitlesFromAudio`, Studio; checked in VibeCut's 13h probe, about 40 s for 30 s of
+    speech). The timeline must be the one open in Resolve. Recorded with the subtitles' ids and any
+    subtitle track it made, so a revert deletes them. (An SRT placed on a subtitle track with
+    `AppendToTimeline` crashed Resolve in that probe, so that is never done.) Ported verbatim (Phase 15a)."""
+    project, timeline = host._timeline(args)
+    current = project.GetCurrentTimeline()
+    if current is None or current.GetName() != timeline.GetName():
+        raise HostError(f"{timeline.GetName()!r} isn't the timeline open in Resolve; open it there to caption it")
+    language = str(args.get("language") or "auto").strip().lower()
+    if language not in CAPTION_LANGUAGES:
+        raise HostError(f"language must be one of: {', '.join(CAPTION_LANGUAGES)}")
+    chars = args.get("charsPerLine", 42)
+    if not isinstance(chars, int) or isinstance(chars, bool) or not 10 <= chars <= 60:
+        raise HostError("charsPerLine must be a whole number from 10 to 60")
+    lines = args.get("lines", 1)
+    if lines not in (1, 2):
+        raise HostError("lines must be 1 or 2")
+    r = host._resolve
+    settings = {
+        r.SUBTITLE_LANGUAGE: getattr(r, f"AUTO_CAPTION_{language.upper()}"),
+        r.SUBTITLE_CAPTION_PRESET: r.AUTO_CAPTION_SUBTITLE_DEFAULT,
+        r.SUBTITLE_CHARS_PER_LINE: chars,
+        r.SUBTITLE_LINE_BREAK: r.AUTO_CAPTION_LINE_SINGLE if lines == 1 else r.AUTO_CAPTION_LINE_DOUBLE,
+        r.SUBTITLE_GAP: 0,
+    }
+    tracks_before = int(timeline.GetTrackCount("subtitle") or 0)
+    before = set(_subtitles(timeline))
+    made = timeline.CreateSubtitlesFromAudio(settings)
+    new = {i: entry for i, entry in _subtitles(timeline).items() if i not in before}
+    if not made or not new:
+        return {"changes": [], "refused": [{"itemId": "", "reason": "Resolve made no subtitles (is there speech on the timeline, and is this Resolve Studio?)"}]}
+    tracks_after = int(timeline.GetTrackCount("subtitle") or 0)
+    index = min(i for i, _item in new.values())
+    return {
+        "changes": [{
+            "kind": "captions",
+            "name": "Subtitles",
+            "itemIds": list(new),
+            "count": len(new),
+            "trackName": f"ST{index}",
+            "newTracks": [["subtitle", i] for i in range(tracks_before + 1, tracks_after + 1)],
+        }],
+        "refused": [],
+    }
+
+
 # ------------------------------------------------------------------------------- reverting
 
 
@@ -551,12 +607,13 @@ def _put_back(
     return item
 
 
-# The change kinds VibeCut Agent's edit commands make (VibeCut's captions, speed, track, grade, link and
-# trackOptions edits aren't ported).
+# The change kinds VibeCut Agent's edit commands make (VibeCut's grade edits aren't ported).
 REVERTIBLE = (
     "added", "deleted", "enabled", "level", "reshaped", "fade", "transition", "split", "link",
     # Phase 12b and 12d, as VibeCut reverts them.
     "speed", "track", "trackOptions",
+    # Phase 15a.
+    "captions",
 )  # fmt: skip
 
 
@@ -678,6 +735,18 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                 failed.append({"name": label, "reason": "Resolve didn't put it back"})
             else:
                 changed_since.append({"name": label, "reason": "it was changed since"})
+        elif kind == "captions":
+            subs = _subtitles(timeline)
+            present = [subs[i][1] for i in change.get("itemIds", []) if i in subs]
+            if not present:
+                changed_since.append({"name": label, "reason": "they aren't on the timeline any more"})
+            elif timeline.DeleteClips(present, False):
+                reverted.append({"kind": kind, "name": label})
+                for track_kind, index in reversed(change.get("newTracks") or []):
+                    if index == int(timeline.GetTrackCount(track_kind) or 0) and not timeline.GetItemListInTrack(track_kind, index):
+                        timeline.DeleteTrack(track_kind, index)
+            else:
+                failed.append({"name": label, "reason": "Resolve didn't remove them"})
         elif kind == "trackOptions":
             from vibecut_agent.nle import resolve_structure
 

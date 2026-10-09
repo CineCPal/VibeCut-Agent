@@ -8,12 +8,14 @@ sends them back to ``revert_timeline_changes``. Nothing is remembered here betwe
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 Edit = Callable[[Any, dict[str, Any]], Any]
 
 
-def premiere_edits() -> dict[str, Edit]:
+def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
+    """`imports` is the bridge folder's imports/, where create_captions writes its SRT (Phase 15a)."""
     from vibecut_agent.nle import links, premiere_edit, premiere_effects, premiere_structure, premiere_timing
 
     return {
@@ -35,6 +37,8 @@ def premiere_edits() -> dict[str, Edit]:
         "remove_track": premiere_timing.remove_track,
         "set_track_options": premiere_structure.set_track_options,
         "revert_timeline_changes": premiere_edit.revert_timeline_changes,
+        # Phase 15a.
+        "create_captions": lambda host, args: premiere_edit.create_captions(host, args, imports),
     }
 
 
@@ -67,6 +71,8 @@ def resolve_edits() -> dict[str, Edit]:
         "remove_track": resolve_timing.remove_track,
         "set_track_options": resolve_structure.set_track_options,
         "revert_timeline_changes": resolve_edit.revert_timeline_changes,
+        # Phase 15a.
+        "create_captions": resolve_edit.create_captions,
     }
 
 

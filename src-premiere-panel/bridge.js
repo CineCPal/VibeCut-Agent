@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.10.0";
+const PANEL_VERSION = "0.11.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 const BRIDGE_DIR =
@@ -25,6 +25,12 @@ const REPLIES = path.join(BRIDGE_DIR, "replies");
 const ALIVE = path.join(BRIDGE_DIR, "alive.json");
 // Rebuilt sequences (Phase 6b): the only folder import_sequence takes a file from.
 const IMPORTS = path.join(BRIDGE_DIR, "imports");
+// Media Encoder's render states, one <jobId>.<kind>.json each, read by premiere_render.py (Phase 15b).
+const RENDER_STATES = path.join(BRIDGE_DIR, "renders");
+// The only folder a render may be written to, and the only presets one may use: Media Encoder's own.
+const RENDERS = path.join(os.homedir(), "Movies", "VibeCut Renders");
+const AME_PRESET = /^\/Applications\/Adobe Media Encoder [^/]+\/Adobe Media Encoder [^/]+\.app\/Contents\/MediaIO\/systempresets\/[\w]+\/[^/]+\.epr$/;
+const RENDER_EXTENSIONS = [".mp4", ".mov", ".wav", ".aac"];
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const INSTANCE = crypto.randomBytes(8).toString("hex");
 const STARTED_AT = Date.now() / 1000;
@@ -59,6 +65,10 @@ const COMMANDS = {
   duplicate_sequence: "vcDuplicateSequence",
   // Phase 14d: a vertical, square or 4:5 version (Auto Reframe Sequence).
   auto_reframe: "vcAutoReframe",
+  // Phase 15a-15b: captions and renders, as VibeCut's panel names them.
+  caption_track: "vcCaptionTrack",
+  encode: "vcEncode",
+  encode_cancel: "vcEncodeCancel",
   open_sequence: "vcOpenSequence",
   rename_sequence: "vcRenameSequence",
   select_items: "vcSelectItems",
@@ -177,6 +187,36 @@ const CHECKS = {
   duplicate_sequence(args) {
     checkSequenceName(args.timeline);
     checkSequenceName(args.name);
+  },
+  caption_track(args) {
+    const file = args.path;
+    if (typeof file !== "string" || !path.isAbsolute(file) || path.extname(file).toLowerCase() !== ".srt" || !fs.existsSync(file)) {
+      throw new Error("path must be an existing .srt file");
+    }
+    if (path.dirname(fs.realpathSync(file)) !== fs.realpathSync(IMPORTS)) throw new Error("Only VibeCut Agent's own caption files can be imported");
+    checkName(args.name, "name", true);
+  },
+  encode(args) {
+    if (typeof args.timeline !== "string" || !args.timeline) throw new Error("timeline must name the sequence");
+    const out = args.out;
+    if (typeof out !== "string" || !path.isAbsolute(out) || out.includes("..") || !RENDER_EXTENSIONS.includes(path.extname(out).toLowerCase())) {
+      throw new Error(`out must be an absolute ${RENDER_EXTENSIONS.join("/")} path`);
+    }
+    const root = fs.realpathSync(RENDERS);
+    if (!fs.realpathSync(path.dirname(out)).startsWith(root + path.sep)) throw new Error("Renders can only go into VibeCut Renders");
+    if (fs.existsSync(out)) throw new Error("out already exists");
+    if (typeof args.preset !== "string" || !AME_PRESET.test(args.preset) || args.preset.includes("..") || !fs.existsSync(args.preset)) {
+      throw new Error("preset must be one of Media Encoder's own presets");
+    }
+    if (args.workArea !== 0 && args.workArea !== 1) throw new Error("workArea must be 0 or 1");
+    if (args.inSeconds !== undefined || args.outSeconds !== undefined) {
+      if (args.workArea !== 1 || typeof args.inSeconds !== "number" || typeof args.outSeconds !== "number" || !(args.inSeconds >= 0 && args.outSeconds > args.inSeconds)) {
+        throw new Error("inSeconds and outSeconds must be a range in seconds, with workArea 1");
+      }
+    }
+    // Where Media Encoder's events write the job's state: never taken from the request.
+    fs.mkdirSync(RENDER_STATES, { recursive: true });
+    args.stateDir = RENDER_STATES;
   },
   auto_reframe(args) {
     checkSequenceName(args.timeline);

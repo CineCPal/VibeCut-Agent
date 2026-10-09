@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.10.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.11.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -170,6 +170,10 @@ describe("Premiere panel bridge.js", () => {
       // Phase 14d.
       ["q8", { command: "auto_reframe", args: { timeline: "Main", name: "Main (9x16)", numerator: 16, denominator: 9, motion: "default" } }, "numerator:denominator must be 9:16, 1:1 or 4:5"],
       ["q9", { command: "auto_reframe", args: { timeline: "Main", name: "Main (9x16)", numerator: 9, denominator: 16, motion: "wild" } }, "motion must be default, slower or faster"],
+      // Phase 15a-15b.
+      ["q10", { command: "caption_track", args: { timeline: "Main", path: "/etc/passwd", name: "Main captions" } }, "path must be an existing .srt file"],
+      ["q11", { command: "encode", args: { timeline: "Main", out: "Main.mp4", preset: "x", workArea: 0 } }, "out must be an absolute .mp4/.mov/.wav/.aac path"],
+      ["q12", { command: "encode", args: { timeline: "Main", out: "/tmp/../etc/Main.mp4", preset: "x", workArea: 0 } }, "out must be an absolute .mp4/.mov/.wav/.aac path"],
     ];
     for (const [id, request] of cases) writeJob(dir, { id, ...request });
     await panel.context.poll();

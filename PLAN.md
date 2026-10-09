@@ -1908,6 +1908,72 @@ The row above the messages had grown four text buttons ("Review on/off", "Revert
 
 Checked in the browser build at 380px with a long title and "Revert 12": the title truncates, nothing overlaps, and History opens under the title. Pending: the user's try in the installed app (`npm run install-app`).
 
+## Phase 15: Deliverables: captions and renders (2026-10-09)
+The last group from Phase 14's choice, built at the user's "continue". Both parts are ports of VibeCut code that was probed live there (its 13h and 7c), with their tests. Neither has been checked live from this app yet.
+
+### 15a: Captions
+**Editor side** (`create_captions`, VibeCut's code verbatim):
+- **Resolve** (`resolve_edit.create_captions`):
+  - `Timeline.CreateSubtitlesFromAudio` (Studio) on the timeline open in Resolve, with a language, characters per line and 1 or 2 lines.
+  - Logged as a "captions" change with the subtitle ids and any new subtitle track. Revert deletes them, and the track if it's left empty and last.
+  - An SRT placed on a subtitle track crashed Resolve in VibeCut's probe, so it's never done.
+- **Premiere** (`premiere_edit.create_captions`): writes the cues as an SRT into the bridge's `imports/`, and the panel's `caption_track` (`vcCaptionTrack`, 0.11.0) imports it and calls `createCaptionTrack`.
+  - Premiere can't remove a caption track from a script, so Revert reports it as failed and says to delete it in Premiere.
+  - The imports folder is passed in through `premiere_edits(imports)`, as for rebuild.
+- **Earlier stubs:** both edit modules had empty "captions (13h)" headings from earlier ports. Those are now filled in, with "captions" added to `REVERTIBLE`.
+
+**App** (`src/lib/agent/captionTools.ts`):
+- VibeCut's `captionCues` (verbatim) splits each transcript line into cues of at most `charsPerLine` characters, at whole words, timed by their words.
+- Premiere's cues come from `heardLines` (new, exported from `transcriptTools.ts`). Heard files with no transcript are named in the summary.
+- It's a reviewed edit, refused while drafting. Its change reads "12 captions on ST1".
+- **Timeout:** the watcher call gets 30 minutes (`nle.rs` `CAPTION_TIMEOUT`).
+
+### 15b: Renders
+**Editor side** (VibeCut's `resolve_render.py` and `premiere_render.py`, verbatim apart from imports; `host_renders.py` becomes `nle/renders.py`):
+- **Commands:** `render_video {preset: source|1080p|720p|prores, range, name?}`, `render_audio {format: wav|aac, …}`, `render_status` and `cancel_render`, registered in `project.py`.
+- **Files** always go to `~/Movies/VibeCut Renders/<project>/` under a new name; the agent never gives a path.
+- **Resolve:** the Deliver queue.
+  - The user's Deliver settings, target folder, marks and page are saved and put back, and only the open timeline renders.
+  - WAV is taken out of a small ProRes carrier with ffmpeg; AAC is renamed `.m4a`.
+- **Premiere:** Media Encoder, through the panel's `encode` / `encode_cancel` (`vcEncode`, `vcEncodeCancel`, with Media Encoder's events writing `<bridge>/renders/<job>.<kind>.json`), using Media Encoder's own presets.
+  - The bridge allows only those presets and only that output folder.
+  - Stopping stops Media Encoder's whole queue, and the answer says so.
+- **Timeouts:** `render_video` and `render_audio` get the 300 s timeout, since starting Media Encoder can take two minutes. Premiere's `caption_track` gets 60 s and `encode_cancel` 30 s.
+- **Not ported:** `export_stills` and `save_stills`, which need the editor's own frame export.
+
+**App** (`src/lib/agent/renderTools.ts`): `export_video` and `export_audio`.
+- They start the render, poll `render_status` every second with the progress (and time left) as the activity line, and stop it with `cancel_render` when the chat is stopped.
+- They answer with the file's path.
+- They're refused while drafting, and not reviewed: they leave the timeline as it was.
+- `RENDER_INSTRUCTION` says to render only when asked, and to suggest `review_edit` at the delivery target first.
+
+**Prompt:** "can't do yet" is now speed ramps or reverse, colour, or titles.
+
+**Premiere panel 0.11.0** adds `caption_track`, `encode` and `encode_cancel` (with their checks).
+
+**MCP:** `create_captions`, `export_video` and `export_audio` are in `LONG_TOOLS` (15 minutes). A render longer than that, started from an outside client, would outlast the MCP call.
+
+### Tests
+**Python:**
+- `test_resolve_render.py` (10) and `test_premiere_render.py` (7), ported;
+- `tests/nle/test_renders.py`, ported;
+- the 13h caption tests in `test_resolve_edit.py` and `test_premiere_edit.py`.
+
+**TS:**
+- `deliverTools.test.ts` (9): cues, both editors' captions, refusals, a render's progress and file, Stop cancelling it, failures;
+- `tools.test.ts`;
+- `bridge.test.ts`: the panel's new checks;
+- `nle.rs`: the timeouts.
+
+**Flaky (seen this phase):** `test_mcp_server.py`'s `test_outside_callers_are_refused_while_outside_control_is_off` and `test_a_call_held_for_review_outlasts_its_usual_limit` failed together once in three full runs and passed 6 of 6 on their own. They're timing-sensitive under load, and likely the unidentified flake noted under 12a.
+
+### Still to check (live)
+- **Resolve, on a scratch timeline:**
+  - `create_captions` with Revert;
+  - `export_video` 1080p, and `export_audio` wav (through the carrier) and aac;
+  - Stop during a render, and Deliver settings put back.
+- **Premiere:** update the panel to 0.11.0, then a caption track and a Media Encoder render.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2219,3 +2285,8 @@ Checked in the browser build at 380px with a long title and "Revert 12": the tit
 - **2026-10-09 (Claude): Phase 15a: a tidier Agent row.**
   - The chat's name now opens History. Revert shortens to `Revert N`, New chat is an icon, and Review edits first moved into the composer.
   - Tests updated (history trigger name, Revert's visible text, the composer's review switch). See "Phase 15" → 15a.
+- **2026-10-09 (Claude): Phase 15: captions and renders.**
+  - Both are ported from VibeCut.
+    - Captions: `create_captions`, through Resolve's own subtitles or a Premiere caption track.
+    - Renders: `export_video` and `export_audio`, through Resolve's Deliver queue or Adobe Media Encoder, with progress and Stop.
+  - Premiere panel 0.11.0. Not checked live yet. See "Phase 15".

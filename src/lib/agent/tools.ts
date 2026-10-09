@@ -26,6 +26,8 @@ import { notesExecutors, notesToolDeclarations } from "./notesTools";
 import { audioExecutors, audioToolDeclarations } from "./audioTools";
 import { reviewExecutors, reviewToolDeclarations } from "./reviewTools";
 import { beatExecutors, beatToolDeclarations } from "./beatTools";
+import { captionExecutors, captionToolDeclarations } from "./captionTools";
+import { renderExecutors, renderToolDeclarations } from "./renderTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -61,6 +63,8 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...audioToolDeclarations(host),
     ...reviewToolDeclarations(host),
     ...beatToolDeclarations(host),
+    ...captionToolDeclarations(host),
+    ...renderToolDeclarations(host),
   ];
 }
 
@@ -298,6 +302,8 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...audioExecutors(context),
     ...reviewExecutors(context),
     ...beatExecutors(context),
+    ...captionExecutors(context),
+    ...renderExecutors(context),
     ...draftExecutors(context),
     ...timingExecutors(context),
     ...poolExecutors(context),

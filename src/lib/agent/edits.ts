@@ -266,6 +266,9 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
     }
     case "track":
       return `${change.action === "removed" ? "Removed" : "Added"} track ${change.name ?? ""}`;
+    // Phase 15a, as VibeCut's timelineEdits.ts words it.
+    case "captions":
+      return `${change.count ?? 0} captions on ${change.trackName ?? "a caption track"}`;
     case "trackOptions": {
       const words: Record<string, [string, string]> = {
         enabled: ["switched off", "switched on"],

@@ -33,6 +33,9 @@ ID_PATTERN = re.compile(r"[\w-]{1,64}")
 # How long the panel gets for each command, in seconds.
 TIMEOUTS = {
     "read_sequence": 25.0,
+    # Phase 15a-15b: a caption track imports an SRT; stopping Media Encoder waits up to 15 s for it.
+    "caption_track": 60.0,
+    "encode_cancel": 30.0,
     "read_project": 25.0,
     "import_sequence": 170.0,
     # Phase 12a: a long sequence's clone, razors and moves run in one blocking call each.

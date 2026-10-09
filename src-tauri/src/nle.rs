@@ -31,11 +31,17 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 /// A rebuild imports a whole new timeline (Premiere's XML import alone may take 170 s; Phase 6b), or
 /// (Phase 12a) clones, razors and moves a long sequence inside Premiere in several calls.
 const REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
+/// Resolve's own transcription of a whole timeline for captions (Phase 15a).
+const CAPTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long a call may take before the app stops waiting for it. A social version (Phase 14d) runs
 /// Resolve's Smart Reframe on up to 60 clips, or Premiere's Auto Reframe over the whole sequence.
 pub fn call_timeout(command: &str) -> Duration {
-    if command == "rebuild" || command == "make_social_version" {
+    if command == "create_captions" {
+        // Phase 15a: Resolve transcribes the timeline itself, about 40 s for 30 s of speech.
+        CAPTION_TIMEOUT
+    } else if command == "rebuild" || command == "make_social_version" || command == "render_video" || command == "render_audio" {
+        // Phase 15b: a render answers once it has started, but starting Media Encoder can take two minutes.
         REBUILD_TIMEOUT
     } else {
         CALL_TIMEOUT
@@ -482,6 +488,8 @@ mod tests {
         assert!(rc.recv_timeout(Duration::from_millis(10)).is_err());
         assert_eq!(call_timeout("rebuild"), Duration::from_secs(300));
         assert_eq!(call_timeout("make_social_version"), Duration::from_secs(300));
+        assert_eq!(call_timeout("render_video"), Duration::from_secs(300));
+        assert_eq!(call_timeout("create_captions"), Duration::from_secs(1800));
         assert_eq!(call_timeout("read_timeline"), Duration::from_secs(35));
     }
 }
