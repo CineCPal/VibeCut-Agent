@@ -6,7 +6,7 @@ import type { NleHost } from "./nle";
  * to `revert_timeline_changes`; only the fields the app reads are typed, the rest ride along.
  */
 export interface TimelineChange {
-  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link";
+  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions";
   name?: string;
   itemId?: string;
   itemIds?: string[];
@@ -32,6 +32,13 @@ export interface TimelineChange {
   /** "link": the clips' link groups before and after (links.py). */
   groupsBefore?: string[][];
   groupsAfter?: string[][];
+  /** "speed" (Phase 12b): whether later clips moved with it, and where it ended before. */
+  ripple?: boolean;
+  endBefore?: number;
+  /** "track" (12d): added or removed. */
+  action?: string;
+  /** "trackOptions" (12d): each switch, [before, after]. */
+  options?: Record<string, [boolean, boolean]>;
   [key: string]: unknown;
 }
 

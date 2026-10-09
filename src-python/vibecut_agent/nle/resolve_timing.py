@@ -37,8 +37,10 @@ from vibecut_agent.nle.resolve_reshape import (
     _apply,
     _clip_fps,
     _has_transition,
+    _label,
     _look,
     _position,
+    _source_frames,
     replace,
     reshape_back,
 )
@@ -56,6 +58,71 @@ def _fades(item: Any) -> list[float]:
 
 
 # ------------------------------------------------------------------------------- speed
+
+
+def set_clip_speed(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, itemId, speed (0.05-20, 1 is normal), ripple (default false)} -> the clip and its
+    linked sound play at that speed."""
+    _project, timeline = host._timeline(args)
+    ((item_id, _kind, _index, item),) = _chosen(_items(timeline), [args.get("itemId")])
+    speed = _number(args.get("speed"), "speed")
+    if not MIN_SPEED <= speed <= MAX_SPEED:
+        raise HostError(f"speed must be from {MIN_SPEED} to {MAX_SPEED:g} (1 is normal)")
+    ripple = args.get("ripple") is True
+    if item.GetLeftOffset() is None or item.GetMediaPoolItem() is None:
+        raise HostError(f"{item.GetName()!r} is a transition, generator or title; its speed can't be set")
+    fps = _frame_rate(timeline)
+    origin = int(timeline.GetStartFrame())
+    before = _speed(item)
+    if abs(before - speed) < 1e-4:
+        return {"changes": [], "refused": []}
+    start, end = int(item.GetStart()), int(item.GetEnd())
+    if not ripple:
+        # The clip keeps its length, so it needs that much more source at a higher speed.
+        frames = _source_frames(item, fps)
+        needed = int(item.GetLeftOffset()) + round((end - start) * speed)
+        if frames is not None and needed > frames:
+            raise HostError(
+                f"{item.GetName()!r}'s source runs out at {speed:g}x for its length; use ripple to let it get shorter, or trim it first"
+            )
+    if not item.SetSpeed({"Percentage": round(speed * 100, 4), "RippleTimeline": ripple}):
+        return {
+            "changes": [],
+            "refused": [{"itemId": item_id, "reason": "Resolve didn't set the speed"}],
+        }
+    now = _items(timeline).get(item_id, (None, None, item))[2]
+    return {
+        "changes": [
+            {
+                "kind": "speed",
+                "itemId": item_id,
+                "name": item.GetName(),
+                "before": before,
+                "after": round(speed, 4),
+                "ripple": ripple,
+                "start": _seconds(start - origin, fps),
+                "endBefore": _seconds(end - origin, fps),
+                "end": _seconds(int(now.GetEnd()) - origin, fps),
+            }
+        ],
+        "refused": [],
+    }
+
+
+def revert_speed(timeline: Any, item: Any, change: dict[str, Any], origin: int, fps: float) -> str:
+    """ "reverted", "changed" (its speed or end moved since) or "failed"."""
+    if (
+        abs(_speed(item) - float(change["after"])) > 1e-3
+        or abs(_seconds(int(item.GetEnd()) - origin, fps) - float(change["end"])) > 0.5 / fps
+    ):
+        return "changed"
+    ok = item.SetSpeed(
+        {
+            "Percentage": round(float(change["before"]) * 100, 4),
+            "RippleTimeline": bool(change.get("ripple")),
+        }
+    )
+    return "reverted" if ok else "failed"
 
 
 # ------------------------------------------------------------------------------- splitting
@@ -237,3 +304,85 @@ def revert_split(
 
 
 # ------------------------------------------------------------------------------- tracks
+
+
+def _kind(args: dict[str, Any]) -> str:
+    kind = args.get("type")
+    if kind not in ("video", "audio"):
+        raise HostError('type must be "video" or "audio"')
+    return kind
+
+
+def add_track(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, type, count (1-4, default 1)} -> new empty tracks at the end."""
+    _project, timeline = host._timeline(args)
+    kind = _kind(args)
+    count = int(_number(args.get("count", 1), "count"))
+    if not 1 <= count <= MAX_NEW_TRACKS:
+        raise HostError(f"count must be from 1 to {MAX_NEW_TRACKS}")
+    added = []
+    for _ in range(count):
+        if not timeline.AddTrack(kind):
+            break
+        added.append(int(timeline.GetTrackCount(kind)))
+    if not added:
+        return {"changes": [], "refused": [{"reason": "Resolve didn't add the track"}]}
+    return {
+        "changes": [
+            {
+                "kind": "track",
+                "action": "added",
+                "type": kind,
+                "indexes": added,
+                "name": ", ".join(_label(kind, i) for i in added),
+            }
+        ],
+        "refused": [] if len(added) == count else [{"reason": f"Resolve added only {len(added)} of {count}"}],
+        "addedTracks": [_label(kind, i) for i in added],
+    }
+
+
+def remove_track(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, type, index (1-based; must be the last of its kind)} -> removes it if it's empty."""
+    _project, timeline = host._timeline(args)
+    kind = _kind(args)
+    count = int(timeline.GetTrackCount(kind) or 0)
+    index = int(_number(args.get("index", count), "index"))
+    if index != count or count <= 1:
+        raise HostError(
+            f"Only the last {kind} track can be removed, and not the only one ({_label(kind, count)} is the last)"
+        )
+    if timeline.GetItemListInTrack(kind, index):
+        raise HostError(f"{_label(kind, index)} has clips on it; only an empty track is removed")
+    if not timeline.DeleteTrack(kind, index):
+        return {
+            "changes": [],
+            "refused": [{"reason": "Resolve didn't remove the track"}],
+        }
+    return {
+        "changes": [
+            {
+                "kind": "track",
+                "action": "removed",
+                "type": kind,
+                "indexes": [index],
+                "name": _label(kind, index),
+            }
+        ],
+        "refused": [],
+    }
+
+
+def revert_track(timeline: Any, change: dict[str, Any]) -> str:
+    kind = change["type"]
+    indexes = sorted(int(i) for i in change.get("indexes", []))
+    if change.get("action") == "added":
+        for index in reversed(indexes):
+            if int(timeline.GetTrackCount(kind) or 0) != index or timeline.GetItemListInTrack(kind, index):
+                return "changed"
+            if not timeline.DeleteTrack(kind, index):
+                return "failed"
+        return "reverted"
+    if int(timeline.GetTrackCount(kind) or 0) != indexes[0] - 1:
+        return "changed"
+    return "reverted" if timeline.AddTrack(kind) else "failed"

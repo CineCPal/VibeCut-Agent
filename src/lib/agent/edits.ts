@@ -227,6 +227,24 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
       const tracks = (change.items ?? []).map((i) => trackLabel(i.before.track[0], i.before.track[1]));
       return `${name} split at ${clock(change.cut ?? 0)} on ${tracks.join("+")}${change.notCarried?.length ? ` (not carried: ${change.notCarried.join(", ")})` : ""}`;
     }
+    // Phase 12b and 12d, as VibeCut's timelineEdits.ts words them.
+    case "speed": {
+      const length = change.ripple && change.end !== change.endBefore ? `, now ending at ${clock(change.end ?? 0)} (later clips moved with it)` : ", same length";
+      return `${name} speed ${String(change.before ?? 1)}x → ${String(change.after)}x${length}`;
+    }
+    case "track":
+      return `${change.action === "removed" ? "Removed" : "Added"} track ${change.name ?? ""}`;
+    case "trackOptions": {
+      const words: Record<string, [string, string]> = {
+        enabled: ["switched off", "switched on"],
+        muted: ["unmuted", "muted"],
+        locked: ["unlocked", "locked"],
+        targeted: ["untargeted", "targeted"],
+        syncLocked: ["sync lock off", "sync lock on"],
+      };
+      const parts = Object.entries(change.options ?? {}).map(([key, [, after]]) => words[key]?.[after ? 1 : 0] ?? `${key} ${String(after)}`);
+      return `${change.name ?? "A track"} ${parts.join(", ")}`;
+    }
   }
 }
 

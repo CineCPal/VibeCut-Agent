@@ -40,6 +40,8 @@ TIMEOUTS = {
     "razor_cuts": 120.0,
     "move_items": 60.0,
     "remove_items": 60.0,
+    # Phase 12b: each clip is asked again until its speed holds (up to 12 times).
+    "set_speed": 60.0,
 }
 DEFAULT_TIMEOUT_S = 20.0
 

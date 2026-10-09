@@ -1418,6 +1418,41 @@ The user's goal for this phase: more of what the agent does should happen inside
 
 **Live:** this needs Premiere. The user presses Settings → Editors → Update panel (0.9.0) and restarts Premiere, then tries a rearrange + send on a copy of a sequence. The "VibeCut" bin should gain only the new sequence.
 
+### 12b–12d: Speed, transitions, tracks and track switches
+All four are ported from VibeCut (verbatim except the import paths) and are direct edits: a backup first, the edit log, then Revert.
+
+**Python:**
+- `set_clip_speed` and `revert_speed`, plus `add_track`, `remove_track` and `revert_track`, are in `premiere_timing.py` and `resolve_timing.py`. Their docstrings already described these before they were ported.
+- `set_transition` and `revert_transition` for Premiere are in `premiere_effects.py`. Resolve's was already there for duck_music.
+- `set_track_options` and `revert_track_options` are in new `premiere_structure.py` and `resolve_structure.py`, which hold only those (links stay in `links.py`).
+- All are registered in `edits.py`, and both hosts' `revert_timeline_changes` now take `speed`, `transition` (Premiere), `track` and `trackOptions`.
+
+**Panel:** `vcSetSpeed` (asked again until the speed holds, up to 12 times), `vcAddTransition`/`vcRemoveTransition`, and `vcSetTrackOptions`/`vcTrackState` are VibeCut's, with their `bridge.js` checks. `set_speed` gets 60 s.
+
+**Tools** (`src/lib/agent/timingTools.ts`; all in `CHANGING_TOOLS`, so they're reviewed when "Review edits first" is on):
+- `set_clip_speed`: constant speed. `ripple` moves later clips. Resolve does that on the timeline itself. Premiere can't from a script, so a ripple there goes into a draft via `setDraftSpeed`, as does any speed change while a draft is open.
+- `set_transition`: dissolve, dip to black, or none, on the cut after a clip.
+- `add_track` and `remove_track`: the last empty track.
+- `set_track_options`:
+  - Premiere: enabled/muted, locked, targeted, syncLocked;
+  - Resolve: enabled and locked, on the open timeline only;
+  - no solo in either editor.
+
+**Prompt and descriptions:** the prompt no longer says speed and transitions can't be done. `describeTimelineChange` words `speed`, `track` and `trackOptions` as VibeCut does.
+
+**Not ported:** speed ramps, reverse, `harmonize_takes`, `swap_clips`/`move_clips_by`.
+
+**Tests:**
+- VibeCut's own, against the port's fakes:
+  - Premiere speed ×4 (one of them a split after a speed change) and tracks;
+  - Premiere transitions ×3;
+  - Resolve speed ×3 and tracks;
+  - track options for each editor.
+- `timingTools.test.ts`: the requests, the Premiere ripple going to a draft, the refusals, the wording.
+- `bridge.test.ts`: the panel checks.
+
+**Live:** not yet. Resolve needs a scratch timeline, which the user approves first. Premiere needs panel 0.9.0 and a restart.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1645,3 +1680,6 @@ The user's goal for this phase: more of what the agent does should happen inside
   - The cause of the copies: the XML import made new master clips for media the project already had, and lost the clips' effects.
   - The fix: `premiere_native.py` clones the sequence, razors, lifts and moves the pieces, and places only what's new from existing project items. XML stays only for speed ramps.
   - Panel 0.9.0 adds `clone_sequence`, `razor_cuts`, `remove_transitions` and `delete_sequence`, and `move_items` takes `moves`. The rebuild timeout is now 300 s. See "Phase 12" → 12a.
+- **2026-10-08 (Claude): Phases 12b–12d: speed, transitions, tracks and track switches.**
+  - Ported from VibeCut: `set_clip_speed`, `set_transition`, `add_track`/`remove_track` and `set_track_options`, with their Revert, their panel functions and their tests.
+  - The new tools are in `timingTools.ts`. A rippled speed change in Premiere goes into a draft. See "Phase 12" → 12b–12d.

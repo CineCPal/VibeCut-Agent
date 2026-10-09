@@ -228,6 +228,22 @@ describe("Premiere panel bridge.js", () => {
     for (const [n, fn] of ["vcMoveItems(", "vcRazorCuts(", "vcDeleteSequence("].entries()) expect(panel.scripts[n]).toContain(fn);
   });
 
+  it("checks speed, transitions and track switches before calling Premiere (Phase 12b-12d)", async () => {
+    const panel = loadPanel(dir, () => JSON.stringify({ ok: true, result: {} }));
+    const refused: [string, Record<string, unknown>, string][] = [
+      ["s1", { command: "set_speed", args: { timeline: "Main", items: [{ id: "n1", speed: 40 }] } }, "items[0].speed must be 0.05 to 20"],
+      ["s2", { command: "add_transition", args: { timeline: "Main", id: "n1", name: "Iris Round", frames: 25 } }, "name must be a transition's name"],
+      ["s3", { command: "remove_transition", args: { timeline: "Main", type: "video", track: 0, startTicks: "-1" } }, "startTicks must be ticks"],
+      ["s4", { command: "set_track_options", args: { timeline: "Main", kind: "audio", index: 0, options: { soloed: true }, keys: [] } }, "options.soloed isn't a track option VibeCut sets"],
+    ];
+    for (const [id, request] of refused) writeJob(dir, { id, ...request });
+    writeJob(dir, { id: "s5", command: "set_speed", args: { timeline: "Main", items: [{ id: "n1", speed: 2 }] } });
+    await panel.context.poll();
+    for (const [id, , error] of refused) expect(readJson(path.join(dir, "replies", `${id}.json`)).error).toBe(error);
+    expect(readJson(path.join(dir, "replies", "s5.json")).ok).toBe(true);
+    expect(panel.scripts[0]).toContain("vcSetSpeed(");
+  });
+
   it("clears requests a previous Premiere left half-done", () => {
     fs.mkdirSync(path.join(dir, "jobs"), { recursive: true });
     fs.writeFileSync(path.join(dir, "jobs", "old.json.running"), "{}");

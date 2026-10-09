@@ -164,3 +164,67 @@ def test_a_duck_sends_a_number_as_the_value_and_refuses_too_many_keys(setup):  #
             call(host, "duck_clip", itemId=sound, spans=[{"start": 1.0, "end": 2.0}])
     finally:
         premiere_effects.MAX_KEYS = before
+
+
+# Phase 12c: VibeCut's transition tests.
+
+
+def test_a_dissolve_on_the_cut_cut_to_the_handles_and_reverted(setup):  # noqa: F811
+    host, premiere, _ = setup
+    butt(premiere)
+    picture = ids_of(premiere, "A.mov")[0]
+    result = call(host, "set_transition", itemId=picture, kind="dissolve", seconds=6)
+    (change,) = result["changes"]
+    # A.mov and B.mov are 3 s long: at most 1.5 s each side of the cut.
+    assert change["after"] == {"kind": "dissolve", "type": "Cross Dissolve", "frames": 74, "seconds": 2.96}
+    assert change["clamped"] is True and change["name"] == "A.mov → B.mov" and change["cut"] == 3.0
+    sound = ids_of(premiere, "A.mov", "audio")[0]
+    crossfade = call(host, "set_transition", itemId=sound, kind="dissolve")
+    assert crossfade["changes"][0]["after"]["type"] == "Constant Power"
+    with pytest.raises(HostError, match="has a transition at an edge"):
+        call(host, "reshape_clip", itemId=picture, slip=0.5)
+    reverted = revert(host, result, crossfade)
+    assert (
+        len(reverted["reverted"]) == 2
+        and premiere.transitions
+        and all(not t for t in premiere.transitions.values())
+    )
+
+
+def test_changing_the_kind_keeps_the_length_and_none_removes_it(setup):  # noqa: F811
+    host, premiere, _ = setup
+    butt(premiere)
+    picture = ids_of(premiere, "A.mov")[0]
+    first = call(host, "set_transition", itemId=picture, kind="dissolve", seconds=0.5)
+    dip = call(host, "set_transition", itemId=picture, kind="dipToBlack")
+    assert dip["changes"][0]["before"]["type"] == "Cross Dissolve"
+    assert dip["changes"][0]["after"] == {
+        "kind": "dipToBlack",
+        "type": "Dip to Black",
+        "frames": 13,
+        "seconds": 0.52,
+    }
+    gone = call(host, "set_transition", itemId=picture, kind="none")
+    assert gone["changes"][0]["after"] is None
+    reverted = revert(host, first, dip, gone)
+    assert len(reverted["reverted"]) == 3 and all(not t for t in premiere.transitions.values())
+
+
+def test_transitions_refused_without_a_cut_or_handles_and_dips_on_sound(setup):  # noqa: F811
+    host, premiere, _ = setup
+    picture = ids_of(premiere, "A.mov")[0]
+    with pytest.raises(HostError, match="no cut to put a transition on"):
+        call(host, "set_transition", itemId=picture, kind="dissolve")
+    butt(premiere)
+    for _k, _i, c in premiere.everything():
+        if c["name"] == "B.mov":
+            c["inTicks"] = "0"
+    with pytest.raises(HostError, match="No room for a dissolve"):
+        call(host, "set_transition", itemId=picture, kind="dissolve")
+    assert call(host, "set_transition", itemId=picture, kind="dipToBlack")["changes"]
+    sound = ids_of(premiere, "A.mov", "audio")[0]
+    with pytest.raises(HostError, match="A dip to black is for picture"):
+        call(host, "set_transition", itemId=sound, kind="dipToBlack")
+
+
+# ------------------------------------------------------------------------------- ducking (13e)

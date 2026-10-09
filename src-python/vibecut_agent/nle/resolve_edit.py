@@ -553,7 +553,11 @@ def _put_back(
 
 # The change kinds VibeCut Agent's edit commands make (VibeCut's captions, speed, track, grade, link and
 # trackOptions edits aren't ported).
-REVERTIBLE = ("added", "deleted", "enabled", "level", "reshaped", "fade", "transition", "split", "link")
+REVERTIBLE = (
+    "added", "deleted", "enabled", "level", "reshaped", "fade", "transition", "split", "link",
+    # Phase 12b and 12d, as VibeCut reverts them.
+    "speed", "track", "trackOptions",
+)  # fmt: skip
 
 
 def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -657,6 +661,35 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                 changed_since.append({"name": label, "reason": "it was changed since"})
             else:
                 failed.append({"name": label, "reason": "Resolve didn't link them back as they were"})
+        elif kind in ("speed", "track"):
+            # Phase 12b and 12d (VibeCut's resolve_timing).
+            from vibecut_agent.nle import resolve_timing
+
+            if kind == "track":
+                outcome = resolve_timing.revert_track(timeline, change)
+            elif current(change.get("itemId")) not in found:
+                outcome = "changed"
+            else:
+                item = found[current(change["itemId"])][2]
+                outcome = resolve_timing.revert_speed(timeline, item, change, origin, fps)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "failed":
+                failed.append({"name": label, "reason": "Resolve didn't put it back"})
+            else:
+                changed_since.append({"name": label, "reason": "it was changed since"})
+        elif kind == "trackOptions":
+            from vibecut_agent.nle import resolve_structure
+
+            outcome = resolve_structure.revert_track_options(project, timeline, change)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": "it was changed since"})
+            else:
+                failed.append(
+                    {"name": label, "reason": "Resolve only changes the tracks of the timeline open in it"}
+                )
         elif kind == "split":
             from vibecut_agent.nle import resolve_timing
 

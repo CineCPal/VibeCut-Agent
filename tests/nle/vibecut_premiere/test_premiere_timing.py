@@ -4,6 +4,7 @@ fake Premiere, which sets speed per item and razors tracks the way 26.5.2 did in
 import pytest
 
 from tests.nle.vibecut_premiere.test_premiere_edit import (
+    FakeProbe,
     T,
     call,
     ids_of,
@@ -15,9 +16,12 @@ from vibecut_agent.nle.premiere_timing import timecode
 
 
 @pytest.fixture
-def timing(setup):  # noqa: F811
-    # VibeCut's version also faked premiere_timing.Probe, which only its (unported) speed edits use.
-    return setup
+def timing(setup, monkeypatch):  # noqa: F811
+    from vibecut_agent.nle import premiere_timing
+
+    host, premiere, media = setup
+    monkeypatch.setattr(premiere_timing, "Probe", lambda: FakeProbe(premiere.media))
+    return host, premiere, media
 
 
 def a_mov(premiere):
@@ -88,3 +92,78 @@ def test_timecode_counts_frames_with_the_zero_point(timing):
     assert timecode(seq, seq.ticks(61.48)) == "00:01:01:12"
     seq.raw["zeroPoint"] = str(3600 * T)
     assert timecode(seq, seq.ticks(1)) == "01:00:01:00"
+
+
+# Phase 12b and 12d: VibeCut's speed and track tests.
+
+
+def test_speed_sets_the_clip_and_its_partners_and_reverts(timing):
+    host, premiere, _ = timing
+    picture = ids_of(premiere, "A.mov")[0]
+    result = call(host, "set_clip_speed", itemId=picture, speed=2)
+    (change,) = result["changes"]
+    assert (
+        change["kind"],
+        change["before"],
+        change["after"],
+        change["ripple"],
+        len(change["speeds"]),
+    ) == ("speed", 1.0, 2.0, False, 3)
+    assert [c["speed"] for c in a_mov(premiere)] == [2, 2, 2]
+    assert revert(host, result)["reverted"] == [{"kind": "speed", "name": "A.mov"}]
+    assert [c["speed"] for c in a_mov(premiere)] == [1, 1, 1]
+
+
+def test_speed_refusals(timing):
+    host, premiere, _ = timing
+    picture = ids_of(premiere, "A.mov")[0]
+    with pytest.raises(HostError, match="in a draft"):
+        call(host, "set_clip_speed", itemId=picture, speed=2, ripple=True)
+    # 3 s from 2 s into a 30 s file at 10x would need 32 s.
+    with pytest.raises(HostError, match="runs out"):
+        call(host, "set_clip_speed", itemId=picture, speed=10)
+    premiere.fades[picture] = {
+        "keys": [{"ticks": "0", "value": 0.0}, {"ticks": str(T), "value": 100.0}],
+        "value": None,
+    }
+    with pytest.raises(HostError, match="fade or keyframes"):
+        call(host, "set_clip_speed", itemId=picture, speed=2)
+    del premiere.fades[picture]
+    premiere.speed_ignored = True
+    with pytest.raises(HostError, match="put back"):
+        call(host, "set_clip_speed", itemId=picture, speed=2)
+
+
+def test_speed_revert_leaves_a_clip_changed_since(timing):
+    host, premiere, _ = timing
+    result = call(host, "set_clip_speed", itemId=ids_of(premiere, "A.mov")[0], speed=2)
+    a_mov(premiere)[0]["speed"] = 1.5
+    assert revert(host, result)["changedSince"] == [{"name": "A.mov", "reason": "it was changed since"}]
+
+
+def test_split_reverts_after_a_speed_set_and_set_back_left_its_ticks_a_hair_off(timing):
+    host, premiere, _ = timing
+    before = premiere.state()
+    result = call(host, "split_clips", itemIds=[ids_of(premiere, "A.mov")[0]], time=1)
+    right = result["changes"][0]["items"][0]["right"]["id"]
+    premiere.find(right)["inTicks"] = str(int(premiere.find(right)["inTicks"]) + 1081533)
+    assert revert(host, result)["reverted"] == [{"kind": "split", "name": "A.mov"}]
+    assert premiere.state() == before
+
+
+def test_tracks_add_and_remove_at_the_end_and_revert(timing):
+    host, premiere, _ = timing
+    added = call(host, "add_track", type="audio", count=2)
+    assert added["addedTracks"] == ["A4", "A5"] and len(premiere.audio) == 5
+    with pytest.raises(HostError, match="Only the last"):
+        call(host, "remove_track", type="audio", index=4)
+    removed = call(host, "remove_track", type="audio", index=5)
+    assert len(premiere.audio) == 4
+    assert revert(host, added, removed)["reverted"] == [
+        {"kind": "track", "name": "A5"},
+        {"kind": "track", "name": "A4, A5"},
+    ]
+    assert len(premiere.audio) == 3
+    premiere.clip(next(iter(premiere.media)), "audio", 3, 20, 21, 0)
+    with pytest.raises(HostError, match="has clips on it"):
+        call(host, "remove_track", type="audio", index=3)

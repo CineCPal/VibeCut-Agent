@@ -100,3 +100,64 @@ def test_split_refusals_and_a_revert_after_a_change(edit):
     _left, right = on(timeline, "video")
     right.start += 5
     assert revert(host, change)["changedSince"] == [{"name": "A.mov", "reason": "it was changed since"}]
+
+
+# Phase 12b and 12d: VibeCut's speed and track tests.
+
+
+def test_speed_keeps_the_clip_in_place_and_reverts(edit):
+    host, timeline, _project, c = edit
+    result = call(host, "set_clip_speed", itemId=c["v"].uid, speed=2)
+    (change,) = result["changes"]
+    assert change == {
+        "kind": "speed", "itemId": c["v"].uid, "name": "A.mov", "before": 1.0, "after": 2.0,
+        "ripple": False, "start": 0.0, "endBefore": 10.0, "end": 10.0,
+    }  # fmt: skip
+    assert (c["v"].speed, c["a"].speed, span(c["v"])) == (200.0, 200.0, (0, 250, 0))
+    assert revert(host, change)["reverted"] == [{"kind": "speed", "name": "A.mov"}]
+    assert (c["v"].speed, c["a"].speed) == (100.0, 100.0)
+
+
+def test_speed_refusals_and_a_change_since(edit):
+    host, _timeline, _project, c = edit
+    with pytest.raises(HostError, match="from 0.05 to 20"):
+        call(host, "set_clip_speed", itemId=c["v"].uid, speed=40)
+    # 10 s of a 30 s file at 4x would need 40 s of source.
+    with pytest.raises(HostError, match="source runs out"):
+        call(host, "set_clip_speed", itemId=c["v"].uid, speed=4)
+    assert call(host, "set_clip_speed", itemId=c["v"].uid, speed=1)["changes"] == []
+    (change,) = call(host, "set_clip_speed", itemId=c["v"].uid, speed=2)["changes"]
+    c["v"].speed = 150.0
+    assert revert(host, change)["changedSince"] == [{"name": "A.mov", "reason": "it was changed since"}]
+
+
+def test_speed_with_ripple_moves_later_clips_and_moves_them_back(edit):
+    host, timeline, _project, c = edit
+    later = timeline.place("video", 1, c["broll"], 250, 300)
+    (change,) = call(host, "set_clip_speed", itemId=c["v"].uid, speed=0.5, ripple=True)["changes"]
+    assert (span(c["v"])[:2], span(later)[:2], change["end"]) == (
+        (0, 500),
+        (500, 550),
+        20.0,
+    )
+    assert revert(host, change)["reverted"]
+    assert (span(c["v"])[:2], span(later)[:2]) == ((0, 250), (250, 300))
+
+
+def test_tracks_are_added_and_removed_at_the_end_and_reverted(edit):
+    host, timeline, _project, c = edit
+    added = call(host, "add_track", type="video", count=2)
+    assert added["addedTracks"] == ["V2", "V3"] and timeline.GetTrackCount("video") == 3
+    with pytest.raises(HostError, match="Only the last"):
+        call(host, "remove_track", type="video", index=2)
+    (removed,) = call(host, "remove_track", type="video", index=3)["changes"]
+    assert timeline.GetTrackCount("video") == 2
+    assert revert(host, *added["changes"], removed)["reverted"] == [
+        {"kind": "track", "name": "V3"},
+        {"kind": "track", "name": "V2, V3"},
+    ]
+    assert timeline.GetTrackCount("video") == 1
+    call(host, "add_track", type="audio")
+    timeline.place("audio", 2, c["music"], 0, 50)
+    with pytest.raises(HostError, match="has clips on it"):
+        call(host, "remove_track", type="audio", index=2)

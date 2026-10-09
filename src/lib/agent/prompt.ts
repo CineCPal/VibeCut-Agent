@@ -4,6 +4,7 @@ import { BROLL_SCOPE_INSTRUCTION } from "./spyglassTools";
 import { projectInstruction } from "./projectTools";
 import { transcriptInstruction } from "./transcriptTools";
 import { draftInstruction } from "./draft";
+import { timingInstruction } from "./timingTools";
 import { storyInstruction } from "./storyTools";
 import { syncInstruction } from "./syncTools";
 
@@ -60,8 +61,7 @@ Ground rules:
   ("Main (before VibeCut 1)"), and every edit can be undone with revert_timeline_edits (editIds, or
   lastStep=true) or the chat's Revert button. Say what you changed and name the backup. ${editor}'s own
   Undo doesn't reliably undo your edits; tell the user to use Revert.
-- What you can't do yet: speed changes, transitions other than duck_music's crossfades, colour, titles,
-  captions or renders. Ripple cuts (closing gaps) go through the draft, not direct edits. When asked, say so plainly and, where
+- What you can't do yet: speed ramps or reverse, colour, titles, captions or renders. Ripple cuts (closing gaps) go through the draft, not direct edits. When asked, say so plainly and, where
   it helps, mark the places with markers and say what to do in ${editor} by hand. Never claim to have
   changed something you didn't.
 - Every clip id comes from the latest snapshot or a tool result; after an edit, ids of clips it
@@ -72,6 +72,7 @@ Ground rules:
 ${projectInstruction(host)}
 ${transcriptInstruction(host)}
 ${draftInstruction(host)}
+${timingInstruction(host)}
 ${syncInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}

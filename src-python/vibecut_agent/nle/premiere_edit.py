@@ -59,6 +59,11 @@ def _number(value: Any, field: str, minimum: float | None = None) -> float:
     return float(value)
 
 
+def media_probe() -> Any:
+    """This module's Probe (tests fake premiere_edit.Probe), for premiere_effects' transitions."""
+    return Probe()
+
+
 def gain(db: float) -> float:
     """Premiere's Level for a dB value: 0 dB is 10^(-15/20)."""
     return 10 ** ((db - 15) / 20)
@@ -1176,7 +1181,11 @@ def _recording(change: dict[str, Any]) -> tuple:
 
 # The change kinds VibeCut Agent's edit commands make (VibeCut's transitions, captions, speed, track,
 # grade, link and trackOptions edits aren't ported).
-REVERTIBLE = ("added", "deleted", "enabled", "level", "reshaped", "fade", "duck", "split", "link")
+REVERTIBLE = (
+    "added", "deleted", "enabled", "level", "reshaped", "fade", "duck", "split", "link",
+    # Phase 12b-12d, as VibeCut reverts them.
+    "speed", "transition", "track", "trackOptions",
+)  # fmt: skip
 
 
 def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str, Any]:
@@ -1260,6 +1269,22 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 changed_since.append({"name": label, "reason": "it was changed since"})
             else:
                 failed.append({"name": label, "reason": "Premiere didn't put it back"})
+        elif kind in ("speed", "track", "trackOptions"):
+            # Phase 12b and 12d (VibeCut's premiere_timing and premiere_structure).
+            from vibecut_agent.nle import premiere_structure, premiere_timing
+
+            if kind == "speed":
+                outcome = premiere_timing.revert_speed(host, timeline, seq, change, current)
+            elif kind == "track":
+                outcome = premiere_timing.revert_track(host, timeline, seq, change)
+            else:
+                outcome = premiere_structure.revert_track_options(host, timeline, change)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": "it was changed since"})
+            else:
+                failed.append({"name": label, "reason": "Premiere didn't put it back"})
         elif kind == "split":
             from vibecut_agent.nle import premiere_timing
 
@@ -1270,14 +1295,18 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 changed_since.append({"name": label, "reason": "it was changed since"})
             else:
                 failed.append({"name": label, "reason": "Premiere didn't put it back"})
-        elif kind in ("fade", "duck"):
+        elif kind in ("fade", "duck", "transition"):
             from vibecut_agent.nle import premiere_effects
 
             item_id = current(change.get("itemId"))
             if item_id not in seq.clips:
                 changed_since.append({"name": label, "reason": "it isn't on the sequence any more"})
                 continue
-            revert = {"fade": premiere_effects.revert_fade, "duck": premiere_effects.revert_duck}[kind]
+            revert = {
+                "fade": premiere_effects.revert_fade,
+                "duck": premiere_effects.revert_duck,
+                "transition": premiere_effects.revert_transition,
+            }[kind]
             outcome = revert(host, timeline, seq, item_id, change)
             if outcome == "reverted":
                 reverted.append({"kind": kind, "name": label})

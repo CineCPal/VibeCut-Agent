@@ -1606,3 +1606,187 @@ function vcDeleteSequence(args) {
     return { deleted: app.project.deleteSequence(sequence) === true };
   }, args);
 }
+
+// ---------------------------------------------------------------- Phase 12b-12d: speed, transitions, track options
+// From VibeCut's host.jsx verbatim (its "Phase 7b", "6e3" and "8a"). QE's item.setSpeed(speed, "", false,
+// false, maintainPitch) changes only that item and keeps its length; transitions are added through QE on
+// the clip's end, centred, and removed through the track's own transitions; track switches are CEP's
+// setMute, setLocked and setTargeted, and QE's setSyncLock.
+
+// A track's switches, for `keys` of muted, locked, targeted (CEP) and syncLocked (QE, on the open
+// sequence: it's opened for the read and the one showing before is shown again).
+function vcTrackState(sequence, kind, index, keys) {
+  var track = (kind === "audio" ? sequence.audioTracks : sequence.videoTracks)[index];
+  var out = {};
+  for (var k = 0; k < keys.length; k++) {
+    if (keys[k] === "muted") {
+      out.muted = track.isMuted() === true;
+    } else if (keys[k] === "locked") {
+      out.locked = track.isLocked() === true;
+    } else if (keys[k] === "targeted") {
+      out.targeted = track.isTargeted() === true;
+    } else if (keys[k] === "syncLocked") {
+      var q = vcQeSequence(sequence);
+      try {
+        var qeTrack = kind === "audio" ? q.qe.getAudioTrackAt(index) : q.qe.getVideoTrackAt(index);
+        out.syncLocked = qeTrack.isSyncLocked() === true;
+      } finally {
+        q.reopen();
+      }
+    }
+  }
+  return out;
+}
+
+// args: {timeline, kind, index (0-based), options: {muted?, locked?, targeted?, syncLocked?}, keys}.
+// Checked in 26.5.2 (8a.0 probe): CEP's setMute (a video track's output), setLocked and setTargeted,
+// and QE's setSyncLock all read back. Returns the `keys` before and after.
+function vcSetTrackOptions(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var tracks = a.kind === "audio" ? sequence.audioTracks : sequence.videoTracks;
+    if (a.index >= tracks.numTracks) {
+      vcRefuse("\"" + sequence.name + "\" has no " + (a.kind === "audio" ? "A" : "V") + (a.index + 1));
+    }
+    var before = vcTrackState(sequence, a.kind, a.index, a.keys);
+    var track = tracks[a.index];
+    var o = a.options;
+    if (o.muted !== undefined) {
+      track.setMute(o.muted ? 1 : 0);
+    }
+    if (o.locked !== undefined) {
+      track.setLocked(o.locked ? 1 : 0);
+    }
+    if (o.targeted !== undefined) {
+      track.setTargeted(o.targeted === true, true);
+    }
+    if (o.syncLocked !== undefined) {
+      var q = vcQeSequence(sequence);
+      try {
+        var qeTrack = a.kind === "audio" ? q.qe.getAudioTrackAt(a.index) : q.qe.getVideoTrackAt(a.index);
+        qeTrack.setSyncLock(o.syncLocked === true);
+      } finally {
+        q.reopen();
+      }
+    }
+    return { before: before, after: vcTrackState(vcSequenceNamed(a.timeline), a.kind, a.index, a.keys) };
+  }, args);
+}
+
+function vcReadTransitions(track) {
+  var out = [];
+  for (var t = 0; t < track.transitions.numItems; t++) {
+    var transition = track.transitions[t];
+    out.push({ name: transition.name, startTicks: transition.start.ticks, endTicks: transition.end.ticks });
+  }
+  return out;
+}
+
+// args: {timeline, id (the clip before the cut), name (QE's), frames}. Adds the transition at the
+// clip's end, centred on the cut, and returns the track's transitions.
+function vcAddTransition(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var entry = vcItemWithId(sequence, a.id);
+    var isAudio = entry.type === "audio";
+    var q = vcQeSequence(sequence);
+    var added;
+    try {
+      var transition = isAudio ? qe.project.getAudioTransitionByName(a.name) : qe.project.getVideoTransitionByName(a.name);
+      if (!transition) {
+        vcRefuse("Premiere has no " + (isAudio ? "audio" : "video") + " transition \"" + a.name + "\"");
+      }
+      var track = isAudio ? q.qe.getAudioTrackAt(entry.track) : q.qe.getVideoTrackAt(entry.track);
+      var item = null;
+      for (var n = 0; n < track.numItems; n++) {
+        var candidate = track.getItemAt(n);
+        if (candidate.type === "Clip" && String(candidate.start.ticks) === String(entry.item.start.ticks)) {
+          item = candidate;
+        }
+      }
+      if (!item) {
+        vcRefuse("Premiere's QE layer doesn't show \"" + entry.item.name + "\" where it is");
+      }
+      added = item.addTransition(transition, false, String(a.frames), "0", 0.5, false, true);
+    } finally {
+      q.reopen();
+    }
+    var now = vcSequenceNamed(a.timeline);
+    var tracks = isAudio ? now.audioTracks : now.videoTracks;
+    return { added: added === true, transitions: vcReadTransitions(tracks[entry.track]) };
+  }, args);
+}
+
+// args: {timeline, type (video|audio), track (0-based), startTicks}. Removes the transition that
+// starts there; the clips stay.
+function vcRemoveTransition(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var tracks = a.type === "audio" ? sequence.audioTracks : sequence.videoTracks;
+    if (a.track >= tracks.numTracks) {
+      vcRefuse("There is no such track");
+    }
+    var track = tracks[a.track];
+    var removed = false;
+    for (var t = 0; t < track.transitions.numItems; t++) {
+      if (String(track.transitions[t].start.ticks) === String(a.startTicks)) {
+        removed = track.transitions[t].remove(false, false) === true;
+        break;
+      }
+    }
+    return { removed: removed, transitions: vcReadTransitions(track) };
+  }, args);
+}
+
+var VC_SPEED_TRIES = 12;
+
+// The QE item of a clip, found on its track by its start ticks.
+function vcQeItem(qeSequence, entry) {
+  var track = entry.type === "audio" ? qeSequence.getAudioTrackAt(entry.track) : qeSequence.getVideoTrackAt(entry.track);
+  for (var n = 0; n < track.numItems; n++) {
+    var candidate = track.getItemAt(n);
+    if (candidate.type === "Clip" && String(candidate.start.ticks) === String(entry.item.start.ticks)) {
+      return candidate;
+    }
+  }
+  vcRefuse("Premiere's QE layer doesn't show \"" + entry.item.name + "\" where it is");
+}
+
+// args: {timeline, items: [{id, speed}]}. Sets each clip's constant speed, keeping its length. Returns
+// each clip's speed afterwards.
+function vcSetSpeed(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var found = vcItems(sequence);
+    for (var i = 0; i < a.items.length; i++) {
+      if (!found[a.items[i].id]) {
+        vcRefuse("There is no clip " + a.items[i].id + " on \"" + sequence.name + "\" any more");
+      }
+    }
+    var q = vcQeSequence(sequence);
+    try {
+      for (var j = 0; j < a.items.length; j++) {
+        var entry = found[a.items[j].id];
+        // One call isn't always enough: back from a slowed clip to a faster speed, Premiere 26.5.2 landed
+        // at 0.805x for 1x, then 0.944x, 0.986x... on further calls (checked live, 7b). So it's asked
+        // again until the clip reads what was asked, up to VC_SPEED_TRIES times.
+        for (var tries = 0; tries < VC_SPEED_TRIES; tries++) {
+          vcQeItem(q.qe, entry).setSpeed(a.items[j].speed, "", false, false, entry.type === "audio");
+          entry = vcItems(sequence)[a.items[j].id];
+          if (!entry || Math.abs(entry.item.getSpeed() - a.items[j].speed) < 0.000001) {
+            break;
+          }
+        }
+      }
+    } finally {
+      q.reopen();
+    }
+    var now = vcItems(vcSequenceNamed(a.timeline));
+    var speeds = {};
+    for (var k = 0; k < a.items.length; k++) {
+      var after = now[a.items[k].id];
+      speeds[a.items[k].id] = after ? after.item.getSpeed() : null;
+    }
+    return { speeds: speeds };
+  }, args);
+}

@@ -15,10 +15,11 @@ The same commands and change records as host-resolve's resolve_effects.py. What 
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-from vibecut_agent.nle.premiere import HostError, seconds
-from vibecut_agent.nle.premiere_edit import Sequence, _ids, _number, _read
+from vibecut_agent.nle.premiere import TICKS_PER_SECOND, HostError, seconds
+from vibecut_agent.nle.premiere_edit import Sequence, _ids, _label, _number, _read
 
 # kind -> Premiere's transition on each kind of track. No dip on sound.
 TRANSITIONS = {
@@ -290,3 +291,166 @@ def revert_duck(host: Any, timeline: str, seq: Sequence, item_id: str, change: d
 
 
 # ------------------------------------------------------------------------------- transitions
+
+
+# ------------------------------------------------------------------------------- transitions
+
+
+def _transition_at(seq: Sequence, kind: str, index: int, cut: int) -> dict[str, Any] | None:
+    for t in seq.tracks[kind][index - 1].get("transitions", []):
+        if int(t["startTicks"]) <= cut <= int(t["endTicks"]):
+            return t
+    return None
+
+
+def _described(transition: dict[str, Any], kind: str, seq: Sequence) -> dict[str, Any]:
+    name = transition["name"]
+    ours = next((k for k, n in TRANSITIONS[kind].items() if n == name), None)
+    frames = round((int(transition["endTicks"]) - int(transition["startTicks"])) / seq.timebase)
+    return {
+        "kind": ours or "other",
+        "type": name,
+        "frames": frames,
+        "seconds": seconds(frames * seq.timebase),
+    }
+
+
+def _remove(host: Any, timeline: str, kind: str, index: int, transition: dict[str, Any]) -> bool:
+    answer = host._send(
+        "remove_transition",
+        {"timeline": timeline, "type": kind, "track": index - 1, "startTicks": str(transition["startTicks"])},
+    )
+    return bool(answer.get("removed"))
+
+
+def _add(host: Any, timeline: str, item_id: str, name: str, frames: int, cut: int) -> dict[str, Any] | None:
+    """Adds the transition and returns it as Premiere has it on the cut now, or None."""
+    answer = host._send(
+        "add_transition", {"timeline": timeline, "id": item_id, "name": name, "frames": int(frames)}
+    )
+    return next(
+        (
+            t
+            for t in answer.get("transitions", [])
+            if int(t["startTicks"]) <= cut <= int(t["endTicks"]) and t["name"] == name
+        ),
+        None,
+    )
+
+
+def _room(seq: Sequence, clip: dict[str, Any], incoming: dict[str, Any], kind: str, probe: Any) -> int:
+    """The longest transition, in frames, centred on the cut: half of either clip at most, and for a
+    dissolve only the unused media both files have past the cut (an even number of frames)."""
+    tb = seq.timebase
+    half = (
+        min(
+            int(clip["endTicks"]) - int(clip["startTicks"]),
+            int(incoming["endTicks"]) - int(incoming["startTicks"]),
+        )
+        / 2
+    )
+    if kind == "dissolve":
+        if not clip.get("mediaPath") or not incoming.get("mediaPath"):
+            return 0
+        duration = (probe.timecode(clip["mediaPath"]) or {}).get("duration")
+        tail = int(duration * TICKS_PER_SECOND) - int(clip["outTicks"]) if duration else 0
+        half = min(half, max(0, tail), max(0, int(incoming["inTicks"])))
+    return 2 * math.floor(half / tb + 1e-9)
+
+
+def set_transition(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str, Any]:
+    """{timeline, itemId (the clip before the cut), kind: dissolve | dipToBlack | none, seconds
+    (default 1, or the current length when changing kind)} -> the transition on the cut at the clip's
+    end, into the clip that starts there on the same track, centred and cut to what fits."""
+    from vibecut_agent.nle import premiere_edit
+
+    probe = probe or premiere_edit.media_probe()
+    wanted = args.get("kind")
+    if wanted not in ("dissolve", "dipToBlack", "none"):
+        raise HostError('kind must be "dissolve", "dipToBlack" or "none"')
+    timeline = host._name(args)
+    seq = _read(host, timeline)
+    clip = seq.clip(args.get("itemId"))
+    kind, index = clip["kind"], clip["index"]
+    cut = int(clip["endTicks"])
+    incoming = next(
+        (
+            c
+            for c in seq.clips.values()
+            if c["kind"] == kind and c["index"] == index and int(c["startTicks"]) == cut
+        ),
+        None,
+    )
+    if incoming is None:
+        raise HostError(
+            f"No clip starts where {clip['name']} ends on {_label(kind, index)}, so there is no cut to put a transition on"
+        )
+    if wanted != "none" and wanted not in TRANSITIONS[kind]:
+        raise HostError("A dip to black is for picture; on sound use a dissolve (a crossfade), or fades")
+    existing = _transition_at(seq, kind, index, cut)
+    before = _described(existing, kind, seq) if existing else None
+    change = {
+        "kind": "transition", "itemId": clip["id"], "incomingId": incoming["id"],
+        "name": f"{clip['name']} → {incoming['name']}", "track": [kind, index], "cut": seconds(cut),
+        "before": before, "after": None,
+    }  # fmt: skip
+    if wanted == "none":
+        if existing is None:
+            return {"changes": [], "refused": []}
+        if not _remove(host, timeline, kind, index, existing):
+            raise HostError("Premiere didn't remove the transition")
+        return {"changes": [change], "refused": []}
+
+    given = args.get("seconds")
+    asked = (
+        round(seq.ticks(_number(given, "seconds")) / seq.timebase)
+        if given is not None
+        else (before["frames"] if before else round(seq.ticks(DEFAULT_SECONDS) / seq.timebase))
+    )
+    if asked <= 0:
+        raise HostError("The transition must be longer than 0 seconds")
+    room = _room(seq, clip, incoming, wanted, probe)
+    if room < 2:
+        raise HostError(
+            f"No room for a dissolve: {clip['name']} and {incoming['name']} use their files right up to the cut. Trim them to leave unused media (handles) on both sides."
+            if wanted == "dissolve"
+            else "The clips are too short for a transition"
+        )
+    frames = min(asked, room)
+    if existing is not None and not _remove(host, timeline, kind, index, existing):
+        raise HostError("Premiere didn't remove the transition that was there")
+    name = TRANSITIONS[kind][wanted]
+    added = _add(host, timeline, clip["id"], name, frames, cut)
+    if added is None:
+        if before is not None:
+            _add(host, timeline, clip["id"], before["type"], before["frames"], cut)
+        raise HostError(
+            f"Premiere didn't add the {name}" + (", so the one there was put back" if before else "")
+        )
+    change["after"] = _described(added, kind, seq)
+    if frames < asked:
+        change["clamped"] = True
+    return {"changes": [change], "refused": []}
+
+
+def revert_transition(host: Any, timeline: str, seq: Sequence, item_id: str, change: dict[str, Any]) -> str:
+    """ "reverted", "changed" (the cut has another transition now, or none) or "failed"."""
+    kind, index = change["track"]
+    clip = seq.clips[item_id]
+    cut = int(clip["endTicks"])
+    if abs(seconds(cut) - float(change["cut"])) > 0.5 / seq.fps:
+        return "changed"
+    now = _transition_at(seq, kind, int(index), cut)
+    after = change.get("after")
+    if (now is None) != (after is None) or (
+        now is not None
+        and after is not None
+        and (now["name"] != after["type"] or _described(now, kind, seq)["frames"] != int(after["frames"]))
+    ):
+        return "changed"
+    if now is not None and not _remove(host, timeline, kind, int(index), now):
+        return "failed"
+    before = change.get("before")
+    if before is not None and _add(host, timeline, item_id, before["type"], before["frames"], cut) is None:
+        return "failed"
+    return "reverted"

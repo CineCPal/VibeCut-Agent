@@ -42,6 +42,12 @@ export const CHANGING_TOOLS = new Set([
   "send_to_premiere",
   "send_to_resolve",
   "discard_draft",
+  // Phase 12b-12d.
+  "set_clip_speed",
+  "set_transition",
+  "add_track",
+  "remove_track",
+  "set_track_options",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -104,6 +110,11 @@ const VERB: Record<string, string> = {
   send_to_premiere: "Send the draft to Premiere as a new sequence",
   send_to_resolve: "Send the draft to Resolve as a new timeline",
   discard_draft: "Discard the draft",
+  set_clip_speed: "Change the speed of",
+  set_transition: "Set the transition after",
+  add_track: "Add a track",
+  remove_track: "Remove a track",
+  set_track_options: "Switch a track",
 };
 
 /** Clip names for ids, from the timeline last read, else the ids themselves. */

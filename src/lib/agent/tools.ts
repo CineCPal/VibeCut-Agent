@@ -17,6 +17,7 @@ import { transcriptExecutors, transcriptToolDeclarations } from "./transcriptToo
 import { draftExecutors, draftToolDeclarations, refuseWhileDrafting } from "./draft";
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
+import { timingExecutors, timingToolDeclarations } from "./timingTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -39,6 +40,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
   return [
     ...readToolDeclarations(host),
     ...editToolDeclarations(host),
+    ...timingToolDeclarations(host),
     ...projectToolDeclarations(host),
     ...transcriptToolDeclarations(host),
     ...draftToolDeclarations(host),
@@ -268,6 +270,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...projectExecutors(context),
     ...transcriptExecutors(context),
     ...draftExecutors(context),
+    ...timingExecutors(context),
     ...syncExecutors(context),
     ...storyExecutors(context),
   };

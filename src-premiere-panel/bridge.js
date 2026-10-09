@@ -72,6 +72,11 @@ const COMMANDS = {
   razor_cuts: "vcRazorCuts",
   remove_transitions: "vcRemoveTransitions",
   delete_sequence: "vcDeleteSequence",
+  // Phase 12b-12d: speed, transitions and track options, as VibeCut's panel names them.
+  set_speed: "vcSetSpeed",
+  add_transition: "vcAddTransition",
+  remove_transition: "vcRemoveTransition",
+  set_track_options: "vcSetTrackOptions",
 };
 
 // Premiere's own sequence presets only (premiere_project.preset_for picks one).
@@ -323,6 +328,39 @@ const CHECKS = {
   },
   delete_sequence(args) {
     checkSequenceName(args.timeline);
+  },
+  // Copied from VibeCut's bridge.js (Phase 12b-12d).
+  set_speed(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.items) || !args.items.length || args.items.length > 32) throw new Error("items must list 1 to 32 clips");
+    args.items.forEach((item, i) => {
+      checkId(item.id, `items[${i}].id`);
+      if (typeof item.speed !== "number" || !(item.speed >= 0.05 && item.speed <= 20)) throw new Error(`items[${i}].speed must be 0.05 to 20`);
+    });
+  },
+  add_transition(args) {
+    checkSequenceName(args.timeline);
+    checkId(args.id, "id");
+    if (!["Cross Dissolve", "Dip to Black", "Constant Power"].includes(args.name)) throw new Error("name must be a transition's name");
+    if (!Number.isInteger(args.frames) || args.frames < 1 || args.frames > 10000) throw new Error("frames must be 1 to 10000");
+  },
+  remove_transition(args) {
+    checkSequenceName(args.timeline);
+    if (!["video", "audio"].includes(args.type)) throw new Error("type must be video or audio");
+    if (!Number.isInteger(args.track) || args.track < 0 || args.track >= 100) throw new Error("track must be a track index");
+    if (typeof args.startTicks !== "string" || !/^\d{1,20}$/.test(args.startTicks)) throw new Error("startTicks must be ticks");
+  },
+  set_track_options(args) {
+    checkSequenceName(args.timeline);
+    const names = ["muted", "locked", "targeted", "syncLocked"];
+    if (!["video", "audio"].includes(args.kind)) throw new Error("kind must be video or audio");
+    if (!Number.isInteger(args.index) || args.index < 0 || args.index >= 100) throw new Error("index must be a track index");
+    if (!isPlainObject(args.options)) throw new Error("options must be an object");
+    Object.keys(args.options).forEach((name) => {
+      if (!names.includes(name)) throw new Error(`options.${name} isn't a track option VibeCut sets`);
+      if (typeof args.options[name] !== "boolean") throw new Error(`options.${name} must be true or false`);
+    });
+    if (!Array.isArray(args.keys) || !args.keys.every((k) => names.includes(k))) throw new Error("keys must name track options");
   },
   razor(args) {
     if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > 32) throw new Error("ids must list 1 to 32 clips");

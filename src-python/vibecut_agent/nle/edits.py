@@ -14,7 +14,7 @@ Edit = Callable[[Any, dict[str, Any]], Any]
 
 
 def premiere_edits() -> dict[str, Edit]:
-    from vibecut_agent.nle import links, premiere_edit, premiere_effects, premiere_timing
+    from vibecut_agent.nle import links, premiere_edit, premiere_effects, premiere_structure, premiere_timing
 
     return {
         "backup_timeline": premiere_edit.backup_timeline,
@@ -28,12 +28,25 @@ def premiere_edits() -> dict[str, Edit]:
         "duck_clip": premiere_effects.duck_clip,
         "split_clips": premiere_timing.split_clips,
         "set_links": links.premiere_set_links,
+        # Phase 12b-12d.
+        "set_clip_speed": premiere_timing.set_clip_speed,
+        "set_transition": premiere_effects.set_transition,
+        "add_track": premiere_timing.add_track,
+        "remove_track": premiere_timing.remove_track,
+        "set_track_options": premiere_structure.set_track_options,
         "revert_timeline_changes": premiere_edit.revert_timeline_changes,
     }
 
 
 def resolve_edits() -> dict[str, Edit]:
-    from vibecut_agent.nle import links, resolve_edit, resolve_effects, resolve_reshape, resolve_timing
+    from vibecut_agent.nle import (
+        links,
+        resolve_edit,
+        resolve_effects,
+        resolve_reshape,
+        resolve_structure,
+        resolve_timing,
+    )
 
     return {
         "backup_timeline": resolve_edit.backup_timeline,
@@ -44,10 +57,15 @@ def resolve_edits() -> dict[str, Edit]:
         "set_clip_levels": resolve_edit.set_clip_levels,
         "reshape_clip": resolve_reshape.reshape_clip,
         "set_clip_fades": resolve_effects.set_clip_fades,
-        # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts).
+        # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts); also a tool (12c).
         "set_transition": resolve_effects.set_transition,
         "split_clips": resolve_timing.split_clips,
         "set_links": links.resolve_set_links,
+        # Phase 12b-12d.
+        "set_clip_speed": resolve_timing.set_clip_speed,
+        "add_track": resolve_timing.add_track,
+        "remove_track": resolve_timing.remove_track,
+        "set_track_options": resolve_structure.set_track_options,
         "revert_timeline_changes": resolve_edit.revert_timeline_changes,
     }
 
