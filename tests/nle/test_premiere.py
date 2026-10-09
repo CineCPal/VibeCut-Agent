@@ -164,3 +164,15 @@ def test_unset_marks_and_a_closed_sequence_say_nothing():
     assert "playhead" not in closed
     # An older panel sends neither.
     assert "playhead" not in timeline(sequence()) and "inOut" not in timeline(sequence())
+
+
+def test_premieres_own_readings_seen_live():
+    """26.5.2, 2026-10-09: unset marks are both -400000 s; marks set with I and O at 59.94 fps."""
+    unset = "-101606400000000000"
+    raw = {**sequence(), "timebase": "4237833600", "endTicks": "158918760000000", "playheadTicks": "0"}
+    assert "inOut" not in timeline({**raw, "inTicks": unset, "outTicks": unset})
+    marked = timeline(
+        {**raw, "playheadTicks": "61507916870400", "inTicks": "29995386220800", "outTicks": "61512154704000"}
+    )
+    assert marked["playhead"] == 242.142
+    assert marked["inOut"] == {"in": 118.085, "out": 242.159}

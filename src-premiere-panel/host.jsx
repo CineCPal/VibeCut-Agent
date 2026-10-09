@@ -339,7 +339,7 @@ function vcReadSequence(args) {
     }
     var active = vcIsActive(sequence);
     // Phase 13a: where the user is. The playhead only on the open sequence; In and Out as Premiere
-    // has them (an unset In reads 0 and an unset Out the end; premiere.py leaves those out).
+    // has them (unset, both read -400000 s; Out is the end of the Out frame; premiere.py sorts it out).
     var where = {};
     try {
       if (active) where.playheadTicks = String(sequence.getPlayerPosition().ticks);

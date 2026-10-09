@@ -1531,7 +1531,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 
 ### 13a: A sharper snapshot
 **The first line** now says where the user is: `…; playhead at 72.2s, In 30.0s – Out 120.0s marked`.
-- **Premiere** (panel 0.9.1): `vcReadSequence` adds `playheadTicks` (open sequence only), `inTicks` and `outTicks`. `premiere.timeline` (`_whereabouts`) leaves out an unset In (0) and an unset Out (the end, or nothing past it). An older panel sends neither, and nothing breaks.
+- **Premiere** (panel 0.9.1): `vcReadSequence` adds `playheadTicks` (open sequence only), `inTicks` and `outTicks`. `premiere.timeline` (`_whereabouts`) leaves out unset marks. Premiere reads both as -400000 s, which shows up as an In at the start with an Out not after it. An older panel sends neither, and nothing breaks.
 - **Resolve:** `read_timeline` adds the playhead (`GetCurrentTimecode`, open timeline only) and `GetMarkInOut()`. The picture's marks win; Out is included, as in VibeCut's `resolve_render.py`.
 - `HostTimeline` gains `playhead?` and `inOut?`. The prompt says "here" or "this shot" means the playhead, and the marked part means In–Out. `get_playhead_time` is only for after the playhead may have moved.
 
@@ -1679,9 +1679,15 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - Deleted: "VCA 13 live", its two backups, and both test clips. 28 timelines remain, and "Timeline 28" is current.
 - Left in place: the empty "Master/VibeCut" bin, the app's import bin, used by earlier checks too.
 
-**Still to check:**
-- **Premiere:** Update panel (0.9.1) and restart Premiere, then the playhead and In/Out read back.
-- **The user's own try in the app:** Notes (⌘⇧N), tool cards with frames, and remembering across a new chat.
+### Phase 13a checked live in Premiere (2026-10-09, Premiere 26.5.2, panel 0.9.1)
+Read only, through `PremiereBridge`/`PremiereHost`, on the user's "Best B-Roll Selects" (59.94 fps, 180 clips, project "2026 Agent Tests").
+- **Unset marks:** with no marks, the panel sent In = Out = -101606400000000000 ticks (-400000 s), not 0 and the end as first assumed. `_whereabouts` already left them out; the comments are corrected, and a test with these exact readings was added.
+- **Marks set by the user** (I and O, with the playhead moved):
+  - playhead 242.142 s, frame 14514, matching `get_playhead`;
+  - In 118.085 s, frame 7078;
+  - Out 242.159 s, the end of frame 14514: one frame after the playhead where O was pressed, so Out includes its frame, as in Resolve.
+
+**Still to check:** the user's own try in the app: Notes (⌘⇧N), tool cards with frames, and remembering across a new chat.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -1748,7 +1754,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
-  - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Checked live in Resolve the same day. Next: Premiere (panel 0.9.1 + restart) and the user's own try. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
+  - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Checked live in Resolve and (13a's playhead and In/Out) in Premiere the same day. Next: the user's own try in the app.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1957,3 +1963,6 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - **2026-10-09 (Claude): Phase 13 checked live in Resolve.**
   - Ran on a scratch timeline with generated media: the snapshot's playhead, In/Out, sources and transcripts; `look_at_clip` and `look_at_timeline` frames accurate to the frame; loudness measured and normalized, then reverted exactly; beats at 120.4 BPM marked and removed. Everything was cleaned up.
   - `look_at_timeline` now labels frames by clip name, not by Resolve's long ids.
+- **2026-10-09 (Claude): Phase 13a checked live in Premiere (panel 0.9.1).**
+  - The playhead and the user's In/Out read back correctly.
+  - Unset marks read -400000 s, which was handled but described wrongly; the comments are fixed and a test added.

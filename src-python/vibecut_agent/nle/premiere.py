@@ -244,7 +244,9 @@ def _ticks(value: Any) -> int | None:
 
 def _whereabouts(raw: dict[str, Any]) -> dict[str, Any]:
     """The playhead and the In/Out marks (Phase 13a, panel 0.9.1; an older panel sends neither).
-    Premiere reads an unset In as 0 and an unset Out as the end (or nothing past it): those aren't marks."""
+    Premiere 26.5.2 reads both unset marks as -400000 s (-101606400000000000 ticks, seen 2026-10-09);
+    an In at the start or an Out at the end isn't a mark either. Out is the end of the Out frame (one
+    frame after the playhead when O was pressed there), as Resolve's is once its frame is counted in."""
     found: dict[str, Any] = {}
     end = _ticks(raw.get("endTicks")) or 0
     playhead = _ticks(raw.get("playheadTicks"))
