@@ -1650,13 +1650,38 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 
 **Measured while building:** synthetic clicks gave 89.8, 120.4 and 128.5 BPM, with median beat error 10–14 ms.
 
-### Phase 13: still to check live
-- **Resolve** (it was closed during this session; the user approved scratch checks):
-  - the playhead and In/Out in a real snapshot (`read_timeline` through `resolve-watch`);
-  - `look_at_clip` on a real clip;
-  - `normalize_loudness` and its Revert, plus `find_beats` with markers, on a "VCA 13" scratch timeline.
+### Phase 13 checked live in Resolve (2026-10-09, Resolve Studio 21.1, "VibeCut 7a")
+**Setup:** a scratch Vitest harness ran the app's own TS tools (`executorsFor`, `snapshotFor`, the edit log and Revert) against a real `resolve-watch`, with the real Python media jobs. Only the Tauri boundary was replaced.
+- **Media:** two generated files, `VCA13_picture.mov` (20 s testsrc2 at 1280x720/25, with a 440 Hz tone at -30 dBFS) and `VCA13_clicks.wav` (30 s, 120 BPM).
+- **Timeline:** `create_timeline` "VCA 13 live", then `add_clips` put both on it (picture on V1+A1, clicks on a new A2).
+
+**13a:**
+- With the playhead set to 4 s and the In/Out marked at frames 50–149, the snapshot's first line read "…; playhead at 4.0s, In 2.0s – Out 6.0s marked".
+- `[SOURCES]` read `"VCA13_picture.mov": h264 1280x720 25 fps · pcm_s16le 1 ch 48 kHz · 0:20`; `[TRANSCRIPTS]` said "0 of 2" and named both files.
+- The notes line came first, and pool lines showed fps.
+
+**13b:**
+- `look_at_clip` (4 frames) gave a 1536x926 sheet, and `look_at_timeline` (no args, so the In–Out) gave 2 frames.
+- The burned-in timecodes matched to the frame: 3.000 and 5.000 exactly, and 2.520 for 2.5 s (the next frame).
+- **Fixed after the run:** `look_at_timeline` labelled frames with Resolve's 36-character clip ids, which crowded the sheet. The label is now the clip's name, and the id moved to the result's `frames[].clipId`.
+
+**13d:**
+- `measure_loudness`: the tone read -33.8 LUFS with a -30.1 dBTP peak, as expected for that sine; the clicks read -28.3 LUFS.
+- `normalize_loudness` to -20 set A1 to +13.8 dB, under its own backup "(before VibeCut 2)", and the level read back as 13.8.
+- Measuring again confirmed `levelDb` 13.8.
+- `revert_timeline_edits` on that edit reverted 1 change, and both clips' levels were back to 0 exactly.
+- `find_beats` on the clicks (to 10 s) found 120.4 BPM (confidence 0.86), 20 beats each within 16 ms of the true clicks.
+- Every 4th beat went to `add_markers` (4 markers, at frames 6, 56, 106 and 156), and `remove_markers` took them all away.
+
+**Jobs:** each took 220–430 ms. No watcher call failed.
+
+**Cleanup:**
+- Deleted: "VCA 13 live", its two backups, and both test clips. 28 timelines remain, and "Timeline 28" is current.
+- Left in place: the empty "Master/VibeCut" bin, the app's import bin, used by earlier checks too.
+
+**Still to check:**
 - **Premiere:** Update panel (0.9.1) and restart Premiere, then the playhead and In/Out read back.
-- **In the app:** the user's own try. The Notes window (⌘⇧N), tool cards with frames, and a chat that remembers across a new chat.
+- **The user's own try in the app:** Notes (⌘⇧N), tool cards with frames, and remembering across a new chat.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -1723,7 +1748,7 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
     - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
-  - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Next: the live checks in "Phase 13: still to check live" (Resolve was closed), then the user's own try. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
+  - *(2026-10-09)* **Phase 13 is built** ("an agent that sees, hears and remembers"): 13a–13d are built and committed: a sharper snapshot, `look_at_*` contact sheets, project notes (⌘⇧N), and loudness and beats. Checked live in Resolve the same day. Next: Premiere (panel 0.9.1 + restart) and the user's own try. Premiere's playhead and In/Out need panel 0.9.1: Update panel, then restart Premiere.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1929,3 +1954,6 @@ Each part ships on its own. The engines for 13a, 13b and 13d live in one package
 - **2026-10-09 (Claude): Phase 13d: the agent hears loudness and beats.**
   - `measure_loudness`, `normalize_loudness` (through `set_clip_levels`, one Revert) and `find_beats`, on the new `media-loudness` and `media-beats` commands.
   - Phase 13 is built. Its live checks in Resolve and Premiere are listed under "Phase 13: still to check live".
+- **2026-10-09 (Claude): Phase 13 checked live in Resolve.**
+  - Ran on a scratch timeline with generated media: the snapshot's playhead, In/Out, sources and transcripts; `look_at_clip` and `look_at_timeline` frames accurate to the frame; loudness measured and normalized, then reverted exactly; beats at 120.4 BPM marked and removed. Everything was cleaned up.
+  - `look_at_timeline` now labels frames by clip name, not by Resolve's long ids.

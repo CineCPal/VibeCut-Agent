@@ -103,9 +103,9 @@ describe("the look_at tools", () => {
 
   it("look_at_timeline takes the In–Out by default and lists gaps", async () => {
     await runTool(executorsFor(context), "look_at_timeline", { count: 2 });
-    expect(shotsSent().map((s) => s.label)).toEqual(["3.0s · V1 a", "5.0s · V2 over"]);
+    expect(shotsSent().map((s) => s.label)).toEqual(['3.0s · V1 "a.mov"', '5.0s · V2 "over.mov"']);
     const outcome = await runTool(executorsFor(context), "look_at_timeline", { times: [7, 16] });
-    expect(outcome.result).toMatchObject({ gaps: ["16.0s: no picture (black)"] });
+    expect(outcome.result).toMatchObject({ frames: [{ n: 1, clipId: "a" }], gaps: ["16.0s: no picture (black)"] });
   });
 
   it("look_at_media reads a project clip's length to spread frames", async () => {

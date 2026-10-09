@@ -29,6 +29,8 @@ export interface Shot {
   /** Seconds into the file. */
   time: number;
   label: string;
+  /** The timeline clip it's from, for the result (the sheet shows the name: Resolve's ids are long). */
+  clipId?: string;
 }
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
@@ -81,7 +83,7 @@ function checkBudget(step: string): void {
 
 /** Reads the frames and returns them as one contact sheet. */
 async function look(shots: Shot[], summary: string, extra: Record<string, unknown>): Promise<{ summary: string; result: unknown; images: ToolImage[] }> {
-  const job = await runJob("media-frames", `Read ${shots.length} frame(s)`, { shots, sheet: true });
+  const job = await runJob("media-frames", `Read ${shots.length} frame(s)`, { shots: shots.map(({ path, time, label }) => ({ path, time, label })), sheet: true });
   const result = (job?.result ?? {}) as { images?: ToolImage[]; frames?: { index: number; label: string; ok: boolean; message?: string }[] };
   const images = result.images ?? [];
   if (!images.length) {
@@ -94,7 +96,7 @@ async function look(shots: Shot[], summary: string, extra: Record<string, unknow
     images,
     result: {
       shown: `A contact sheet of ${shots.length} frame(s), numbered in reading order with their labels, is attached to this result.`,
-      frames: shots.map((s, i) => ({ n: i + 1, label: s.label, file: fileName(s.path), fileTime: s.time })),
+      frames: shots.map((s, i) => ({ n: i + 1, label: s.label, ...(s.clipId ? { clipId: s.clipId } : {}), file: fileName(s.path), fileTime: s.time })),
       ...(problems.length ? { problems } : {}),
       note: SOURCE_NOTE,
       ...extra,
@@ -189,7 +191,7 @@ export function visionExecutors(context: ToolContext): Record<string, Executor> 
       for (const t of at) {
         const seen = pictureAt(view, t);
         if (!seen) gaps.push(t);
-        else shots.push({ path: seen.clip.filePath!, time: sourceTime(seen.clip, t), label: `${clock(t)} · ${seen.track} ${seen.clip.id}` });
+        else shots.push({ path: seen.clip.filePath!, time: sourceTime(seen.clip, t), label: `${clock(t)} · ${seen.track} "${seen.clip.name}"`, clipId: seen.clip.id });
       }
       if (!shots.length) throw new Error(`There's no picture on the ${noun} at ${at.map(clock).join(", ")} (gaps, sound only, or tracks that are off)`);
       return look(shots, `Looked at the ${noun} at ${shots.length} moment${shots.length === 1 ? "" : "s"}`, gaps.length ? { gaps: gaps.map((t) => `${clock(t)}: no picture (black)`) } : {});
