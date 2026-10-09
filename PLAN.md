@@ -2003,7 +2003,14 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **14d's Auto Reframe** made "VCA 15 Premiere (9x16)" with both clips, at **607x1080**: Premiere keeps the sequence's height. The tool's description promised 1080x1920; it now says what Premiere does, and so does `premiere_project.make_social_version`.
 
-**Not yet seen by eye:** the caption track and the reframed framing (script reads in Premiere can be wrong; see the 12a note). The test sequences are left for the user's look. The render files were deleted.
+**Confirmed by the user's screenshot:**
+- The 9x16 sequence has a subtitle track (C1) with the 5 lines at the right times; the reframed copy kept the captions.
+- Its V1 clip carries Auto Reframe's fx.
+- Media Encoder's queue keeps a cancelled job as "Stopped" (finished ones clear themselves). The user clears it there.
+
+**Cleanup:**
+- Both test sequences were deleted with the panel's `delete_sequence`, and the render files were deleted.
+- **Left in "2026 Agent Tests":** the test clip and the SRT item in the "VibeCut" bin, which can't be deleted from a script.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
