@@ -12,6 +12,7 @@ import { executorsFor, runTool, type ToolContext } from "./tools";
 import { fileKey } from "./transcriptTools";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
 import { useAgentStore } from "../../store/useAgentStore";
+import { useSystemStore } from "../../store/useSystemStore";
 import { AI_CHOICES } from "../../types/agent";
 import type { HostClip, HostTimeline, HostTrack } from "../../types/timeline";
 
@@ -208,7 +209,7 @@ describe("review_edit", () => {
   });
 
   it("asks the critic with the chat's model, stills either side of each cut, the words and the check's findings", async () => {
-    useAgentStore.setState({ aiChoice: "claude-code-sonnet-5-5", messages: [{ id: "u", role: "user", text: "Tighten the opening", createdAt: 1, status: "done" }] });
+    useAgentStore.setState({ criticModel: "same", aiChoice: "claude-code-sonnet-5-5", messages: [{ id: "u", role: "user", text: "Tighten the opening", createdAt: 1, status: "done" }] });
     const out = await runTool(executorsFor(context), "review_edit", {});
     const call = jobs.runJob.mock.calls.find((c) => c[0] === "critique");
     const request = call?.[2] as { provider: string; model?: string; frames: { path: string; time: number; sourceTime: number; label: string }[]; brief: string; transcript: string; snapshot: string; lint: unknown[] };
@@ -223,10 +224,29 @@ describe("review_edit", () => {
     expect(request.snapshot).toContain("V1");
     expect(request.lint.length).toBeGreaterThan(0);
     const result = out.result as { critic: { overall: string; findings: { time: number }[]; stillsSeen: number } };
-    expect(result.critic).toEqual({ overall: "The opening drags.", findings: [CRITIC.findings[0]], stillsSeen: 6 });
-    expect(out.summary).toMatch(/1 note\(s\) from the critic \(6 stills\)\. The opening drags\./);
+    expect(result.critic).toEqual({ overall: "The opening drags.", findings: [CRITIC.findings[0]], stillsSeen: 6, model: "Claude Sonnet 5.5 (subscription)" });
+    expect(out.summary).toMatch(/1 note\(s\) from the critic \(Claude Sonnet 5\.5 \(subscription\), 6 stills\)\. The opening drags\./);
     const critic = out.findings?.filter((f) => f.source === "critic");
     expect(critic).toEqual([{ time: 11, severity: "high", text: "A jump cut on the same framing. Fix: Cover it with B-roll.", source: "critic" }]);
+  });
+
+  it("runs the critic on Gemini Flash by default, whatever the chat's model, when there's a Gemini key", async () => {
+    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-opus-5-5" });
+    useSystemStore.setState({ keys: { gemini: true, anthropic: true } as never });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string };
+    expect(request.provider).toBe("gemini");
+    expect(request.model).toBeUndefined();
+    expect(out.summary).toMatch(/from the critic \(Gemini Flash, 6 stills\)/);
+  });
+
+  it("falls back to the chat's model without a Gemini key, and says so", async () => {
+    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-opus-5-5" });
+    useSystemStore.setState({ keys: { gemini: false, anthropic: true } as never });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string };
+    expect(request).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+    expect(out.summary).toMatch(/there's no Gemini key, so the critic ran on Claude Opus 5\.5/);
   });
 
   it("keeps the automatic check when the critic fails, saying why", async () => {

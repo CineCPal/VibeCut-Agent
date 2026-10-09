@@ -150,6 +150,9 @@ export function familyOf(choice: AiChoice): ClaudeFamily | null {
 /** The Story Editor's first pass over long footage (Phase 7e): the story's own provider (Sonnet on
  * Claude, Flash on Gemini), or always Gemini Flash (needs a Gemini key). */
 export type StoryFirstPass = "same" | "gemini";
+/** Which model review_edit's critic runs on: Gemini Flash (the default: cheapest, and spares a Claude plan
+ * or API budget), or the chat's own. */
+export type CriticModel = "gemini" | "same";
 
 /** Mirrors `ClaudeCodeStatus` in src-tauri/src/claude_code.rs. */
 export interface ClaudeCodeStatus {

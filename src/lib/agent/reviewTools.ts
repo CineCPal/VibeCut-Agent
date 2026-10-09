@@ -16,6 +16,7 @@
 import { runJob } from "../jobs";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useConnectionStore } from "../../store/useConnectionStore";
+import { useSystemStore } from "../../store/useSystemStore";
 import { AI_CHOICES } from "../../types/agent";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
@@ -438,6 +439,18 @@ export interface CriticAnswer {
   overall: string;
   findings: CriticFinding[];
   framesSent: number;
+  /** Which model reviewed ("Gemini Flash", or the chat's). */
+  by?: string;
+}
+
+/** The model the critic runs on: Gemini Flash when Settings says so (the default) and there's a Gemini key,
+ * else the chat's own. `fellBack` says Gemini was wanted but had no key. */
+export function criticModel(): { provider: string; model?: string; label: string; fellBack: boolean } {
+  const state = useAgentStore.getState();
+  const wantsGemini = state.criticModel !== "same";
+  if (wantsGemini && useSystemStore.getState().keys?.gemini) return { provider: "gemini", label: "Gemini Flash", fellBack: false };
+  const choice = AI_CHOICES.find((c) => c.id === state.aiChoice) ?? AI_CHOICES[0];
+  return { provider: choice.chatProvider, ...(choice.model ? { model: choice.model } : {}), label: choice.label, fellBack: wantsGemini && choice.chatProvider !== "gemini" };
 }
 
 /** The most recent thing the user asked the agent, as the critic's brief. */
@@ -512,7 +525,7 @@ export function cardFindings(findings: CheckFinding[], critic: CriticFinding[] =
 export function reviewSummary(findings: CheckFinding[], critic?: CriticAnswer | null, criticError?: string): string {
   const high = findings.filter((f) => f.severity === "high").length;
   const check = findings.length ? `${findings.length} problem(s) found by the automatic check${high ? `, ${high} serious` : ""}` : "the automatic check found nothing to fix";
-  const notes = critic ? `; ${critic.findings.length} note(s) from the critic (${critic.framesSent} stills)` : criticError ? ` (the critic couldn't run: ${criticError})` : "";
+  const notes = critic ? `; ${critic.findings.length} note(s) from the critic (${critic.by ? `${critic.by}, ` : ""}${critic.framesSent} stills)` : criticError ? ` (the critic couldn't run: ${criticError})` : "";
   const overall = critic?.overall ? ` ${critic.overall}` : "";
   return `Reviewed the cut: ${check}${notes}.${overall}`;
 }
@@ -528,7 +541,7 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
       const target = optNum(args, "targetLufs");
       if (target !== undefined && (target < -40 || target > -5)) throw new Error("targetLufs must be between -40 and -5");
 
-      const key = JSON.stringify([host, view.timeline, start, end, target ?? null, optStr(args, "brief") ?? null, bool(args, "visual", true)]);
+      const key = JSON.stringify([host, view.timeline, start, end, target ?? null, optStr(args, "brief") ?? null, bool(args, "visual", true), useAgentStore.getState().criticModel]);
       const seen = JSON.stringify([view.tracks, view.duration]);
       if (lastReview && lastReview.key === key && lastReview.seen === seen && Date.now() - lastReview.at < REVIEW_MEMO_MS) {
         const result = lastReview.outcome.result as Record<string, unknown>;
@@ -568,10 +581,11 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
         const frames = sampleFrames(visibleVideo(lintInput), lintInput.frameRate, window).filter((f) => !f.path.startsWith("none:"));
         if (!frames.length) criticError = `there is no picture on the ${NOUN[host]} to look at`;
         else {
-          const choice = AI_CHOICES.find((c) => c.id === useAgentStore.getState().aiChoice) ?? AI_CHOICES[0];
-          const job = await runJob("critique", `Review the cut (${frames.length} stills)`, {
-            provider: choice.chatProvider,
-            ...(choice.model ? { model: choice.model } : {}),
+          const reviewer = criticModel();
+          if (reviewer.fellBack) notes.push(`there's no Gemini key, so the critic ran on ${reviewer.label}`);
+          const job = await runJob("critique", `Review the cut (${frames.length} stills, ${reviewer.label})`, {
+            provider: reviewer.provider,
+            ...(reviewer.model ? { model: reviewer.model } : {}),
             frames,
             brief: optStr(args, "brief") ?? lastUserRequest(),
             snapshot: timelineLines(view).join("\n"),
@@ -579,6 +593,7 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
             lint: automaticCheck.map(({ time, severity, category, message }) => ({ time, severity, category, message })),
           });
           critic = job?.status === "done" ? criticAnswer(job.result) : null;
+          if (critic) critic.by = reviewer.label;
           if (!critic) criticError = job?.error ?? `the review ${job?.status ?? "didn't finish"}`;
         }
       }
@@ -587,7 +602,7 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
         summary: reviewSummary(findings, critic, criticError) + (notes.length ? ` (${notes.join("; ")})` : ""),
         result: {
           automaticCheck,
-          critic: critic ? { overall: critic.overall, findings: critic.findings, stillsSeen: critic.framesSent } : { skipped: criticError ?? "not requested" },
+          critic: critic ? { overall: critic.overall, findings: critic.findings, stillsSeen: critic.framesSent, model: critic.by } : { skipped: criticError ?? "not requested" },
           ...(notes.length ? { notes } : {}),
         },
         findings: cardFindings(findings, critic?.findings),

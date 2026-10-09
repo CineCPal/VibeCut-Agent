@@ -19,6 +19,8 @@ export function AgentModelSection() {
   const aiChoice = useAgentStore((s) => s.aiChoice);
   const setAiChoice = useAgentStore((s) => s.setAiChoice);
   const storyFirstPass = useAgentStore((s) => s.storyFirstPass);
+  const criticModel = useAgentStore((s) => s.criticModel);
+  const setCriticModel = useAgentStore((s) => s.setCriticModel);
   const setStoryFirstPass = useAgentStore((s) => s.setStoryFirstPass);
   const effort = useAgentStore((s) => s.effort);
   const setEffort = useAgentStore((s) => s.setEffort);
@@ -90,6 +92,22 @@ export function AgentModelSection() {
       <p className="mt-1 text-[11px] text-cool-grey">
         It reads every line and shortlists the strongest moments, then the agent&rsquo;s model cuts the story from them. Text only. Gemini Flash is faster and
         spares your Claude plan&rsquo;s limits, but sends the transcripts to Google.
+      </p>
+      <label htmlFor="settings-critic" className="mt-2 block text-[11px] text-cool-grey">
+        Edit review critic
+      </label>
+      <select
+        id="settings-critic"
+        className={`${fieldClass} mt-0.5`}
+        value={criticModel}
+        onChange={(event) => setCriticModel(event.target.value === "same" ? "same" : "gemini")}
+      >
+        <option value="gemini">Gemini Flash (default){keys?.gemini ? "" : " — key missing, uses the agent's model"}</option>
+        <option value="same">Same model as the agent</option>
+      </select>
+      <p className="mt-1 text-[11px] text-cool-grey">
+        Looks at stills either side of every cut when the agent reviews an edit. Gemini Flash is the cheapest and keeps reviews off your Claude API bill and
+        plan limits, but sends the stills and what is said to Google.
       </p>
     </Section>
   );

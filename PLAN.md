@@ -1775,6 +1775,20 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **Gemini** (repo key): "high · framing · 9.0 s: severely out of focus" and "medium · continuity · 5.0 s: abrupt jump cut on identical framing". It also noted the burned-in timecode.
 - **Claude Code** (2.1.292, Work profile, Sonnet): the same two, plus the jarring cut into the soft shot and "no product shown". The lockdown check passed with the stream-json input.
 
+### 14b, revised: the critic on Gemini Flash by default (2026-10-09)
+**Decision (the user):** they would rather pay for Gemini's API than the Claude API's per-token billing.
+- **Before:** the critic ran on the chat's model, so chatting on Claude Opus or Sonnet (API) billed every review to the Claude API. On the subscription, it used up plan limits.
+- **Now:** Settings → Agent → "Edit review critic" offers Gemini Flash (the default) or "Same model as the agent". It's saved as `criticModel` in `useAgentStore`.
+- **`criticModel()`** (`reviewTools.ts`) sends `provider: "gemini"` with no model, so `gemini-flash-latest` is used, the request checked live in 14b. This happens whenever the setting is Gemini and `useSystemStore.keys.gemini` says there's a key.
+  - **No key:** it falls back to the chat's model, and the summary says "there's no Gemini key, so the critic ran on …".
+  - **Rust:** no change; `critique` already injects the key for the provider asked for.
+- **Reporting:** the summary and the result name the reviewer ("from the critic (Gemini Flash, 6 stills)"). The setting is part of the review's repeat key, so changing it gives a fresh review.
+- **About:** says the critic goes to Gemini by default, whatever the chat model, and to Claude only when Settings says so.
+- **Tests:**
+  - `reviewTools.test.ts`: Gemini with a Claude chat, the fallback and its note, the chat's model when set to it;
+  - `SettingsPanel.test.tsx`: the menu, its missing-key note and the change;
+  - `useAgentStore.test.ts`: the setting is saved.
+
 ### 14c: Cut to the beat
 **Tool** `cut_to_beats {musicClipId, shots: [{clipId | filePath, sourceIn?, sourceOut?}], start?, end?, everyBeats? (1/2/4/8, default 2), offsetFrames?, videoTrack?}` (`src/lib/agent/beatTools.ts`). It's a reviewed edit (`CHANGING_TOOLS`), refused while drafting, and in `LONG_TOOLS`.
 - **The beats:** `beatsOf` is factored out of `find_beats` (`audioTools.ts`) and gives timeline times through the music clip's speed.
@@ -2188,3 +2202,6 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **2026-10-09 (Claude): Phase 14e: ten new saved prompts** for the review, sound, beat, social and memory tools.
   - Existing users get them once, through a version 2 migration of the prompt store.
   - Phase 14 is built. See "Phase 14" → 14e and "still to check".
+- **2026-10-09 (Claude): the critic runs on Gemini Flash by default.** The user prefers Gemini's API cost to the Claude API's.
+  - Settings → Agent → Edit review critic: Gemini Flash (default) or the agent's model.
+  - Without a Gemini key it falls back to the agent's model and says so. See "Phase 14" → "14b, revised".

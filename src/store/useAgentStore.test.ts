@@ -43,6 +43,7 @@ describe("useAgentStore", () => {
     expect(saved.state).toEqual({
       aiChoice: "claude-opus-5-5",
       storyFirstPass: "same",
+      criticModel: "gemini",
       effort: { opus: "medium", sonnet: "medium" },
       chatId: useAgentStore.getState().chatId,
       autoTitles: true,

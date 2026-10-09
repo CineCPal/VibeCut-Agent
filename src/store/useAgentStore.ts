@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMention, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, QueuedMessage, StoryFirstPass } from "../types/agent";
+import type { AgentStatus, AiChoiceId, ChatMention, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, QueuedMessage, StoryFirstPass, CriticModel } from "../types/agent";
 import { AI_CHOICES, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
@@ -19,6 +19,7 @@ export interface AgentState {
   effort: Record<ClaudeFamily, EffortLevel>;
   /** Which model reads long footage first for the Story Editor (Phase 7e). */
   storyFirstPass: StoryFirstPass;
+  criticModel: CriticModel;
   draft: string;
   /** Images in the composer, to go with the next message (Phase 8g). */
   pendingImages: PendingImage[];
@@ -58,6 +59,7 @@ export interface AgentState {
   setStatus: (status: AgentStatus, detail?: string | null) => void;
   setAiChoice: (choice: AiChoiceId) => void;
   setStoryFirstPass: (choice: StoryFirstPass) => void;
+  setCriticModel: (choice: CriticModel) => void;
   setEffort: (family: ClaudeFamily, level: EffortLevel) => void;
   setDraft: (draft: string) => void;
   setPendingImages: (images: PendingImage[]) => void;
@@ -101,6 +103,7 @@ export const useAgentStore = create<AgentState>()(
       statusDetail: AGENT_OFFLINE_DETAIL,
       aiChoice: "gemini",
       storyFirstPass: "same",
+      criticModel: "gemini",
       effort: { opus: DEFAULT_EFFORT, sonnet: DEFAULT_EFFORT },
       draft: "",
       pendingImages: [],
@@ -139,6 +142,7 @@ export const useAgentStore = create<AgentState>()(
         if (AI_CHOICES.some((c) => c.id === choice)) set({ aiChoice: choice });
       },
       setStoryFirstPass: (storyFirstPass) => set({ storyFirstPass: storyFirstPass === "gemini" ? "gemini" : "same" }),
+      setCriticModel: (criticModel) => set({ criticModel: criticModel === "same" ? "same" : "gemini" }),
       setEffort: (family, level) => {
         if (EFFORT_LEVELS.includes(level)) set((state) => ({ effort: { ...state.effort, [family]: level } }));
       },
@@ -218,6 +222,7 @@ export const useAgentStore = create<AgentState>()(
       partialize: (state) => ({
         aiChoice: state.aiChoice,
         storyFirstPass: state.storyFirstPass,
+        criticModel: state.criticModel,
         effort: state.effort,
         chatId: state.chatId,
         autoTitles: state.autoTitles,

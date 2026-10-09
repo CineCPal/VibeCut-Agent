@@ -8,6 +8,8 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
 
 import { SettingsPanel } from "./SettingsPanel";
 import { useUiStore } from "../../store/useUiStore";
+import { useAgentStore } from "../../store/useAgentStore";
+import { useSystemStore } from "../../store/useSystemStore";
 
 describe("SettingsPanel", () => {
   beforeEach(() => {
@@ -52,5 +54,16 @@ describe("SettingsPanel", () => {
       expect(screen.queryByRole("heading", { name: "Agent sidecar" })).not.toBeInTheDocument();
       expect(screen.queryByRole("heading", { name: "Local dependencies" })).not.toBeInTheDocument();
     }
+  });
+
+  it("picks the edit review critic, Gemini Flash by default", async () => {
+    useAgentStore.setState({ criticModel: "gemini" });
+    useSystemStore.setState({ keys: { gemini: false, anthropic: true } as never });
+    await renderPanel();
+    const critic = screen.getByRole("combobox", { name: "Edit review critic" }) as HTMLSelectElement;
+    expect(critic.value).toBe("gemini");
+    expect(screen.getByRole("option", { name: /Gemini Flash \(default\) — key missing, uses the agent's model/ })).toBeInTheDocument();
+    fireEvent.change(critic, { target: { value: "same" } });
+    expect(useAgentStore.getState().criticModel).toBe("same");
   });
 });
