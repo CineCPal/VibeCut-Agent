@@ -1453,6 +1453,32 @@ All four are ported from VibeCut (verbatim except the import paths) and are dire
 
 **Live:** not yet. Resolve needs a scratch timeline, which the user approves first. Premiere needs panel 0.9.0 and a restart.
 
+### 12e: Organizing the Media Pool / Premiere project
+**Python:** `premiere_organize.py` and `resolve_organize.py` are VibeCut's, verbatim apart from the import paths and two type annotations. Each has six commands, registered in `project.py`:
+- `create_bins`, `move_clips`, `rename_clips`;
+- `set_clip_labels`: Resolve's clip colour and flags; Premiere's label, which can't be cleared;
+- `set_clip_metadata`: logged fields, plus keywords on Resolve. Premiere's keywords live in the media's XMP, which VibeCut never writes;
+- `revert_pool_changes`.
+
+Every change is `{clipId, field, before, after}`. The project's own media files are never touched.
+
+**Panel (0.9.0):** `vcCreateBin`, `vcMoveProjectItems`, `vcSetProjectItems` (through the project's own XMP) and `vcDeleteBin` (empty bins only) are VibeCut's, with their `bridge.js` checks.
+
+**Tools** (`src/lib/agent/poolTools.ts`, from VibeCut's `poolChanges.ts` and `poolSpec.ts`): `create_bins`, `move_clips`, `set_clip_labels`, `set_clip_metadata` and `rename_clips`. Clips are named by their short pool ids ("p3"). All five go through review.
+
+**How it differs from VibeCut:**
+- **One log, one Revert:** VibeCut kept a separate pool log with its own `revert_pool_changes` tool. Here each change goes in the same edit log as the timeline edits, as an entry with `pool: {changes, createdBins}` and no backup. `revertTimelineEdits` sends such an entry to `revert_pool_changes`, so the chat's Revert and `revert_timeline_edits` undo a request's project and timeline changes together. A bin the agent made is removed only once it's empty.
+- **Review cards** name pool clips by their names.
+
+**Not done:** colour and names for clips on a timeline (the user's choice: later; it needs a probe first).
+
+**Tests:**
+- VibeCut's `test_resolve_organize.py` and `test_premiere_organize.py` (21), against the port's fakes. One import in the ported `premiere_fakes.py` was still VibeCut's and had never run.
+- `poolTools.test.ts`: ids, the log, refusals, Revert together with a timeline edit, the per-editor declarations, review.
+- `bridge.test.ts`: the panel checks.
+
+**Live:** not yet. Resolve: on "VibeCut 7a", after the user approves; clean up the bins afterwards. Premiere: after Update panel.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1509,6 +1535,15 @@ All four are ported from VibeCut (verbatim except the import paths) and are dire
   - *(2026-10-07)* **Phase 10 is built:** the Analyze tab's options are remembered, clips give up to 20 segments with ticks, segments preview in the app, and the selects export as a Premiere XML (`broll-export`) or build a new timeline (one Revert). Next: the user's try in the app (`npm run install-app` or `tauri dev`), Build timeline on a scratch Resolve timeline, and the XML in Premiere. The header layout was left for later.
   - *(2026-10-07)* **Phase 11 is built:** Settings in tabs (About keeps what only reports), a message queue, @-mentions, Review edits first (with `mcp_hold` for Claude Code), done notifications, and a faster first token (bytecode kept outside the bundle, lighter imports, a warm job and a warm Claude Code). Next: the user's try in the installed app (notifications ask once), a review card on a scratch Resolve timeline, and Gemini/Claude API timings with a fresh key.
   - *(2026-10-07)* **The app installs:** `npm run install-app` puts it in `~/Applications` (Spotlight, Launchpad, Dock), with Settings → Window → Open at login. Next: the user's try of Open at login, and keys in Settings → API keys for the installed app (it reads the Keychain, not `.env`).
+  - *(2026-10-08)* **Phase 12 is built** (on `phase-8-persist-chats`, not pushed):
+    - 12a: send_to_premiere is built inside Premiere, so no more imported copies;
+    - 12b–12d: speed, transitions, tracks and track switches;
+    - 12e: organizing the Media Pool / project.
+
+    Next:
+    - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
+    - With the user's go-ahead, a live pass on a scratch Resolve timeline (speed with and without ripple, a dissolve, add/remove track, a track lock, a label, a rename, a bin), each reverted.
+    - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -1683,3 +1718,6 @@ All four are ported from VibeCut (verbatim except the import paths) and are dire
 - **2026-10-08 (Claude): Phases 12b–12d: speed, transitions, tracks and track switches.**
   - Ported from VibeCut: `set_clip_speed`, `set_transition`, `add_track`/`remove_track` and `set_track_options`, with their Revert, their panel functions and their tests.
   - The new tools are in `timingTools.ts`. A rippled speed change in Premiere goes into a draft. See "Phase 12" → 12b–12d.
+- **2026-10-08 (Claude): Phase 12e: organizing the Media Pool / Premiere project.**
+  - Ported VibeCut's `premiere_organize`/`resolve_organize`, their panel commands and their tests.
+  - The new tools are in `poolTools.ts`. Their changes go in the edit log, so Revert undoes them with the timeline edits. See "Phase 12" → 12e.

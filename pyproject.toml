@@ -92,6 +92,11 @@ module = [
     "vibecut_agent.nle.resolve_rebuild",
     "vibecut_agent.nle.interchange.*",
     "vibecut_agent.transcribe.*",
+    # Phase 12d-12e, from VibeCut: track switches and organizing the project.
+    "vibecut_agent.nle.premiere_structure",
+    "vibecut_agent.nle.resolve_structure",
+    "vibecut_agent.nle.premiere_organize",
+    "vibecut_agent.nle.resolve_organize",
 ]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false

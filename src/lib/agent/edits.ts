@@ -7,6 +7,7 @@
 import { nleCall } from "../ipc";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import type { EditEntry, EditResult, RevertResult, TimelineChange } from "../../types/edits";
+import { refreshPool } from "./projectTools";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 import { clock, type ToolOutcome } from "./args";
@@ -139,7 +140,17 @@ export function followed(changes: TimelineChange[], restored: Record<string, str
   }));
 }
 
-/** Reverts logged edits, newest first, one entry at a time. Entries already reverted are skipped. */
+/** What `revert_pool_changes` answers (premiere_organize / resolve_organize). */
+interface PoolRevertResult {
+  reverted: { clipId: string; field: string }[];
+  changedSince: { clipId: string; field: string }[];
+  failed: { clipId: string; field: string; reason: string }[];
+  binsRemoved: string[];
+  binsKept: string[];
+}
+
+/** Reverts logged edits, newest first, one entry at a time. Entries already reverted are skipped.
+ * A project (pool) entry goes back through `revert_pool_changes` (Phase 12e). */
 export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutcome> {
   const entries = useEditLogStore
     .getState()
@@ -147,7 +158,19 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
     .reverse();
   if (entries.length === 0) throw new Error("Those timeline edits are already reverted, or there are none");
   const totals = { reverted: 0, changedSince: [] as RevertResult["changedSince"], failed: [] as RevertResult["failed"], lost: [] as string[], graded: [] as string[] };
+  const pool = { reverted: 0, binsRemoved: [] as string[], binsKept: [] as string[] };
   for (const entry of entries) {
+    if (entry.pool) {
+      // A change to the project's bins and clips (Phase 12e): the editor puts back each `before`.
+      const back = await nleCall<PoolRevertResult>(entry.host, "revert_pool_changes", { changes: entry.pool.changes, createdBins: entry.pool.createdBins });
+      useEditLogStore.getState().markReverted(entry.id, { at: Date.now(), changedSince: back.changedSince.length, failed: back.failed.length, lost: [] });
+      pool.reverted += back.reverted.length;
+      pool.binsRemoved.push(...back.binsRemoved);
+      pool.binsKept.push(...back.binsKept);
+      totals.changedSince.push(...back.changedSince.map((c) => ({ name: c.clipId, reason: `its ${c.field} was changed in ${HOST_SHORT[entry.host]} since` })));
+      totals.failed.push(...back.failed.map((f) => ({ name: f.clipId, reason: f.reason })));
+      continue;
+    }
     const result = await nleCall<RevertResult>(entry.host, "revert_timeline_changes", {
       timeline: entry.timeline,
       changes: followed(entry.changes, useEditLogStore.getState().restoredIds[entry.host]),
@@ -167,8 +190,17 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
     totals.graded.push(...(result.gradedFromBackup ?? []));
   }
   const host = entries[0].host;
+  if (entries.some((e) => e.pool)) await refreshPool(host, null);
   const backups = [...new Set(entries.map((e) => e.backup).filter(Boolean))];
-  const parts = [`Reverted ${count(totals.reverted, "timeline change")}`];
+  const what = [
+    totals.reverted || !pool.reverted ? count(totals.reverted, "timeline change") : null,
+    pool.reverted ? count(pool.reverted, `${host === "premiere" ? "project" : "Media Pool"} change`) : null,
+  ].filter((w): w is string => w !== null);
+  const parts = [
+    `Reverted ${what.join(" and ")}`,
+    pool.binsRemoved.length ? `removed the bin(s) ${pool.binsRemoved.join(", ")}` : null,
+    pool.binsKept.length ? `kept ${pool.binsKept.join(", ")}, which isn't empty` : null,
+  ].filter((p): p is string => p !== null);
   if (totals.changedSince.length) parts.push(`left ${totals.changedSince.length} that changed since (${totals.changedSince.map((c) => `${c.name}: ${c.reason}`).join("; ")})`);
   if (totals.failed.length) parts.push(`${totals.failed.length} couldn't be undone (${totals.failed.map((c) => `${c.name}: ${c.reason}`).join("; ")})`);
   const graded = new Set(totals.graded);
@@ -181,7 +213,7 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
     if (withGrade.length) parts.push(`${withGrade.join(", ")} put back with the grade, transform and fades from "${backups.join('", "')}" (Fusion effects and keyframes aren't restored)`);
     if (without.length) parts.push(`${without.join(", ")} put back from the source without its grade or effects; "${backups.join('", "')}" still has them`);
   }
-  return { summary: parts.join("; "), result: { ...totals, lost, backups } };
+  return { summary: parts.join("; "), result: { ...totals, lost, backups, ...(pool.reverted ? { pool } : {}) } };
 }
 
 /** Reverts every edit of the latest request that has unreverted ones (the chat's Revert button). */

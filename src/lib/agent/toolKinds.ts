@@ -10,6 +10,7 @@
  */
 import { lastTimelineView } from "./context";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
+import { useConnectionStore } from "../../store/useConnectionStore";
 
 export const CHANGING_TOOLS = new Set([
   "add_clips",
@@ -48,6 +49,12 @@ export const CHANGING_TOOLS = new Set([
   "add_track",
   "remove_track",
   "set_track_options",
+  // Phase 12e: organizing the project.
+  "create_bins",
+  "move_clips",
+  "set_clip_labels",
+  "set_clip_metadata",
+  "rename_clips",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -115,15 +122,25 @@ const VERB: Record<string, string> = {
   add_track: "Add a track",
   remove_track: "Remove a track",
   set_track_options: "Switch a track",
+  create_bins: "Create bins",
+  move_clips: "Move project clips into a bin",
+  set_clip_labels: "Change the colour of",
+  set_clip_metadata: "Change the logged notes of",
+  rename_clips: "Rename project clips",
 };
 
-/** Clip names for ids, from the timeline last read, else the ids themselves. */
+/** Clip names for ids, from the timeline last read (or, for a short pool id like "p3", the project's
+ * clips), else the ids themselves. */
 function clipNames(ids: string[]): string[] {
   const nle = useNleStateStore.getState();
   const host = selectActiveHost(nle);
   const timeline = host ? nle.hosts[host].timeline : null;
   const view = host && timeline ? lastTimelineView(host, timeline) : null;
   const names = new Map(view?.tracks.flatMap((t) => t.clips.map((c) => [c.id, c.name] as const)) ?? []);
+  if (host) {
+    const { pool, aliases } = useConnectionStore.getState().connections[host];
+    for (const clip of pool?.clips ?? []) names.set(aliases[clip.id] ?? clip.id, clip.name);
+  }
   return ids.map((id) => names.get(id) ?? id);
 }
 
@@ -141,7 +158,7 @@ export function describeChange(name: string, args: unknown): string {
     const names = clipNames(ids);
     return `${verb} ${ids.length === 1 ? "" : `${ids.length} clips: `}${listed(names)}`;
   }
-  for (const key of ["clips", "markers", "paths", "markerIds"]) {
+  for (const key of ["clips", "markers", "paths", "markerIds", "renames"]) {
     if (count(key)) return `${verb} (${count(key)})`;
   }
   const named = [a.name, a.newName, a.timeline].find((v): v is string => typeof v === "string" && v.length > 0);

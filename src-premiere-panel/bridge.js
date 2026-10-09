@@ -77,6 +77,11 @@ const COMMANDS = {
   add_transition: "vcAddTransition",
   remove_transition: "vcRemoveTransition",
   set_track_options: "vcSetTrackOptions",
+  // Phase 12e: organizing the project (premiere_organize.py), as VibeCut's panel names them.
+  create_bin: "vcCreateBin",
+  move_project_items: "vcMoveProjectItems",
+  set_project_items: "vcSetProjectItems",
+  delete_bin: "vcDeleteBin",
 };
 
 // Premiere's own sequence presets only (premiere_project.preset_for picks one).
@@ -328,6 +333,30 @@ const CHECKS = {
   },
   delete_sequence(args) {
     checkSequenceName(args.timeline);
+  },
+  // Copied from VibeCut's bridge.js (Phase 12e).
+  create_bin(args) {
+    checkId(args.parentId, "parentId");
+    checkName(args.name, "name", true);
+  },
+  move_project_items(args) {
+    checkIds(args.ids, "ids");
+    checkId(args.binId, "binId");
+  },
+  set_project_items(args) {
+    if (!Array.isArray(args.items) || !args.items.length || args.items.length > 500) throw new Error("items must list 1 to 500 project items");
+    args.items.forEach((item, i) => {
+      checkId(item.id, `items[${i}].id`);
+      if (item.name !== undefined) checkName(item.name, `items[${i}].name`, false);
+      if (item.label !== undefined && !(Number.isInteger(item.label) && item.label >= 0 && item.label <= 15)) throw new Error(`items[${i}].label must be 0 to 15`);
+      (item.fields || []).forEach((field, f) => {
+        if (!["Description", "LogNote", "Scene", "Shot", "Good"].includes(field.key)) throw new Error(`items[${i}].fields[${f}] can't be set`);
+        if (typeof field.value !== "string" || field.value.length > 2000) throw new Error(`items[${i}].fields[${f}].value must be text`);
+      });
+    });
+  },
+  delete_bin(args) {
+    checkId(args.id, "id");
   },
   // Copied from VibeCut's bridge.js (Phase 12b-12d).
   set_speed(args) {

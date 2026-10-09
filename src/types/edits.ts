@@ -65,6 +65,9 @@ export interface EditEntry {
   /** The copy made before the request's first edit. */
   backup: string;
   changes: TimelineChange[];
+  /** A change to the project's bins and clips instead of a timeline (Phase 12e): what it replaced, for
+   * `revert_pool_changes`. Its `changes` is empty and `backup` "". */
+  pool?: { changes: PoolChange[]; createdBins: string[] };
   reverted?: { at: number; changedSince: number; failed: number; lost: string[] };
   /** Made before this launch (loaded from the saved log, Phase 8a): its clips may have changed since. */
   fromEarlierRun?: boolean;
@@ -77,4 +80,19 @@ export interface RevertResult {
   lost: string[];
   gradedFromBackup?: string[];
   restoredIds: Record<string, string>;
+}
+
+/** One change to a Media Pool / project clip (Phase 12e), as premiere_organize / resolve_organize return it. */
+export interface PoolChange {
+  clipId: string;
+  field: string;
+  before: string | string[] | boolean | null;
+  after: string | string[] | boolean | null;
+}
+
+/** What every organizing command answers. */
+export interface PoolChangeResult {
+  changes: PoolChange[];
+  createdBins: string[];
+  refused: { clipId: string; reason: string }[];
 }

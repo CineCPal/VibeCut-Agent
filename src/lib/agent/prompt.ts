@@ -5,6 +5,7 @@ import { projectInstruction } from "./projectTools";
 import { transcriptInstruction } from "./transcriptTools";
 import { draftInstruction } from "./draft";
 import { timingInstruction } from "./timingTools";
+import { poolInstruction } from "./poolTools";
 import { storyInstruction } from "./storyTools";
 import { syncInstruction } from "./syncTools";
 
@@ -70,6 +71,7 @@ Ground rules:
   ${colors.join(", ")}. ${ids} Removing or changing markers the user made can't be undone from here:
   only touch ones the user asked about or that you added.
 ${projectInstruction(host)}
+${poolInstruction(host)}
 ${transcriptInstruction(host)}
 ${draftInstruction(host)}
 ${timingInstruction(host)}

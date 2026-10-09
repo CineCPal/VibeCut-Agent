@@ -158,7 +158,7 @@ export function editToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "revert_timeline_edits",
-      description: `Undoes your earlier direct edits: editIds (the editId each result gave, e.g. "e2"), or lastStep=true for everything you edited for the latest request. A clip changed since is left as it is. ${host === "premiere" ? "A deleted clip comes back from its file without its effects; the backup still has them. Trims, slips and moves go back with the clip's effects." : "A deleted clip comes back from its source with its grade from the backup when it can; the backup timeline keeps everything."}`,
+      description: `Undoes your earlier direct edits, and your changes to the ${host === "premiere" ? "project's bins and clips" : "Media Pool"}: editIds (the editId each result gave, e.g. "e2"), or lastStep=true for everything you changed for the latest request. A clip changed since is left as it is; a bin you made is removed only once it's empty. ${host === "premiere" ? "A deleted clip comes back from its file without its effects; the backup still has them. Trims, slips and moves go back with the clip's effects." : "A deleted clip comes back from its source with its grade from the backup when it can; the backup timeline keeps everything."}`,
       parameters: { type: "OBJECT", properties: { editIds: { type: "ARRAY", items: { type: "STRING" } }, lastStep: { type: "BOOLEAN" } } },
     },
   ];

@@ -244,6 +244,21 @@ describe("Premiere panel bridge.js", () => {
     expect(panel.scripts[0]).toContain("vcSetSpeed(");
   });
 
+  it("checks organizing the project before calling Premiere (Phase 12e)", async () => {
+    const panel = loadPanel(dir, () => JSON.stringify({ ok: true, result: {} }));
+    const refused: [string, Record<string, unknown>, string][] = [
+      ["o1", { command: "create_bin", args: { parentId: "000f4240", name: "B-roll/Day 1" } }, 'name must be one line of at most 255 characters, without "/"'],
+      ["o2", { command: "set_project_items", args: { items: [{ id: "000f4241", label: 16 }] } }, "items[0].label must be 0 to 15"],
+      ["o3", { command: "set_project_items", args: { items: [{ id: "000f4241", fields: [{ key: "Keywords", value: "x" }] }] } }, "items[0].fields[0] can't be set"],
+    ];
+    for (const [id, request] of refused) writeJob(dir, { id, ...request });
+    writeJob(dir, { id: "o4", command: "move_project_items", args: { ids: ["000f4241"], binId: "000f4240" } });
+    await panel.context.poll();
+    for (const [id, , error] of refused) expect(readJson(path.join(dir, "replies", `${id}.json`)).error).toBe(error);
+    expect(readJson(path.join(dir, "replies", "o4.json")).ok).toBe(true);
+    expect(panel.scripts[0]).toContain("vcMoveProjectItems(");
+  });
+
   it("clears requests a previous Premiere left half-done", () => {
     fs.mkdirSync(path.join(dir, "jobs"), { recursive: true });
     fs.writeFileSync(path.join(dir, "jobs", "old.json.running"), "{}");

@@ -167,7 +167,7 @@ class FakeProject:
                     item["name"] = want["name"]
                 if "label" in want:
                     item["label"] = want["label"]
-                    from premiere_pool import PREMIERE_LABEL_COLORS
+                    from vibecut_agent.nle.premiere_pool import PREMIERE_LABEL_COLORS
 
                     item["columns"]["Label"] = PREMIERE_LABEL_COLORS[want["label"]]
                 for field in want.get("fields", []):

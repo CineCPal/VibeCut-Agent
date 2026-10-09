@@ -1790,3 +1790,120 @@ function vcSetSpeed(args) {
     return { speeds: speeds };
   }, args);
 }
+
+// ---------------------------------------------------------------- Phase 12e: organizing the project
+// From VibeCut's host.jsx verbatim (its "Connect page, phase 4e"; checked in 26.5.2): bins made and
+// emptied ones removed, items moved with moveBin, names, label colours and the logged columns (through
+// the project's own XMP, never the media file's).
+
+var VC_SETTABLE = {
+  Description: "Column.PropertyText.Description",
+  LogNote: "Column.Intrinsic.LogNote",
+  Scene: "Column.PropertyText.Scene",
+  Shot: "Column.PropertyText.Shot",
+  Good: "Column.PropertyBool.Good"
+};
+var VC_PROJECT_NS = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
+
+function vcBinWithId(id, index) {
+  var found = vcProjectItemWithId(id, index);
+  if (found.item.type !== ProjectItemType.BIN && found.item.type !== ProjectItemType.ROOT) {
+    vcRefuse("\"" + found.item.name + "\" isn't a bin");
+  }
+  return found.item;
+}
+
+// args: {parentId, name}. Makes one bin; returns it.
+function vcCreateBin(args) {
+  return vcAnswer(function (a) {
+    vcProject();
+    var made = vcBinWithId(a.parentId).createBin(a.name);
+    if (!made || !made.nodeId) {
+      vcRefuse("Premiere didn't make the bin \"" + a.name + "\"");
+    }
+    return { id: made.nodeId, name: made.name };
+  }, args);
+}
+
+// args: {ids, binId}. Moves each item into the bin.
+function vcMoveProjectItems(args) {
+  return vcAnswer(function (a) {
+    vcProject();
+    var index = vcProjectIndex();
+    var bin = vcBinWithId(a.binId, index);
+    var moved = [];
+    var failed = [];
+    for (var i = 0; i < a.ids.length; i++) {
+      var item = vcProjectItemWithId(a.ids[i], index).item;
+      if (item.moveBin(bin) === true) {
+        moved.push(a.ids[i]);
+      } else {
+        failed.push(a.ids[i]);
+      }
+    }
+    return { moved: moved, failed: failed };
+  }, args);
+}
+
+function vcXmp() {
+  if (typeof XMPMeta === "undefined") {
+    ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
+  }
+}
+
+// args: {items: [{id, name?, label?, fields?: [{key, value}]}]}. Sets what each names and reads it
+// back: {items: [{id, name, label, columns}]}. Field keys are VC_SETTABLE's.
+function vcSetProjectItems(args) {
+  return vcAnswer(function (a) {
+    vcProject();
+    var index = vcProjectIndex();
+    var out = [];
+    for (var i = 0; i < a.items.length; i++) {
+      var want = a.items[i];
+      var item = vcProjectItemWithId(want.id, index).item;
+      if (want.name !== undefined && want.name !== null) {
+        item.name = want.name;
+      }
+      if (want.label !== undefined && want.label !== null) {
+        item.setColorLabel(want.label);
+      }
+      if (want.fields && want.fields.length) {
+        vcXmp();
+        var xmp = new XMPMeta(item.getProjectMetadata());
+        var ids = [];
+        for (var f = 0; f < want.fields.length; f++) {
+          var key = want.fields[f].key;
+          if (!VC_SETTABLE.hasOwnProperty(key)) {
+            vcRefuse("A script can't set " + key);
+          }
+          // setProperty throws ("Composite nodes can't have values") for "" on a field that's set
+          // (26.5.2), so a field is cleared by deleting it; listing it below makes Premiere clear it.
+          if (String(want.fields[f].value) === "") {
+            xmp.deleteProperty(VC_PROJECT_NS, VC_SETTABLE[key]);
+          } else {
+            xmp.setProperty(VC_PROJECT_NS, VC_SETTABLE[key], String(want.fields[f].value));
+          }
+          ids.push(VC_SETTABLE[key]);
+        }
+        item.setProjectMetadata(xmp.serialize(), ids);
+      }
+      out.push({ id: want.id, name: item.name, label: item.getColorLabel(), columns: vcColumnsOf(item, false) });
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {id}. Removes a bin, only when it's empty.
+function vcDeleteBin(args) {
+  return vcAnswer(function (a) {
+    vcProject();
+    var bin = vcBinWithId(a.id);
+    if (bin.type === ProjectItemType.ROOT) {
+      vcRefuse("That's the project itself");
+    }
+    if (bin.children.numItems > 0) {
+      return { deleted: false };
+    }
+    return { deleted: bin.deleteBin() === true };
+  }, args);
+}

@@ -18,6 +18,7 @@ import { draftExecutors, draftToolDeclarations, refuseWhileDrafting } from "./dr
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
 import { timingExecutors, timingToolDeclarations } from "./timingTools";
+import { poolExecutors, poolToolDeclarations } from "./poolTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -42,6 +43,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...editToolDeclarations(host),
     ...timingToolDeclarations(host),
     ...projectToolDeclarations(host),
+    ...poolToolDeclarations(host),
     ...transcriptToolDeclarations(host),
     ...draftToolDeclarations(host),
     ...syncToolDeclarations(host),
@@ -271,6 +273,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...transcriptExecutors(context),
     ...draftExecutors(context),
     ...timingExecutors(context),
+    ...poolExecutors(context),
     ...syncExecutors(context),
     ...storyExecutors(context),
   };
