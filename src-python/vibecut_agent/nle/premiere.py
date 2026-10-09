@@ -31,7 +31,16 @@ MAX_TEXT = 2000
 ID_PATTERN = re.compile(r"[\w-]{1,64}")
 
 # How long the panel gets for each command, in seconds.
-TIMEOUTS = {"read_sequence": 25.0, "read_project": 25.0, "import_sequence": 170.0}
+TIMEOUTS = {
+    "read_sequence": 25.0,
+    "read_project": 25.0,
+    "import_sequence": 170.0,
+    # Phase 12a: a long sequence's clone, razors and moves run in one blocking call each.
+    "clone_sequence": 120.0,
+    "razor_cuts": 120.0,
+    "move_items": 60.0,
+    "remove_items": 60.0,
+}
 DEFAULT_TIMEOUT_S = 20.0
 
 Request = Callable[[str, dict[str, Any], float], Any]

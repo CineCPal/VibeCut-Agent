@@ -28,8 +28,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub const STATE_EVENT: &str = "nle-state";
 /// How long `nle_call` waits for a reply. The watcher gives Premiere 25 s for its longest read.
 const CALL_TIMEOUT: Duration = Duration::from_secs(35);
-/// A rebuild imports a whole new timeline (Premiere's XML import alone may take 170 s; Phase 6b).
-const REBUILD_TIMEOUT: Duration = Duration::from_secs(200);
+/// A rebuild imports a whole new timeline (Premiere's XML import alone may take 170 s; Phase 6b), or
+/// (Phase 12a) clones, razors and moves a long sequence inside Premiere in several calls.
+const REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long a call may take before the app stops waiting for it.
 pub fn call_timeout(command: &str) -> Duration {
@@ -478,7 +479,7 @@ mod tests {
         let (c, rc) = pending.register();
         pending.forget(&c);
         assert!(rc.recv_timeout(Duration::from_millis(10)).is_err());
-        assert_eq!(call_timeout("rebuild"), Duration::from_secs(200));
+        assert_eq!(call_timeout("rebuild"), Duration::from_secs(300));
         assert_eq!(call_timeout("read_timeline"), Duration::from_secs(35));
     }
 }

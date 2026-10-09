@@ -11,7 +11,7 @@ import { useConnectionStore } from "../../store/useConnectionStore";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
-import { arrangeSections, draftAsTimeline, draftFromSnapshot, rebuildRequest, removeRanges, type HostDraft } from "../../vibecut/lib/connect/hostDraft";
+import { arrangeSections, draftAsTimeline, draftFromSnapshot, rebuildRequest, removeRanges, type DraftClip, type HostDraft } from "../../vibecut/lib/connect/hostDraft";
 import type { TimeRange } from "../../vibecut/lib/timeline";
 import { type Args, clock, type Executor, optStr, type ToolOutcome } from "./args";
 import { HOST_SHORT, TIMELINE_NOUN } from "./edits";
@@ -76,6 +76,30 @@ interface RebuildResult {
   bin?: string;
   gradesCopied?: number;
   gradesNotCopied?: number;
+  /** Premiere (Phase 12a): built inside Premiere from the project's own clips, not imported. */
+  native?: boolean;
+  carried?: number;
+  placed?: number;
+}
+
+/** The draft's own clips, V1 and A1 first, for Premiere's rebuild inside Premiere (PLAN.md, "Phase
+ * 12a"): each names the clip of the original it was cut from, so that clip is cut and moved instead of
+ * its file being imported again. */
+export function nativeLayout(draft: HostDraft): Record<string, unknown> {
+  const clip = (c: DraftClip) => ({
+    ...(c.originId ? { originId: c.originId } : {}),
+    sourcePath: c.sourcePath,
+    start: c.start,
+    end: c.end,
+    sourceIn: c.sourceIn,
+    sourceOut: c.sourceOut,
+    speed: c.speed,
+    enabled: c.enabled,
+    volumeDb: c.volumeDb,
+    ...(c.linkGroup ? { linkGroup: c.linkGroup } : {}),
+    ...(c.timeRemap ? { ramp: true } : {}),
+  });
+  return { video: draft.video.map((t) => t.clips.map(clip)), audio: draft.audio.map((t) => t.clips.map(clip)) };
 }
 
 /** Builds the new timeline from the draft, connects to it and closes the draft. */
@@ -84,8 +108,11 @@ export async function sendDraft(context: ToolContext, name?: string): Promise<To
   const draft = draftOf(host);
   if (!draft) throw new Error("There's no draft to send");
   const request = rebuildRequest(draft, name);
-  // Premiere's rebuild carries no grades.
-  if (host === "premiere") delete request.grades;
+  // Premiere's rebuild carries no grades; it's built from the original's own clips instead.
+  if (host === "premiere") {
+    delete request.grades;
+    request.layout = nativeLayout(draft);
+  }
   const r = await nleCall<RebuildResult>(host, "rebuild", request);
   const store = useConnectionStore.getState();
   store.addMadeTimeline(host, r.timeline);
@@ -93,6 +120,8 @@ export async function sendDraft(context: ToolContext, name?: string): Promise<To
   context.timeline = r.timeline;
   const notes = [
     host === "premiere" ? `in the "${r.bin ?? "VibeCut"}" bin` : r.gradesCopied ? `${r.gradesCopied} grade(s) carried` : null,
+    r.native ? `built from the project's own clips with their effects, nothing imported${r.placed ? ` (${r.placed} placed from project media)` : ""}` : null,
+    ...r.warnings.slice(0, 3),
     r.markersAdded ? `${r.markersAdded} marker(s)` : null,
     draft.notCarried.length ? `not carried: ${draft.notCarried.join(", ")}` : null,
   ].filter(Boolean);
@@ -154,12 +183,19 @@ export function draftToolDeclarations(host: NleHost): ToolDeclaration[] {
 
 export function draftInstruction(host: NleHost): string {
   const noun = TIMELINE_NOUN[host];
+  const carried =
+    host === "premiere"
+      ? `In Premiere the new sequence is built from the original's own clips, so their effects, Lumetri
+  and keyframes go with them and no media is imported again (a speed ramp is the exception: it comes in
+  as XML, and the result says so). Transitions aren't carried, and the draft lists anything else that
+  won't be (notCarried). Mention it when you send.`
+      : `A rebuilt ${noun} can't carry transitions, effects, titles, adjustment layers or nested
+  ${noun}s; the draft lists what won't be carried (notCarried). Mention it when you send.`;
   return `- Cutting by content (remove_time_ranges, rearrange_sections, remove_transcript_lines,
   remove_speaker_lines) works in a DRAFT: a copy of the connected ${noun} where the rest closes up after
   each cut. The snapshot shows the draft while one is open, with its own clip ids. When it's done, call
   send_to_${host} once: it creates a NEW ${noun} (like "Interview (VibeCut 1)"), opens it and connects to
   it; the user's ${noun} is left as it is. Say which ${noun} you created. discard_draft throws it away.
   While a draft is open, direct edits, create_timeline and switch_timeline are refused: send or discard
-  it first. A rebuilt ${noun} can't carry transitions, effects, titles, adjustment layers or nested
-  ${noun}s; the draft lists what won't be carried (notCarried). Mention it when you send.`;
+  it first. ${carried}`;
 }

@@ -1379,6 +1379,45 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
   - The app itself: the tabs, queue, mentions, review cards and notifications. Notifications need the installed app (`npm run install-app`): macOS asks to allow them once.
   - A review card on a scratch Resolve timeline.
 
+## Phase 12: More of the agent's actions done in the editor itself (2026-10-08)
+
+The user's goal for this phase: more of what the agent does should happen inside Premiere and Resolve. They chose to keep cuts by content in drafts (a NEW timeline), and to add speed, transitions, tracks, and organizing the Media Pool / bins (12b–12e). Timeline-clip colour and names come later.
+
+### 12a: send_to_premiere built inside Premiere
+**The bug (seen by the user):** a resequence "round-tripped and imported new copies". `send_to_premiere` wrote the draft as XML, and the panel imported it (`vcImportSequence`). Premiere then makes a new master clip in the "VibeCut" bin for every source in an XML, even a file the project already has, and the clips' effects stay behind. Resolve's rebuild never did this: it imports with `importSourceClips: False` and uses the Media Pool's own clips.
+
+**Now (`nle/premiere_native.py`, called by `premiere_rebuild.rebuild` when the request has a `layout`):**
+1. `clone_sequence` (panel `vcCloneSequenceInto`) copies the connected sequence into the "VibeCut" bin and opens it. Clips keep their effects, Lumetri and keyframes.
+2. `remove_transitions` clears the clone's transitions; the XML rebuild never carried them either. The result warns.
+3. Each draft clip with an `originId` (every clip `draftFromSnapshot` made) is found in the clone where it was cut from:
+   - `razor_cuts` (QE, up to 200 cuts per call) cuts the tracks at its edges;
+   - `remove_items` lifts every piece no draft clip uses;
+   - `move_items` moves the rest in two passes: everything past the end first, then each to its start (`moves: [{id, offsetTicks}]`, new), so no move ever lands on another clip;
+   - `set_items` sets on/off and levels where the draft differs, and `set_links` relinks each picture with its sound.
+4. A draft clip without a clip of the original to come from (B-roll the draft placed, a Story Editor cut, a second use of the same source range) goes through `premiere_edit.add_clips`. It uses the project item already there for that file (`vcProjectItemFor`) and imports only a file the project doesn't have. Missing tracks are added first.
+5. The clone's markers are replaced by the draft's.
+6. Any failure deletes the clone (`delete_sequence`). The original is never touched.
+
+**Still from XML:** a clip with a speed ramp, or a new clip at another speed. The result says so, along with the copies it imports.
+
+**What else changed:**
+- **App side:** `draft.ts` sends `layout` (`nativeLayout`) for Premiere, and its summary says when nothing was imported. The prompt now tells the agent that Premiere keeps the clips' effects.
+- **Panel 0.9.0:** new commands `clone_sequence`, `razor_cuts`, `remove_transitions` and `delete_sequence`. `move_items` now takes `moves`. Every one is checked in `bridge.js`, and `move_items` gained a check it didn't have.
+- **Timeouts:** the panel gets 120 s for a clone or razor batch. Rust's `rebuild` wait is 200 → 300 s.
+- **Not removed:** the copies made by earlier sends are still in the "VibeCut" bin; nothing deletes project items automatically.
+
+**Tests:**
+- `test_premiere_native.py` runs against a fake panel that keeps a real sequence and refuses a move onto another clip. It checks:
+  - a resequence of A/B with linked sound: the pieces, places and links, the original unchanged, no `import_sequence` call, markers replaced, transitions removed;
+  - a clip placed from the project;
+  - a failed cut, which deletes the clone;
+  - levels and on/off;
+  - which drafts `plan` leaves to XML.
+- `bridge.test.ts`: the new checks.
+- `transcriptTools.test.ts`: the layout names the original's clips.
+
+**Live:** this needs Premiere. The user presses Settings → Editors → Update panel (0.9.0) and restarts Premiere, then tries a rearrange + send on a copy of a sequence. The "VibeCut" bin should gain only the new sequence.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1602,3 +1641,7 @@ The engine already supported all of this (ported in Phase 4, unused by the UI): 
 - **2026-10-08 (Claude): Fix: `rearrange_sections` left zero-length clips that Premiere refused.**
   - `arrangeSections` (src/vibecut/lib/connect/hostDraft.ts) snapped the sections to frames but compared them with the clips' own edges, which Premiere reports rounded to the millisecond. A clip ending a fraction of a frame into a section left a sliver that snapped to zero length. The rebuild refused it with "must end after it starts". Seen while sorting a 94-clip B-roll selects sequence by clip name.
   - Clips are now compared on frame-snapped edges, and any piece under half a frame is dropped. `remove_time_ranges` and the transcript cuts go through the same function, so they get the fix too. Test: "leaves no zero-length clip …" in hostDraft.test.ts.
+- **2026-10-08 (Claude): Phase 12a: send_to_premiere is built inside Premiere, from the project's own clips.**
+  - The cause of the copies: the XML import made new master clips for media the project already had, and lost the clips' effects.
+  - The fix: `premiere_native.py` clones the sequence, razors, lifts and moves the pieces, and places only what's new from existing project items. XML stays only for speed ramps.
+  - Panel 0.9.0 adds `clone_sequence`, `razor_cuts`, `remove_transitions` and `delete_sequence`, and `move_items` takes `moves`. The rebuild timeout is now 300 s. See "Phase 12" → 12a.

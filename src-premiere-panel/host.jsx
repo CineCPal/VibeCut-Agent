@@ -792,15 +792,33 @@ function vcSetItems(args) {
   }, args);
 }
 
-// args: {timeline, ids, offsetTicks}. Moves each clip along its track by the offset.
+// args: {timeline, ids, offsetTicks} moves each clip along its track by the offset; or {timeline, moves:
+// [{id, offsetTicks}]} moves each by its own (Phase 12a's rebuild, many clips in one call).
 function vcMoveItems(args) {
   return vcAnswer(function (a) {
     var sequence = vcSequenceNamed(a.timeline);
+    var moves = [];
+    var i;
+    if (a.moves) {
+      moves = a.moves;
+    } else {
+      for (i = 0; i < a.ids.length; i++) {
+        moves.push({ id: a.ids[i], offsetTicks: a.offsetTicks });
+      }
+    }
+    var found = vcItems(sequence);
+    for (i = 0; i < moves.length; i++) {
+      if (!found[moves[i].id]) {
+        vcRefuse("There is no clip " + moves[i].id + " on \"" + sequence.name + "\" any more");
+      }
+      found[moves[i].id].item.move(vcTime(moves[i].offsetTicks));
+    }
+    var after = vcItems(sequence);
     var out = [];
-    for (var i = 0; i < a.ids.length; i++) {
-      var entry = vcItemWithId(sequence, a.ids[i]);
-      entry.item.move(vcTime(a.offsetTicks));
-      out.push(vcPlaced(vcItemWithId(sequence, a.ids[i]), a.ids[i]));
+    for (i = 0; i < moves.length; i++) {
+      if (after[moves[i].id]) {
+        out.push(vcPlaced(after[moves[i].id], moves[i].id));
+      }
     }
     return { items: out };
   }, args);
@@ -1515,5 +1533,76 @@ function vcSetLinks(args) {
       vcRestoreSelection(sequence, saved);
     }
     return { groups: linked };
+  }, args);
+}
+
+// ---------------------------------------------------------------- Phase 12a: a draft built inside Premiere
+// premiere_native.py makes the new sequence from a clone of the connected one, so the project's own
+// clips (and their effects) are used and nothing is imported that the project already has.
+
+// args: {timeline, name, bin}. Clones the sequence, names the copy, files it in the bin and opens it.
+function vcCloneSequenceInto(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var copy = vcCloneSequence(sequence, a.name, "Premiere didn't copy the sequence, so no new sequence was made");
+    var bin = vcBin(a.bin);
+    if (copy.projectItem && typeof copy.projectItem.moveBin === "function") {
+      copy.projectItem.moveBin(bin);
+    }
+    app.project.openSequence(copy.sequenceID);
+    return { name: copy.name };
+  }, args);
+}
+
+// args: {timeline, cuts: [{type, track (0-based), timecode}]}. Razors each track at its timecode (QE).
+function vcRazorCuts(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var q = vcQeSequence(sequence);
+    var cut = 0;
+    try {
+      for (var i = 0; i < a.cuts.length; i++) {
+        var c = a.cuts[i];
+        var track = c.type === "audio" ? q.qe.getAudioTrackAt(c.track) : q.qe.getVideoTrackAt(c.track);
+        if (track) {
+          track.razor(c.timecode);
+          cut++;
+        }
+      }
+    } finally {
+      q.reopen();
+    }
+    return { cuts: cut };
+  }, args);
+}
+
+// args: {timeline}. Removes every transition on every track (VibeCut's vcRemoveTransition way).
+function vcRemoveTransitions(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var removed = 0;
+    var kinds = [sequence.videoTracks, sequence.audioTracks];
+    for (var k = 0; k < kinds.length; k++) {
+      for (var t = 0; t < kinds[k].numTracks; t++) {
+        var track = kinds[k][t];
+        if (!track.transitions) {
+          continue;
+        }
+        for (var n = track.transitions.numItems - 1; n >= 0; n--) {
+          if (track.transitions[n].remove(false, false) === true) {
+            removed++;
+          }
+        }
+      }
+    }
+    return { removed: removed };
+  }, args);
+}
+
+// args: {timeline}. Deletes a sequence the rebuild made and couldn't finish.
+function vcDeleteSequence(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    return { deleted: app.project.deleteSequence(sequence) === true };
   }, args);
 }

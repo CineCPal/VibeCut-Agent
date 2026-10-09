@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.8.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.9.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -208,6 +208,24 @@ describe("Premiere panel bridge.js", () => {
     expect(readJson(path.join(dir, "replies", "l1.json")).error).toBe("groups[0] must list 2 to 64 clips");
     expect(readJson(path.join(dir, "replies", "l2.json")).ok).toBe(true);
     expect(panel.scripts[0]).toContain("vcSetLinks(");
+  });
+
+  it("checks the rebuild's clone, cuts and moves before calling Premiere (Phase 12a)", async () => {
+    const panel = loadPanel(dir, () => JSON.stringify({ ok: true, result: {} }));
+    const refused: [string, Record<string, unknown>, string][] = [
+      ["r1", { command: "razor_cuts", args: { timeline: "Main", cuts: [{ type: "video", track: 0, timecode: "1:2" }] } }, "cuts[0].timecode must be HH:MM:SS:FF"],
+      ["r2", { command: "razor_cuts", args: { timeline: "Main", cuts: [{ type: "title", track: 0, timecode: "00:00:01:00" }] } }, "cuts[0].type must be video or audio"],
+      ["r3", { command: "move_items", args: { timeline: "Main", moves: [{ id: "n1", offsetTicks: "1.5" }] } }, "moves[0].offsetTicks must be ticks"],
+      ["r4", { command: "clone_sequence", args: { timeline: "Main", name: "Main (VibeCut 1)", bin: "../x" } }, "bin must be a short name"],
+    ];
+    for (const [id, request] of refused) writeJob(dir, { id, ...request });
+    writeJob(dir, { id: "r5", command: "move_items", args: { timeline: "Main", moves: [{ id: "n1", offsetTicks: "-254016000000" }] } });
+    writeJob(dir, { id: "r6", command: "razor_cuts", args: { timeline: "Main", cuts: [{ type: "audio", track: 1, timecode: "00:00:04:12" }] } });
+    writeJob(dir, { id: "r7", command: "delete_sequence", args: { timeline: "Main (VibeCut 1)" } });
+    await panel.context.poll();
+    for (const [id, , error] of refused) expect(readJson(path.join(dir, "replies", `${id}.json`)).error).toBe(error);
+    for (const id of ["r5", "r6", "r7"]) expect(readJson(path.join(dir, "replies", `${id}.json`)).ok).toBe(true);
+    for (const [n, fn] of ["vcMoveItems(", "vcRazorCuts(", "vcDeleteSequence("].entries()) expect(panel.scripts[n]).toContain(fn);
   });
 
   it("clears requests a previous Premiere left half-done", () => {

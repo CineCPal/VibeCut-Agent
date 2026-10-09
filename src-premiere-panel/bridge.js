@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.8.0";
+const PANEL_VERSION = "0.9.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 const BRIDGE_DIR =
@@ -67,6 +67,11 @@ const COMMANDS = {
   import_sequence: "vcImportSequence",
   // Phase 6c: link groups (links.py), for link_clips and a synced camera + recorder.
   set_links: "vcSetLinks",
+  // Phase 12a: a draft built inside Premiere from a clone (premiere_native.py), so nothing is imported twice.
+  clone_sequence: "vcCloneSequenceInto",
+  razor_cuts: "vcRazorCuts",
+  remove_transitions: "vcRemoveTransitions",
+  delete_sequence: "vcDeleteSequence",
 };
 
 // Premiere's own sequence presets only (premiere_project.preset_for picks one).
@@ -281,6 +286,43 @@ const CHECKS = {
       });
       if (typeof item.value !== "number" || !Number.isFinite(item.value)) throw new Error(`items[${i}].value must be a number`);
     });
+  },
+  move_items(args) {
+    checkSequenceName(args.timeline);
+    const offset = (value, where) => {
+      if (typeof value !== "string" || !/^-?\d{1,20}$/.test(value)) throw new Error(`${where} must be ticks`);
+    };
+    if (args.moves !== undefined) {
+      if (!Array.isArray(args.moves) || !args.moves.length || args.moves.length > 500) throw new Error("moves must list 1 to 500 clips");
+      args.moves.forEach((m, i) => {
+        if (!isPlainObject(m)) throw new Error(`moves[${i}] must be an object`);
+        checkId(m.id, `moves[${i}].id`);
+        offset(m.offsetTicks, `moves[${i}].offsetTicks`);
+      });
+      return;
+    }
+    checkIds(args.ids, "ids");
+    offset(args.offsetTicks, "offsetTicks");
+  },
+  clone_sequence(args) {
+    checkSequenceName(args.timeline);
+    checkSequenceName(args.name);
+    if (typeof args.bin !== "string" || !/^[\w ()-]{1,64}$/.test(args.bin)) throw new Error("bin must be a short name");
+  },
+  razor_cuts(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.cuts) || !args.cuts.length || args.cuts.length > 200) throw new Error("cuts must list 1 to 200 cuts");
+    args.cuts.forEach((c, i) => {
+      if (!isPlainObject(c) || (c.type !== "video" && c.type !== "audio")) throw new Error(`cuts[${i}].type must be video or audio`);
+      if (!Number.isInteger(c.track) || c.track < 0 || c.track > 99) throw new Error(`cuts[${i}].track must be a track index`);
+      if (typeof c.timecode !== "string" || !/^\d{2}:\d{2}:\d{2}:\d{2,3}$/.test(c.timecode)) throw new Error(`cuts[${i}].timecode must be HH:MM:SS:FF`);
+    });
+  },
+  remove_transitions(args) {
+    checkSequenceName(args.timeline);
+  },
+  delete_sequence(args) {
+    checkSequenceName(args.timeline);
   },
   razor(args) {
     if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > 32) throw new Error("ids must list 1 to 32 clips");

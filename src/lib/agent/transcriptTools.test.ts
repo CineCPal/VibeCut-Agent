@@ -106,6 +106,11 @@ describe("the agent's transcript and draft tools", () => {
     expect(request.timeline).toBe("Main");
     expect(request.tracks.length).toBeGreaterThan(0);
     expect(request.grades).toBeUndefined();
+    // Phase 12a: Premiere gets the draft's own clips, each naming the clip of "Main" it was cut from.
+    const layout = (request as { layout?: { video: { originId?: string; start: number; sourceIn: number }[][]; audio: { originId?: string }[][] } }).layout!;
+    expect(layout.video[0].length).toBeGreaterThan(0);
+    expect(layout.video[0].every((c) => c.originId === "v1")).toBe(true);
+    expect(layout.audio[0].every((c) => c.originId === "a1")).toBe(true);
     expect(context.timeline).toBe("Main (VibeCut 1)");
     expect(useConnectionStore.getState().connections.premiere).toMatchObject({ draft: null, madeTimelines: ["Main (VibeCut 1)"] });
   });

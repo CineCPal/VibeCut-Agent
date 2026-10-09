@@ -239,9 +239,23 @@ def _markers(raw: Any, duration: float) -> list[dict[str, Any]]:
     return out
 
 
+def _add_markers(host: Any, name: str, raw: Any, notes: list[str]) -> int:
+    """Adds the draft's markers that fit the new sequence; a failure is a note, not an error."""
+    markers = _markers(raw, seconds(host._info({"timeline": name})["endTicks"]))
+    if not markers:
+        return 0
+    try:
+        return len(host.add_markers({"timeline": name, "markers": markers})["added"])
+    except HostError as exc:
+        notes.append(f"The markers weren't added: {exc}")
+        return 0
+
+
 def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -> dict[str, Any]:
-    """Command `rebuild`: {timeline (the connected one), name (optional), tracks, markers}. `imports` is
-    the bridge folder's imports/, which the panel will only import from."""
+    """Command `rebuild`: {timeline (the connected one), name (optional), tracks, markers, layout}.
+    With `layout` (the draft's own clips, Phase 12a) the sequence is built inside Premiere from the
+    project's own clips (premiere_native.py); without it, or when that can't be done, from XML.
+    `imports` is the bridge folder's imports/, which the panel will only import from."""
     probe = probe or Probe()
     original = host._name(args)
     info = host._info(args)
@@ -254,6 +268,35 @@ def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -
         if isinstance(wanted, str) and wanted.strip()
         else default_name(original, taken)
     )
+
+    xml_note = None
+    if args.get("layout") is not None:
+        from vibecut_agent.nle import premiere_native
+        from vibecut_agent.nle.premiere_edit import _read
+
+        clips = premiere_native.layout_clips(args["layout"])
+        seq = _read(host, original)
+        steps = premiere_native.plan(seq, premiere_native.view_of(host, original), clips)
+        if steps is not None:
+            built = premiere_native.build(host, original, name, BIN_NAME, seq, steps)
+            notes = list(built["warnings"])
+            # The clone came with the original's markers; the draft's replace them.
+            host._send("remove_markers", {"timeline": built["timeline"], "all": True})
+            added = _add_markers(host, built["timeline"], args.get("markers"), notes)
+            return {
+                "timeline": built["timeline"],
+                "clips": built["clips"],
+                "markersAdded": added,
+                "bin": BIN_NAME,
+                "warnings": notes,
+                "native": True,
+                "carried": built["carried"],
+                "placed": built["placed"],
+            }
+        xml_note = (
+            "A speed ramp (or a new clip at another speed) can't be built inside Premiere, so this sequence came in "
+            f'as XML, and Premiere imported copies of its media into the "{BIN_NAME}" bin.'
+        )
 
     sources, unreadable = source_info(tracks, probe)
     refuse_sound_on_picture(tracks, sources)
@@ -272,14 +315,8 @@ def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -
             path.unlink()
     name = imported.get("name", name)
 
-    added = 0
-    markers = _markers(args.get("markers"), seconds(host._info({"timeline": name})["endTicks"]))
-    notes = list(warnings)
-    if markers:
-        try:
-            added = len(host.add_markers({"timeline": name, "markers": markers})["added"])
-        except HostError as exc:
-            notes.append(f"The markers weren't added: {exc}")
+    notes = list(warnings) + ([xml_note] if xml_note else [])
+    added = _add_markers(host, name, args.get("markers"), notes)
     for source in unreadable:
         notes.append(
             f"Couldn't read the start timecode of {os.path.basename(source)}, so its clips count from 00:00:00:00."
