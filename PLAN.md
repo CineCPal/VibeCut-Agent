@@ -1451,7 +1451,7 @@ All four are ported from VibeCut (verbatim except the import paths) and are dire
 - `timingTools.test.ts`: the requests, the Premiere ripple going to a draft, the refusals, the wording.
 - `bridge.test.ts`: the panel checks.
 
-**Live:** not yet. Resolve needs a scratch timeline, which the user approves first. Premiere needs panel 0.9.0 and a restart.
+**Live:** Resolve checked 2026-10-09 (see below). Premiere needs panel 0.9.0 and a restart.
 
 ### 12e: Organizing the Media Pool / Premiere project
 **Python:** `premiere_organize.py` and `resolve_organize.py` are VibeCut's, verbatim apart from the import paths and two type annotations. Each has six commands, registered in `project.py`:
@@ -1477,7 +1477,27 @@ Every change is `{clipId, field, before, after}`. The project's own media files 
 - `poolTools.test.ts`: ids, the log, refusals, Revert together with a timeline edit, the per-editor declarations, review.
 - `bridge.test.ts`: the panel checks.
 
-**Live:** not yet. Resolve: on "VibeCut 7a", after the user approves; clean up the bins afterwards. Premiere: after Update panel.
+**Live in Resolve (2026-10-09):** see "12b–12e checked live in Resolve" below. Premiere: after Update panel.
+
+### 12b–12e checked live in Resolve (2026-10-09, Resolve Studio 21.1, "VibeCut 7a")
+**Setup:** a real `resolve-watch` from the repo, driven by a scratch script. "Bakery (VibeCut 1)"'s media had gone offline, so a 40 s test clip was made with ffmpeg (testsrc2 + a sine). A new timeline, "VCA 12 live", got four linked clips from it through `add_clips`.
+
+**What each edit did:**
+- `backup_timeline`, then a 0.5 s dissolve on the first cut: Resolve placed it at 2.72–3.24 s, centred on the 3.0 s cut.
+- Clip 2 at 0.5x without ripple: same place and length, source 8.0–9.5 s.
+- Clip 3 at 2x with ripple: it became 6–8 s, and clip 4 moved from 10 s to 8 s, on V1 and A1 alike.
+- Add V2, add A2, remove A2.
+- Lock A1, switch V1 off.
+- In the Media Pool: clip colour Orange plus a Blue flag, Comments and a keyword, a rename, and a move into a new bin "Master/VCA 12 bin".
+
+Every change read back as asked.
+
+**Revert, newest first:**
+- The four pool changes: the new bin was removed.
+- The eight timeline changes: every one reverted, nothing changed since, nothing failed or lost.
+- The timeline then matched its first read clip by clip (place, source range, on/off, speed), with the same tracks and switches. The pool clip's name, bin, colour, flags and metadata were back as well.
+
+**Cleanup:** "VCA 12 live", its backup and an unused "VCA 12 test" copy were deleted, along with the imported test clip. "Timeline 28" is current again.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -1542,7 +1562,7 @@ Every change is `{clipId, field, before, after}`. The project's own media files 
 
     Next:
     - The user updates the Premiere panel to 0.9.0 (Settings → Editors → Update panel) and restarts Premiere, then tries a resequence and send.
-    - With the user's go-ahead, a live pass on a scratch Resolve timeline (speed with and without ripple, a dissolve, add/remove track, a track lock, a label, a rename, a bin), each reverted.
+    - ~~A live pass in Resolve~~: done 2026-10-09; every edit and its Revert held.
     - Later: colour and names for clips on a timeline (needs a probe), speed ramps.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
@@ -1721,3 +1741,6 @@ Every change is `{clipId, field, before, after}`. The project's own media files 
 - **2026-10-08 (Claude): Phase 12e: organizing the Media Pool / Premiere project.**
   - Ported VibeCut's `premiere_organize`/`resolve_organize`, their panel commands and their tests.
   - The new tools are in `poolTools.ts`. Their changes go in the edit log, so Revert undoes them with the timeline edits. See "Phase 12" → 12e.
+- **2026-10-09 (Claude): Phase 12b–12e checked live in Resolve.**
+  - Speed with and without ripple, a dissolve, tracks, track switches, and a pool label, flag, logging, rename and bin, on a scratch timeline with generated media.
+  - All of them were reverted, and the timeline and the pool clip matched where they started. Everything was cleaned up.
