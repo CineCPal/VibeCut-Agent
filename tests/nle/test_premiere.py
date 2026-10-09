@@ -82,6 +82,16 @@ def test_bridge_reports_panel_errors(tmp_path):
         PremiereBridge(tmp_path).request("status", {}, 5)
 
 
+def test_bridge_says_to_restart_premiere_when_its_loaded_panel_is_older(tmp_path):
+    def old_panel(_args):
+        raise RuntimeError("Unknown command: clone_sequence")
+
+    with FakePanel(tmp_path, {"clone_sequence": old_panel}), pytest.raises(HostError) as exc:
+        PremiereBridge(tmp_path).request("clone_sequence", {}, 5)
+    assert "still running VibeCut Agent's panel 0.1.0" in str(exc.value)
+    assert "Restart Premiere" in str(exc.value)
+
+
 def test_bridge_without_a_heartbeat_says_to_install_the_panel(tmp_path):
     with pytest.raises(Unreachable) as exc:
         PremiereBridge(tmp_path).check_alive()

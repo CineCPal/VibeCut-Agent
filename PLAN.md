@@ -1744,3 +1744,7 @@ Every change read back as asked.
 - **2026-10-09 (Claude): Phase 12b–12e checked live in Resolve.**
   - Speed with and without ripple, a dissolve, tracks, track switches, and a pool label, flag, logging, rename and bin, on a scratch timeline with generated media.
   - All of them were reverted, and the timeline and the pool clip matched where they started. Everything was cleaned up.
+- **2026-10-09 (Claude): A clear message when Premiere is running an older panel than the app.**
+  - **Seen:** the user pressed Update panel (0.9.0 on disk), but Premiere kept running the 0.8.0 panel it had loaded. A resequence's send then failed with "Unknown command: clone_sequence".
+  - **Fix:** `premiere_bridge.request` now turns the panel's "Unknown command" into a message naming the running panel's version (from `alive.json`) and asking for a restart of Premiere, or a close and reopen of the panel. Test in `test_premiere.py`.
+  - **Still to do:** Settings → Editors could show the running version beside the installed one.

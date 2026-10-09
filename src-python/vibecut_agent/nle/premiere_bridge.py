@@ -126,7 +126,17 @@ class PremiereBridge:
             raise HostError(f"Premiere's reply to {command} was for another request")
         if answer.get("ok") is True:
             return answer.get("result")
-        raise HostError(str(answer.get("error") or "Premiere couldn't do that"))
+        error = str(answer.get("error") or "Premiere couldn't do that")
+        if error.startswith("Unknown command:"):
+            # The panel Premiere has loaded is older than this side: Update panel replaces its files, but
+            # Premiere keeps running the copy it loaded until it reloads the panel (seen 2026-10-09).
+            running = (self.heartbeat() or {}).get("panelVersion") or "an older version"
+            raise HostError(
+                f"Premiere is still running VibeCut Agent's panel {running}, loaded before the panel was "
+                f"updated, and it can't do {command} yet. Restart Premiere (or close and reopen the panel "
+                "in Window > Extensions), then try again. This step wasn't done."
+            )
+        raise HostError(error)
 
     def _withdraw(self, job: Path) -> None:
         """Takes back a request the panel hasn't started, so it doesn't run after this side gave up."""
