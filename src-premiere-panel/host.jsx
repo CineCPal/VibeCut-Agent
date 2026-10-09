@@ -697,7 +697,8 @@ function vcNestRange(args) {
     nested.name = a.name;
     var removed = [];
     for (var r = 0; r < a.ids.length; r++) {
-      found[a.ids[r]].item.remove(false, true);
+      // Looked up again for each removal (see vcMoveItems).
+      vcItemWithId(sequence, a.ids[r]).item.remove(false, true);
       removed.push(a.ids[r]);
     }
     var before = vcItems(sequence);
@@ -717,11 +718,12 @@ function vcNestRange(args) {
 function vcRemoveItems(args) {
   return vcAnswer(function (a) {
     var sequence = vcSequenceNamed(a.timeline);
-    var found = vcItems(sequence);
     var removed = [];
     var missing = [];
     for (var i = 0; i < a.ids.length; i++) {
-      var entry = found[a.ids[i]];
+      // Looked up again for each: a TrackItem read before another clip on its track changed no longer
+      // acts on the real clip (see vcMoveItems).
+      var entry = vcItems(sequence)[a.ids[i]];
       if (entry) {
         entry.item.remove(false, false);
         removed.push(a.ids[i]);
@@ -806,12 +808,12 @@ function vcMoveItems(args) {
         moves.push({ id: a.ids[i], offsetTicks: a.offsetTicks });
       }
     }
-    var found = vcItems(sequence);
+    // Each clip is looked up again right before it moves: a TrackItem read before another clip on its
+    // track moved no longer moves the real clip (Premiere 26.5.2, 2026-10-09: six clips moved through
+    // handles read up front read back as moved, but the sequence's end didn't change and Premiere's
+    // timeline lost them).
     for (i = 0; i < moves.length; i++) {
-      if (!found[moves[i].id]) {
-        vcRefuse("There is no clip " + moves[i].id + " on \"" + sequence.name + "\" any more");
-      }
-      found[moves[i].id].item.move(vcTime(moves[i].offsetTicks));
+      vcItemWithId(sequence, moves[i].id).item.move(vcTime(moves[i].offsetTicks));
     }
     var after = vcItems(sequence);
     var out = [];

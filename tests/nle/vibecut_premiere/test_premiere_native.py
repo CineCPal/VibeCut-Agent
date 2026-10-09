@@ -1,5 +1,6 @@
 """Phase 12a: send_to_premiere built inside Premiere (premiere_native.py), against a fake panel that keeps
-a real sequence: it clones, razors, lifts, moves and links clips the way Premiere 26.5.2 was seen to."""
+a real sequence: it clones, lifts and places clips (a stereo file's sound fills two audio tracks), the
+way Premiere 26.5.2 did, and never moves one."""
 
 from __future__ import annotations
 
@@ -11,8 +12,10 @@ import pytest
 from tests.nle.vibecut_premiere.premiere_fakes import TB_25
 from vibecut_agent.nle import premiere_native, premiere_rebuild
 from vibecut_agent.nle.premiere import HostError, PremiereHost
+from vibecut_agent.nle.premiere_edit import Sequence
 
 TPS = 254016000000
+ZERO_DB = 10 ** (-15 / 20)
 
 
 def t(sec: float) -> str:
@@ -20,13 +23,7 @@ def t(sec: float) -> str:
 
 
 def clip(
-    cid: str,
-    name: str,
-    start: float,
-    end: float,
-    source_in: float,
-    linked: list[str],
-    level: float | None = None,
+    cid: str, name: str, start: float, end: float, source_in: float, item: str, level: float | None = None
 ) -> dict[str, Any]:
     return {
         "id": cid,
@@ -38,14 +35,14 @@ def clip(
         "disabled": False,
         "speed": 1,
         "mediaPath": f"/m/{name}",
-        "linkedIds": linked,
+        "projectItemId": item,
+        "linkedIds": [],
         "level": level,
     }
 
 
 def interview() -> dict[str, Any]:
-    """A 10 s sequence at 25 fps: A.mov (0–4 s, from 10 s in) then B.mov (4–10 s), each with its sound."""
-    zero_db = 10 ** (-15 / 20)
+    """10 s at 25 fps: A.mov (0–4 s, from 10 s in) then B.mov (4–10 s), each with stereo sound on A1+A2."""
     return {
         "project": "P",
         "name": "Interview",
@@ -55,19 +52,20 @@ def interview() -> dict[str, Any]:
         "video": [
             {
                 "name": "Video 1",
-                "clips": [clip("va", "A.mov", 0, 4, 10, ["aa"]), clip("vb", "B.mov", 4, 10, 0, ["ab"])],
+                "clips": [clip("va", "A.mov", 0, 4, 10, "pa"), clip("vb", "B.mov", 4, 10, 0, "pb")],
                 "transitions": [{"name": "Cross Dissolve", "startTicks": t(3.5), "endTicks": t(4.5)}],
             }
         ],
         "audio": [
             {
-                "name": "Audio 1",
+                "name": f"Audio {n}",
                 "clips": [
-                    clip("aa", "A.mov", 0, 4, 10, ["va"], zero_db),
-                    clip("ab", "B.mov", 4, 10, 0, ["vb"], zero_db),
+                    clip(f"a{n}a", "A.mov", 0, 4, 10, "pa", ZERO_DB),
+                    clip(f"a{n}b", "B.mov", 4, 10, 0, "pb", ZERO_DB),
                 ],
                 "transitions": [],
             }
+            for n in (1, 2)
         ],
         "markers": [
             {"id": "m1", "name": "Old", "comments": "", "startTicks": "0", "endTicks": "0", "colorIndex": 0}
@@ -76,14 +74,14 @@ def interview() -> dict[str, Any]:
 
 
 class FakePremiere:
-    """The panel's commands over sequences kept here. A move that lands on another clip fails, as it
-    would leave Premiere's track overwritten."""
+    """The panel's commands over sequences kept here. place_clip overwrites like overwriteClip: picture
+    on its video track unless -1, and the file's two channels on the audio track and the next unless -1."""
 
     def __init__(self, base: dict[str, Any]) -> None:
         self.sequences = {base["name"]: base}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.next_id = 0
-        self.razor_works = True
+        self.drop: set[str] = set()
 
     def __call__(self, command: str, args: dict[str, Any], timeout_s: float) -> Any:
         self.calls.append((command, copy.deepcopy(args)))
@@ -102,41 +100,26 @@ class FakePremiere:
             (kind, i, c) for kind in ("video", "audio") for i, tr in enumerate(seq[kind]) for c in tr["clips"]
         ]
 
-    def _end(self, name: str) -> int:
-        return max((int(c["endTicks"]) for _k, _i, c in self._clips(name)), default=0)
-
-    # --- reads
     def status(self, a):
         return {"sequences": list(self.sequences), "activeSequence": None}
 
     def read_sequence(self, a):
         seq = copy.deepcopy(self.sequences[a["timeline"]])
-        for kind in ("video", "audio"):
-            for tr in seq[kind]:
-                tr["clips"].sort(key=lambda c: int(c["startTicks"]))
-        seq["endTicks"] = str(self._end(a["timeline"]))
+        seq["endTicks"] = str(
+            max((int(c["endTicks"]) for _k, _i, c in self._clips(a["timeline"])), default=0)
+        )
         return seq
 
     def sequence_info(self, a):
-        seq = self.sequences[a["timeline"]]
-        return {
-            "timebase": seq["timebase"],
-            "zeroPoint": "0",
-            "endTicks": str(self._end(a["timeline"])),
-            "isActive": True,
-        }
+        seq = self.read_sequence(a)
+        return {"timebase": seq["timebase"], "zeroPoint": "0", "endTicks": seq["endTicks"], "isActive": True}
 
-    # --- Phase 12a
     def clone_sequence(self, a):
         copied = copy.deepcopy(self.sequences[a["timeline"]])
-        ids = {
-            c["id"]: self._new_id() for kind in ("video", "audio") for tr in copied[kind] for c in tr["clips"]
-        }
         for kind in ("video", "audio"):
             for tr in copied[kind]:
                 for c in tr["clips"]:
-                    c["id"] = ids[c["id"]]
-                    c["linkedIds"] = [ids[i] for i in c["linkedIds"]]
+                    c["id"] = self._new_id()
         copied["name"] = a["name"]
         self.sequences[a["name"]] = copied
         return {"name": a["name"]}
@@ -147,49 +130,52 @@ class FakePremiere:
                 tr["transitions"] = []
         return {"removed": 1}
 
-    def razor_cuts(self, a):
-        for cut in a["cuts"]:
-            hh, mm, ss, ff = (int(x) for x in cut["timecode"].split(":"))
-            at = ((hh * 3600 + mm * 60 + ss) * 25 + ff) * TB_25
-            track = self.sequences[a["timeline"]][cut["type"]][cut["track"]]
-            for c in list(track["clips"]):
-                start, end = int(c["startTicks"]), int(c["endTicks"])
-                if self.razor_works and start < at < end:
-                    right = {
-                        **c,
-                        "id": self._new_id(),
-                        "startTicks": str(at),
-                        "inTicks": str(int(c["inTicks"]) + at - start),
-                        "linkedIds": [],
-                    }
-                    c["endTicks"] = str(at)
-                    c["outTicks"] = right["inTicks"]
-                    track["clips"].append(right)
-        return {"cuts": len(a["cuts"])}
-
     def remove_items(self, a):
         gone = set(a["ids"])
-        for _kind, _i, c in self._clips(a["timeline"]):
-            c["linkedIds"] = [i for i in c["linkedIds"] if i not in gone]
         for kind in ("video", "audio"):
             for tr in self.sequences[a["timeline"]][kind]:
                 tr["clips"] = [c for c in tr["clips"] if c["id"] not in gone]
         return {"removed": a["ids"], "notFound": []}
 
-    def move_items(self, a):
-        moves = a.get("moves") or [{"id": i, "offsetTicks": a["offsetTicks"]} for i in a["ids"]]
-        for m in moves:
-            kind, index, c = next(x for x in self._clips(a["timeline"]) if x[2]["id"] == m["id"])
-            delta = int(m["offsetTicks"])
-            start, end = int(c["startTicks"]) + delta, int(c["endTicks"]) + delta
-            assert start >= 0, "moved before the start"
-            for other in self.sequences[a["timeline"]][kind][index]["clips"]:
-                if other is not c:
-                    assert end <= int(other["startTicks"]) or start >= int(other["endTicks"]), (
-                        f"{c['id']} landed on {other['id']}"
-                    )
-            c["startTicks"], c["endTicks"] = str(start), str(end)
-        return {"items": []}
+    def place_clip(self, a):
+        seq = self.sequences[a["timeline"]]
+        if a["path"] in self.drop:
+            return {"placed": []}
+        start = int(a["atTicks"])
+        length = round((a["outSeconds"] - a["inSeconds"]) * TPS)
+        name = a["path"].rsplit("/", 1)[-1]
+        spots = ([("video", a["videoTrack"])] if a["videoTrack"] >= 0 else []) + (
+            [("audio", a["audioTrack"]), ("audio", a["audioTrack"] + 1)] if a["audioTrack"] >= 0 else []
+        )
+        placed = []
+        for kind, index in spots:
+            while len(seq[kind]) <= index:
+                seq[kind].append({"name": "", "clips": [], "transitions": []})
+            track = seq[kind][index]
+            # overwriteClip: what was there in that range goes.
+            track["clips"] = [
+                c
+                for c in track["clips"]
+                if int(c["endTicks"]) <= start or int(c["startTicks"]) >= start + length
+            ]
+            new = clip(
+                self._new_id(),
+                name,
+                0,
+                0,
+                0,
+                a.get("itemId") or "imported",
+                ZERO_DB if kind == "audio" else None,
+            )
+            new.update(
+                startTicks=str(start),
+                endTicks=str(start + length),
+                inTicks=t(a["inSeconds"]),
+                outTicks=t(a["outSeconds"]),
+            )
+            track["clips"].append(new)
+            placed.append({"id": new["id"], "type": kind, "track": index})
+        return {"placed": placed}
 
     def set_items(self, a):
         for item in a["items"]:
@@ -199,13 +185,6 @@ class FakePremiere:
             if "level" in item:
                 c["level"] = item["level"]
         return {"items": []}
-
-    def set_links(self, a):
-        for group in a["groups"]:
-            for _k, _i, c in self._clips(a["timeline"]):
-                if c["id"] in group:
-                    c["linkedIds"] = [i for i in group if i != c["id"]]
-        return {"groups": len(a["groups"])}
 
     def add_tracks(self, a):
         seq = self.sequences[a["timeline"]]
@@ -241,17 +220,11 @@ class FakePremiere:
         return {"added": added}
 
     def import_sequence(self, a):
-        raise AssertionError("the native rebuild must not import anything")
+        raise AssertionError("the native rebuild must not import a sequence")
 
 
 def piece(
-    origin: str | None,
-    path: str,
-    start: float,
-    end: float,
-    source_in: float,
-    group: str | None = None,
-    **extra: Any,
+    origin: str | None, path: str, start: float, end: float, source_in: float, **extra: Any
 ) -> dict[str, Any]:
     out = {
         "sourcePath": path,
@@ -266,8 +239,6 @@ def piece(
     }
     if origin:
         out["originId"] = origin
-    if group:
-        out["linkGroup"] = group
     return out
 
 
@@ -296,99 +267,92 @@ def request(files, layout: dict[str, Any], markers: list | None = None) -> dict[
     return {"timeline": "Interview", "tracks": tracks, "layout": layout, "markers": markers or []}
 
 
-def resequenced(files) -> dict[str, Any]:
+def resequenced() -> dict[str, Any]:
     """rearrange_sections [6, 10], [0, 2], [4, 6]: B's last 4 s, A's first 2 s, then B's first 2 s."""
 
-    def track(kind_ids: tuple[str, str]) -> list[dict[str, Any]]:
-        a_id, b_id = kind_ids
+    def track(a_id: str, b_id: str) -> list[dict[str, Any]]:
         return [
-            piece(b_id, "/m/B.mov", 0, 4, 2, "vb"),
-            piece(a_id, "/m/A.mov", 4, 6, 10, "va"),
-            piece(b_id, "/m/B.mov", 6, 8, 0, "vb"),
+            piece(b_id, "/m/B.mov", 0, 4, 2),
+            piece(a_id, "/m/A.mov", 4, 6, 10),
+            piece(b_id, "/m/B.mov", 6, 8, 0),
         ]
 
-    return {"video": [track(("va", "vb"))], "audio": [track(("aa", "ab"))]}
+    return {"video": [track("va", "vb")], "audio": [track("a1a", "a1b"), track("a2a", "a2b")]}
 
 
-def placed(fake: FakePremiere, name: str) -> list[tuple[str, str, float, float, float]]:
-    out = []
-    for kind, _i, c in fake._clips(name):
-        out.append(
-            (kind, c["name"], int(c["startTicks"]) / TPS, int(c["endTicks"]) / TPS, int(c["inTicks"]) / TPS)
+def laid_out(fake: FakePremiere, name: str) -> list[tuple[Any, ...]]:
+    out = [
+        (
+            kind,
+            i + 1,
+            c["name"],
+            int(c["startTicks"]) / TPS,
+            int(c["endTicks"]) / TPS,
+            int(c["inTicks"]) / TPS,
+            c["projectItemId"],
         )
-    return sorted(out, key=lambda x: (x[0], x[2]))
+        for kind, i, c in fake._clips(name)
+    ]
+    return sorted(out, key=lambda x: (x[0], x[1], x[3]))
 
 
-def test_resequence_is_cut_and_moved_in_a_clone_and_imports_nothing(files):
+def test_resequence_places_the_projects_own_clips_in_a_copy_and_imports_nothing(files):
     fake = FakePremiere(interview())
     original = copy.deepcopy(fake.sequences["Interview"])
     result = premiere_rebuild.rebuild(
         PremiereHost(fake),
-        request(files, resequenced(files), [{"time": 4, "name": "A here", "color": "Red"}]),
+        request(files, resequenced(), [{"time": 4, "name": "A here", "color": "Red"}]),
         files / "imports",
     )
     assert result["native"] is True
-    assert result["timeline"] == "Interview (VibeCut 1)"
-    assert (result["carried"], result["placed"], result["markersAdded"]) == (6, 0, 1)
-    assert not fake.sent("import_sequence")
+    assert (result["timeline"], result["clips"], result["markersAdded"]) == ("Interview (VibeCut 1)", 9, 1)
+    assert not fake.sent("import_sequence") and not fake.sent("move_items")
     assert fake.sequences["Interview"] == original
-    assert placed(fake, "Interview (VibeCut 1)") == [
-        ("audio", "B.mov", 0, 4, 2),
-        ("audio", "A.mov", 4, 6, 10),
-        ("audio", "B.mov", 6, 8, 0),
-        ("video", "B.mov", 0, 4, 2),
-        ("video", "A.mov", 4, 6, 10),
-        ("video", "B.mov", 6, 8, 0),
+    pieces = (("B.mov", 0, 4, 2, "pb"), ("A.mov", 4, 6, 10, "pa"), ("B.mov", 6, 8, 0, "pb"))
+    assert laid_out(fake, "Interview (VibeCut 1)") == [("audio", n, *p) for n in (1, 2) for p in pieces] + [
+        ("video", 1, *p) for p in pieces
+    ]
+    # One placement per picture-and-sound, each from its project item.
+    assert [(p["itemId"], p["videoTrack"], p["audioTrack"]) for p in fake.sent("place_clip")] == [
+        ("pb", 0, 0),
+        ("pa", 0, 0),
+        ("pb", 0, 0),
     ]
     new = fake.sequences["Interview (VibeCut 1)"]
-    by_start = {(kind, int(c["startTicks"])): c for kind, _i, c in fake._clips("Interview (VibeCut 1)")}
-    for sec in (0, 4, 6):
-        v, a = by_start[("video", round(sec * TPS))], by_start[("audio", round(sec * TPS))]
-        assert v["linkedIds"] == [a["id"]] and a["linkedIds"] == [v["id"]]
     assert [m["name"] for m in new["markers"]] == ["A here"]
     assert new["video"][0]["transitions"] == []
-    assert "Transitions weren't carried" in result["warnings"][0]
-    assert fake.sent("clone_sequence")[0]["bin"] == "VibeCut"
 
 
-def test_a_clip_from_outside_the_original_is_placed_from_the_project(files, monkeypatch):
+def test_a_picture_without_its_sound_on_a_new_track(files):
     fake = FakePremiere(interview())
-    added: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        premiere_native, "add_clips", lambda host, args: added.append(args) or {"changes": []}
-    )
-    layout = {
-        "video": [[piece("va", "/m/A.mov", 0, 4, 10, "va")], [piece(None, "/m/C.mov", 1, 3, 5)]],
-        "audio": [[piece("aa", "/m/A.mov", 0, 4, 10, "va")]],
-    }
+    layout = {"video": [[piece("va", "/m/A.mov", 0, 4, 10)], [piece(None, "/m/C.mov", 1, 3, 5)]], "audio": []}
     result = premiere_rebuild.rebuild(PremiereHost(fake), request(files, layout), files / "imports")
-    assert (result["carried"], result["placed"]) == (2, 1)
+    assert result["clips"] == 2
     assert fake.sent("add_tracks") == [{"timeline": "Interview (VibeCut 1)", "video": 1, "audio": 0}]
-    assert added == [
-        {
-            "timeline": "Interview (VibeCut 1)",
-            "clips": [
-                {
-                    "path": "/m/C.mov",
-                    "sourceIn": 5,
-                    "sourceOut": 7,
-                    "at": 1,
-                    "picture": True,
-                    "sound": False,
-                    "videoTrack": 2,
-                }
-            ],
-        }
+    assert [x[:4] for x in laid_out(fake, "Interview (VibeCut 1)")] == [
+        ("video", 1, "A.mov", 0),
+        ("video", 2, "C.mov", 1),
     ]
-    # B was in the original but not in the draft, so it's gone from the new sequence.
-    assert {c["name"] for _k, _i, c in fake._clips("Interview (VibeCut 1)")} == {"A.mov"}
+    # C.mov has no clip in the original, so the panel finds (or imports) its file by path.
+    assert "itemId" not in fake.sent("place_clip")[1]
 
 
-def test_a_failed_cut_deletes_the_clone(files):
+def test_sound_the_draft_doesnt_have_is_lifted_again(files):
     fake = FakePremiere(interview())
-    fake.razor_works = False
-    with pytest.raises(HostError, match="didn't cut"):
-        premiere_rebuild.rebuild(PremiereHost(fake), request(files, resequenced(files)), files / "imports")
+    # A picture whose stereo sound is wanted on A1 only.
+    layout = {"video": [[piece("va", "/m/A.mov", 0, 4, 10)]], "audio": [[piece("a1a", "/m/A.mov", 0, 4, 10)]]}
+    premiere_rebuild.rebuild(PremiereHost(fake), request(files, layout), files / "imports")
+    assert [x[:3] for x in laid_out(fake, "Interview (VibeCut 1)")] == [
+        ("audio", 1, "A.mov"),
+        ("video", 1, "A.mov"),
+    ]
+
+
+def test_a_piece_premiere_didnt_place_deletes_the_copy(files):
+    fake = FakePremiere(interview())
+    fake.drop = {"/m/A.mov"}
+    with pytest.raises(HostError, match=r"didn't place A.mov at 4.0 s"):
+        premiere_rebuild.rebuild(PremiereHost(fake), request(files, resequenced()), files / "imports")
     assert list(fake.sequences) == ["Interview"]
     assert fake.sent("delete_sequence") == [{"timeline": "Interview (VibeCut 1)"}]
 
@@ -396,28 +360,21 @@ def test_a_failed_cut_deletes_the_clone(files):
 def test_level_and_off_follow_the_draft(files):
     fake = FakePremiere(interview())
     layout = {
-        "video": [[piece("va", "/m/A.mov", 0, 4, 10, "va", enabled=False)]],
-        "audio": [[piece("aa", "/m/A.mov", 0, 4, 10, "va", volumeDb=-6.0)]],
+        "video": [[piece("va", "/m/A.mov", 0, 4, 10, enabled=False)]],
+        "audio": [
+            [piece("a1a", "/m/A.mov", 0, 4, 10, volumeDb=-6.0)],
+            [piece("a2a", "/m/A.mov", 0, 4, 10, volumeDb=-6.0)],
+        ],
     }
     premiere_rebuild.rebuild(PremiereHost(fake), request(files, layout), files / "imports")
-    items = fake.sent("set_items")[0]["items"]
-    by_id = {c["id"]: c for _k, _i, c in fake._clips("Interview (VibeCut 1)")}
-    video = next(c for c in by_id.values() if c["name"] == "A.mov" and c["level"] is None)
-    assert video["disabled"] is True
-    assert any(abs(i.get("level", 0) - 10 ** ((-6 - 15) / 20)) < 1e-9 for i in items)
+    by_kind = {kind: c for kind, _i, c in fake._clips("Interview (VibeCut 1)")}
+    assert by_kind["video"]["disabled"] is True
+    assert abs(by_kind["audio"]["level"] - 10 ** ((-6 - 15) / 20)) < 1e-9
 
 
-def test_plan_leaves_ramps_and_new_speeds_to_xml():
-    from vibecut_agent.nle.premiere_edit import Sequence
-
+def test_plan_leaves_ramps_and_speeds_to_xml():
     seq = Sequence(interview())
-    view = {"va": {"id": "va", "start": 0, "sourceIn": 10}}
-    ramp = premiere_native.layout_clips({"video": [[piece("va", "/m/A.mov", 0, 4, 10, ramp=True)]]})
-    assert premiere_native.plan(seq, view, ramp) is None
-    faster = premiere_native.layout_clips({"video": [[piece(None, "/m/C.mov", 0, 2, 0, speed=2)]]})
-    assert premiere_native.plan(seq, view, faster) is None
-    reused = premiere_native.layout_clips(
-        {"video": [[piece("va", "/m/A.mov", 0, 2, 10), piece("va", "/m/A.mov", 2, 4, 10)]]}
-    )
-    steps = premiere_native.plan(seq, view, reused)
-    assert steps is not None and len(steps["kept"]) == 1 and len(steps["placed"]) == 1
+    ramp = {"video": [[piece("va", "/m/A.mov", 0, 4, 10, ramp=True)]]}
+    faster = {"video": [[piece(None, "/m/C.mov", 0, 2, 0, speed=2)]]}
+    assert premiere_native.plan(seq, premiere_native.layout_clips(ramp)) is None
+    assert premiere_native.plan(seq, premiere_native.layout_clips(faster)) is None

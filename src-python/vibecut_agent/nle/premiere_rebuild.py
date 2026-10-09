@@ -253,7 +253,7 @@ def _add_markers(host: Any, name: str, raw: Any, notes: list[str]) -> int:
 
 def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -> dict[str, Any]:
     """Command `rebuild`: {timeline (the connected one), name (optional), tracks, markers, layout}.
-    With `layout` (the draft's own clips, Phase 12a) the sequence is built inside Premiere from the
+    With `layout` (the draft's own clips, Phase 12a) the sequence is placed inside Premiere from the
     project's own clips (premiere_native.py); without it, or when that can't be done, from XML.
     `imports` is the bridge folder's imports/, which the panel will only import from."""
     probe = probe or Probe()
@@ -276,11 +276,11 @@ def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -
 
         clips = premiere_native.layout_clips(args["layout"])
         seq = _read(host, original)
-        steps = premiere_native.plan(seq, premiere_native.view_of(host, original), clips)
-        if steps is not None:
-            built = premiere_native.build(host, original, name, BIN_NAME, seq, steps)
+        placements = premiere_native.plan(seq, clips)
+        if placements is not None:
+            built = premiere_native.build(host, original, name, BIN_NAME, seq, placements)
             notes = list(built["warnings"])
-            # The clone came with the original's markers; the draft's replace them.
+            # The copy came with the original's markers; the draft's replace them.
             host._send("remove_markers", {"timeline": built["timeline"], "all": True})
             added = _add_markers(host, built["timeline"], args.get("markers"), notes)
             return {
@@ -290,11 +290,9 @@ def rebuild(host: Any, args: dict[str, Any], imports: Path, probe: Any = None) -
                 "bin": BIN_NAME,
                 "warnings": notes,
                 "native": True,
-                "carried": built["carried"],
-                "placed": built["placed"],
             }
         xml_note = (
-            "A speed ramp (or a new clip at another speed) can't be built inside Premiere, so this sequence came in "
+            "A speed change or ramp can't be placed inside Premiere, so this sequence came in "
             f'as XML, and Premiere imported copies of its media into the "{BIN_NAME}" bin.'
         )
 

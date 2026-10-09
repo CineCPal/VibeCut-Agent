@@ -76,15 +76,13 @@ interface RebuildResult {
   bin?: string;
   gradesCopied?: number;
   gradesNotCopied?: number;
-  /** Premiere (Phase 12a): built inside Premiere from the project's own clips, not imported. */
+  /** Premiere (Phase 12a): placed inside Premiere from the project's own clips, not imported. */
   native?: boolean;
-  carried?: number;
-  placed?: number;
 }
 
 /** The draft's own clips, V1 and A1 first, for Premiere's rebuild inside Premiere (PLAN.md, "Phase
- * 12a"): each names the clip of the original it was cut from, so that clip is cut and moved instead of
- * its file being imported again. */
+ * 12a"): each names the clip of the original it was cut from, so it's placed from that clip's project
+ * item instead of its file being imported again. */
 export function nativeLayout(draft: HostDraft): Record<string, unknown> {
   const clip = (c: DraftClip) => ({
     ...(c.originId ? { originId: c.originId } : {}),
@@ -120,7 +118,7 @@ export async function sendDraft(context: ToolContext, name?: string): Promise<To
   context.timeline = r.timeline;
   const notes = [
     host === "premiere" ? `in the "${r.bin ?? "VibeCut"}" bin` : r.gradesCopied ? `${r.gradesCopied} grade(s) carried` : null,
-    r.native ? `built from the project's own clips with their effects, nothing imported${r.placed ? ` (${r.placed} placed from project media)` : ""}` : null,
+    r.native ? "placed from the project's own clips, nothing imported; effects and colour on the clips weren't carried" : null,
     ...r.warnings.slice(0, 3),
     r.markersAdded ? `${r.markersAdded} marker(s)` : null,
     draft.notCarried.length ? `not carried: ${draft.notCarried.join(", ")}` : null,
@@ -185,10 +183,10 @@ export function draftInstruction(host: NleHost): string {
   const noun = TIMELINE_NOUN[host];
   const carried =
     host === "premiere"
-      ? `In Premiere the new sequence is built from the original's own clips, so their effects, Lumetri
-  and keyframes go with them and no media is imported again (a speed ramp is the exception: it comes in
-  as XML, and the result says so). Transitions aren't carried, and the draft lists anything else that
-  won't be (notCarried). Mention it when you send.`
+      ? `In Premiere the new sequence is placed from the project's own clips, so no media is imported again
+  (a speed change or ramp is the exception: it comes in as XML, and the result says so). Effects, Lumetri,
+  keyframes and transitions on the clips aren't carried, and the draft lists anything else that won't be
+  (notCarried). Mention it when you send.`
       : `A rebuilt ${noun} can't carry transitions, effects, titles, adjustment layers or nested
   ${noun}s; the draft lists what won't be carried (notCarried). Mention it when you send.`;
   return `- Cutting by content (remove_time_ranges, rearrange_sections, remove_transcript_lines,

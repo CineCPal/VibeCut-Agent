@@ -1,23 +1,24 @@
 """premiere_native.py -- send_to_premiere built inside Premiere (PLAN.md, "Phase 12a").
 
 The XML rebuild (premiere_rebuild.py) has Premiere import a file, and Premiere then makes a new master
-clip for every source in it, even one already in the project (the "VibeCut" bin filled up with copies),
-and the clips' effects stay behind. Here the new sequence is a clone of the connected one, cut up in place:
-1. `clone_sequence` copies it (effects, Lumetri, keyframes and all) into the "VibeCut" bin and opens it.
-2. Its transitions are removed (`remove_transitions`); the XML rebuild never carried them either.
-3. Each draft clip cut from a clip of the original (its originId) is found in the clone where it was cut
-   from: that track is razored at the piece's edges (`razor_cuts`, QE), the pieces no draft clip uses are
-   lifted, and the rest are moved into place in two passes: all of them past the end first, then each to
-   its start, so no move lands on another clip.
-4. Levels, on/off and links are set as the draft has them.
-5. A draft clip with no clip of the original to come from (B-roll the draft placed, a Story Editor cut, a
-   second use of the same part of a clip) is placed from the project's own item for its file by
-   premiere_edit.add_clips, which imports only a file the project doesn't have yet.
-6. The markers are replaced by the draft's.
-If anything fails, the clone is deleted; the original is never touched.
+clip for every source in it, even one already in the project (the "VibeCut" bin filled up with copies).
+Here the new sequence is made from the project's own clips instead:
+1. `clone_sequence` copies the connected sequence into the "VibeCut" bin (its settings, tracks and track
+   names) and opens it; every clip on the copy is then lifted (`remove_items`) and its transitions removed.
+2. Each draft piece is placed with `place_clip`: the project item it was cut from (else the one for its
+   file, which is imported only when the project doesn't have it), its source range, at its start, on
+   its tracks. A picture and its sound from the same moment of the same file go in together; the half
+   a piece doesn't want is lifted again at once, before the next placement.
+3. Levels and on/off are set as the draft has them, and the result is read back: every piece must be
+   there, where the draft has it. If anything fails, the copy is deleted; the original is never touched.
 
-A clip with a speed ramp, or a new clip at another speed, can't be built this way: `plan` returns None
-and premiere_rebuild.py builds that draft from XML, saying so.
+Effects, Lumetri and keyframes don't come across (the XML rebuild never carried them either). Moving
+the copy's own clips into place would have kept them, but Premiere 26.5.2 loses clips when a script
+moves many of them (seen live, 2026-10-09: 180 moves read back as done, while Premiere's timeline showed
+four clips), so nothing is moved.
+
+A clip with a speed ramp, or at another speed, can't be placed this way: `plan` returns None and
+premiere_rebuild.py builds that draft from XML, saying so.
 """
 
 from __future__ import annotations
@@ -26,16 +27,11 @@ import contextlib
 import math
 from typing import Any
 
-from vibecut_agent.nle.premiere import HostError, seconds
-from vibecut_agent.nle.premiere_edit import Sequence, _read, add_clips, gain
-from vibecut_agent.nle.premiere_timing import timecode
+from vibecut_agent.nle.premiere import TICKS_PER_SECOND, HostError, seconds
+from vibecut_agent.nle.premiere_edit import Sequence, _read, gain
+from vibecut_agent.nle.premiere_support import BIN_NAME
 
-# Calls to the panel are kept to what its checks take (bridge.js).
-RAZOR_CHUNK = 200
 IDS_CHUNK = 500
-ADD_CHUNK = 50
-LINK_GROUPS_CHUNK = 32
-LINK_IDS_CHUNK = 64
 MAX_NEW_TRACKS = 8
 
 
@@ -85,7 +81,6 @@ def layout_clips(raw: Any) -> list[dict[str, Any]]:
                     "speed": _num(c.get("speed"), 1.0),
                     "enabled": c.get("enabled") is not False,
                     "volumeDb": _num(c.get("volumeDb")),
-                    "linkGroup": c.get("linkGroup") if isinstance(c.get("linkGroup"), str) else None,
                     "ramp": c.get("ramp") is True,
                 })  # fmt: skip
     if not out:
@@ -93,235 +88,153 @@ def layout_clips(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def plan(
-    seq: Sequence, view: dict[str, dict[str, Any]], clips: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    """Which draft clips come from a clip of the original (`kept`, with where they sit in it now, in
-    ticks) and which are placed new (`placed`). None when the draft can't be built in Premiere."""
-    kept: list[dict[str, Any]] = []
-    placed: list[dict[str, Any]] = []
-    used: dict[str, list[tuple[int, int]]] = {}
-    for c in sorted(clips, key=lambda c: (c["kind"], c["index"], c["start"])):
-        if c["ramp"]:
-            return None
-        origin = seq.clips.get(c["originId"] or "")
-        read = view.get(c["originId"] or "")
-        if origin is not None and read is not None:
-            rate = _num(read.get("speed"), 1.0) or 1.0
-            same = (
-                (origin["kind"], origin["index"]) == (c["kind"], c["index"])
-                and origin.get("mediaPath") == c["sourcePath"]
-                and rate > 0
-                and abs(rate - (c["speed"] or 1.0)) < 1e-3
-            )
-            if same:
-                first, last = int(origin["startTicks"]), int(origin["endTicks"])
-                at = max(first, seq.ticks(read["start"] + (c["sourceIn"] - read["sourceIn"]) / rate))
-                until = min(last, seq.ticks(read["start"] + (c["sourceOut"] - read["sourceIn"]) / rate))
-                spans = used.setdefault(origin["id"], [])
-                if until > at and all(until <= s or at >= e for s, e in spans):
-                    spans.append((at, until))
-                    kept.append(
-                        {
-                            **c,
-                            "origin": origin,
-                            "read": read,
-                            "from": at,
-                            "to": until,
-                            "target": seq.ticks(c["start"]),
-                        }
-                    )
-                    continue
-        if abs((c["speed"] or 1.0) - 1.0) > 1e-3:
-            return None
-        placed.append(c)
-    return {"kept": kept, "placed": placed}
+def plan(seq: Sequence, clips: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """The placements that make the draft: one per picture and its sound from the same moment of the
+    same file, each with its project item when the original has it. None when the draft can't be placed
+    (a speed ramp, or a speed other than normal)."""
+    if any(c["ramp"] or abs((c["speed"] or 1.0) - 1.0) > 1e-3 for c in clips):
+        return None
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for c in sorted(clips, key=lambda c: (c["start"], c["kind"] != "video", c["index"])):
+        key = (seq.ticks(c["start"]), c["sourcePath"], round(c["sourceIn"], 3), round(c["sourceOut"], 3))
+        groups.setdefault(key, []).append(c)
+    out = []
+    for (at, path, _in, _out), members in groups.items():
+        pictures = [c for c in members if c["kind"] == "video"]
+        sounds = sorted((c for c in members if c["kind"] == "audio"), key=lambda c: c["index"])
+        # Two pictures of the same moment on different tracks are placed apart.
+        for picture in pictures[1:]:
+            out.append(_placement(seq, at, path, [picture], []))
+        out.append(_placement(seq, at, path, pictures[:1], sounds))
+    return out
 
 
-def _cuts(seq: Sequence, kept: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Where to razor the clone: each kept piece's edges that fall inside the clip it comes from."""
-    seen: set[tuple[str, int, int]] = set()
-    cuts = []
-    for k in kept:
-        first, last = int(k["origin"]["startTicks"]), int(k["origin"]["endTicks"])
-        for edge in (k["from"], k["to"]):
-            key = (k["kind"], k["index"], edge)
-            if first < edge < last and key not in seen:
-                seen.add(key)
-                cuts.append({"type": k["kind"], "track": k["index"] - 1, "timecode": timecode(seq, edge)})
-    return cuts
-
-
-def _pieces(after: Sequence, kept: list[dict[str, Any]], half: int) -> dict[int, str]:
-    """The clone's clip for each kept piece (by its place in `kept`), found by track and place."""
-    found: dict[int, str] = {}
-    for n, k in enumerate(kept):
-        match = next(
-            (
-                c["id"]
-                for c in after.clips.values()
-                if (c["kind"], c["index"]) == (k["kind"], k["index"])
-                and abs(int(c["startTicks"]) - k["from"]) <= half
-                and abs(int(c["endTicks"]) - k["to"]) <= half
-                and c["id"] not in found.values()
-            ),
-            None,
-        )
-        if match is None:
-            raise HostError(
-                f"Premiere didn't cut {k['origin'].get('name') or 'a clip'} at {seconds(k['from'])}–{seconds(k['to'])} s "
-                "on the new sequence"
-            )
-        found[n] = match
-    return found
+def _placement(
+    seq: Sequence, at: int, path: str, pictures: list[dict[str, Any]], sounds: list[dict[str, Any]]
+) -> dict[str, Any]:
+    first = (pictures or sounds)[0]
+    origin = next((seq.clips[c["originId"]] for c in pictures + sounds if c["originId"] in seq.clips), None)
+    item_id = origin.get("projectItemId") if origin and origin.get("mediaPath") == path else None
+    frames = max(1, round((first["end"] - first["start"]) * TICKS_PER_SECOND / seq.timebase))
+    return {
+        "path": path,
+        "itemId": item_id if isinstance(item_id, str) and item_id else None,
+        "atTicks": at,
+        "inSeconds": first["sourceIn"],
+        "outSeconds": first["sourceIn"] + frames * seq.timebase / TICKS_PER_SECOND,
+        "picture": pictures[0] if pictures else None,
+        "sounds": sounds,
+        "name": path.rsplit("/", 1)[-1],
+    }
 
 
 def _chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _link_batches(groups: list[list[str]]) -> list[list[list[str]]]:
-    """set_links calls: at most 32 groups and 64 clips each."""
-    batches: list[list[list[str]]] = [[]]
-    count = 0
-    for group in groups:
-        if batches[-1] and (len(batches[-1]) >= LINK_GROUPS_CHUNK or count + len(group) > LINK_IDS_CHUNK):
-            batches.append([])
-            count = 0
-        batches[-1].append(group)
-        count += len(group)
-    return [b for b in batches if b]
-
-
-def _placements(placed: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """add_clips entries for the new clips: a picture and its sound from the same moment of the same
-    file go in together, linked; the sound's channels fill the tracks from its first one."""
-    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for n, c in enumerate(placed):
-        key = (c["linkGroup"] or f"#{n}", c["sourcePath"], round(c["start"], 3), round(c["sourceIn"], 3))
-        groups.setdefault(key, []).append(c)
-    out = []
-    for members in groups.values():
-        picture = next((c for c in members if c["kind"] == "video"), None)
-        sounds = sorted((c for c in members if c["kind"] == "audio"), key=lambda c: c["index"])
-        first = picture or sounds[0]
-        entry: dict[str, Any] = {
-            "path": first["sourcePath"],
-            "sourceIn": first["sourceIn"],
-            "sourceOut": first["sourceOut"],
-            "at": first["start"],
-            "picture": picture is not None,
-            "sound": bool(sounds),
-        }
-        if picture is not None:
-            entry["videoTrack"] = picture["index"]
-        if sounds:
-            entry["audioTrack"] = sounds[0]["index"]
-            if sounds[0]["volumeDb"] is not None:
-                entry["volumeDb"] = sounds[0]["volumeDb"]
-        out.append(entry)
-    return out
+def _place(host: Any, name: str, p: dict[str, Any]) -> list[dict[str, Any]]:
+    """One placement; the halves the draft doesn't have there are lifted again at once."""
+    picture, sounds = p["picture"], p["sounds"]
+    placed: list[dict[str, Any]] = host._send(
+        "place_clip",
+        {
+            "timeline": name,
+            "path": p["path"],
+            "inSeconds": p["inSeconds"],
+            "outSeconds": p["outSeconds"],
+            "atTicks": str(p["atTicks"]),
+            # The panel's tracks are 0-based; -1 is none.
+            "videoTrack": picture["index"] - 1 if picture else -1,
+            "audioTrack": sounds[0]["index"] - 1 if sounds else -1,
+            "bin": BIN_NAME,
+            **({"itemId": p["itemId"]} if p["itemId"] else {}),
+        },
+    )["placed"]
+    wanted_audio = {c["index"] for c in sounds}
+    unwanted = [
+        q["id"]
+        for q in placed
+        if (q["type"] == "video" and (picture is None or q["track"] + 1 != picture["index"]))
+        or (q["type"] == "audio" and q["track"] + 1 not in wanted_audio)
+    ]
+    if unwanted:
+        host._send("remove_items", {"timeline": name, "ids": unwanted})
+    return [q for q in placed if q["id"] not in unwanted]
 
 
 def build(
-    host: Any, base: str, name: str, bin_name: str, seq: Sequence, steps: dict[str, Any]
+    host: Any, base: str, name: str, bin_name: str, seq: Sequence, placements: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Makes `name` from the draft (`steps` is plan()'s answer). Returns the rebuild's result."""
-    kept, placed = steps["kept"], steps["placed"]
+    """Makes `name` from the draft (`placements` is plan()'s answer). Returns the rebuild's result."""
     made = host._send("clone_sequence", {"timeline": base, "name": name, "bin": bin_name})
     name = made.get("name", name)
     warnings: list[str] = []
     try:
-        if any(t.get("transitions") for kind in ("video", "audio") for t in seq.tracks[kind]):
+        copy = _read(host, name)
+        if any(t.get("transitions") for kind in ("video", "audio") for t in copy.tracks[kind]):
             host._send("remove_transitions", {"timeline": name})
-            warnings.append("Transitions weren't carried; add them again with set_transition.")
-
-        for chunk in _chunks(_cuts(seq, kept), RAZOR_CHUNK):
-            host._send("razor_cuts", {"timeline": name, "cuts": chunk})
-        after = _read(host, name)
-        pieces = _pieces(after, kept, after.timebase // 2)
-
-        unused = [i for i in after.clips if i not in set(pieces.values())]
-        for chunk in _chunks(unused, IDS_CHUNK):
+        for chunk in _chunks(list(copy.clips), IDS_CHUNK):
             host._send("remove_items", {"timeline": name, "ids": chunk})
+        if _read(host, name).clips:
+            raise HostError("Premiere didn't clear the copy of the sequence")
 
-        movers = [n for n, k in enumerate(kept) if k["target"] != k["from"]]
-        if movers:
-            ends = [int(c["endTicks"]) for c in after.clips.values()] + [
-                k["target"] + k["to"] - k["from"] for k in kept
-            ]
-            park = seq.ticks(seconds(max(ends)) + 1.0)
-            for chunk in _chunks(movers, IDS_CHUNK):
-                host._send(
-                    "move_items",
-                    {"timeline": name, "ids": [pieces[n] for n in chunk], "offsetTicks": str(park)},
-                )
-            for chunk in _chunks(movers, IDS_CHUNK):
-                moves = [
-                    {"id": pieces[n], "offsetTicks": str(kept[n]["target"] - kept[n]["from"] - park)}
-                    for n in chunk
-                ]
-                host._send("move_items", {"timeline": name, "moves": moves})
+        wanted = {"video": 0, "audio": 0}
+        for p in placements:
+            if p["picture"]:
+                wanted["video"] = max(wanted["video"], p["picture"]["index"])
+            for s in p["sounds"]:
+                wanted["audio"] = max(wanted["audio"], s["index"])
+        more = {kind: max(0, wanted[kind] - len(copy.tracks[kind])) for kind in wanted}
+        if any(v > MAX_NEW_TRACKS for v in more.values()):
+            raise HostError("The draft has more tracks than VibeCut can add to a sequence at once")
+        if any(more.values()):
+            host._send("add_tracks", {"timeline": name, **more})
 
         settings = []
-        for n, k in enumerate(kept):
-            item: dict[str, Any] = {"id": pieces[n]}
-            if k["enabled"] == bool(k["origin"].get("disabled")):
-                item["disabled"] = not k["enabled"]
-            if k["kind"] == "audio":
-                was = _num(k["read"].get("volumeDb"))
-                want = k["volumeDb"] if k["volumeDb"] is not None else 0.0
-                if was is not None and abs(want - was) > 0.05:
-                    item["level"] = gain(want)
-            if len(item) > 1:
-                settings.append(item)
+        for p in placements:
+            for q in _place(host, name, p):
+                draft = (
+                    p["picture"]
+                    if q["type"] == "video"
+                    else next((s for s in p["sounds"] if s["index"] == q["track"] + 1), None)
+                )
+                if draft is None:
+                    continue
+                item: dict[str, Any] = {"id": q["id"]}
+                if not draft["enabled"]:
+                    item["disabled"] = True
+                if q["type"] == "audio" and draft["volumeDb"] is not None and abs(draft["volumeDb"]) > 0.05:
+                    item["level"] = gain(draft["volumeDb"])
+                if len(item) > 1:
+                    settings.append(item)
         for chunk in _chunks(settings, IDS_CHUNK):
             try:
                 host._send("set_items", {"timeline": name, "items": chunk})
             except HostError as exc:
                 warnings.append(f"Some levels or on/off settings weren't set: {exc}")
 
-        linked: dict[tuple[str, int], list[str]] = {}
-        for n, k in enumerate(kept):
-            if k["linkGroup"]:
-                linked.setdefault((k["linkGroup"], k["target"]), []).append(pieces[n])
-        groups = [g for g in linked.values() if len(g) > 1]
-        for batch in _link_batches(groups):
-            host._send(
-                "set_links", {"timeline": name, "unlink": [i for g in batch for i in g], "groups": batch}
-            )
-
-        if placed:
-            now = _read(host, name)
-            more = {
-                kind: max(
-                    0,
-                    max((c["index"] for c in placed if c["kind"] == kind), default=0) - len(now.tracks[kind]),
-                )
-                for kind in ("video", "audio")
-            }
-            if any(v > MAX_NEW_TRACKS for v in more.values()):
-                raise HostError("The draft has more tracks than VibeCut can add to a sequence at once")
-            if any(more.values()):
-                host._send("add_tracks", {"timeline": name, **more})
-        for chunk in _chunks(_placements(placed), ADD_CHUNK):
-            add_clips(host, {"timeline": name, "clips": chunk})
-
+        _check(_read(host, name), placements, name)
         host._send("open_sequence", {"timeline": name})
     except Exception:
         with contextlib.suppress(Exception):
             host._send("delete_sequence", {"timeline": name})
         raise
-    return {
-        "timeline": name,
-        "clips": len(kept) + len(placed),
-        "carried": len(kept),
-        "placed": len(placed),
-        "warnings": warnings,
-    }
+    count = sum((1 if p["picture"] else 0) + len(p["sounds"]) for p in placements)
+    return {"timeline": name, "clips": count, "warnings": warnings}
 
 
-def view_of(host: Any, base: str) -> dict[str, dict[str, Any]]:
-    """The original's clips as the agent reads them (seconds, speed, level), by id."""
-    tracks = host.read_timeline({"timeline": base}).get("tracks", [])
-    return {c["id"]: c for t in tracks for c in t.get("clips", []) if c.get("kind") is None}
+def _check(after: Sequence, placements: list[dict[str, Any]], name: str) -> None:
+    """Every piece must be on its track where the draft has it."""
+    tb = after.timebase
+    have = {(c["kind"], c["index"], round(int(c["startTicks"]) / tb)) for c in after.clips.values()}
+    for p in placements:
+        tracks = ([("video", p["picture"]["index"])] if p["picture"] else []) + [
+            ("audio", s["index"]) for s in p["sounds"]
+        ]
+        frame = round(p["atTicks"] / tb)
+        for kind, index in tracks:
+            if not any((kind, index, frame + d) in have for d in (-1, 0, 1)):
+                raise HostError(
+                    f"Premiere didn't place {p['name']} at {seconds(p['atTicks'])} s on "
+                    f'{kind[0].upper()}{index} of "{name}", so the new sequence was deleted'
+                )

@@ -1386,7 +1386,7 @@ The user's goal for this phase: more of what the agent does should happen inside
 ### 12a: send_to_premiere built inside Premiere
 **The bug (seen by the user):** a resequence "round-tripped and imported new copies". `send_to_premiere` wrote the draft as XML, and the panel imported it (`vcImportSequence`). Premiere then makes a new master clip in the "VibeCut" bin for every source in an XML, even a file the project already has, and the clips' effects stay behind. Resolve's rebuild never did this: it imports with `importSourceClips: False` and uses the Media Pool's own clips.
 
-**Now (`nle/premiere_native.py`, called by `premiere_rebuild.rebuild` when the request has a `layout`):**
+**First version, since replaced (see "12a, revised" below): moving the clone's own clips** (`nle/premiere_native.py`, called by `premiere_rebuild.rebuild` when the request has a `layout`):
 1. `clone_sequence` (panel `vcCloneSequenceInto`) copies the connected sequence into the "VibeCut" bin and opens it. Clips keep their effects, Lumetri and keyframes.
 2. `remove_transitions` clears the clone's transitions; the XML rebuild never carried them either. The result warns.
 3. Each draft clip with an `originId` (every clip `draftFromSnapshot` made) is found in the clone where it was cut from:
@@ -1417,6 +1417,26 @@ The user's goal for this phase: more of what the agent does should happen inside
 - `transcriptTools.test.ts`: the layout names the original's clips.
 
 **Live:** this needs Premiere. The user presses Settings → Editors → Update panel (0.9.0) and restarts Premiere, then tries a rearrange + send on a copy of a sequence. The "VibeCut" bin should gain only the new sequence.
+
+### 12a, revised (2026-10-09): placing the pieces, not moving them
+**What went wrong live (Premiere 26.5.2, the user's "Best B-Roll Selects", 180 clips at 59.94 fps):**
+- **First the panel was too old.** The first send failed with "Unknown command: clone_sequence": Premiere was still running panel 0.8.0, loaded before Update panel. The bridge now says to restart Premiere.
+- **Then the move build lost most clips.** It "succeeded": the panel's reading listed all 180 clips in name order, but Premiere's timeline showed four picture clips and one sound clip, and an end of 5:50.
+- **Probes on a copy ("VCA probe", deleted afterwards):**
+  - Every clip was looked up once, and then each was moved through that handle. Six clips moved that way read back as moved, but Premiere didn't move them. The panel now looks each clip up again just before it moves or removes it (`vcMoveItems`, `vcRemoveItems`, `vcNestRange`).
+  - That fix alone didn't save the full resequence: the user's screenshot still showed the clips gone, even after closing and reopening the sequence.
+  - The end Premiere reports (`sequence.end`) isn't a check either: it follows the last clip moved.
+
+**Now (`premiere_native.py`, rewritten):**
+- The copy keeps only the sequence's settings, tracks and names. Its clips and transitions are lifted.
+- Each draft piece is placed with `place_clip` from the project item its original clip used, or the one for its file, found by path; only a file the project lacks is imported. A picture and its sound from the same moment of the same file go in as one placement, and any half the draft doesn't have there is lifted again at once.
+- Levels and on/off are set, every piece is checked on its track at its start, and on any failure the copy is deleted.
+- **Costs:** effects, Lumetri, keyframes and transitions don't come across, as with XML. Pieces take their project item's name ("…_02", not "…_02 (seg 1)"). A speed change or ramp still goes through XML.
+- `razor_cuts` and the move command's per-clip `moves` are now unused by the rebuild, but kept in panel 0.9.0.
+
+**Checked live (2026-10-09):** the user's resequence rebuilt in 31 s as 90 placements from the project's own items, with nothing imported. The reading shows V1 at 90 clips, A1 and A2 at 45 each, all to 10:25.6, and Premiere's end reads 625.6 s. The user's screenshot confirms the picture in name order with its sound beneath.
+
+**Panel:** `host.jsx` was copied straight into the installed extension (the panel loads it fresh for every call), so this needed no restart. `npm run install-app` is needed for the sidecar's new `premiere_native.py`.
 
 ### 12b–12d: Speed, transitions, tracks and track switches
 All four are ported from VibeCut (verbatim except the import paths) and are direct edits: a backup first, the edit log, then Revert.
@@ -1748,3 +1768,8 @@ Every change read back as asked.
   - **Seen:** the user pressed Update panel (0.9.0 on disk), but Premiere kept running the 0.8.0 panel it had loaded. A resequence's send then failed with "Unknown command: clone_sequence".
   - **Fix:** `premiere_bridge.request` now turns the panel's "Unknown command" into a message naming the running panel's version (from `alive.json`) and asking for a restart of Premiere, or a close and reopen of the panel. Test in `test_premiere.py`.
   - **Still to do:** Settings → Editors could show the running version beside the installed one.
+- **2026-10-09 (Claude): Phase 12a revised: send_to_premiere places pieces instead of moving them.**
+  - **Live:** moving the clone's clips lost most of them in Premiere while the panel's reading said all was well.
+  - **Fix:** the rebuild now places each piece from the project's own items into an emptied copy and checks every piece. The panel looks up each clip again before moving or removing it.
+  - **Checked:** the user's 180-clip resequence, confirmed by their screenshot.
+  - **Also:** one Python test failed once and then passed in three full runs; it hasn't been identified.
