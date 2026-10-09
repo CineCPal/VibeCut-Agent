@@ -4,7 +4,7 @@ const ipc = vi.hoisted(() => ({ nleCall: vi.fn() }));
 vi.mock("../ipc", () => ipc);
 
 import { aliasOf, poolClipId, poolContext } from "./projectTools";
-import { executorsFor, runTool, type ToolContext } from "./tools";
+import { executorsFor, runTool, toolDeclarations, type ToolContext } from "./tools";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
 import { useEditLogStore } from "../../store/useEditLogStore";
 import type { HostPool } from "../../types/pool";
@@ -109,6 +109,27 @@ describe("the agent's project tools", () => {
     });
     await run(context, "duplicate_timeline", {});
     expect(context.timeline).toBe("Main Copy");
+  });
+
+  it("makes a social version as a new timeline it connects to, leaving the original (Phase 14d)", async () => {
+    editor({ make_social_version: (a) => ({ timeline: `${a.timeline} (9x16)`, original: a.timeline, width: 1080, height: 1920, reframed: 3, reframe: a.reframe }) });
+    const resolve = ctx({ host: "resolve" });
+    const made = await run(resolve, "make_social_version", { aspect: "9:16" });
+    expect(ipc.nleCall).toHaveBeenCalledWith("resolve", "make_social_version", { timeline: "Main", aspect: "9:16", reframe: "auto" });
+    expect(made.summary).toBe('Made "Main (9x16)", a 9:16 version of "Main" at 1080x1920 with Smart Reframe on 3 clip(s), opened it and connected to it; "Main" is unchanged');
+    expect(resolve.timeline).toBe("Main (9x16)");
+    expect(useConnectionStore.getState().connections.resolve.madeTimelines).toEqual(["Main (9x16)"]);
+
+    const premiere = ctx();
+    expect((await run(premiere, "make_social_version", { aspect: "1:1" })).summary).toMatch(/with Premiere's Auto Reframe/);
+    expect(errorOf(await run(premiere, "make_social_version", { aspect: "1:1", reframe: "center" }))).toMatch(/only make a social version with Auto Reframe/);
+    expect(errorOf(await run(premiere, "make_social_version", { aspect: "16:9" }))).toMatch(/aspect must be one of 9:16, 1:1, 4:5/);
+    useConnectionStore.setState((s) => ({ connections: { ...s.connections, resolve: { ...s.connections.resolve, draft: { base: "Main", changes: ["x"] } as never } } }));
+    expect(errorOf(await run(ctx({ host: "resolve" }), "make_social_version", { aspect: "4:5" }))).toMatch(/A draft of "Main" is open/);
+    // Premiere's tool has no reframe choice to offer.
+    const declared = (host: "premiere" | "resolve") => toolDeclarations(host).find((t) => t.name === "make_social_version");
+    expect(Object.keys((declared("premiere")?.parameters as { properties: object }).properties)).toEqual(["aspect", "name"]);
+    expect(Object.keys((declared("resolve")?.parameters as { properties: object }).properties)).toEqual(["aspect", "name", "reframe"]);
   });
 
   it("switches to made timelines, and to the user's only when the message names them", async () => {

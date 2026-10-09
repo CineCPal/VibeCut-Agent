@@ -99,7 +99,7 @@ export function snapshotHeader(host: NleHost | null, timeline: HostTimeline | nu
     timeline.playhead !== undefined ? `playhead at ${clock(timeline.playhead)}` : null,
     timeline.inOut ? `In ${clock(timeline.inOut.in)} – Out ${clock(timeline.inOut.out)} marked` : null,
   ].filter(Boolean);
-  const head = `[${HOST_NOUN[host]} "${timeline.timeline}" in project "${timeline.project}", ${timeline.fps} fps, ${clock(timeline.duration)} long, starts at ${timeline.startTimecode}${where.length ? `; ${where.join(", ")}` : ""}]`;
+  const head = `[${HOST_NOUN[host]} "${timeline.timeline}" in project "${timeline.project}", ${timeline.width && timeline.height ? `${timeline.width}x${timeline.height}, ` : ""}${timeline.fps} fps, ${clock(timeline.duration)} long, starts at ${timeline.startTimecode}${where.length ? `; ${where.join(", ")}` : ""}]`;
   const edits = editLogContext();
   return [head, ...timelineLines(timeline), ...(edits ? [edits] : [])].join("\n");
 }

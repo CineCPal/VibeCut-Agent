@@ -46,6 +46,9 @@ export interface HostTimeline {
   project: string;
   timeline: string;
   fps: number;
+  /** The frame size, when the editor says it (Phase 14d; Premiere panel 0.10.0). */
+  width?: number;
+  height?: number;
   startTimecode: string;
   duration: number;
   isCurrent: boolean;

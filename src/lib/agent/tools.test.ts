@@ -42,6 +42,7 @@ describe("agent tools", () => {
       "set_track_options",
       "create_timeline",
       "duplicate_timeline",
+      "make_social_version",
       "switch_timeline",
       "rename_timeline",
       "select_clip",

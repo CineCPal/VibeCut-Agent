@@ -22,6 +22,8 @@ const BACKUP = /\(before VibeCut \d+\)$/;
 /** Pool clips listed in the snapshot before it's abridged. */
 const CONTEXT_POOL_LIMIT = 80;
 const IMPORT_BIN = "VibeCut";
+/** The aspects make_social_version makes (Phase 14d; nle/social.py). */
+export const SOCIAL_ASPECTS = ["9:16", "1:1", "4:5"] as const;
 
 // ----------------------------------------------------------------------------- words (poolSpec.ts)
 
@@ -196,6 +198,30 @@ export function projectExecutors(context: ToolContext): Record<string, Executor>
       return { summary: `Copied "${source}" to "${timeline}" in ${editor}, opened the copy and connected to it; "${source}" is unchanged`, result: { timeline, original: source } };
     },
 
+    // Phase 14d: a vertical, square or 4:5 copy of the connected timeline.
+    make_social_version: async (args) => {
+      refuseWhileDrafting(host, `make a social version (send the draft first, then make it from the new ${thing})`);
+      const aspect = optStr(args, "aspect");
+      if (!aspect || !SOCIAL_ASPECTS.includes(aspect as (typeof SOCIAL_ASPECTS)[number])) throw new Error(`aspect must be one of ${SOCIAL_ASPECTS.join(", ")}`);
+      const reframe = optStr(args, "reframe") ?? "auto";
+      if (reframe !== "auto" && reframe !== "center") throw new Error("reframe must be auto or center");
+      if (host === "premiere" && reframe === "center") throw new Error("Premiere can only make a social version with Auto Reframe from a script; leave reframe out");
+      const source = connectedName();
+      const made = await nleCall<{ timeline: string; original: string; width?: number; height?: number; reframed?: number; notReframed?: string[]; note?: string }>(host, "make_social_version", {
+        timeline: source,
+        aspect,
+        reframe,
+        ...(optStr(args, "name") ? { name: optStr(args, "name") } : {}),
+      });
+      await connectTo(made.timeline, true);
+      const size = made.width && made.height ? ` at ${made.width}x${made.height}` : "";
+      const how = host === "premiere" ? "with Premiere's Auto Reframe" : reframe === "auto" ? `with Smart Reframe on ${made.reframed ?? 0} clip(s)` : "centred, filling the frame";
+      return {
+        summary: `Made "${made.timeline}", a ${aspect} version of "${source}"${size} ${how}, opened it and connected to it; "${source}" is unchanged${made.note ? `. ${made.note}` : ""}`,
+        result: { ...made, aspect },
+      };
+    },
+
     switch_timeline: async (args) => {
       const name = optStr(args, "timeline");
       if (!name) throw new Error("timeline must name the one to switch to");
@@ -324,6 +350,23 @@ export function projectToolDeclarations(host: NleHost): ToolDeclaration[] {
       name: "duplicate_timeline",
       description: `Copies the connected ${thing} (clips${premiere ? "" : ", grades"}, markers), opens the copy and connects to it, so the edits that follow change the copy and leave the original alone: the way to make a variation.`,
       parameters: { type: "OBJECT", properties: { name: { type: "STRING", description: 'Optional; defaults to "<name> Copy", made unique.' } } },
+    },
+    {
+      name: "make_social_version",
+      description: `Makes a ${premiere ? "new sequence" : "copy of the connected timeline"} at a social aspect: 9:16 (Reels, TikTok, Shorts), 1:1 or 4:5 (feed), keeping the frame's short side (1920x1080 gives 1080x1920), opens it and connects to it; the original stays as it was. ${
+        premiere
+          ? "It's Premiere's Auto Reframe Sequence: each clip's framing follows its subject."
+          : "Every clip fills the new frame; reframe auto (the default) also runs Smart Reframe (Resolve Studio) on each clip so its subject stays in frame, center leaves them centred."
+      } Get the length right first (a draft with remove_time_ranges / rearrange_sections, then send it), then make the version from that ${thing}; titles and graphics may need moving by hand afterwards.`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          aspect: { type: "STRING", enum: [...SOCIAL_ASPECTS] },
+          name: { type: "STRING", description: 'Optional; defaults to "<name> (9x16)", made unique.' },
+          ...(premiere ? {} : { reframe: { type: "STRING", enum: ["auto", "center"], description: "Default auto." } }),
+        },
+        required: ["aspect"],
+      },
     },
     {
       name: "switch_timeline",

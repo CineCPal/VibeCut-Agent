@@ -19,6 +19,7 @@ from typing import Any
 from vibecut_agent.nle.errors import HostError
 from vibecut_agent.nle.resolve_pool import _walk
 from vibecut_agent.nle.resolve_support import unique_name
+from vibecut_agent.nle.social import SUFFIX, social_args, social_size
 
 MAX_NAME = 200
 
@@ -59,6 +60,87 @@ def duplicate_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         raise HostError(f"Resolve didn't copy {source.GetName()!r}")
     project.SetCurrentTimeline(copy)
     return {"timeline": copy.GetName()}
+
+
+# Smart Reframe takes Resolve 1-6 s a clip (21.1); past this many the rest are left centred.
+MAX_REFRAMED = 60
+# "Scale full frame with crop": the picture fills the new frame, cropped at the sides.
+FILL = "scaleToCrop"
+
+
+def _size(timeline: Any) -> tuple[int, int]:
+    try:
+        return int(timeline.GetSetting("timelineResolutionWidth")), int(timeline.GetSetting("timelineResolutionHeight"))
+    except (TypeError, ValueError):
+        raise HostError("Resolve didn't say the timeline's frame size") from None
+
+
+def make_social_version(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, aspect: 9:16 | 1:1 | 4:5, name?, reframe: auto | center} -> a copy at that frame size,
+    opened; the original is unchanged.
+
+    What Resolve 21.1 does (probed live, PLAN.md "14d"): a timeline takes its own frame size once
+    `useCustomSettings` is "1" (the project and the original keep theirs); `timelineInputResMismatchBehavior`
+    "scaleToCrop" fills the frame; `TimelineItem.SmartReframe()` (Studio) moves each clip's framing onto
+    its subject, though Pan and Zoom read the same after it.
+    """
+    aspect, reframe = social_args(args)
+    project, source = host._timeline(args)
+    width, height = _size(source)
+    new_width, new_height = social_size(width, height, aspect)
+    wanted = _new_name(args.get("name"), f"{source.GetName()} ({SUFFIX[aspect]})")
+    name = unique_name(wanted, _names(host, project))
+    copy = source.DuplicateTimeline(name)
+    if not copy:
+        raise HostError(f"Resolve didn't copy {source.GetName()!r}")
+    project.SetCurrentTimeline(copy)
+    for key, value in (
+        ("useCustomSettings", "1"),
+        ("timelineResolutionWidth", str(new_width)),
+        ("timelineResolutionHeight", str(new_height)),
+        ("timelineInputResMismatchBehavior", FILL),
+    ):
+        copy.SetSetting(key, value)
+    if _size(copy) != (new_width, new_height):
+        raise HostError(
+            f"Resolve made the copy {copy.GetName()!r} but kept it at {width}x{height}; set its frame size in "
+            "Timeline Settings (or delete the copy)"
+        )
+    out: dict[str, Any] = {
+        "timeline": copy.GetName(),
+        "original": source.GetName(),
+        "width": new_width,
+        "height": new_height,
+        "from": [width, height],
+        "fill": copy.GetSetting("timelineInputResMismatchBehavior") == FILL,
+        "reframe": reframe,
+    }
+    if reframe == "auto":
+        clips = [
+            item
+            for index in range(1, int(copy.GetTrackCount("video") or 0) + 1)
+            for item in copy.GetItemListInTrack("video", index) or []
+            if item.GetClipEnabled() and item.GetMediaPoolItem() is not None
+        ]
+        reframed, missed = 0, []
+        for item in clips[:MAX_REFRAMED]:
+            smart = getattr(item, "SmartReframe", None)
+            try:
+                done = bool(smart and smart())
+            except Exception:  # noqa: BLE001 - one clip that won't reframe stays centred
+                done = False
+            if done:
+                reframed += 1
+            else:
+                missed.append(item.GetName())
+        out["reframed"] = reframed
+        if missed:
+            out["notReframed"] = missed[:20]
+        if len(clips) > MAX_REFRAMED:
+            out["note"] = f"Smart Reframe ran on the first {MAX_REFRAMED} of {len(clips)} clips; the rest are centred"
+        elif clips and not reframed:
+            out["note"] = "Smart Reframe didn't run (it needs DaVinci Resolve Studio), so every clip is centred"
+    return out
 
 
 def open_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:

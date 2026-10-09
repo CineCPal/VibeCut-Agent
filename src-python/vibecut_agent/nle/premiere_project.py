@@ -19,6 +19,7 @@ from typing import Any
 
 from vibecut_agent.nle.premiere import HostError, frame_rate
 from vibecut_agent.nle.premiere_support import unique_name
+from vibecut_agent.nle.social import ASPECTS, SUFFIX, social_args
 
 MAX_NAME = 200
 PRESET_GLOB = "/Applications/Adobe Premiere Pro */Adobe Premiere Pro *.app/Contents/Settings/SequencePresets/HD 1080p/HD 1080p {fps} fps.sqpreset"
@@ -78,6 +79,30 @@ def duplicate_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     source = host._name(args)
     name = unique_name(_new_name(args.get("name"), f"{source} Copy"), _names(host))
     return {"timeline": host._send("duplicate_sequence", {"timeline": source, "name": name})["name"]}
+
+
+def make_social_version(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, aspect: 9:16 | 1:1 | 4:5, name?, reframe: auto} -> Premiere's Auto Reframe Sequence: a
+    new sequence at that aspect, each clip's framing following its subject, opened; the original is
+    unchanged. Premiere can't centre-crop a sequence from a script, so `center` is refused."""
+    aspect, reframe = social_args(args)
+    if reframe != "auto":
+        raise HostError(
+            "Premiere can only make a social version with Auto Reframe from a script; leave reframe out "
+            "(or use Sequence > Auto Reframe Sequence in Premiere and pick a slower motion)"
+        )
+    source = host._name(args)
+    name = unique_name(_new_name(args.get("name"), f"{source} ({SUFFIX[aspect]})"), _names(host))
+    across, down = ASPECTS[aspect]
+    made = host._send(
+        "auto_reframe",
+        {"timeline": source, "name": name, "numerator": across, "denominator": down, "motion": "default"},
+    )
+    out: dict[str, Any] = {"timeline": made["name"], "original": source, "reframe": "auto"}
+    for key in ("width", "height"):
+        if isinstance(made.get(key), int):
+            out[key] = made[key]
+    return out
 
 
 def open_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:

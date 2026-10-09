@@ -225,6 +225,7 @@ def timeline(raw: dict[str, Any]) -> dict[str, Any]:
         "project": raw.get("project", ""),
         "timeline": raw["name"],
         "fps": fps,
+        **_frame_size(raw),
         "startTimecode": timecode(int(raw.get("zeroPoint") or 0), timebase),
         "duration": seconds(raw["endTicks"]),
         "isCurrent": bool(raw.get("isActive")),
@@ -233,6 +234,14 @@ def timeline(raw: dict[str, Any]) -> dict[str, Any]:
     }
     out.update(_whereabouts(raw))
     return out
+
+
+def _frame_size(raw: dict[str, Any]) -> dict[str, int]:
+    """The sequence's frame size (Phase 14d; panel 0.10.0), when the panel sends it."""
+    width, height = raw.get("frameWidth"), raw.get("frameHeight")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        return {"width": width, "height": height}
+    return {}
 
 
 def _ticks(value: Any) -> int | None:

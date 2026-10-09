@@ -32,9 +32,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 /// (Phase 12a) clones, razors and moves a long sequence inside Premiere in several calls.
 const REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// How long a call may take before the app stops waiting for it.
+/// How long a call may take before the app stops waiting for it. A social version (Phase 14d) runs
+/// Resolve's Smart Reframe on up to 60 clips, or Premiere's Auto Reframe over the whole sequence.
 pub fn call_timeout(command: &str) -> Duration {
-    if command == "rebuild" {
+    if command == "rebuild" || command == "make_social_version" {
         REBUILD_TIMEOUT
     } else {
         CALL_TIMEOUT
@@ -480,6 +481,7 @@ mod tests {
         pending.forget(&c);
         assert!(rc.recv_timeout(Duration::from_millis(10)).is_err());
         assert_eq!(call_timeout("rebuild"), Duration::from_secs(300));
+        assert_eq!(call_timeout("make_social_version"), Duration::from_secs(300));
         assert_eq!(call_timeout("read_timeline"), Duration::from_secs(35));
     }
 }

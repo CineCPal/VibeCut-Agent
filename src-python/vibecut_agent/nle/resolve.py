@@ -180,6 +180,15 @@ def _linked(item: Any) -> list[Any]:
     ]
 
 
+def _frame_size(timeline: Any) -> dict[str, int]:
+    """The timeline's frame size (Phase 14d), when Resolve says it."""
+    try:
+        width, height = int(timeline.GetSetting("timelineResolutionWidth")), int(timeline.GetSetting("timelineResolutionHeight"))
+    except (TypeError, ValueError):
+        return {}
+    return {"width": width, "height": height} if width > 0 and height > 0 else {}
+
+
 def _whereabouts(timeline: Any, fps: float, length: int, is_current: bool) -> dict[str, Any]:
     """The playhead (only on the open timeline) and the In/Out marks (Phase 13a). `GetMarkInOut()`
     gives {"video": {"in", "out"}, "audio": ...} in frames from the timeline's start, Out included
@@ -263,6 +272,7 @@ class ResolveHost:
             "project": project.GetName(),
             "timeline": timeline.GetName(),
             "fps": fps,
+            **_frame_size(timeline),
             "startTimecode": timeline.GetStartTimecode(),
             "duration": _seconds(length, fps),
             "isCurrent": is_current,

@@ -1796,6 +1796,66 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - the free track;
 - the tool end to end: the pool's marked range, picture only, one backup and step; a new top track and two batches of a 64-shot cut; 2× music giving 240 BPM and cuts every 0.5 s; refusals (no steady beat, too many, a bad step, drafting).
 
+### 14d: Vertical, square and 4:5 versions
+**Probed live first (Resolve Studio 21.1, "VibeCut 7a", on scratch timelines):**
+- A timeline takes its own frame size once `useCustomSettings` is "1". The original and the project keep theirs.
+- **Resize modes** (`timelineInputResMismatchBehavior`): `scaleToCrop` ("scale full frame with crop") fills the frame. It also takes `scaleToFit`, `centerCrop` and `stretch`; `scaleToFill`, `fill` and `crop` are refused.
+- **Smart Reframe:** `TimelineItem.SmartReframe()` exists and answers True in 1–6 s a clip, but Pan, Tilt and Zoom read the same afterwards. Its effect only shows in the picture:
+  - an exported still (`Project.ExportCurrentFrameAsStill`) of a white box at x 1500–1740 of a 1920 frame put it at x 356–776 of the 1080x1920 frame;
+  - a centre crop would have put it off the frame.
+
+**`nle/social.py`:** the aspects, the sizes and the checks.
+- `social_size` keeps the source's short side, rounded to even pixels (1920x1080 gives 1080x1920, 1080x1080 or 1080x1350).
+- New names get "(9x16)", "(1x1)" or "(4x5)", made unique.
+
+**Resolve** (`resolve_project.make_social_version`):
+1. `DuplicateTimeline`.
+2. Set the copy's own size with `scaleToCrop`, and read it back. If the size didn't take, it says so, naming the copy.
+3. With `reframe: auto`, run `SmartReframe()` on each enabled video clip with media, up to 60.
+4. The result says how many clips were reframed. When none could be, it notes that Smart Reframe needs Studio.
+
+**Premiere** (`premiere_project.make_social_version`, panel 0.10.0):
+- `vcAutoReframe` runs `sequence.autoReframeSequence(num, den, "default", name, false)` and opens the result. The bridge checks the ratio and the motion setting.
+- `center` is refused: a scripted centre crop would mean setting each clip's Motion scale from its media size, which can't be checked from here.
+- **Not checked live yet.** The user is to update the panel and try it.
+
+**Snapshot:** `HostTimeline.width` and `height` come from Resolve's `GetSetting` and Premiere's `sequence.getSettings()` in `vcReadSequence` (0.10.0; an older panel sends neither). The first line now reads `…, 1080x1920, 25 fps, …`.
+
+**Tool** `make_social_version {aspect, name?, reframe? (Resolve only)}` (`projectTools.ts`):
+- It's reviewed like `duplicate_timeline`, and refused while drafting: send the draft first.
+- It connects to the new timeline (`addMadeTimeline`).
+- The watcher call gets the 300 s timeout (`nle.rs` `call_timeout`).
+
+**Tests:**
+- `tests/nle/test_social.py` (12):
+  - sizes;
+  - Resolve: the filled copy, its clips reframed (titles and switched-off clips skipped), unique names, centre-only, no Studio, a size that didn't take, bad arguments;
+  - Premiere: Auto Reframe's request, and `center` refused;
+  - both editors reading the frame size.
+- `projectTools.test.ts`, `awareness.test.ts` (the first line), `bridge.test.ts` (the panel's checks) and `nle.rs` (the timeout).
+
+### Phase 14 checked live in Resolve (2026-10-09, Resolve Studio 21.1, "VibeCut 7a")
+**Setup:** a scratch Vitest harness ran the app's own TS tools against a real `resolve-watch`, with the real Python jobs, as in Phase 13.
+- **Media:** generated files: `VCA14_picture.mov` (testsrc2 1920x1080/25 with a -48 dBFS tone), `VCA14_broll.mov` and `VCA14_clicks.wav` (120 BPM).
+- **"VCA 14 live":** picture 0–8 s and 9–15 s on V1+A1, a 2-frame B-roll flash at 4 s on V2, a B-roll clip at 16–18 s switched off, and the clicks on A2.
+
+**14a** (`review_edit`, `targetLufs` -14, `visual: false`) found 7 problems:
+- the flash at 4 s (2 frames);
+- black from 8 to 9 s and from 15 to 20 s;
+- the switched-off clip at 16 s;
+- both picture pieces at -51.8 LUFS and the clicks at -24.1 LUFS, all under the target.
+
+**14c** (`cut_to_beats`, 0–8 s, every 2 beats):
+- 120.3 BPM; 8 shots on a new V3 at 0.04, 0.96, 2, 2.96, 4, 4.96, 6 and 6.96 s, each within one frame of the clicks.
+- Revert undid 9 changes (the shots and the track), and the timeline matched its earlier read exactly.
+
+**14d** (`make_social_version` 9:16, auto) made "VCA 14 live (9x16)" in 3.6 s:
+- 2160x3840 (the project is UHD), with Smart Reframe on 3 clips; the switched-off one was skipped.
+- The original stayed at 3840x2160.
+- An exported still of the copy at 2 s was filled from top to bottom, with no bars.
+
+**Cleanup:** the test timelines, their backups and the test media were deleted. 28 timelines remain, and "Timeline 28" is current.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2083,3 +2143,9 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **2026-10-09 (Claude): Phase 14c: cut to the beat.**
   - `cut_to_beats` lays shots into the slots between every Nth beat of a music clip, on a free or new video track, with one Revert.
   - `beatsOf` is shared with `find_beats`. See "Phase 14" → 14c.
+- **2026-10-09 (Claude): Phase 14d: vertical, square and 4:5 versions.**
+  - `make_social_version` makes a copy at a social aspect.
+    - Resolve: its own frame size, filled, with Smart Reframe on each clip.
+    - Premiere: Auto Reframe Sequence, in panel 0.10.0.
+  - The snapshot shows each timeline's frame size.
+  - Probed and checked live in Resolve with 14a and 14c. See "Phase 14" → 14d and "checked live".

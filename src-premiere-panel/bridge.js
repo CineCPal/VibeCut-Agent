@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.9.1";
+const PANEL_VERSION = "0.10.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 const BRIDGE_DIR =
@@ -57,6 +57,8 @@ const COMMANDS = {
   // Phase 6a: the project (sequences, selection, the Project panel).
   create_sequence: "vcCreateSequence",
   duplicate_sequence: "vcDuplicateSequence",
+  // Phase 14d: a vertical, square or 4:5 version (Auto Reframe Sequence).
+  auto_reframe: "vcAutoReframe",
   open_sequence: "vcOpenSequence",
   rename_sequence: "vcRenameSequence",
   select_items: "vcSelectItems",
@@ -175,6 +177,13 @@ const CHECKS = {
   duplicate_sequence(args) {
     checkSequenceName(args.timeline);
     checkSequenceName(args.name);
+  },
+  auto_reframe(args) {
+    checkSequenceName(args.timeline);
+    checkSequenceName(args.name);
+    const ratios = ["9:16", "1:1", "4:5"];
+    if (!ratios.includes(`${args.numerator}:${args.denominator}`)) throw new Error("numerator:denominator must be 9:16, 1:1 or 4:5");
+    if (!["default", "slower", "faster"].includes(args.motion)) throw new Error("motion must be default, slower or faster");
   },
   open_sequence(args) {
     checkSequenceName(args.timeline);

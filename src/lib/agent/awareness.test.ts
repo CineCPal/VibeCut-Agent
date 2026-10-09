@@ -54,6 +54,10 @@ describe("the snapshot's first line (Phase 13a)", () => {
     );
     expect(snapshotHeader("resolve", timeline()).split("\n")[0]).not.toMatch(/playhead/);
   });
+
+  it("gives the frame size when the editor says it (Phase 14d)", () => {
+    expect(snapshotHeader("premiere", timeline({ width: 1080, height: 1920 })).split("\n")[0]).toMatch(/^\[Premiere sequence "Main" in project "Doc", 1080x1920, 25 fps, /);
+  });
 });
 
 describe("[SOURCES]", () => {

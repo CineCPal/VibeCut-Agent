@@ -338,6 +338,15 @@ function vcReadSequence(args) {
       audio.push(vcReadTrack(sequence.audioTracks[s], true, false));
     }
     var active = vcIsActive(sequence);
+    // Phase 14d: the frame size, for the snapshot and make_social_version.
+    var size = {};
+    try {
+      var settings = sequence.getSettings();
+      size.width = settings.videoFrameWidth;
+      size.height = settings.videoFrameHeight;
+    } catch (e) {
+      size = {};
+    }
     // Phase 13a: where the user is. The playhead only on the open sequence; In and Out as Premiere
     // has them (unset, both read -400000 s; Out is the end of the Out frame; premiere.py sorts it out).
     var where = {};
@@ -358,6 +367,8 @@ function vcReadSequence(args) {
       playheadTicks: where.playheadTicks,
       inTicks: where.inTicks,
       outTicks: where.outTicks,
+      frameWidth: size.width,
+      frameHeight: size.height,
       video: video,
       audio: audio,
       markers: vcMarkers(sequence)
@@ -1235,6 +1246,29 @@ function vcDuplicateSequence(args) {
     var copy = vcCloneSequence(vcSequenceNamed(a.timeline), a.name, "Premiere didn't copy the sequence");
     app.project.openSequence(copy.sequenceID);
     return { name: copy.name };
+  }, args);
+}
+
+// Phase 14d. args: {timeline, name, numerator, denominator, motion}: Premiere's Auto Reframe Sequence,
+// a new sequence at numerator:denominator whose clips follow their subjects; the original is unchanged.
+function vcAutoReframe(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    if (typeof sequence.autoReframeSequence !== "function") {
+      vcRefuse("This Premiere has no Auto Reframe Sequence for scripts");
+    }
+    var made = sequence.autoReframeSequence(a.numerator, a.denominator, a.motion, a.name, false);
+    if (!made) {
+      vcRefuse("Premiere didn't make the reframed sequence");
+    }
+    app.project.openSequence(made.sequenceID);
+    var out = { name: made.name };
+    try {
+      var settings = made.getSettings();
+      out.width = settings.videoFrameWidth;
+      out.height = settings.videoFrameHeight;
+    } catch (e) {}
+    return out;
   }, args);
 }
 

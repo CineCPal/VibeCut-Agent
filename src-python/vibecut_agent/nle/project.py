@@ -30,6 +30,8 @@ def premiere_project(imports: Path | None = None) -> dict[str, Call]:
     calls: dict[str, Call] = {
         "create_timeline": premiere_project.create_timeline,
         "duplicate_timeline": premiere_project.duplicate_timeline,
+        # Phase 14d: Premiere's Auto Reframe Sequence.
+        "make_social_version": premiere_project.make_social_version,
         "open_timeline": premiere_project.open_timeline,
         "rename_timeline": premiere_project.rename_timeline,
         "select_items": premiere_project.select_items,
@@ -51,6 +53,8 @@ def resolve_project() -> dict[str, Call]:
     return {
         "create_timeline": resolve_project.create_timeline,
         "duplicate_timeline": resolve_project.duplicate_timeline,
+        # Phase 14d: a vertical, square or 4:5 copy.
+        "make_social_version": resolve_project.make_social_version,
         "open_timeline": resolve_project.open_timeline,
         "rename_timeline": resolve_project.rename_timeline,
         "select_pool_clips": resolve_project.select_pool_clips,
