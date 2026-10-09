@@ -1991,8 +1991,19 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Cleanup:** the test timelines, their backups, the test clip and every "VCA 15 live" render file were deleted. 28 timelines remain, with "Timeline 28" current. The older Bakery renders in that folder were left alone.
 
-### Still to check (live)
-- **Premiere:** update the panel to 0.11.0, then a caption track and a Media Encoder render.
+### Checked live in Premiere (2026-10-09, Premiere 26.5.2, panel 0.11.0, "2026 Agent Tests")
+**Setup:** the editor-side code through the real panel bridge, with no app. The scratch sequence "VCA 15 Premiere" (59.94 fps) held VCA15_talk.mov.
+
+**Captions:** `create_captions` with the 5 cues Resolve had transcribed made an SRT in the bridge's `imports/`, and the panel made a caption track (count 5, 0.4 s). Revert reported "Premiere's scripting can't remove a caption track; delete it in Premiere", as designed.
+
+**Renders through Media Encoder:**
+- 720p over 0–4 s gave 1280x720 H.264 with AAC, 3.99 s long.
+- WAV gave 16-bit 48 kHz, 8.56 s.
+- Stopping a ProRes render answered "cancelled", left no partial file, and noted Media Encoder's paused queue.
+
+**14d's Auto Reframe** made "VCA 15 Premiere (9x16)" with both clips, at **607x1080**: Premiere keeps the sequence's height. The tool's description promised 1080x1920; it now says what Premiere does, and so does `premiere_project.make_social_version`.
+
+**Not yet seen by eye:** the caption track and the reframed framing (script reads in Premiere can be wrong; see the 12a note). The test sequences are left for the user's look. The render files were deleted.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -2314,3 +2325,6 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - Captions, 720p, WAV, AAC and Stop all held.
   - VibeCut's audio-only AAC job left Resolve rendering no picture afterwards, so AAC now comes from an H.264 carrier and every job starts from "H.264 Master". A refused start is tried once more.
   - See "Phase 15" → "Checked live in Resolve".
+- **2026-10-09 (Claude): Phase 15 and 14d checked live in Premiere (panel 0.11.0).**
+  - The caption track, a 720p render, WAV, Stop and Auto Reframe all worked.
+  - Auto Reframe keeps the height (607x1080 at 9:16), and the tool now says so.

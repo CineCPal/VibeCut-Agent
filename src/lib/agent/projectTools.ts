@@ -353,7 +353,7 @@ export function projectToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "make_social_version",
-      description: `Makes a ${premiere ? "new sequence" : "copy of the connected timeline"} at a social aspect: 9:16 (Reels, TikTok, Shorts), 1:1 or 4:5 (feed), keeping the frame's short side (1920x1080 gives 1080x1920), opens it and connects to it; the original stays as it was. ${
+      description: `Makes a ${premiere ? "new sequence" : "copy of the connected timeline"} at a social aspect: 9:16 (Reels, TikTok, Shorts), 1:1 or 4:5 (feed), ${premiere ? "keeping the sequence's height (a 1080p sequence gives 607x1080 at 9:16; say so, since platforms take it but many expect 1080x1920)" : "keeping the frame's short side (1920x1080 gives 1080x1920)"}, opens it and connects to it; the original stays as it was. ${
         premiere
           ? "It's Premiere's Auto Reframe Sequence: each clip's framing follows its subject."
           : "Every clip fills the new frame; reframe auto (the default) also runs Smart Reframe (Resolve Studio) on each clip so its subject stays in frame, center leaves them centred."

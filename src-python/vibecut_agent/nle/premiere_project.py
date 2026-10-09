@@ -84,7 +84,9 @@ def duplicate_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 def make_social_version(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline, aspect: 9:16 | 1:1 | 4:5, name?, reframe: auto} -> Premiere's Auto Reframe Sequence: a
     new sequence at that aspect, each clip's framing following its subject, opened; the original is
-    unchanged. Premiere can't centre-crop a sequence from a script, so `center` is refused."""
+    unchanged. Premiere can't centre-crop a sequence from a script, so `center` is refused. Checked live
+    (Phase 15, Premiere 26.5.2): it keeps the sequence's height, so a 1920x1080 sequence gives 607x1080
+    at 9:16, not 1080x1920 as Resolve's version does."""
     aspect, reframe = social_args(args)
     if reframe != "auto":
         raise HostError(
