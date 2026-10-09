@@ -1898,6 +1898,16 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **Premiere:** update the panel to 0.10.0 (Settings → Editors → Update panel), restart Premiere, then ask for a 9:16 version. Auto Reframe Sequence was not checked from here.
 - **The critic on the Claude API:** the repo `.env` key still returns 401.
 
+## Phase 15: The chat bot app, continued (2026-10-09)
+
+### 15a: A tidier Agent row
+The row above the messages had grown four text buttons ("Review on/off", "Revert N edits (earlier session)", "History", "New chat") and ran out of room at the 440px default and the 380px minimum. The user picked this layout:
+- **Left: the open chat's name** ("New chat" before it is saved), with a ▾. Clicking it, or ⌘Y, opens History, which now drops down from the left. Its accessible name is "<title>, past chats" (`ChatHistoryMenu`).
+- **Right: `Revert N`**, still a warning button. The full "Revert N edits (earlier session)" stays as its accessible name, and "earlier session" is in the tooltip. **New chat** is a pen icon.
+- **Review edits first** moved into the composer: a shield switch next to Add images (blue when on), with the same switch role, label and tooltips (`Composer`).
+
+Checked in the browser build at 380px with a long title and "Revert 12": the title truncates, nothing overlaps, and History opens under the title. Pending: the user's try in the installed app (`npm run install-app`).
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -1972,6 +1982,7 @@ The user asked what other skills the agent should have. Of four groups (delivera
     - 14e: ten new saved prompts.
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
+  - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2205,3 +2216,6 @@ The user asked what other skills the agent should have. Of four groups (delivera
 - **2026-10-09 (Claude): the critic runs on Gemini Flash by default.** The user prefers Gemini's API cost to the Claude API's.
   - Settings → Agent → Edit review critic: Gemini Flash (default) or the agent's model.
   - Without a Gemini key it falls back to the agent's model and says so. See "Phase 14" → "14b, revised".
+- **2026-10-09 (Claude): Phase 15a: a tidier Agent row.**
+  - The chat's name now opens History. Revert shortens to `Revert N`, New chat is an icon, and Review edits first moved into the composer.
+  - Tests updated (history trigger name, Revert's visible text, the composer's review switch). See "Phase 15" → 15a.

@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { History, Pencil, Search, Trash2 } from "lucide-react";
+import { ChevronDown, Pencil, Search, Trash2 } from "lucide-react";
 import { deleteChat, openChat, renameChat } from "../../lib/agent/chatHistory";
 import { searchChats } from "../../lib/ipc";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -42,6 +42,8 @@ function Snippet({ hit }: { hit: ChatSearchHit }) {
  * Keys, from the search box or the list: ↑↓ / Home / End move, Enter opens, F2 renames, Escape clears the
  * search, then closes. From the list (Tab to it), Delete asks once and deletes on the second press.
  * While a request runs, the list can be read and renamed but not switched.
+ *
+ * Phase 15a: the button is the open chat's name ("New chat" before it's saved), at the left of the chat's row.
  */
 export function ChatHistoryMenu({ busy }: { busy: boolean }) {
   const open = useUiStore((s) => s.historyOpen);
@@ -59,6 +61,7 @@ export function ChatHistoryMenu({ busy }: { busy: boolean }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
+  const title = chats?.find((c) => c.id === chatId)?.title || "New chat";
 
   useEffect(() => {
     if (!open) return;
@@ -219,7 +222,7 @@ export function ChatHistoryMenu({ busy }: { busy: boolean }) {
     : "↑↓ to move · Enter to open · F2 to rename · Tab, then Delete twice to remove";
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative min-w-0">
       <button
         ref={buttonRef}
         type="button"
@@ -228,14 +231,15 @@ export function ChatHistoryMenu({ busy }: { busy: boolean }) {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
+        aria-label={`${title}, past chats`}
         title="Past chats (⌘Y)"
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-cool-grey hover:text-athletic-blue-light disabled:opacity-40"
+        className="group flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-white hover:bg-surface disabled:cursor-default disabled:hover:bg-transparent"
       >
-        <History size={12} aria-hidden="true" />
-        History
+        <span className="min-w-0 truncate">{title}</span>
+        <ChevronDown size={12} aria-hidden="true" className="shrink-0 text-cool-grey group-hover:text-athletic-blue-light group-disabled:opacity-40" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-20 mt-1 w-80 max-w-[calc(100vw-1.5rem)] rounded-md border border-border bg-surface shadow-lg">
+        <div className="absolute left-0 top-full z-20 mt-1 w-80 max-w-[calc(100vw-1.5rem)] rounded-md border border-border bg-surface shadow-lg">
           <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5">
             <Search size={12} aria-hidden="true" className="shrink-0 text-cool-grey" />
             <input

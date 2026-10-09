@@ -45,6 +45,16 @@ describe("Composer", () => {
     expect(composerBlockReason("idle", null)).toBeNull();
   });
 
+  it("switches Review edits first", () => {
+    useAgentStore.setState({ reviewEdits: false });
+    render(<Composer />);
+    const toggle = screen.getByRole("switch", { name: "Review edits before they're made" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(useAgentStore.getState().reviewEdits).toBe(true);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
+
   it("is disabled with the reason while the agent is offline", () => {
     render(<Composer />);
     expect(screen.getByLabelText("Message the agent")).toBeDisabled();

@@ -34,7 +34,9 @@ describe("ChatPanel revert", () => {
     useEditLogStore.setState({ entries: [entry("e1", "m1"), entry("e2", "m2"), entry("e3", "m2")] });
     edits.revertLastRequest.mockResolvedValue({ summary: "Reverted 2 timeline changes", result: {} });
     render(<ChatPanel />);
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Revert 2 edits" })));
+    const button = screen.getByRole("button", { name: "Revert 2 edits" });
+    expect(button).toHaveTextContent(/^Revert 2$/);
+    await act(async () => fireEvent.click(button));
     expect(edits.revertLastRequest).toHaveBeenCalledTimes(1);
     expect(useAgentStore.getState().messages.at(-1)).toMatchObject({ role: "tool", text: "Reverted 2 timeline changes" });
   });

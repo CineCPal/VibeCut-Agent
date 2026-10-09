@@ -39,7 +39,7 @@ describe("ChatHistoryMenu", () => {
 
   it("lists past chats, newest first, with the open one marked", () => {
     render(<ChatHistoryMenu busy={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    fireEvent.click(screen.getByRole("button", { name: /past chats/ }));
     const options = screen.getAllByRole("option");
     expect(options).toHaveLength(2);
     expect(options[0]).toHaveTextContent("Tighten the interview");
@@ -92,10 +92,19 @@ describe("ChatHistoryMenu", () => {
     expect(useUiStore.getState().historyOpen).toBe(true);
   });
 
+  it("names the open chat, or a new one", () => {
+    const view = render(<ChatHistoryMenu busy={false} />);
+    expect(screen.getByRole("button", { name: "Tighten the interview, past chats" })).toHaveTextContent("Tighten the interview");
+    view.unmount();
+    useAgentStore.setState({ chatId: "unsaved" });
+    render(<ChatHistoryMenu busy={false} />);
+    expect(screen.getByRole("button", { name: "New chat, past chats" })).toHaveTextContent("New chat");
+  });
+
   it("is disabled with no past chats", () => {
     useChatHistoryStore.setState({ chats: [] });
     render(<ChatHistoryMenu busy={false} />);
-    expect(screen.getByRole("button", { name: "History" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /past chats/ })).toBeDisabled();
   });
 
   describe("search and rename (Phase 8d)", () => {

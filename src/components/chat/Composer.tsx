@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type SyntheticEvent } from "react";
-import { ImagePlus, ListPlus, Pencil, SendHorizontal, Square, X } from "lucide-react";
+import { ImagePlus, ListPlus, Pencil, SendHorizontal, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import { MAX_IMAGES, addImagesTo, imageFiles } from "../../lib/agent/attachments";
 import { cancelEditing, lastTurnEdits, sendEditedMessage, startEditingLastMessage, stopTurn, submitMessage, warmUp } from "../../lib/agent/controller";
 import { allMentions, loadMentionTimeline, matchingMentions, mentionQuery, MENTION_GROUPS } from "../../lib/agent/mentions";
@@ -41,6 +41,7 @@ export function Composer() {
   const outsideRunning = useMcpStore((s) => s.outsideRunning > 0);
   const editing = useAgentStore((s) => s.editingMessageId);
   const images = useAgentStore((s) => s.pendingImages);
+  const reviewEdits = useAgentStore((s) => s.reviewEdits);
   const setImages = useAgentStore((s) => s.setPendingImages);
   const [imageProblem, setImageProblem] = useState<string | null>(null);
   const hintId = useId();
@@ -293,16 +294,34 @@ export function Composer() {
             event.target.value = "";
           }}
         />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={offline || images.length >= MAX_IMAGES}
-          aria-label="Add images"
-          title={images.length >= MAX_IMAGES ? `At most ${MAX_IMAGES} images per message` : "Add images (or paste or drop them)"}
-          className="rounded-md p-2 text-cool-grey hover:text-athletic-blue-light focus-visible:text-athletic-blue-light disabled:opacity-40"
-        >
-          <ImagePlus size={16} aria-hidden="true" />
-        </button>
+        <span className="flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={offline || images.length >= MAX_IMAGES}
+            aria-label="Add images"
+            title={images.length >= MAX_IMAGES ? `At most ${MAX_IMAGES} images per message` : "Add images (or paste or drop them)"}
+            className="rounded-md p-2 text-cool-grey hover:text-athletic-blue-light focus-visible:text-athletic-blue-light disabled:opacity-40"
+          >
+            <ImagePlus size={16} aria-hidden="true" />
+          </button>
+          {/* Review edits first (Phase 11d), beside the message it applies to (Phase 15a). */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={reviewEdits}
+            aria-label="Review edits before they're made"
+            onClick={() => useAgentStore.getState().setReviewEdits(!reviewEdits)}
+            title={
+              reviewEdits
+                ? "Review edits first is on: each change to the timeline or project waits for your Apply. Click to let the agent edit straight away."
+                : "Review edits first is off: the agent edits straight away (Revert undoes a request). Click to approve each change first."
+            }
+            className={`rounded-md p-2 ${reviewEdits ? "text-athletic-blue-light" : "text-cool-grey"} hover:text-white focus-visible:text-white`}
+          >
+            {reviewEdits ? <ShieldCheck size={16} aria-hidden="true" /> : <ShieldOff size={16} aria-hidden="true" />}
+          </button>
+        </span>
         <label className="sr-only" htmlFor={`${hintId}-input`}>
           Message the agent
         </label>
