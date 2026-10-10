@@ -787,15 +787,36 @@ def test_captions_become_an_srt_caption_track_and_a_revert_says_to_delete_it_in_
     imports = tmp_path / "imports"
     made = []
     premiere.caption_track = lambda a: made.append(a) or {"created": True, "item": a["name"]}
-    result = premiere_edit.create_captions(host, {"timeline": "Main", "cues": [{"start": 0.5, "end": 2.25, "text": "Hi,  I'm Daniel."}, {"start": 3661, "end": 3662.5, "text": "Bye."}], "name": "Main captions"}, imports)
+    result = premiere_edit.create_captions(
+        host,
+        {
+            "timeline": "Main",
+            "cues": [
+                {"start": 0.5, "end": 2.25, "text": "Hi,  I'm Daniel."},
+                {"start": 3661, "end": 3662.5, "text": "Bye."},
+            ],
+            "name": "Main captions",
+        },
+        imports,
+    )
     (change,) = result["changes"]
     assert (change["kind"], change["count"], change["name"]) == ("captions", 2, "Main captions")
     with open(made[0]["path"], encoding="utf-8") as f:
-        assert f.read() == "1\n00:00:00,500 --> 00:00:02,250\nHi, I'm Daniel.\n\n2\n01:01:01,000 --> 01:01:02,500\nBye.\n\n"
+        assert (
+            f.read()
+            == "1\n00:00:00,500 --> 00:00:02,250\nHi, I'm Daniel.\n\n2\n01:01:01,000 --> 01:01:02,500\nBye.\n\n"
+        )
     assert made[0]["name"] == "Main captions"
     reverted = revert(host, result)
-    assert reverted["failed"] == [{"name": "Main captions", "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere"}]
+    assert reverted["failed"] == [
+        {
+            "name": "Main captions",
+            "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere",
+        }
+    ]
     with pytest.raises(HostError, match="end after its start"):
-        premiere_edit.create_captions(host, {"timeline": "Main", "cues": [{"start": 2, "end": 1, "text": "x"}]}, imports)
+        premiere_edit.create_captions(
+            host, {"timeline": "Main", "cues": [{"start": 2, "end": 1, "text": "x"}]}, imports
+        )
     with pytest.raises(HostError, match="no folder for caption files"):
         call(host, "create_captions", cues=[{"start": 0, "end": 1, "text": "x"}])

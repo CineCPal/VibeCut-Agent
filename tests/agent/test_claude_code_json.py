@@ -84,7 +84,10 @@ def test_an_answer_comes_from_structured_output_with_no_tools_and_no_key(setup: 
 
 def test_content_blocks_go_in_as_one_stream_json_user_line(setup: dict[str, Any]) -> None:
     # Phase 14b: the critic's stills reach Claude Code as image blocks.
-    blocks = [{"type": "text", "text": "Stills:"}, {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}]
+    blocks = [
+        {"type": "text", "text": "Stills:"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}},
+    ]
     assert run_json(setup, "claude-sonnet-5-5", "Review.", blocks, SCHEMA) == {"picks": [1, 3]}
     seen = recorded(setup)
     assert flag(seen["argv"], "--input-format") == "stream-json"

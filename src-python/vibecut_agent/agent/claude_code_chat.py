@@ -473,16 +473,33 @@ def run_chat_turn(
     os.makedirs(setup["workDir"], exist_ok=True)
     try:
         return _run_once(
-            setup, resolved_model, system_instruction, session, history,
-            user_line(images, user_message), reply, should_abort, max_iterations, launcher, effort,
+            setup,
+            resolved_model,
+            system_instruction,
+            session,
+            history,
+            user_line(images, user_message),
+            reply,
+            should_abort,
+            max_iterations,
+            launcher,
+            effort,
         )
     except _SessionGone:
         reply.reset()
         reply.emit("status", detail=SESSION_GONE_STATUS)
         return _run_once(
-            setup, resolved_model, system_instruction, None, [],
-            user_line(images, user_message, note=SESSION_GONE_NOTE), reply, should_abort, max_iterations,
-            launcher, effort,
+            setup,
+            resolved_model,
+            system_instruction,
+            None,
+            [],
+            user_line(images, user_message, note=SESSION_GONE_NOTE),
+            reply,
+            should_abort,
+            max_iterations,
+            launcher,
+            effort,
         )
 
 

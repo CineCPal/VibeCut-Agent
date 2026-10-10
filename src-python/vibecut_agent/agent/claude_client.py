@@ -128,7 +128,11 @@ def send(
                         return None
                     if on_text and getattr(event, "type", None) == "content_block_delta":
                         delta = getattr(event, "delta", None)
-                        piece = getattr(delta, "text", None) if getattr(delta, "type", None) == "text_delta" else None
+                        piece = (
+                            getattr(delta, "text", None)
+                            if getattr(delta, "type", None) == "text_delta"
+                            else None
+                        )
                         if isinstance(piece, str) and piece:
                             on_text(piece)
                     if on_block and getattr(event, "type", None) == "content_block_stop":

@@ -85,11 +85,23 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     try:
         if provider == "claude-code":
             answer = claude_code_json_answer(
-                request.get("claudeCode"), SYSTEM, text, TITLE_SCHEMA, model, effort="low", should_abort=should_abort
+                request.get("claudeCode"),
+                SYSTEM,
+                text,
+                TITLE_SCHEMA,
+                model,
+                effort="low",
+                should_abort=should_abort,
             )
         elif provider == "claude":
             answer = claude_json(
-                api_key, SYSTEM, text, TITLE_SCHEMA, model, should_abort=should_abort, effort="low",
+                api_key,
+                SYSTEM,
+                text,
+                TITLE_SCHEMA,
+                model,
+                should_abort=should_abort,
+                effort="low",
                 max_tokens=CLAUDE_MAX_TOKENS,
             )
         else:

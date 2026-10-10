@@ -89,9 +89,7 @@ def _range(timeline: Any, fps: float, value: Any) -> tuple[bool, int, int]:
         first = picture.get("in", sound.get("in"))
         last = picture.get("out", sound.get("out"))
         if first is None and last is None:
-            raise HostError(
-                f"{timeline.GetName()!r} has no In or Out marked in Resolve"
-            )
+            raise HostError(f"{timeline.GetName()!r} has no In or Out marked in Resolve")
         first = int(first) if first is not None else 0
         last = int(last) if last is not None else length - 1
         if not 0 <= first <= last < length:
@@ -139,9 +137,7 @@ def _restore(resolve: Any, project: Any, timeline: Any, saved: dict[str, Any]) -
         for kind in ("video", "audio"):
             mark = marks.get(kind) or {}
             if "in" in mark or "out" in mark:
-                timeline.SetMarkInOut(
-                    int(mark.get("in", 0)), int(mark.get("out", length - 1)), kind
-                )
+                timeline.SetMarkInOut(int(mark.get("in", 0)), int(mark.get("out", length - 1)), kind)
     if saved["page"] and resolve.GetCurrentPage() != saved["page"]:
         resolve.OpenPage(saved["page"])
 
@@ -154,16 +150,12 @@ def _start(host: Any, args: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
             f"Open {timeline.GetName()!r} in Resolve first: Resolve only renders the timeline that's open"
         )
     if project.IsRenderingInProgress():
-        raise HostError(
-            "Resolve is already rendering; wait for it to finish or stop it first"
-        )
+        raise HostError("Resolve is already rendering; wait for it to finish or stop it first")
     fps = _frame_rate(timeline)
     select_all, first, last = _range(timeline, fps, args.get("range"))
     start = int(timeline.GetStartFrame())
 
-    folder, stem = output_stem(
-        project.GetName(), timeline.GetName(), args.get("name"), plan["extensions"]
-    )
+    folder, stem = output_stem(project.GetName(), timeline.GetName(), args.get("name"), plan["extensions"])
     rendered = os.path.join(folder, stem + plan["rendered"])
     final = os.path.join(folder, stem + plan["final"])
 
@@ -181,9 +173,7 @@ def _start(host: Any, args: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
         # no picture whatever ExportVideo was set to; loading a built-in preset cleared it (seen live).
         project.LoadRenderPreset(BASE_PRESET)
         if not project.SetCurrentRenderFormatAndCodec(plan["format"], plan["codec"]):
-            raise HostError(
-                f"Resolve didn't accept {plan['format']}/{plan['codec']} as the render format"
-            )
+            raise HostError(f"Resolve didn't accept {plan['format']}/{plan['codec']} as the render format")
         settings = {
             "TargetDir": folder,
             "CustomName": stem,
@@ -265,9 +255,7 @@ def render_video(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             "rendered": ".mp4",
             "final": ".mp4",
         }
-    plan.update(
-        video=True, width=width, height=height, finish=None, extensions=(plan["final"],)
-    )
+    plan.update(video=True, width=width, height=height, finish=None, extensions=(plan["final"],))
     return _start(host, args, plan)
 
 
@@ -295,9 +283,7 @@ def render_audio(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             "format": "mov", "codec": "ProRes422P", "audio": "lpcm", "video": True,
             "rendered": ".mov", "final": ".wav", "finish": "audio",
         }  # fmt: skip
-    plan.update(
-        width=width, height=height, extensions=(plan["rendered"], plan["final"])
-    )
+    plan.update(width=width, height=height, extensions=(plan["rendered"], plan["final"]))
     return _start(host, args, plan)
 
 
@@ -348,9 +334,7 @@ def _end(
                 os.replace(record["rendered"], record["path"])
         except (RenderError, OSError) as exc:
             state, error = "failed", str(exc)
-        if state == "done" and not (
-            os.path.isfile(record["path"]) and os.path.getsize(record["path"]) > 0
-        ):
+        if state == "done" and not (os.path.isfile(record["path"]) and os.path.getsize(record["path"]) > 0):
             state, error = (
                 "failed",
                 "Resolve said the render was complete, but the file isn't there",
@@ -384,9 +368,7 @@ def render_status(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         )
         _end(host, project, job, record, "failed", str(reason))
     else:
-        record["fraction"] = max(
-            0.0, min(1.0, float(status.get("CompletionPercentage") or 0) / 100)
-        )
+        record["fraction"] = max(0.0, min(1.0, float(status.get("CompletionPercentage") or 0) / 100))
         eta = status.get("EstimatedTimeRemainingInMs")
         record["eta"] = round(float(eta) / 1000) if eta else None
     return _report(record)
@@ -403,9 +385,7 @@ def cancel_render(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     status = project.GetRenderJobStatus(job) or {}
     while status.get("JobStatus") == "Rendering" or project.IsRenderingInProgress():
         if time.monotonic() >= deadline:
-            raise HostError(
-                "Resolve is still stopping the render; ask for its status again in a moment"
-            )
+            raise HostError("Resolve is still stopping the render; ask for its status again in a moment")
         time.sleep(STOP_POLL_S)
         status = project.GetRenderJobStatus(job) or {}
     if status.get("JobStatus") == "Complete":

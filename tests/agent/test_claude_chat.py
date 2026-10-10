@@ -470,7 +470,11 @@ def test_the_answer_streams_and_text_before_a_tool_call_breaks(monkeypatch):
     claude_fakes.install(
         monkeypatch,
         [
-            claude_fakes.message(claude_fakes.text("Looking now."), claude_fakes.tool_use("t1", "noop", {}), stop_reason="tool_use"),
+            claude_fakes.message(
+                claude_fakes.text("Looking now."),
+                claude_fakes.tool_use("t1", "noop", {}),
+                stop_reason="tool_use",
+            ),
             claude_fakes.message(claude_fakes.text("All done.")),
         ],
     )
@@ -494,7 +498,9 @@ def test_a_retried_answer_resets_what_was_streamed(monkeypatch):
         def __iter__(self):
             from types import SimpleNamespace
 
-            yield SimpleNamespace(type="content_block_delta", index=0, delta=SimpleNamespace(type="text_delta", text="Hal"))
+            yield SimpleNamespace(
+                type="content_block_delta", index=0, delta=SimpleNamespace(type="text_delta", text="Hal")
+            )
             raise claude_fakes.connection_error()
 
     client = claude_fakes.install(monkeypatch, [claude_fakes.message(claude_fakes.text("Whole."))])
@@ -514,5 +520,12 @@ def test_a_retried_answer_resets_what_was_streamed(monkeypatch):
     outcome = run_turn(rec)
 
     assert {"type": "reply_reset"} in rec.events
-    assert "".join(e["text"] for e in rec.events[rec.events.index({"type": "reply_reset"}) :] if e["type"] == "reply_delta") == "Whole."
+    assert (
+        "".join(
+            e["text"]
+            for e in rec.events[rec.events.index({"type": "reply_reset"}) :]
+            if e["type"] == "reply_delta"
+        )
+        == "Whole."
+    )
     assert outcome["text"] == "Whole."

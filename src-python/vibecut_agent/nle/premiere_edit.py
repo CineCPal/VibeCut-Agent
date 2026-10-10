@@ -559,7 +559,10 @@ def _srt_time(t: float) -> str:
 
 
 def srt_text(cues: list[dict[str, Any]]) -> str:
-    return "".join(f"{n}\n{_srt_time(c['start'])} --> {_srt_time(c['end'])}\n{c['text']}\n\n" for n, c in enumerate(cues, 1))
+    return "".join(
+        f"{n}\n{_srt_time(c['start'])} --> {_srt_time(c['end'])}\n{c['text']}\n\n"
+        for n, c in enumerate(cues, 1)
+    )
 
 
 def create_captions(host: Any, args: dict[str, Any], imports: Path | None = None) -> dict[str, Any]:
@@ -576,7 +579,10 @@ def create_captions(host: Any, args: dict[str, Any], imports: Path | None = None
     for i, cue in enumerate(raw):
         if not isinstance(cue, dict):
             raise HostError(f"cues[{i}] must be an object")
-        start, end = _number(cue.get("start"), f"cues[{i}].start", 0), _number(cue.get("end"), f"cues[{i}].end", 0)
+        start, end = (
+            _number(cue.get("start"), f"cues[{i}].start", 0),
+            _number(cue.get("end"), f"cues[{i}].end", 0),
+        )
         text = cue.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > 300 or end <= start:
             raise HostError(f"cues[{i}] needs text (at most 300 characters) and an end after its start")
@@ -592,7 +598,18 @@ def create_captions(host: Any, args: dict[str, Any], imports: Path | None = None
     with open(path, "w", encoding="utf-8") as f:
         f.write(srt_text(cues))
     host._send("caption_track", {"timeline": timeline, "path": path, "name": name})
-    return {"changes": [{"kind": "captions", "name": name, "count": len(cues), "trackName": "a caption track", "path": path}], "refused": []}
+    return {
+        "changes": [
+            {
+                "kind": "captions",
+                "name": name,
+                "count": len(cues),
+                "trackName": "a caption track",
+                "path": path,
+            }
+        ],
+        "refused": [],
+    }
 
 
 # ------------------------------------------------------------------------------- switches and levels
@@ -1332,7 +1349,12 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
             else:
                 failed.append({"name": label, "reason": "Premiere didn't put it back"})
         elif kind == "captions":
-            failed.append({"name": label, "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere"})
+            failed.append(
+                {
+                    "name": label,
+                    "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere",
+                }
+            )
         elif kind == "split":
             from vibecut_agent.nle import premiere_timing
 

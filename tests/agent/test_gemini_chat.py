@@ -451,8 +451,12 @@ def test_the_answer_streams_and_its_chunks_are_gathered_into_one_reply(monkeypat
     seen = {}
     chunks = [
         {"candidates": [{"content": {"role": "model", "parts": [{"text": "Hello "}]}}]},
-        {"candidates": [{"content": {"role": "model", "parts": [{"text": "there."}]}, "finishReason": "STOP"}],
-         "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}},
+        {
+            "candidates": [
+                {"content": {"role": "model", "parts": [{"text": "there."}]}, "finishReason": "STOP"}
+            ],
+            "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3},
+        },
     ]
 
     def fake_post(url, headers=None, data=None, timeout=None, stream=False):

@@ -466,8 +466,15 @@ def test_settings_effort_reaches_the_claude_providers(monkeypatch, provider, mod
         return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
 
     monkeypatch.setattr(importlib.import_module(f"vibecut_agent.agent.{module}"), "run_chat_turn", fake_turn)
-    request = {"provider": provider, "apiKey": "k", "claudeCode": {}, "effort": "high", "toolDeclarations": [],
-               "history": [], "userMessage": "go"}
+    request = {
+        "provider": provider,
+        "apiKey": "k",
+        "claudeCode": {},
+        "effort": "high",
+        "toolDeclarations": [],
+        "history": [],
+        "userMessage": "go",
+    }
     stdin = FakeStdin([json.dumps(request), json.dumps({"type": "end_session"})])
 
     assert run_chat(monkeypatch, stdin, Capture()) == 0
@@ -572,7 +579,17 @@ def test_bad_attachments_are_refused_before_any_call(monkeypatch, attachments, s
     called = []
     monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: called.append(1))
     stdin = FakeStdin(
-        [json.dumps({"apiKey": "k", "toolDeclarations": [], "history": [], "userMessage": "hi", "attachments": attachments})]
+        [
+            json.dumps(
+                {
+                    "apiKey": "k",
+                    "toolDeclarations": [],
+                    "history": [],
+                    "userMessage": "hi",
+                    "attachments": attachments,
+                }
+            )
+        ]
     )
     capture = Capture()
 
@@ -628,18 +645,33 @@ def test_claude_code_starts_the_next_turn_ahead_and_ends_it_with_the_job(monkeyp
 
     def fake_turn(*args, **kwargs):
         turns.append(kwargs["launcher"])
-        return {"text": "ok", "history": [{"claudeCodeSession": "s2"}], "usage": None, "aborted": False,
-                "outOfSteps": False}
+        return {
+            "text": "ok",
+            "history": [{"claudeCodeSession": "s2"}],
+            "usage": None,
+            "aborted": False,
+            "outOfSteps": False,
+        }
 
     monkeypatch.setattr(claude_code_chat, "run_chat_turn", fake_turn)
-    monkeypatch.setattr(claude_code_chat, "prepare_turn", lambda launcher, setup, model, system, history, *rest: prepared.append(history))
+    monkeypatch.setattr(
+        claude_code_chat,
+        "prepare_turn",
+        lambda launcher, setup, model, system, history, *rest: prepared.append(history),
+    )
     monkeypatch.setattr(claude_code_chat.Launcher, "close", lambda self: closed.append(self))
-    request = {"provider": "claude-code", "claudeCode": {}, "toolDeclarations": [],
-               "history": [{"claudeCodeSession": "s1"}]}
+    request = {
+        "provider": "claude-code",
+        "claudeCode": {},
+        "toolDeclarations": [],
+        "history": [{"claudeCodeSession": "s1"}],
+    }
     stdin = FakeStdin(
         [
             json.dumps(request),
-            json.dumps({"type": "user_message", "userMessage": "go", "history": [{"claudeCodeSession": "s1"}]}),
+            json.dumps(
+                {"type": "user_message", "userMessage": "go", "history": [{"claudeCodeSession": "s1"}]}
+            ),
             json.dumps({"type": "end_session"}),
         ]
     )

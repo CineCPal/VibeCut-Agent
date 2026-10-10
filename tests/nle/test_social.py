@@ -33,12 +33,16 @@ MODES = {"scaleToFit", "scaleToCrop", "centerCrop", "stretch"}
         ((1001, 563), "9:16", (564, 1000)),
     ],
 )
-def test_sizes_keep_the_short_side_and_are_even(size: tuple[int, int], aspect: str, made: tuple[int, int]) -> None:
+def test_sizes_keep_the_short_side_and_are_even(
+    size: tuple[int, int], aspect: str, made: tuple[int, int]
+) -> None:
     assert social_size(*size, aspect) == made
 
 
 class Item:
-    def __init__(self, name: str, media: bool = True, enabled: bool = True, smart: bool | None = True) -> None:
+    def __init__(
+        self, name: str, media: bool = True, enabled: bool = True, smart: bool | None = True
+    ) -> None:
         self.name, self.media, self.enabled, self.smart = name, media, enabled, smart
         self.reframed = 0
         if smart is not None:
@@ -59,9 +63,16 @@ class Item:
 
 
 class Timeline:
-    def __init__(self, name: str, project: Project, items: list[Item], width: int = 1920, height: int = 1080) -> None:
+    def __init__(
+        self, name: str, project: Project, items: list[Item], width: int = 1920, height: int = 1080
+    ) -> None:
         self.name, self.project, self.items = name, project, items
-        self.settings = {"useCustomSettings": "0", "timelineResolutionWidth": str(width), "timelineResolutionHeight": str(height), "timelineInputResMismatchBehavior": "scaleToFit"}
+        self.settings = {
+            "useCustomSettings": "0",
+            "timelineResolutionWidth": str(width),
+            "timelineResolutionHeight": str(height),
+            "timelineInputResMismatchBehavior": "scaleToFit",
+        }
         self.takes_size = True
 
     def GetName(self) -> str:
@@ -110,22 +121,43 @@ def resolve(items: list[Item]) -> tuple[ResolveHost, Project, Timeline]:
 
 
 def test_resolve_makes_a_filled_copy_at_the_new_size_and_smart_reframes_its_clips() -> None:
-    host, project, original = resolve([Item("A.mov"), Item("Title", media=False), Item("Off.mov", enabled=False), Item("B.mov")])
+    host, project, original = resolve(
+        [Item("A.mov"), Item("Title", media=False), Item("Off.mov", enabled=False), Item("B.mov")]
+    )
     out = run_command(host, "make_social_version", {"timeline": "Promo", "aspect": "9:16"})
-    assert out == {"timeline": "Promo (9x16)", "original": "Promo", "width": 1080, "height": 1920, "from": [1920, 1080], "fill": True, "reframe": "auto", "reframed": 2}
+    assert out == {
+        "timeline": "Promo (9x16)",
+        "original": "Promo",
+        "width": 1080,
+        "height": 1920,
+        "from": [1920, 1080],
+        "fill": True,
+        "reframe": "auto",
+        "reframed": 2,
+    }
     copy = project.current
     assert copy is not original and copy.GetName() == "Promo (9x16)"
-    assert copy.settings["useCustomSettings"] == "1" and copy.settings["timelineInputResMismatchBehavior"] == "scaleToCrop"
+    assert (
+        copy.settings["useCustomSettings"] == "1"
+        and copy.settings["timelineInputResMismatchBehavior"] == "scaleToCrop"
+    )
     assert [i.reframed for i in copy.items] == [1, 0, 0, 1], "titles and switched-off clips are left alone"
     # The original and the project keep their size.
-    assert original.GetSetting("timelineResolutionWidth") == "1920" and project.settings["timelineResolutionHeight"] == "1080"
+    assert (
+        original.GetSetting("timelineResolutionWidth") == "1920"
+        and project.settings["timelineResolutionHeight"] == "1080"
+    )
     again = run_command(host, "make_social_version", {"timeline": "Promo", "aspect": "9:16"})
     assert again["timeline"] == "Promo (9x16) 2"
 
 
 def test_resolve_centre_only_and_without_studio() -> None:
     host, project, _ = resolve([Item("A.mov")])
-    out = run_command(host, "make_social_version", {"timeline": "Promo", "aspect": "1:1", "reframe": "center", "name": "Square"})
+    out = run_command(
+        host,
+        "make_social_version",
+        {"timeline": "Promo", "aspect": "1:1", "reframe": "center", "name": "Square"},
+    )
     assert out["timeline"] == "Square" and (out["width"], out["height"]) == (1080, 1080)
     assert "reframed" not in out and project.current.items[0].reframed == 0
 
@@ -160,15 +192,44 @@ class ReframeProject(SequenceProject):
 
 def test_premiere_uses_auto_reframe_sequence_and_refuses_centre() -> None:
     project = ReframeProject()
-    out = run_command(PremiereHost(project), "make_social_version", {"timeline": "Interview", "aspect": "9:16"})
-    assert out == {"timeline": "Interview (9x16)", "original": "Interview", "reframe": "auto", "width": 1080, "height": 1920}
-    assert project.reframed == [{"timeline": "Interview", "name": "Interview (9x16)", "numerator": 9, "denominator": 16, "motion": "default"}]
+    out = run_command(
+        PremiereHost(project), "make_social_version", {"timeline": "Interview", "aspect": "9:16"}
+    )
+    assert out == {
+        "timeline": "Interview (9x16)",
+        "original": "Interview",
+        "reframe": "auto",
+        "width": 1080,
+        "height": 1920,
+    }
+    assert project.reframed == [
+        {
+            "timeline": "Interview",
+            "name": "Interview (9x16)",
+            "numerator": 9,
+            "denominator": 16,
+            "motion": "default",
+        }
+    ]
     with pytest.raises(HostError, match="only make a social version with Auto Reframe"):
-        run_command(PremiereHost(project), "make_social_version", {"timeline": "Interview", "aspect": "1:1", "reframe": "center"})
+        run_command(
+            PremiereHost(project),
+            "make_social_version",
+            {"timeline": "Interview", "aspect": "1:1", "reframe": "center"},
+        )
 
 
 def test_both_editors_read_the_frame_size() -> None:
-    raw = {"name": "S", "timebase": str(254016000000 // 25), "zeroPoint": "0", "endTicks": "0", "isActive": True, "video": [], "audio": [], "markers": []}
+    raw = {
+        "name": "S",
+        "timebase": str(254016000000 // 25),
+        "zeroPoint": "0",
+        "endTicks": "0",
+        "isActive": True,
+        "video": [],
+        "audio": [],
+        "markers": [],
+    }
     assert "width" not in premiere.timeline(raw), "an older panel sends no size"
     sized = premiere.timeline({**raw, "frameWidth": 1080, "frameHeight": 1920})
     assert (sized["width"], sized["height"]) == (1080, 1920)

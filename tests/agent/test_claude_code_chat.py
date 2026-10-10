@@ -210,7 +210,14 @@ def test_plan_limits_are_passed_to_the_app(fake: dict[str, Any]) -> None:
 
 
 def test_plan_limits_fall_back_to_the_limiting_window_and_skip_junk() -> None:
-    event = {"rate_limit_info": {"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.91, "resetsAt": 5}}
+    event = {
+        "rate_limit_info": {
+            "status": "allowed_warning",
+            "rateLimitType": "seven_day",
+            "utilization": 0.91,
+            "resetsAt": 5,
+        }
+    }
     assert claude_code_chat.plan_limits(event) == {
         "status": "allowed_warning",
         "limiting": "weekly",
@@ -219,7 +226,12 @@ def test_plan_limits_fall_back_to_the_limiting_window_and_skip_junk() -> None:
     assert claude_code_chat.plan_limits({"rate_limit_info": {"status": "allowed"}}) == {"status": "allowed"}
     assert claude_code_chat.plan_limits({"rate_limit_info": "x"}) is None
     assert claude_code_chat.plan_limits({}) is None
-    odd = {"rate_limit_info": {"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": "lots"}, "seven_day": None}}}
+    odd = {
+        "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {"five_hour": {"utilization": "lots"}, "seven_day": None},
+        }
+    }
     assert claude_code_chat.plan_limits(odd) == {"status": "allowed"}
 
 
@@ -235,7 +247,9 @@ def test_the_reply_streams_and_text_before_a_tool_call_is_its_own_message(fake: 
     assert all(kind == "reply_delta" for kind, _ in after)
     # The status for the tool comes after the break, so the app ends the first message first.
     kinds = [kind for kind, fields in events]
-    running = next(i for i, (k, f) in enumerate(events) if k == "status" and f["detail"] == "Running add_markers…")
+    running = next(
+        i for i, (k, f) in enumerate(events) if k == "status" and f["detail"] == "Running add_markers…"
+    )
     assert kinds.index("reply_break") < running
 
 
@@ -371,7 +385,10 @@ def test_usage_and_names_are_read_safely() -> None:
         ("bash", "VibeCut stopped Claude Code before it did anything: .*doesn't allow \\(Bash\\)"),
         ("mcp", "VibeCut stopped Claude Code before it did anything: .*MCP servers .*\\(github\\)"),
         ("no-init", "VibeCut stopped Claude Code before it did anything: .*didn't report its tools"),
-        ("partial-before-init", "VibeCut stopped Claude Code before it did anything: .*didn't report its tools"),
+        (
+            "partial-before-init",
+            "VibeCut stopped Claude Code before it did anything: .*didn't report its tools",
+        ),
         ("mcp-failed", "VibeCut's tools didn't start in Claude Code \\(failed\\)"),
     ],
 )

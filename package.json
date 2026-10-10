@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
+    "test:run": "vitest run",
     "build:panel": "vite build --config vite.panel.config.ts",
     "install-app": "zsh -l scripts/install-app.sh"
   },

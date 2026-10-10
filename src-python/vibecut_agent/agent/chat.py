@@ -236,7 +236,9 @@ def _converse(
         history = request.get("history") or []
         if prepare_next is not None and isinstance(history, list):
             prepare_next(history)
-    elif not run_one_turn(request.get("userMessage"), request.get("history") or [], request.get("attachments")):
+    elif not run_one_turn(
+        request.get("userMessage"), request.get("history") or [], request.get("attachments")
+    ):
         return 1
 
     while True:
@@ -250,5 +252,7 @@ def _converse(
             continue  # Stop pressed just as the turn ended on its own
         if message_type != "user_message":
             raise RequestError(f"Expected a user_message or end_session message, got: {message_type!r}")
-        if not run_one_turn(message.get("userMessage"), message.get("history") or [], message.get("attachments")):
+        if not run_one_turn(
+            message.get("userMessage"), message.get("history") or [], message.get("attachments")
+        ):
             return 1

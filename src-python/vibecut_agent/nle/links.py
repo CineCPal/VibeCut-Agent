@@ -73,11 +73,7 @@ def premiere_set_links(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     if action not in ("link", "unlink"):
         raise HostError('action must be "link" or "unlink"')
     ids = args.get("itemIds")
-    if (
-        not isinstance(ids, list)
-        or not ids
-        or not all(isinstance(i, str) and i for i in ids)
-    ):
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
         raise HostError("itemIds must be a non-empty list of sequence clip ids")
     ids = list(dict.fromkeys(ids))
     if len(ids) > MAX_CLIPS:
@@ -106,9 +102,7 @@ def premiere_set_links(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     now = premiere_link_groups(_read(host, timeline))
     if _as_lists({now[i] for g in after for i in g if i in now}) != after:
         _premiere_regroup(host, timeline, before)
-        raise HostError(
-            "Premiere didn't link the clips as asked, so they were put back as they were"
-        )
+        raise HostError("Premiere didn't link the clips as asked, so they were put back as they were")
     return {
         "changes": [
             {
@@ -139,11 +133,7 @@ def premiere_revert_links(host: Any, timeline: str, change: dict[str, Any]) -> s
     _premiere_regroup(host, timeline, before)
     now = premiere_link_groups(_read(host, timeline))
     wanted = _as_lists({frozenset(g) for g in before})
-    return (
-        "reverted"
-        if _as_lists({now[i] for g in before for i in g if i in now}) == wanted
-        else "failed"
-    )
+    return "reverted" if _as_lists({now[i] for g in before for i in g if i in now}) == wanted else "failed"
 
 
 # ------------------------------------------------------------------------------- Resolve
@@ -170,9 +160,7 @@ def resolve_link_groups(found: dict[str, tuple[str, int, Any]]) -> dict[str, fro
     return {item_id: frozenset(members[root(item_id)]) for item_id in found}
 
 
-def _resolve_regroup(
-    timeline: Any, found: dict[str, tuple[str, int, Any]], groups: list[list[str]]
-) -> None:
+def _resolve_regroup(timeline: Any, found: dict[str, tuple[str, int, Any]], groups: list[list[str]]) -> None:
     """Unlinks every clip of `groups`, then links each group of two or more."""
     every = [found[i][2] for g in groups for i in g if i in found]
     if len(every) > 1:
@@ -200,11 +188,7 @@ def resolve_set_links(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     if action not in ("link", "unlink"):
         raise HostError('action must be "link" or "unlink"')
     ids = args.get("itemIds")
-    if (
-        not isinstance(ids, list)
-        or not ids
-        or not all(isinstance(i, str) and i for i in ids)
-    ):
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
         raise HostError("itemIds must be a non-empty list of timeline clip ids")
     ids = list(dict.fromkeys(ids))
     if len(ids) > MAX_CLIPS:
@@ -212,9 +196,7 @@ def resolve_set_links(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     found = _items(timeline)
     for item_id in ids:
         if item_id not in found:
-            raise HostError(
-                f"There is no clip {item_id!r} on the connected timeline any more"
-            )
+            raise HostError(f"There is no clip {item_id!r} on the connected timeline any more")
         if found[item_id][2].GetLeftOffset() is None:
             raise HostError(
                 f"{found[item_id][2].GetName()!r} is a transition or generator; it can't be linked"
@@ -242,9 +224,7 @@ def resolve_set_links(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     if got != after:
         # Put them back as they were.
         _resolve_regroup(timeline, _items(timeline), before)
-        raise HostError(
-            "Resolve didn't link the clips as asked, so they were put back as they were"
-        )
+        raise HostError("Resolve didn't link the clips as asked, so they were put back as they were")
     name = found[ids[0]][2].GetName()
     return {
         "changes": [
@@ -274,8 +254,4 @@ def resolve_revert_links(timeline: Any, change: dict[str, Any]) -> str:
     _resolve_regroup(timeline, found, before)
     now = resolve_link_groups(_items(timeline))
     wanted = _as_lists({frozenset(g) for g in before})
-    return (
-        "reverted"
-        if _as_lists({now[i] for g in before for i in g if i in now}) == wanted
-        else "failed"
-    )
+    return "reverted" if _as_lists({now[i] for g in before for i in g if i in now}) == wanted else "failed"

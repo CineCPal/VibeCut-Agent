@@ -19,7 +19,14 @@ Call = Callable[[Any, dict[str, Any]], Any]
 
 def _organize(module: Any) -> dict[str, Call]:
     """Phase 12e: the same six commands on each editor."""
-    names = ("create_bins", "move_clips", "set_clip_labels", "set_clip_metadata", "rename_clips", "revert_pool_changes")
+    names = (
+        "create_bins",
+        "move_clips",
+        "set_clip_labels",
+        "set_clip_metadata",
+        "rename_clips",
+        "revert_pool_changes",
+    )
     return {name: getattr(module, name) for name in names}
 
 

@@ -61,7 +61,16 @@ def test_each_provider_uses_its_own_helper_at_low_effort(monkeypatch: pytest.Mon
 
     for request, expected in [
         ({"apiKey": "g", "request": "Mark the hook"}, "gemini title"),
-        ({"provider": "claude", "apiKey": "c", "model": "claude-opus-5-5", "request": "Mark it", "reply": "Done"}, "claude title"),
+        (
+            {
+                "provider": "claude",
+                "apiKey": "c",
+                "model": "claude-opus-5-5",
+                "request": "Mark it",
+                "reply": "Done",
+            },
+            "claude title",
+        ),
         ({"provider": "claude-code", "claudeCode": {"program": "/x"}, "request": "Mark it"}, "code title"),
     ]:
         cap = Capture()

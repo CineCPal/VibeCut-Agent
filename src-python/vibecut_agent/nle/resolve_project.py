@@ -70,7 +70,9 @@ FILL = "scaleToCrop"
 
 def _size(timeline: Any) -> tuple[int, int]:
     try:
-        return int(timeline.GetSetting("timelineResolutionWidth")), int(timeline.GetSetting("timelineResolutionHeight"))
+        return int(timeline.GetSetting("timelineResolutionWidth")), int(
+            timeline.GetSetting("timelineResolutionHeight")
+        )
     except (TypeError, ValueError):
         raise HostError("Resolve didn't say the timeline's frame size") from None
 
@@ -137,9 +139,13 @@ def make_social_version(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         if missed:
             out["notReframed"] = missed[:20]
         if len(clips) > MAX_REFRAMED:
-            out["note"] = f"Smart Reframe ran on the first {MAX_REFRAMED} of {len(clips)} clips; the rest are centred"
+            out["note"] = (
+                f"Smart Reframe ran on the first {MAX_REFRAMED} of {len(clips)} clips; the rest are centred"
+            )
         elif clips and not reframed:
-            out["note"] = "Smart Reframe didn't run (it needs DaVinci Resolve Studio), so every clip is centred"
+            out["note"] = (
+                "Smart Reframe didn't run (it needs DaVinci Resolve Studio), so every clip is centred"
+            )
     return out
 
 

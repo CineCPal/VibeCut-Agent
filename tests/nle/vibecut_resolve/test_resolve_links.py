@@ -31,9 +31,7 @@ def on(timeline, kind, index=1):
 def test_link_merges_the_groups_and_reverts(edit):
     host, timeline, _project, c = edit
     v, a, b = c["v"], c["a"], c["b"]
-    (change,) = call(host, "set_links", itemIds=[v.uid, b.uid], action="link")[
-        "changes"
-    ]
+    (change,) = call(host, "set_links", itemIds=[v.uid, b.uid], action="link")["changes"]
     assert change["kind"] == "link" and change["action"] == "linked"
     assert change["groupsBefore"] == sorted([sorted([v.uid, a.uid]), [b.uid]])
     assert change["groupsAfter"] == [sorted([v.uid, a.uid, b.uid])]
@@ -60,9 +58,7 @@ def test_stale_one_way_links_dont_count(edit):
     v, a, b = c["v"], c["a"], c["b"]
     # What Resolve left in the probe: a still lists v and b, which don't list it back.
     v.links, a.links, b.links = [], [v, b], []
-    (change,) = call(host, "set_links", itemIds=[v.uid, a.uid], action="link")[
-        "changes"
-    ]
+    (change,) = call(host, "set_links", itemIds=[v.uid, a.uid], action="link")["changes"]
     assert change["groupsBefore"] == sorted([[v.uid], [a.uid]])
     assert (v.links, a.links) == ([a], [v])
 
@@ -79,6 +75,4 @@ def test_links_refused_on_a_locked_track_and_a_changed_revert(edit):
         call(host, "set_links", itemIds=[v.uid], action="link")
     (change,) = call(host, "set_links", itemIds=[a.uid], action="unlink")["changes"]
     timeline.SetClipsLinked([v, a], True)
-    assert revert(host, change)["changedSince"] == [
-        {"name": "A.mov", "reason": "it was changed since"}
-    ]
+    assert revert(host, change)["changedSince"] == [{"name": "A.mov", "reason": "it was changed since"}]

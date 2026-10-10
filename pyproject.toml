@@ -66,6 +66,7 @@ line-length = 110
 "tests/nle/vibecut_*/*" = ["RUF059", "SIM115"]
 
 [tool.mypy]
+files = ["src-python"]
 mypy_path = "src-python"
 strict = true
 

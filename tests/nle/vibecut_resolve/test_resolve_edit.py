@@ -712,7 +712,12 @@ def test_captions_come_from_resolves_transcription_and_revert_with_their_track(e
     seen = captioning(host, timeline)
     result = call(host, "create_captions", language="english", charsPerLine=32, lines=2)
     (change,) = result["changes"]
-    assert (change["kind"], change["count"], change["trackName"], change["newTracks"]) == ("captions", 2, "ST1", [["subtitle", 1]])
+    assert (change["kind"], change["count"], change["trackName"], change["newTracks"]) == (
+        "captions",
+        2,
+        "ST1",
+        [["subtitle", 1]],
+    )
     assert seen == {
         "SUBTITLE_LANGUAGE": "AUTO_CAPTION_ENGLISH", "SUBTITLE_CAPTION_PRESET": "AUTO_CAPTION_SUBTITLE_DEFAULT",
         "SUBTITLE_CHARS_PER_LINE": 32, "SUBTITLE_LINE_BREAK": "AUTO_CAPTION_LINE_DOUBLE", "SUBTITLE_GAP": 0,

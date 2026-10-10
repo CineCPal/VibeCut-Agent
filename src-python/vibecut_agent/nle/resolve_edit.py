@@ -532,7 +532,9 @@ def create_captions(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     project, timeline = host._timeline(args)
     current = project.GetCurrentTimeline()
     if current is None or current.GetName() != timeline.GetName():
-        raise HostError(f"{timeline.GetName()!r} isn't the timeline open in Resolve; open it there to caption it")
+        raise HostError(
+            f"{timeline.GetName()!r} isn't the timeline open in Resolve; open it there to caption it"
+        )
     language = str(args.get("language") or "auto").strip().lower()
     if language not in CAPTION_LANGUAGES:
         raise HostError(f"language must be one of: {', '.join(CAPTION_LANGUAGES)}")
@@ -555,18 +557,28 @@ def create_captions(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     made = timeline.CreateSubtitlesFromAudio(settings)
     new = {i: entry for i, entry in _subtitles(timeline).items() if i not in before}
     if not made or not new:
-        return {"changes": [], "refused": [{"itemId": "", "reason": "Resolve made no subtitles (is there speech on the timeline, and is this Resolve Studio?)"}]}
+        return {
+            "changes": [],
+            "refused": [
+                {
+                    "itemId": "",
+                    "reason": "Resolve made no subtitles (is there speech on the timeline, and is this Resolve Studio?)",
+                }
+            ],
+        }
     tracks_after = int(timeline.GetTrackCount("subtitle") or 0)
     index = min(i for i, _item in new.values())
     return {
-        "changes": [{
-            "kind": "captions",
-            "name": "Subtitles",
-            "itemIds": list(new),
-            "count": len(new),
-            "trackName": f"ST{index}",
-            "newTracks": [["subtitle", i] for i in range(tracks_before + 1, tracks_after + 1)],
-        }],
+        "changes": [
+            {
+                "kind": "captions",
+                "name": "Subtitles",
+                "itemIds": list(new),
+                "count": len(new),
+                "trackName": f"ST{index}",
+                "newTracks": [["subtitle", i] for i in range(tracks_before + 1, tracks_after + 1)],
+            }
+        ],
         "refused": [],
     }
 
@@ -743,7 +755,9 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             elif timeline.DeleteClips(present, False):
                 reverted.append({"kind": kind, "name": label})
                 for track_kind, index in reversed(change.get("newTracks") or []):
-                    if index == int(timeline.GetTrackCount(track_kind) or 0) and not timeline.GetItemListInTrack(track_kind, index):
+                    if index == int(
+                        timeline.GetTrackCount(track_kind) or 0
+                    ) and not timeline.GetItemListInTrack(track_kind, index):
                         timeline.DeleteTrack(track_kind, index)
             else:
                 failed.append({"name": label, "reason": "Resolve didn't remove them"})

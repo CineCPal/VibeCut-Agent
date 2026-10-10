@@ -100,7 +100,9 @@ def test_a_new_sequence_doesnt_need_the_connected_one_to_still_exist(project, mo
     failed on its frame rate. Now the rate comes from the sequence open in Premiere, else any other."""
     rates: list[float] = []
     real = premiere_project.preset_for
-    monkeypatch.setattr(premiere_project, "preset_for", lambda fps: (rates.append(round(fps, 3)), real(fps))[1])
+    monkeypatch.setattr(
+        premiere_project, "preset_for", lambda fps: (rates.append(round(fps, 3)), real(fps))[1]
+    )
     project.timebases["Interview"] = 254016000000 * 1001 // 30000
     made = call(project, "create_timeline", timeline="Sequence 03", name="Campus Video")
     assert made["timeline"] == "Campus Video"

@@ -89,7 +89,11 @@ class RenderProject(FakeProject):
             # Resolve's own preset (Phase 15b): it resets the Deliver page, video on.
             self.base_loads = getattr(self, "base_loads", 0) + 1
             self.format = {"format": "mov", "codec": "H264"}
-            self.settings = {"TargetDir": self.settings.get("TargetDir"), "ExportVideo": True, "ExportAudio": True}
+            self.settings = {
+                "TargetDir": self.settings.get("TargetDir"),
+                "ExportVideo": True,
+                "ExportAudio": True,
+            }
             return True
         fmt, kept = self.presets[name]
         self.format = dict(fmt)
@@ -110,10 +114,7 @@ class RenderProject(FakeProject):
             "JobId": job,
             "TimelineName": self.current.GetName(),
             "TargetDir": self.settings["TargetDir"],
-            "OutputFilename": (
-                self.settings.get("CustomName") or self.current.GetName()
-            )
-            + ext,
+            "OutputFilename": (self.settings.get("CustomName") or self.current.GetName()) + ext,
             "settings": dict(self.settings),
             "format": dict(self.format),
             "status": "Ready",
@@ -132,10 +133,7 @@ class RenderProject(FakeProject):
     def StartRendering(self, jobs, interactive):
         for job in jobs:
             j = self.jobs[job]
-            if (
-                not j["settings"].get("ExportVideo")
-                and j["settings"].get("AudioCodec") == "lpcm"
-            ):
+            if not j["settings"].get("ExportVideo") and j["settings"].get("AudioCodec") == "lpcm":
                 return False
             j["status"] = "Rendering"
         return True
@@ -216,10 +214,7 @@ def test_a_whole_render_sets_every_field_and_puts_everything_back(setup, renders
     assert started["seconds"] == 20.0
     settings = project.jobs[job]["settings"]
     assert project.jobs[job]["format"] == {"format": "mp4", "codec": "H264"}
-    assert (
-        settings["TargetDir"] == str(folder)
-        and settings["CustomName"] == "Interview cut 2 - client v1"
-    )
+    assert settings["TargetDir"] == str(folder) and settings["CustomName"] == "Interview cut 2 - client v1"
     assert (
         settings["SelectAllFrames"],
         settings["ExportVideo"],
@@ -241,10 +236,7 @@ def test_a_whole_render_sets_every_field_and_puts_everything_back(setup, renders
     # Taken off the queue; the Deliver settings, target folder, marks and page are back.
     assert project.jobs == {} and project.presets == {}
     assert project.format == {"format": "mov", "codec": "H264"}
-    assert (
-        project.settings["TargetDir"] == "/Users/me/Renders"
-        and project.settings["FormatWidth"] == 3840
-    )
+    assert project.settings["TargetDir"] == "/Users/me/Renders" and project.settings["FormatWidth"] == 3840
     assert timeline.marks == {
         "video": {"in": 10, "out": 99},
         "audio": {"in": 10, "out": 99},
@@ -287,13 +279,9 @@ def test_a_range_marks_the_frames_and_the_old_marks_come_back(setup):
 def test_in_out_uses_the_timelines_marks(setup):
     host, _resolve, project, timeline = setup
     with pytest.raises(HostError, match="no In or Out marked"):
-        run_command(
-            host, "render_video", {"timeline": "Interview: cut 2", "range": "in_out"}
-        )
+        run_command(host, "render_video", {"timeline": "Interview: cut 2", "range": "in_out"})
     timeline.marks["video"] = {"in": 50}
-    started = run_command(
-        host, "render_video", {"timeline": "Interview: cut 2", "range": "in_out"}
-    )
+    started = run_command(host, "render_video", {"timeline": "Interview: cut 2", "range": "in_out"})
     settings = project.jobs[started["jobId"]]["settings"]
     assert (settings["MarkIn"], settings["MarkOut"]) == (START + 50, START + 499)
 
@@ -309,9 +297,7 @@ def test_bad_requests_are_refused_before_anything_changes(setup):
         with pytest.raises(HostError, match=message):
             run_command(host, "render_video", {"timeline": "Interview: cut 2", **args})
     with pytest.raises(HostError, match="format must be one of"):
-        run_command(
-            host, "render_audio", {"timeline": "Interview: cut 2", "format": "flac"}
-        )
+        run_command(host, "render_audio", {"timeline": "Interview: cut 2", "format": "flac"})
     project.current = project.timelines[1]
     with pytest.raises(HostError, match="Open 'Interview: cut 2' in Resolve first"):
         run_command(host, "render_video", {"timeline": "Interview: cut 2"})
@@ -331,9 +317,7 @@ def test_aac_is_an_m4a_copied_out_of_a_small_h264_carrier(setup, renders, monkey
         os.remove(carrier)
 
     monkeypatch.setattr(resolve_render, "extract_wav", fake_extract)
-    started = run_command(
-        host, "render_audio", {"timeline": "Interview: cut 2", "format": "aac"}
-    )
+    started = run_command(host, "render_audio", {"timeline": "Interview: cut 2", "format": "aac"})
     job = project.jobs[started["jobId"]]
     settings = job["settings"]
     assert job["format"] == {"format": "mp4", "codec": "H264"}
@@ -341,10 +325,7 @@ def test_aac_is_an_m4a_copied_out_of_a_small_h264_carrier(setup, renders, monkey
     assert started["path"].endswith("Interview cut 2.m4a")
     assert project.base_loads == 1, "each render starts from Resolve's H.264 Master"
     project.finish(started["jobId"])
-    assert (
-        run_command(host, "render_status", {"jobId": started["jobId"]})["state"]
-        == "done"
-    )
+    assert run_command(host, "render_status", {"jobId": started["jobId"]})["state"] == "done"
     assert taken == [("Interview cut 2.mp4", "Interview cut 2.m4a")]
     assert sorted(os.listdir(renders / "Doc Final")) == ["Interview cut 2.m4a"]
 
@@ -360,9 +341,7 @@ def test_wav_comes_out_of_a_small_carrier_movie(setup, renders, monkeypatch):
         os.remove(carrier)
 
     monkeypatch.setattr(resolve_render, "extract_wav", fake_extract)
-    started = run_command(
-        host, "render_audio", {"timeline": "Interview: cut 2", "format": "wav"}
-    )
+    started = run_command(host, "render_audio", {"timeline": "Interview: cut 2", "format": "wav"})
     job = project.jobs[started["jobId"]]
     assert job["format"] == {"format": "mov", "codec": "ProRes422P"}
     assert (
@@ -372,19 +351,14 @@ def test_wav_comes_out_of_a_small_carrier_movie(setup, renders, monkeypatch):
         job["settings"]["AudioBitDepth"],
     ) == (640, 360, "lpcm", 24)
     project.finish(started["jobId"])
-    assert (
-        run_command(host, "render_status", {"jobId": started["jobId"]})["path"]
-        == started["path"]
-    )
+    assert run_command(host, "render_status", {"jobId": started["jobId"]})["path"] == started["path"]
     assert taken == [("Interview cut 2.mov", "Interview cut 2.wav")]
     assert sorted(os.listdir(renders / "Doc Final")) == ["Interview cut 2.wav"]
 
 
 def test_cancel_removes_the_partial_file_and_restores(setup, renders):
     host, resolve, project, _timeline = setup
-    started = run_command(
-        host, "render_video", {"timeline": "Interview: cut 2", "preset": "prores"}
-    )
+    started = run_command(host, "render_video", {"timeline": "Interview: cut 2", "preset": "prores"})
     assert project.jobs[started["jobId"]]["format"] == {
         "format": "mov",
         "codec": "ProRes422HQ",
@@ -395,10 +369,7 @@ def test_cancel_removes_the_partial_file_and_restores(setup, renders):
     assert os.listdir(renders / "Doc Final") == []
     assert project.jobs == {} and resolve.GetCurrentPage() == "edit"
     # Asking again gives the same answer, without touching Resolve.
-    assert (
-        run_command(host, "render_status", {"jobId": started["jobId"]})["state"]
-        == "cancelled"
-    )
+    assert run_command(host, "render_status", {"jobId": started["jobId"]})["state"] == "cancelled"
 
 
 def test_a_failed_render_is_reported_and_cleaned_up(setup, renders):
@@ -418,10 +389,7 @@ def test_a_project_with_no_target_folder_still_renders(setup):
     project.settings.pop("TargetDir")
     started = run_command(host, "render_video", {"timeline": "Interview: cut 2"})
     project.finish(started["jobId"])
-    assert (
-        run_command(host, "render_status", {"jobId": started["jobId"]})["state"]
-        == "done"
-    )
+    assert run_command(host, "render_status", {"jobId": started["jobId"]})["state"] == "done"
 
 
 class SlowStopProject(RenderProject):
@@ -455,10 +423,7 @@ def test_cancel_waits_for_resolve_to_stop_before_cleaning_up(renders, monkeypatc
     resolve = RenderResolve(project)
     host = ResolveHost(resolve)
     started = run_command(host, "render_video", {"timeline": "Interview"})
-    assert (
-        run_command(host, "cancel_render", {"jobId": started["jobId"]})["state"]
-        == "cancelled"
-    )
+    assert run_command(host, "cancel_render", {"jobId": started["jobId"]})["state"] == "cancelled"
     assert project.jobs == {} and project.presets == {}
     assert resolve.GetCurrentPage() == "edit" and project.format == {
         "format": "mov",
@@ -488,4 +453,3 @@ def test_a_render_resolve_wont_start_at_once_is_asked_again(setup, monkeypatch):
     with pytest.raises(HostError, match="didn't start the render"):
         run_command(host, "render_video", {"timeline": "Interview: cut 2", "name": "again"})
     assert project.jobs == {}
-

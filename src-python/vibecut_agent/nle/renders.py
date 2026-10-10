@@ -52,9 +52,7 @@ def unique_stem(folder: str, stem: str, extensions: tuple[str, ...]) -> str:
     n = 1
     while True:
         candidate = stem if n == 1 else f"{stem} {n}"
-        if not any(
-            os.path.exists(os.path.join(folder, candidate + ext)) for ext in extensions
-        ):
+        if not any(os.path.exists(os.path.join(folder, candidate + ext)) for ext in extensions):
             return candidate
         n += 1
 
@@ -91,9 +89,7 @@ def ffmpeg() -> str:
         return custom
     found = shutil.which("ffmpeg")
     if not found:
-        raise RenderError(
-            "ffmpeg not found. Install ffmpeg (brew install ffmpeg) or set VIBECUT_FFMPEG"
-        )
+        raise RenderError("ffmpeg not found. Install ffmpeg (brew install ffmpeg) or set VIBECUT_FFMPEG")
     return found
 
 

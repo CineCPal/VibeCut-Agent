@@ -59,9 +59,7 @@ def presets_dir() -> str:
         return custom
     found = sorted(glob.glob(AME_PRESETS))
     if not found:
-        raise HostError(
-            "Adobe Media Encoder isn't installed; Premiere renders through it"
-        )
+        raise HostError("Adobe Media Encoder isn't installed; Premiere renders through it")
     return found[-1]
 
 
@@ -80,9 +78,7 @@ def _start(host: Any, args: dict[str, Any], key: str, imports: Path | None) -> d
     preset_file, ext = PRESETS[key]
     preset = os.path.join(presets_dir(), preset_file)
     if not os.path.isfile(preset):
-        raise HostError(
-            f"Media Encoder's preset {os.path.basename(preset)!r} isn't installed"
-        )
+        raise HostError(f"Media Encoder's preset {os.path.basename(preset)!r} isn't installed")
     request: dict[str, Any] = {"timeline": name, "preset": preset}
     value = args.get("range")
     if value is None or value == "all":
@@ -94,9 +90,7 @@ def _start(host: Any, args: dict[str, Any], key: str, imports: Path | None) -> d
         end = _number(value.get("end"), "range.end")
         length = seconds(int(host._info(args)["endTicks"]))
         if start < 0 or end > length or end - start < 0.04:
-            raise HostError(
-                f"range must be within the sequence (0 to {length} s) and at least a frame long"
-            )
+            raise HostError(f"range must be within the sequence (0 to {length} s) and at least a frame long")
         request.update(workArea=1, inSeconds=round(start, 3), outSeconds=round(end, 3))
     else:
         raise HostError('range must be "all", "in_out" or {start, end} in seconds')
@@ -162,9 +156,7 @@ def _read_state(record: dict[str, Any], job: str, kind: str) -> dict[str, Any] |
     """The panel's <jobId>.<kind>.json (progress, done or failed), or None while there isn't one."""
     try:
         news = json.loads(
-            (Path(record["states"]) / f"{_safe_id(job)}.{kind}.json").read_text(
-                encoding="utf-8"
-            )
+            (Path(record["states"]) / f"{_safe_id(job)}.{kind}.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
         return None  # not written yet, or being replaced
@@ -191,11 +183,7 @@ def render_status(_host: Any, args: dict[str, Any]) -> dict[str, Any]:
     failed = _read_state(record, job, "failed")
     if done is not None:
         written = str(done.get("path") or record["path"])
-        if (
-            written != record["path"]
-            and inside(written, renders_root())
-            and os.path.isfile(written)
-        ):
+        if written != record["path"] and inside(written, renders_root()) and os.path.isfile(written):
             record["path"] = written
         if os.path.isfile(record["path"]) and os.path.getsize(record["path"]) > 0:
             _end(record, job, "done", None)
@@ -216,9 +204,7 @@ def render_status(_host: Any, args: dict[str, Any]) -> dict[str, Any]:
     else:
         progress = _read_state(record, job, "progress") or {}
         try:
-            record["fraction"] = max(
-                record["fraction"], min(1.0, float(progress.get("fraction") or 0))
-            )
+            record["fraction"] = max(record["fraction"], min(1.0, float(progress.get("fraction") or 0)))
         except (TypeError, ValueError):
             pass
     return _report(record)

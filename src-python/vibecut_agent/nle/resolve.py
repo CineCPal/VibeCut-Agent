@@ -183,7 +183,10 @@ def _linked(item: Any) -> list[Any]:
 def _frame_size(timeline: Any) -> dict[str, int]:
     """The timeline's frame size (Phase 14d), when Resolve says it."""
     try:
-        width, height = int(timeline.GetSetting("timelineResolutionWidth")), int(timeline.GetSetting("timelineResolutionHeight"))
+        width, height = (
+            int(timeline.GetSetting("timelineResolutionWidth")),
+            int(timeline.GetSetting("timelineResolutionHeight")),
+        )
     except (TypeError, ValueError):
         return {}
     return {"width": width, "height": height} if width > 0 and height > 0 else {}

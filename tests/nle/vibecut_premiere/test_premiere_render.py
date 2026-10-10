@@ -109,11 +109,7 @@ def test_ranges_and_audio(env):
         {"timeline": "Interview", "format": "aac", "range": "in_out"},
     )
     sent = requests.sent("encode")[-1]
-    assert (
-        sent["workArea"] == 1
-        and "inSeconds" not in sent
-        and sent["out"].endswith(".aac")
-    )
+    assert sent["workArea"] == 1 and "inSeconds" not in sent and sent["out"].endswith(".aac")
 
 
 def test_bad_requests_never_reach_media_encoder(env):
@@ -131,9 +127,7 @@ def test_bad_requests_never_reach_media_encoder(env):
 
 def test_a_failure_removes_the_partial_file(env):
     host, _requests, tmp_path = env
-    started = run_command(
-        host, "render_video", {"timeline": "Interview", "preset": "prores"}
-    )
+    started = run_command(host, "render_video", {"timeline": "Interview", "preset": "prores"})
     assert started["path"].endswith(".mov")
     with open(started["path"], "w") as f:
         f.write("partial")
@@ -163,9 +157,7 @@ def test_cancel_stops_the_batch_and_says_so(env):
     assert result["state"] == "cancelled" and "whole queue" in result["note"]
     assert requests.sent("encode_cancel") == [{}]
     assert not os.path.exists(started["path"])
-    assert (
-        run_command(host, "cancel_render", {"jobId": "job-1"})["state"] == "cancelled"
-    )
+    assert run_command(host, "cancel_render", {"jobId": "job-1"})["state"] == "cancelled"
     assert len(requests.sent("encode_cancel")) == 1
     with pytest.raises(HostError, match="no render with that jobId"):
         run_command(host, "render_status", {"jobId": "job-7"})
@@ -175,15 +167,11 @@ def test_a_late_progress_event_cant_hide_the_end(env):
     """Media Encoder ran its handlers out of order live (7c): a progress write that started before the
     end can land after it. The end has its own file, so it still counts."""
     host, _requests, tmp_path = env
-    started = run_command(
-        host, "render_audio", {"timeline": "Interview", "format": "wav"}
-    )
+    started = run_command(host, "render_audio", {"timeline": "Interview", "format": "wav"})
     with open(started["path"], "w") as f:
         f.write("wav")
     event(tmp_path, "job-1", "done", path=started["path"])
     event(tmp_path, "job-1", "progress", fraction=0)
-    (tmp_path / "bridge" / "renders" / "job-1.progress.json.123-1-5.tmp").write_text(
-        "{}"
-    )
+    (tmp_path / "bridge" / "renders" / "job-1.progress.json.123-1-5.tmp").write_text("{}")
     assert run_command(host, "render_status", {"jobId": "job-1"})["state"] == "done"
     assert list((tmp_path / "bridge" / "renders").iterdir()) == []

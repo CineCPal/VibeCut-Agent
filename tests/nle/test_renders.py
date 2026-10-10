@@ -13,9 +13,7 @@ from vibecut_agent.nle.renders import (
     safe_name,
 )
 
-needs_ffmpeg = pytest.mark.skipif(
-    shutil.which("ffmpeg") is None, reason="ffmpeg isn't installed"
-)
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg isn't installed")
 
 
 @pytest.fixture

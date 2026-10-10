@@ -57,13 +57,19 @@ CATEGORIES = ("pacing", "continuity", "framing", "broll_relevance", "audio", "st
 RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
-        "overall": {"type": "STRING", "description": "Two or three sentences: how well the cut works and the most important thing to fix."},
+        "overall": {
+            "type": "STRING",
+            "description": "Two or three sentences: how well the cut works and the most important thing to fix.",
+        },
         "findings": {
             "type": "ARRAY",
             "items": {
                 "type": "OBJECT",
                 "properties": {
-                    "time": {"type": "NUMBER", "description": "Timeline seconds the finding is about (usually a cut)."},
+                    "time": {
+                        "type": "NUMBER",
+                        "description": "Timeline seconds the finding is about (usually a cut).",
+                    },
                     "severity": {"type": "STRING", "enum": list(SEVERITIES)},
                     "category": {"type": "STRING", "enum": list(CATEGORIES)},
                     "issue": {"type": "STRING"},
@@ -104,7 +110,12 @@ Grab = Callable[[str, float, int], bytes]
 
 
 def _number(value: Any, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or math.isnan(value) or math.isinf(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or math.isnan(value)
+        or math.isinf(value)
+    ):
         raise RequestError(f"{field} must be a number")
     return float(value)
 
@@ -142,7 +153,9 @@ def grab_jpeg(path: str, time: float, width: int) -> bytes:
     return out.getvalue()
 
 
-def extract_frames(frames: list[dict[str, Any]], grab: Grab = grab_jpeg) -> tuple[list[tuple[dict[str, Any], bytes]], list[dict[str, Any]]]:
+def extract_frames(
+    frames: list[dict[str, Any]], grab: Grab = grab_jpeg
+) -> tuple[list[tuple[dict[str, Any], bytes]], list[dict[str, Any]]]:
     """Reads each frame's JPEG in parallel. Returns (the frames read with their bytes, in request order;
     the frames that couldn't be read)."""
 
@@ -180,7 +193,9 @@ def build_parts(
     ]
     for frame, jpeg in frames:
         parts.append({"text": _frame_caption(frame)})
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode("ascii")}})
+        parts.append(
+            {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode("ascii")}}
+        )
     parts.append({"text": "Review the cut now."})
     return parts
 
@@ -200,7 +215,12 @@ def findings_from(answer: Any) -> dict[str, Any]:
             continue
         time = raw.get("time")
         issue = raw.get("issue")
-        if not isinstance(time, (int, float)) or isinstance(time, bool) or not isinstance(issue, str) or not issue.strip():
+        if (
+            not isinstance(time, (int, float))
+            or isinstance(time, bool)
+            or not isinstance(issue, str)
+            or not issue.strip()
+        ):
             continue
         severity = raw.get("severity") if raw.get("severity") in SEVERITIES else "medium"
         category = raw.get("category") if raw.get("category") in CATEGORIES else "other"
@@ -215,7 +235,10 @@ def findings_from(answer: Any) -> dict[str, Any]:
             }
         )
     overall = answer.get("overall")
-    return {"overall": overall.strip() if isinstance(overall, str) else "", "findings": findings[:MAX_FINDINGS]}
+    return {
+        "overall": overall.strip() if isinstance(overall, str) else "",
+        "findings": findings[:MAX_FINDINGS],
+    }
 
 
 def findings_from_text(text: str) -> dict[str, Any]:
@@ -233,7 +256,9 @@ def _text(request: dict[str, Any], key: str) -> str:
     return value[:MAX_TEXT]
 
 
-def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None, grab: Grab = grab_jpeg) -> int:
+def run(
+    request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None, grab: Grab = grab_jpeg
+) -> int:
     from vibecut_agent.story.models import StoryModelError, claude_code_json_answer, claude_json, gemini_json
 
     register_secret(request.get("apiKey"))
@@ -248,7 +273,11 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     lint = request.get("lint") or []
     if not isinstance(lint, list):
         raise RequestError("lint must be a list")
-    brief, snapshot, transcript = _text(request, "brief"), _text(request, "snapshot"), _text(request, "transcript")
+    brief, snapshot, transcript = (
+        _text(request, "brief"),
+        _text(request, "snapshot"),
+        _text(request, "transcript"),
+    )
     model = request.get("model") or None
     should_abort = cancel.is_set if cancel else (lambda: False)
 
@@ -258,15 +287,29 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
         emitter.error("None of the stills could be read (are the media files there?)")
         return 1
     parts = build_parts(ok, brief, snapshot, transcript, lint[:MAX_LINT])
-    emitter.progress(len(frames), len(frames), phase="reviewing", detail=f"{WHO[provider]} is reviewing the cut")
+    emitter.progress(
+        len(frames), len(frames), phase="reviewing", detail=f"{WHO[provider]} is reviewing the cut"
+    )
     try:
         if provider == "claude-code":
             answer = claude_code_json_answer(
-                request.get("claudeCode"), SYSTEM_INSTRUCTION, parts, RESPONSE_SCHEMA, model, effort="medium", should_abort=should_abort
+                request.get("claudeCode"),
+                SYSTEM_INSTRUCTION,
+                parts,
+                RESPONSE_SCHEMA,
+                model,
+                effort="medium",
+                should_abort=should_abort,
             )
         elif provider == "claude":
             answer = claude_json(
-                api_key, SYSTEM_INSTRUCTION, parts, RESPONSE_SCHEMA, model, should_abort=should_abort, effort="medium",
+                api_key,
+                SYSTEM_INSTRUCTION,
+                parts,
+                RESPONSE_SCHEMA,
+                model,
+                should_abort=should_abort,
+                effort="medium",
                 max_tokens=CLAUDE_MAX_TOKENS,
             )
         else:
