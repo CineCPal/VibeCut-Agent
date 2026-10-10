@@ -96,7 +96,7 @@ export function SelectsBar({ chosen, busy }: { chosen: Selects; busy: boolean })
           type="button"
           className={button}
           disabled={empty || running || busy}
-          title="Write a Premiere Pro XML: a bin of the clips and a sequence of the selects (File → Import in Premiere)"
+          title="Write an XML: a bin of the clips and a sequence of the selects (Premiere: File → Import; Resolve: File → Import → Timeline)"
           onClick={() => void run("export", () => exportSelectsXml(chosen, setExportJob))}
         >
           <FileDown size={14} aria-hidden="true" />

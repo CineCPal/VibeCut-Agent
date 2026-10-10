@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from tests.broll.test_pipeline import SCORES, fake_result
-from vibecut_agent.broll import commands, pipeline
+from vibecut_agent.broll import commands, ffprobe_util, pipeline
 from vibecut_agent.protocol import Emitter
 
 
@@ -97,11 +97,25 @@ def test_exports_one_clipitem_per_chosen_segment_in_the_given_order(monkeypatch,
         pytest.fail("export must not decode any video")
 
     monkeypatch.setattr(pipeline, "analyze_clip", must_not_decode)
+    starts = {"b.mov": {"seconds": 3600.0, "timecode": "01:00:00:00"}}
+    monkeypatch.setattr(ffprobe_util, "probe_start_timecode", lambda path: starts.get(os.path.basename(path)))
     code, capture = run(monkeypatch, "export", export_request(folder, out, sequenceName="  Gym   selects "))
 
     assert code == 0 and capture.of_type("error") == []
     (result,) = capture.of_type("result")
-    assert result == {"type": "result", "exportPath": out, "clips": 2, "segments": 3, "seconds": 7.5}
+    assert result == {
+        "type": "result",
+        "exportPath": out,
+        "warnings": [
+            (
+                "Couldn't read the start timecode of a.mov, so the XML starts it at 00:00:00:00; "
+                "Resolve may not link it."
+            )
+        ],
+        "clips": 2,
+        "segments": 3,
+        "seconds": 7.5,
+    }
     root = ET.parse(out).getroot()
     assert root.find("project/children/sequence/name").text == "Gym selects"
     items = root.findall("project/children/sequence/media/video/track/clipitem")
@@ -115,6 +129,9 @@ def test_exports_one_clipitem_per_chosen_segment_in_the_given_order(monkeypatch,
     assert [int(i.find("start").text) for i in items] == [0, 60, 165]
     bin_clips = root.findall("project/children/bin/children/clip")
     assert "Quality score: 90.0/100" in ET.tostring(bin_clips[0], encoding="unicode")
+    # Resolve links b only at its own start timecode (30 fps); a, unreadable, keeps zero.
+    assert [c.find("file/timecode/string").text for c in bin_clips] == ["01:00:00:00", "00:00:00:00"]
+    assert [int(c.find("file/timecode/frame").text) for c in bin_clips] == [108000, 0]
 
 
 def test_a_clip_never_analyzed_is_refused(monkeypatch, folder, tmp_path):

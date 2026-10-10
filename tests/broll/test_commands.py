@@ -132,7 +132,7 @@ def test_catalog_mode_with_no_prior_analysis_is_an_empty_catalog(monkeypatch, fo
 def test_exports_the_selected_clips(monkeypatch, folder, tmp_path):
     exported = {}
 
-    def fake_export(selected, path, show_energy=True):
+    def fake_export(selected, path, show_energy=True, timecodes=None):
         exported["names"] = [r.filename for r in selected]
         exported["path"] = path
         open(path, "w").write("<xmeml/>")

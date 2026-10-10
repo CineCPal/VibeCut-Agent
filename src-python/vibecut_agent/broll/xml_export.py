@@ -25,13 +25,26 @@ or drag the .xml into a project). The output contains:
     sync, and in its native format rather than being stripped out. Each
     clip's named channel preset (Mono/Stereo/5.1/etc.) is also carried
     through into its bin comments for easy reference.
+
+DaVinci Resolve imports the same file (File > Import > Timeline) as long
+as each <file> carries the source's own start timecode: camera files
+start at a time of day, and Resolve refuses the whole import when a
+clip's range lies before the file's first timecode (seen live,
+Phase 16a). start_timecodes() probes them; Premiere reads the same block.
 """
 
 import os
+import unicodedata
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from vibecut_agent.broll.analyzer import ClipResult, Segment
+
+# A source's start: {"seconds": float, "timecode": "HH:MM:SS:FF" or None}, from
+# ffprobe_util.probe_start_timecode (None when ffprobe can't read the file).
+StartProbe = Callable[[str], dict | None]
 
 
 def _tc_string(seconds: float, fps: float) -> str:
@@ -63,25 +76,61 @@ def _rate_block(fps: float, indent: str = "") -> str:
     )
 
 
-def _timecode_block(seconds: float, fps: float, indent: str = "") -> str:
+def _timecode_block(seconds: float, fps: float, indent: str = "", label: str | None = None) -> str:
+    """`label` is the source's own timecode string when it has one (kept as written, so a
+    drop-frame `;` survives); otherwise it's computed from `seconds`."""
+    string = label or _tc_string(seconds, fps)
+    display = "DF" if ";" in string else "NDF"
     return (
         f"{indent}<timecode>\n"
-        f"{indent}  <string>{_tc_string(seconds, fps)}</string>\n"
+        f"{indent}  <string>{escape(string)}</string>\n"
         f"{indent}  <frame>{_frames(seconds, fps)}</frame>\n"
-        f"{indent}  <displayformat>NDF</displayformat>\n"
+        f"{indent}  <displayformat>{display}</displayformat>\n"
         f"{_rate_block(fps, indent + '  ')}\n"
         f"{indent}</timecode>"
     )
 
 
 def _file_url(path: str) -> str:
+    """`file://localhost/` plus the percent-encoded path, as Premiere's own exports write it, so a
+    space, `#`, `%` or accent in a folder or file name reads back as the same path."""
     abspath = os.path.abspath(path).replace(os.sep, "/")
     if not abspath.startswith("/"):
         abspath = "/" + abspath
-    return "file://" + abspath  # -> file:///Users/... or file:///home/...
+    return "file://localhost" + quote(unicodedata.normalize("NFC", abspath), safe="/")
 
 
-def _file_definition(clip: ClipResult, file_id: str, fps: float, indent: str = "  ") -> str:
+def start_timecodes(
+    results: list[ClipResult], probe: StartProbe | None = None
+) -> tuple[dict[str, dict], list[str]]:
+    """Each source's start timecode, by path, for export_xml's `timecodes`; and a warning naming the files
+    whose start couldn't be read (it keeps 00:00:00:00, which Resolve may refuse)."""
+    from vibecut_agent.broll.ffprobe_util import probe_start_timecode
+
+    read = probe or probe_start_timecode
+    starts: dict[str, dict] = {}
+    unreadable: list[str] = []
+    for path in dict.fromkeys(c.path for c in results):
+        start = read(path)
+        if start is None:
+            unreadable.append(os.path.basename(path))
+        else:
+            starts[path] = start
+    warnings = []
+    if unreadable:
+        names = ", ".join(unreadable[:3]) + (
+            f" and {len(unreadable) - 3} more" if len(unreadable) > 3 else ""
+        )
+        warnings.append(
+            f"Couldn't read the start timecode of {names}, so the XML starts it at 00:00:00:00; "
+            "Resolve may not link it."
+        )
+    return starts, warnings
+
+
+def _file_definition(
+    clip: ClipResult, file_id: str, fps: float, indent: str = "  ", start: dict | None = None
+) -> str:
     # Sources with no audio stream at all (clip.audio_channels == 0, set
     # by analyzer._probe_audio_format when ffprobe finds zero audio
     # streams) must omit <media><audio> entirely rather than declaring
@@ -106,7 +155,7 @@ def _file_definition(clip: ClipResult, file_id: str, fps: float, indent: str = "
 {indent}  <pathurl>{escape(_file_url(clip.path))}</pathurl>
 {_rate_block(fps, indent + "  ")}
 {indent}  <duration>{_frames(clip.duration, fps)}</duration>
-{_timecode_block(0.0, fps, indent + "  ")}
+{_timecode_block(float((start or {}).get("seconds") or 0.0), fps, indent + "  ", (start or {}).get("timecode"))}
 {indent}  <media>
 {indent}    <video>
 {indent}      <samplecharacteristics>
@@ -136,7 +185,14 @@ def _comments_xml(clip: ClipResult, indent: str = "        ", show_energy: bool 
     return "\n".join(lines)
 
 
-def _bin_clip_xml(clip: ClipResult, clip_id: str, file_id: str, fps: float, show_energy: bool = True) -> str:
+def _bin_clip_xml(
+    clip: ClipResult,
+    clip_id: str,
+    file_id: str,
+    fps: float,
+    show_energy: bool = True,
+    start: dict | None = None,
+) -> str:
     """A master-clip entry for the Project panel / bin. Uses <clip>, not
     <clipitem> -- <clipitem> is reserved for items placed on a track."""
     in_f = 0
@@ -148,7 +204,7 @@ def _bin_clip_xml(clip: ClipResult, clip_id: str, file_id: str, fps: float, show
         <in>{in_f}</in>
         <out>{out_f}</out>
         <ismasterclip>TRUE</ismasterclip>
-{_file_definition(clip, file_id, fps, indent="        ")}
+{_file_definition(clip, file_id, fps, indent="        ", start=start)}
 {_comments_xml(clip, indent="        ", show_energy=show_energy)}
       </clip>"""
 
@@ -266,10 +322,15 @@ def export_xml(
     output_path: str,
     sequence_name: str = "Best B-Roll Selects",
     show_energy: bool = True,
+    timecodes: dict[str, dict] | None = None,
 ):
     """
     results: list of ClipResult, expected already sorted best-first.
-    Writes a Final Cut Pro XML (v5) file Premiere Pro can import.
+    Writes a Final Cut Pro XML (v5) file Premiere Pro and DaVinci Resolve can import.
+
+    timecodes: each source's start ({"seconds", "timecode"}, from
+    start_timecodes), by path; a source missing from it starts at zero.
+    Clipitem <in>/<out> stay counted from the media's first frame either way.
 
     show_energy: whether the energy-score bin comment (mastercomment2)
     should appear at all for this export run, independent of whether a
@@ -315,7 +376,16 @@ def export_xml(
         clip_id = f"masterclip-{idx + 1}"
         file_id = f"file-{idx + 1}"
 
-        bin_clips.append(_bin_clip_xml(clip, clip_id, file_id, clip_fps, show_energy=show_energy))
+        bin_clips.append(
+            _bin_clip_xml(
+                clip,
+                clip_id,
+                file_id,
+                clip_fps,
+                show_energy=show_energy,
+                start=(timecodes or {}).get(clip.path),
+            )
+        )
 
         # A clip may have multiple recommended segments; place each one
         # on the timeline, back-to-back, in chronological (source) order.

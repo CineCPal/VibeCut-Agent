@@ -30,9 +30,11 @@ export interface AnalyzeResult {
   duplicates: number;
 }
 
-/** A `broll-export` result: the Premiere XML written from the chosen segments (Phase 10). */
+/** A `broll-export` result: the XML (Premiere or Resolve) written from the chosen segments (Phase 10). */
 export interface ExportResult {
   exportPath: string;
+  /** Files whose start timecode couldn't be read (Phase 16a); absent from older sidecars. */
+  warnings?: string[];
   clips: number;
   segments: number;
   /** The selects reel's length. */

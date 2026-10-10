@@ -65,7 +65,7 @@ It is designed to run locally in the background, launching independently and int
 | command | `dependency_status` | `commands.rs` | `getDependencyStatus()` | `[{ name, path, version }]` for ffmpeg, ffprobe, exiftool, uv (PATH, then `/opt/homebrew/bin`, `/usr/local/bin`) |
 | command | `hardware_acceleration` | `commands.rs` | `getHardwareAcceleration()` | `{ videotoolbox, nvenc }` from `ffmpeg -encoders` |
 | command | `storage_paths` | `commands.rs` | `getStoragePaths()` | `{ config, data, logs }` app directories |
-| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key, or for `claude-code` the Claude Code setup as `claudeCode`, Phase 7b), `broll-analyze`, `broll-match`, `broll-export` (Phase 10: a Premiere XML from chosen segments, read from the folder cache), `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
+| command | `sidecar_start` | `sidecar.rs` | `startSidecar(jobId, command, request)` | starts a job from the `COMMANDS` allow-list: `health`, `chat` (interactive; Rust injects the provider's key, or for `claude-code` the Claude Code setup as `claudeCode`, Phase 7b), `broll-analyze`, `broll-match`, `broll-export` (Phase 10: an XML for Premiere or Resolve from chosen segments, read from the folder cache; Phase 16a: each source's start timecode is probed), `broll-spyglass` (Rust sets its `indexPath`; `--extra energy` per `extras_for`), `transcribe` (`--extra transcribe`, plus `diarize` and the HF token only when it labels speakers), `audio-peaks`, and (6d) `assemble` (Rust injects the chat provider's key, as for `chat`: `needs_llm_key`). Rust-owned commands (`session`, the watchers) are refused |
 | command | `sidecar_send` | `sidecar.rs` | `sendToSidecar(jobId, message)` | writes one JSON line to an interactive job (`agent-session`); any `apiKey` or `claudeCode` is stripped |
 | command | `sidecar_cancel` | `sidecar.rs` | `cancelSidecar(jobId)` | SIGTERM to the process group, SIGKILL after 3 s |
 | command | `sidecar_session_status` | `sidecar.rs` | `getSessionStatus()` | `{ state: "starting" \| "ready" \| "stopped", version, python, message }` |
@@ -2012,6 +2012,38 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - Both test sequences were deleted with the panel's `delete_sequence`, and the render files were deleted.
 - **Left in "2026 Agent Tests":** the test clip and the SRT item in the "VibeCut" bin, which can't be deleted from a script.
 
+## Phase 16a: The B-roll XML links in DaVinci Resolve (2026-10-10)
+
+**Why (the user):** Resolve couldn't locate the files when they imported the Analyze tab's **Export XML…** with File › Import › Timeline. The XML had only ever been tried in Premiere.
+
+**What the live repro showed** (scratch project "VibeCut 7a", two ffmpeg clips named `Shot #1 café.mov` with an embedded `14:03:22:00` and `Plain shot.mov` with none, imported with `MediaPool.ImportTimelineFromFile(..., {"importSourceClips": True})`):
+
+| Variant | Resolve |
+|---|---|
+| A: the old export (every `<file>` timecode `00:00:00:00`, raw `file:///` paths, file definitions only in the bin) | import refused |
+| B: A with percent-encoded `file://localhost/` paths | refused |
+| D: A with the file definitions moved into the sequence | refused |
+| C: A with only the real start timecode in the `<file>` | **linked**, all 9 items online |
+| E: B + C + D | linked |
+
+**The cause** is the start timecode. Camera files start at a time of day, and Resolve refuses the whole import when a clip's range lies before the file's first timecode. Raw paths with spaces, `#` and accents were fine.
+
+**The fix** is in `broll/xml_export.py`:
+- **`start_timecodes(results, probe)`** reads each source once with `ffprobe_util.probe_start_timecode`, the same probe the rebuilds use. `export_xml(..., timecodes=)` writes it into each `<file>`'s `<timecode>`: the string as the file has it (a `;` gives `DF`), and the frame at the file's own rate.
+- Clipitem `<in>`/`<out>` stay counted from the media's first frame, as xmeml (and Premiere) read them. `export_xml` itself still opens no files.
+- A file whose start can't be read keeps zero, and the result's `warnings` names it. `broll-export`'s result gains `warnings`, and the Analyze tab appends them to its notice. `broll-analyze` with `exportXmlPath` adds them to its own `warnings`.
+- **Paths:** `<pathurl>` is now `file://localhost/` plus the NFC, percent-encoded path, as Premiere's own exports write it. Resolve didn't need it, but a `%` in a name now reads back exactly.
+- The file definitions stay in the bin. Moving them made no difference to Resolve, and it keeps the layout Premiere has read since Phase 10.
+- **Labels:** the save dialog is "Export XML for Premiere or Resolve". The notice says "Premiere: File → Import. Resolve: File → Import → Timeline.", and the button's tooltip says the same.
+
+**Tests:** `test_xml_export.py` › `TestResolveLinking` covers the encoded path, the start timecode with relative in/out, drop-frame, and one probe per source with the unreadable ones named. `test_commands_export.py` covers the probed timecodes and the warning in `broll-export`'s result. `broll.test.ts` covers the new label and the warnings. All suites are green.
+
+**Checked live in Resolve (2026-10-10):** the fixed `broll-export` ("VCA 16a F fixed") imported with every item online and the right source frames (left offsets 50, 150 and 25 at 25 fps for segments at 2 s, 6 s and 1 s). It was checked both with the clips already in the pool and from an empty pool.
+
+**Cleanup:** the "VCA 16a" timelines and test clips were deleted, "Timeline 28" is current, and the test media was deleted.
+
+**Pending:** the XML in Premiere, which reads the same timecode block (the user's try), and `npm run install-app`.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2087,6 +2119,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-10)* **Phase 16a:** the Analyze tab's XML now imports in Resolve (File › Import › Timeline). It carries each source's real start timecode, which Resolve needs; checked live. Next: the XML in Premiere (the user's try), `npm run install-app`, then the next chat features.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2335,3 +2368,6 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **2026-10-09 (Claude): Phase 15 and 14d checked live in Premiere (panel 0.11.0).**
   - The caption track, a 720p render, WAV, Stop and Auto Reframe all worked.
   - Auto Reframe keeps the height (607x1080 at 9:16), and the tool now says so.
+- **2026-10-10 (Claude): Phase 16a: the B-roll XML links in Resolve.**
+  - Resolve refused the Analyze tab's XML because every file started at 00:00:00:00. The export now probes each source's start timecode, and the paths are percent-encoded under `file://localhost/`.
+  - Checked live in Resolve with a five-variant repro. See "Phase 16a".

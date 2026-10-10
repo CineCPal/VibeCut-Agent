@@ -176,17 +176,17 @@ describe("Phase 10: options, kept results, XML and timeline", () => {
     expect(useBrollStore.getState().lastResult).toBeNull();
   });
 
-  it("exports the chosen segments as a Premiere XML through broll-export", async () => {
+  it("exports the chosen segments as an XML through broll-export, with any warnings", async () => {
     const { exportSelectsXml } = await import("./broll");
     const { selects } = await import("./brollSelects");
     ipc.chooseSavePath.mockResolvedValue("/out/Gym");
     ipc.startSidecar.mockImplementation(async (id: string) => {
-      finish(id, { exportPath: "/out/Gym.xml", clips: 2, segments: 3, seconds: 95.2 });
+      finish(id, { exportPath: "/out/Gym.xml", warnings: ["Couldn't read b.mov."], clips: 2, segments: 3, seconds: 95.2 });
     });
     useBrollStore.setState({ sequenceName: "  Gym  " });
     const chosen = selects([clip("/m/a.mov", 80, [[0, 2], [5, 8]]), clip("/m/b.mov", 60, [[1, 4]])], DEFAULT_OPTIONS, {}, true);
     const done = await exportSelectsXml(chosen);
-    expect(ipc.chooseSavePath).toHaveBeenCalledWith("Export Premiere XML", "/m/m selects.xml", ["xml"]);
+    expect(ipc.chooseSavePath).toHaveBeenCalledWith("Export XML for Premiere or Resolve", "/m/m selects.xml", ["xml"]);
     const [, command, request] = ipc.startSidecar.mock.calls[0];
     expect(command).toBe("broll-export");
     expect(request).toEqual({
@@ -199,7 +199,7 @@ describe("Phase 10: options, kept results, XML and timeline", () => {
         { path: "/m/b.mov", score: 60, energy: null, segments: [{ start: 1, end: 4 }] },
       ],
     });
-    expect(done).toEqual({ text: "Wrote 3 segments from 2 clips (1:35). In Premiere: File → Import.", path: "/out/Gym.xml" });
+    expect(done).toEqual({ text: "Wrote 3 segments from 2 clips (1:35). Premiere: File → Import. Resolve: File → Import → Timeline. Couldn't read b.mov.", path: "/out/Gym.xml" });
   });
 
   it("does nothing when the save dialog is cancelled, and reports a failed export", async () => {

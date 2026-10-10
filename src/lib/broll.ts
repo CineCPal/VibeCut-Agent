@@ -1,6 +1,6 @@
 /**
- * Starts and stops the B-roll analyzer's jobs (PLAN.md, Phase 4), and sends its selects to a Premiere XML
- * or a new timeline (Phase 10). Progress, ETA and the result come back as sidecar events into
+ * Starts and stops the B-roll analyzer's jobs (PLAN.md, Phase 4), and sends its selects to an XML for Premiere
+ * or Resolve, or a new timeline (Phase 10). Progress, ETA and the result come back as sidecar events into
  * `useSidecarStore` (useSidecarBridge), as for any job.
  */
 import { cancelSidecar, chooseSavePath, nleCall, startSidecar } from "./ipc";
@@ -113,13 +113,13 @@ const clockLength = (seconds: number) => {
 /** The sequence name to use: the option, or the default when it's blank. */
 const nameOf = (name: string) => name.trim().replace(/\s+/g, " ") || "B-Roll Selects";
 
-/** Asks where to save, then writes the selects as a Premiere XML (`broll-export`, read from the folder's
+/** Asks where to save, then writes the selects as an XML for Premiere or Resolve (`broll-export`, read from the folder's
  * cache, no decoding). Returns what happened, or null if the user cancelled the save dialog. */
 export async function exportSelectsXml(chosen: Selects, onStart?: (id: string) => void): Promise<{ text: string; path: string } | null> {
   const { folder, sequenceName, contentAware, lastResult } = useBrollStore.getState();
   if (!folder || !chosen.clips.length) throw new Error("No segments are selected.");
   const folderName = folder.split("/").filter(Boolean).pop() ?? "B-roll";
-  const path = await chooseSavePath("Export Premiere XML", `${folder}/${folderName} selects.xml`, ["xml"]);
+  const path = await chooseSavePath("Export XML for Premiere or Resolve", `${folder}/${folderName} selects.xml`, ["xml"]);
   if (!path) return null;
   const outputPath = path.toLowerCase().endsWith(".xml") ? path : `${path}.xml`;
   const job = await runJob(
@@ -137,7 +137,7 @@ export async function exportSelectsXml(chosen: Selects, onStart?: (id: string) =
   if (job?.status !== "done" || !job.result) throw new Error(job?.error ?? "The export stopped before it finished.");
   const r = job.result as unknown as ExportResult;
   return {
-    text: `Wrote ${count(r.segments, "segment")} from ${count(r.clips, "clip")} (${clockLength(r.seconds)}). In Premiere: File → Import.`,
+    text: `Wrote ${count(r.segments, "segment")} from ${count(r.clips, "clip")} (${clockLength(r.seconds)}). Premiere: File → Import. Resolve: File → Import → Timeline.${(r.warnings ?? []).map((w) => ` ${w}`).join("")}`,
     path: r.exportPath,
   };
 }

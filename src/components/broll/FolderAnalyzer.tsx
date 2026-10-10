@@ -45,7 +45,7 @@ function Issues({ result }: { result: { warnings: string[]; failed: { path: stri
 
 /**
  * The Analyze tab (PLAN.md, Phases 4 and 10): rank a folder's clips with the B-roll analyzer, pick up to 20
- * segments per clip, preview them, then export the selects as a Premiere XML or build them into a timeline.
+ * segments per clip, preview them, then export the selects as an XML (Premiere or Resolve) or build them into a timeline.
  * Options and the last result are remembered between runs.
  */
 export function FolderAnalyzer() {

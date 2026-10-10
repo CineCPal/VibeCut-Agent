@@ -27,9 +27,10 @@ CLIP model needed.
 """
 
 import re
+import xml.etree.ElementTree as ET
 
 from vibecut_agent.broll.analyzer import ClipResult, Segment
-from vibecut_agent.broll.xml_export import export_xml
+from vibecut_agent.broll.xml_export import export_xml, start_timecodes
 
 
 def make_clip_result(**overrides):
@@ -149,3 +150,63 @@ class TestMixedFrameRateTimelinePlacement:
         bin_block_match = re.search(r'<clip id="masterclip-3">.*?</clip>', xml_text, re.DOTALL)
         assert bin_block_match is not None
         assert "<timebase>30</timebase>" in bin_block_match.group(0)
+
+
+class TestResolveLinking:
+    """What DaVinci Resolve's File > Import > Timeline needs to link the sources (Phase 16a, seen
+    live): each file's own start timecode, and a path URL that reads back exactly."""
+
+    def test_the_path_is_percent_encoded_under_file_localhost(self, tmp_path):
+        # "e" + combining accent (as macOS may hand it over) is written as the composed é.
+        clip = make_clip_result(path="/Vol/Rough Cut #2/Shot 100%/cafe\u0301.mov", filename="café.mov")
+        out = str(tmp_path / "x.xml")
+        export_xml([clip], out)
+        (url,) = [p.text for p in ET.parse(out).getroot().iter("pathurl")]
+        assert url == "file://localhost/Vol/Rough%20Cut%20%232/Shot%20100%25/caf%C3%A9.mov"
+
+    def test_each_file_carries_its_own_start_timecode_and_clipitems_stay_relative(self, tmp_path):
+        camera = make_clip_result(
+            path="/v/cam.mov", filename="cam.mov", fps=25.0, segments=[Segment(start=2.0, end=4.0, score=0)]
+        )
+        plain = make_clip_result(path="/v/plain.mov", filename="plain.mov", fps=25.0)
+        out = str(tmp_path / "x.xml")
+        starts = {"/v/cam.mov": {"seconds": 50602.0, "timecode": "14:03:22:00"}}
+        export_xml([camera, plain], out, timecodes=starts)
+        root = ET.parse(out).getroot()
+        files = {f.find("name").text: f for f in root.iter("file") if f.find("name") is not None}
+        assert files["cam.mov"].find("timecode/string").text == "14:03:22:00"
+        assert files["cam.mov"].find("timecode/frame").text == str(50602 * 25)
+        assert files["plain.mov"].find("timecode/string").text == "00:00:00:00"
+        first = root.find("project/children/sequence/media/video/track/clipitem")
+        assert (first.find("in").text, first.find("out").text) == ("50", "100")
+
+    def test_a_drop_frame_start_is_kept_as_written(self, tmp_path):
+        clip = make_clip_result(path="/v/df.mov", filename="df.mov", fps=29.97)
+        out = str(tmp_path / "x.xml")
+        export_xml([clip], out, timecodes={"/v/df.mov": {"seconds": 3600.0, "timecode": "01:00:00;00"}})
+        tc = next(f for f in ET.parse(out).getroot().iter("file") if f.find("name") is not None).find(
+            "timecode"
+        )
+        assert (tc.find("string").text, tc.find("displayformat").text) == ("01:00:00;00", "DF")
+
+    def test_start_timecodes_probes_each_source_once_and_names_the_unreadable(self):
+        probed = []
+
+        def probe(path):
+            probed.append(path)
+            return None if path.endswith("bad.mov") else {"seconds": 10.0, "timecode": "00:00:10:00"}
+
+        clips = [
+            make_clip_result(path="/v/a.mov", filename="a.mov"),
+            make_clip_result(path="/v/a.mov", filename="a.mov"),
+            make_clip_result(path="/v/bad.mov", filename="bad.mov"),
+        ]
+        starts, warnings = start_timecodes(clips, probe)
+        assert probed == ["/v/a.mov", "/v/bad.mov"]
+        assert starts == {"/v/a.mov": {"seconds": 10.0, "timecode": "00:00:10:00"}}
+        assert warnings == [
+            (
+                "Couldn't read the start timecode of bad.mov, so the XML starts it at 00:00:00:00; "
+                "Resolve may not link it."
+            )
+        ]

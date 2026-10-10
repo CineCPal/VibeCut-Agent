@@ -42,9 +42,9 @@ every clip this folder's cache already has a score for (nothing is decoded to an
 
     broll-export      (one JSON request on stdin)
 
-Writes a Premiere selects reel (xml_export.export_xml) from segments the editor already chose, with
-no decoding: each clip's frame rate, size, audio format and timecode come from the folder's cache,
-so every clip must have been analyzed first.
+Writes a selects reel for Premiere or Resolve (xml_export.export_xml) from segments the editor already
+chose, with no decoding: each clip's frame rate, size and audio format come from the folder's cache, so
+every clip must have been analyzed first.
 
 request: {
     "folder": absolute path,
@@ -56,7 +56,10 @@ request: {
                                                           20 segments each)
 }
 
-Events: starting, status, result {exportPath, clips, segments, seconds}, error, done.
+Each source's start timecode is read with ffprobe (Resolve won't link a clip without it); a file whose
+timecode can't be read starts at zero, with a warning.
+
+Events: starting, status, result {exportPath, warnings, clips, segments, seconds}, error, done.
 
     broll-match       (one JSON request on stdin)
 
@@ -119,7 +122,7 @@ from typing import Any, TextIO
 
 from vibecut_agent.broll import pipeline, result_cache, semantic, spyglass_index
 from vibecut_agent.broll.analyzer import ClipResult, Segment, find_video_files
-from vibecut_agent.broll.xml_export import export_xml
+from vibecut_agent.broll.xml_export import export_xml, start_timecodes
 from vibecut_agent.protocol import (
     CancelFlag,
     Emitter,
@@ -352,9 +355,11 @@ def run_analyze(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag) -
         if not selected:
             warnings.append("No clips met the selection, so no XML was written.")
         else:
-            emitter.emit("status", phase="exporting", detail="Writing the Premiere XML")
+            emitter.emit("status", phase="exporting", detail="Writing the XML")
             os.makedirs(os.path.dirname(export_path), exist_ok=True)
-            export_xml(selected, export_path, show_energy=enable_energy)
+            starts, tc_warnings = start_timecodes(selected)
+            warnings.extend(tc_warnings)
+            export_xml(selected, export_path, show_energy=enable_energy, timecodes=starts)
             exported = export_path
 
     emitter.emit(
@@ -781,12 +786,15 @@ def run_export(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag) ->
             clip.energy_enabled = False
         clips.append(clip)
 
-    emitter.emit("status", phase="exporting", detail="Writing the Premiere XML")
-    export_xml(clips, output, sequence_name=name, show_energy=show_energy)
+    emitter.emit("status", phase="reading", detail="Reading each clip's start timecode")
+    starts, warnings = start_timecodes(clips)
+    emitter.emit("status", phase="exporting", detail="Writing the XML")
+    export_xml(clips, output, sequence_name=name, show_energy=show_energy, timecodes=starts)
     segments = [s for c in clips for s in c.segments]
     emitter.emit(
         "result",
         exportPath=output,
+        warnings=warnings,
         clips=len(clips),
         segments=len(segments),
         seconds=round(sum(s.end - s.start for s in segments), 3),
