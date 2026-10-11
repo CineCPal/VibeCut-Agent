@@ -2098,6 +2098,41 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Pending:** Premiere (its rebuild places the pieces from the project's own clips; a ramp comes in as XML, as the draft's description says), for the user's try.
 
+## Phase 16d: A music bed under a Story Editor cut (2026-10-10)
+
+**Why:** 6d left out VibeCut's music bed, and the user picked it now.
+
+**What was built** (after VibeCut's `storyEditorActions.ts` and `musicActions.ts`):
+- **`run_story_editor`** takes three new arguments:
+  - **`music`**: a clip on the timeline, a project clip or an absolute path.
+  - `musicLevelDb`: −40 to 0, default **−18**, under the voices.
+  - `snapToBeats`: default true.
+- **Flow** (`lib/agent/musicBed.ts`):
+  1. The music's beats and length come from the `media-beats` job (Phase 13d, up to its first 20 minutes). This runs *before* the Story Editor, so a missing or unreadable file costs no model call.
+  2. With a steady pulse (confidence ≥ 0.3), the cut's main edit points snap to the nearest beat within 0.15 s. This is VibeCut's `snapPlanToBeats`, ported verbatim (`src/vibecut/lib/musicSync.ts` and its tests). A segment's length never changes, and nothing can overlap.
+  3. The music goes on a new audio track of the draft from 0, trimmed to the cut (no stretching or looping), at the bed level.
+  4. The summary and result say the track, level, BPM, how many cuts moved, and whether the music ends early.
+- **Differences from VibeCut:**
+  - The first main cut is never moved. Snapping it to a first beat a frame in left black at the head (seen live).
+  - The fade-out isn't in the draft, because OTIO carries fades only as metadata. The summary and prompt tell the agent to `set_clip_fade` the music's end after sending.
+
+**Tests:**
+- `musicSync.test.ts` (VibeCut's 7).
+- `storyTools.test.ts`:
+  - the bed, the snap and the first cut kept;
+  - the beats read before `assemble`;
+  - no steady beat;
+  - music shorter than the cut;
+  - an unreadable file stopping before the Story Editor.
+
+**Checked live in Resolve (2026-10-10)** with the scratch harness:
+- **Setup:** a real `media-beats` run on a generated 120 BPM track, a real `resolve-watch` and the real `sendDraft`, on "VCA 16d probe". The Story Editor's model answer was canned, to spare a model call.
+- **Result:**
+  - The track read as 120.3 BPM (confidence 0.92).
+  - "VCA 16d story 2" had the cut at 0–3.4 s and 3.48–7.48 s (the second moved onto a beat) on V1/A1, and the music on A2, 0–7.48 s at −18 dB.
+  - The first run had moved the first cut to 0.04 s, which led to the first-cut rule.
+- **Cleanup:** the "VCA 16d" timelines and the test clips were deleted, and "Timeline 28" is current.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2173,6 +2208,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-10)* **Phase 16d:** the Story Editor's music bed (`music`, `musicLevelDb`, `snapToBeats`). Checked live in Resolve. Next: 16e, the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16c:** `set_speed_ramp` and `clear_clip_speed` (the draft's ramp, sent as constant-speed pieces). Checked live in Resolve. Next: 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16b:** `label_timeline_clips` names and colours clips on the timeline (one Revert). Checked live in Resolve; Premiere needs panel 0.12.0. Next: 16c speed ramps (the draft's existing `setDraftSpeedRamp` as a tool), 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16a:** the Analyze tab's XML now imports in Resolve (File › Import › Timeline). It carries each source's real start timecode, which Resolve needs; checked live. Next: the XML in Premiere (the user's try), `npm run install-app`, then the next chat features.
@@ -2433,3 +2469,6 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **2026-10-10 (Claude): Phase 16c: speed ramps.**
   - `set_speed_ramp` and `clear_clip_speed`, from VibeCut, work in the draft.
   - A ramp sent to Resolve was checked live. Resolve also imports a smooth xmeml ramp, noted as a later upgrade.
+- **2026-10-10 (Claude): Phase 16d: the Story Editor's music bed.**
+  - The cut snaps to the music's beats, and the bed goes on its own track of the draft.
+  - Checked live in Resolve. See "Phase 16d".

@@ -11,7 +11,8 @@
  *   (VibeCut's project Story Editor did this; its connected one only dropped switched-off speakers).
  * - B-roll can also come from the B-roll Library's Spyglass scope (`brollFromLibrary`), one catalog
  *   entry per indexed shot, placed from the shot's own start in its file.
- * - No music bed (the user's decision for 6d).
+ * - No music bed in 6d (the user's decision then). Phase 16d adds one (`music`): the main cuts snap to
+ *   its beats and it goes on its own audio track of the draft (musicBed.ts, after VibeCut's).
  */
 import { cancelSidecar } from "../ipc";
 import { runJob } from "../jobs";
@@ -33,9 +34,10 @@ import {
   type StoryTranscriptSource,
 } from "../../vibecut/lib/storyEditorContext";
 import type { StoryBrollCatalogEntry } from "../../vibecut/types/storyEditor";
-import { bool, type Args, type Executor, optStr } from "./args";
+import { bool, type Args, type Executor, optNum, optStr } from "./args";
 import { connectedView, draftOf, draftSummary } from "./draft";
 import { TIMELINE_NOUN } from "./edits";
+import { addMusicBed, DEFAULT_BED_DB, musicBeats, snapToMusic, type MusicBeats } from "./musicBed";
 import { aliasOf, poolClipId } from "./projectTools";
 import { filesOf, readTranscript, withSpeakers } from "./transcriptTools";
 import type { ToolContext, ToolDeclaration } from "./tools";
@@ -175,6 +177,15 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       const answers = briefWantsInterviewer(prompt) ? gathered : withoutInterviewer(gathered);
       const { sources, truncated } = capTranscripts(answers.length ? answers : gathered, MAX_STORY_LINES);
 
+      // The music is read before the Story Editor runs, so a missing or unreadable file costs nothing.
+      const musicRef = optStr(args, "music")?.trim();
+      const musicLevel = optNum(args, "musicLevelDb") ?? DEFAULT_BED_DB;
+      let music: MusicBeats | null = null;
+      if (musicRef) {
+        const [path] = musicRef.startsWith("/") ? [musicRef] : await filesOf(context, [musicRef]);
+        music = await musicBeats(path);
+      }
+
       const broll = [...poolBroll(host, args), ...(bool(args, "brollFromLibrary") ? await libraryBroll() : [])];
       const capped = capCatalog(broll.map((b) => b.entry));
 
@@ -207,12 +218,16 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       }
       if (stop.stopped()) throw new Error("Stopped by the user");
       if (!job || job.status !== "done") throw new Error(job?.error ?? "The Story Editor didn't finish");
-      const plan = roughCutPlan(job.result ? withBrollOffsets(job.result, broll) : null);
-      if (!plan || plan.segments.length === 0) return { summary: "The Story Editor returned no usable cuts", result: { cuts: 0 } };
+      const cut = roughCutPlan(job.result ? withBrollOffsets(job.result, broll) : null);
+      if (!cut || cut.segments.length === 0) return { summary: "The Story Editor returned no usable cuts", result: { cuts: 0 } };
+      const snapped = music && bool(args, "snapToBeats", true) ? snapToMusic(cut, music) : null;
+      const plan = snapped?.plan ?? cut;
       const summary = roughCutSummary(job.result);
       // The model may rename the cut; the timeline gets the name asked for, when one was.
       // Cuts from a separately recorded WAV take their picture from the camera synced to it in this timeline.
-      const draft = draftFromPlan(context.timeline, view.fps, { ...plan, sequenceName: optStr(args, "sequenceName") ?? plan.sequenceName }, syncedPictures(view));
+      let draft = draftFromPlan(context.timeline, view.fps, { ...plan, sequenceName: optStr(args, "sequenceName") ?? plan.sequenceName }, syncedPictures(view));
+      const bed = music ? addMusicBed(draft, music, musicLevel) : null;
+      if (bed) draft = bed.draft;
       useConnectionStore.getState().setDraft(host, draft);
       const notes = [
         missing.length ? `left out ${missing.length} file(s) with no transcript (${missing.join(", ")})` : "",
@@ -220,6 +235,9 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
         capped.truncated ? `only ${capped.entries.length} of ${broll.length} B-roll clips were offered` : "",
         plan.unreadable ? `${plan.unreadable} cut(s) couldn't be read` : "",
         ...draft.notCarried,
+        bed && music
+          ? `music bed "${fileName(music.path)}" on ${bed.track} at ${musicLevel} dB${music.bpm ? ` (${music.bpm} BPM)` : ""}${bed.shorterThanCut ? `, ending at ${bed.length.toFixed(1)}s before the cut does` : ""}; ${snapped ? (snapped.skipped ?? `${snapped.moved} cut(s) moved onto a beat`) : "cuts not snapped to its beats"}. After sending, fade its end with set_clip_fade (the rebuild doesn't carry fades)`
+          : "",
       ].filter(Boolean);
       return {
         summary: `Draft: ${draft.changes[0]}${summary?.runtimeLabel ? `, ${summary.runtimeLabel}` : ""}${notes.length ? `; ${notes.join("; ")}` : ""}. Send it to make the ${noun} in ${host === "premiere" ? "Premiere" : "Resolve"}.`,
@@ -229,6 +247,7 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
           narrativeSummary: summary?.narrativeSummary ?? "",
           ...(summary?.warnings.length ? { warnings: summary.warnings.slice(0, 10) } : {}),
           brollOffered: capped.entries.length,
+          ...(bed && music ? { music: { file: fileName(music.path), track: bed.track, levelDb: musicLevel, seconds: bed.length, bpm: music.bpm, beatConfidence: music.confidence, cutsOnBeat: snapped?.moved ?? 0 } } : {}),
         },
       };
     },
@@ -251,6 +270,9 @@ export function storyToolDeclarations(host: NleHost): ToolDeclaration[] {
           brollBin: { type: "STRING", description: 'Part of a project bin path, e.g. "B-roll". Optional.' },
           brollClipIds: { type: "ARRAY", items: { type: "STRING" }, description: 'Specific B-roll project clips ("p3"). Optional.' },
           brollFromLibrary: { type: "BOOLEAN", description: "Offer the B-roll Library's shots (its ticked folders, else the whole archive). Optional." },
+          music: { type: "STRING", description: `A music bed (Phase 16d): a clip on the ${noun}, a project clip ("p3") or an absolute file path. It goes on its own audio track from the cut's start, trimmed to the cut, and the cut's edit points move onto its beats (up to 0.15 s) when it has a steady pulse. Optional.` },
+          musicLevelDb: { type: "NUMBER", description: `The bed's level, -40 to 0 dB. Optional; default ${DEFAULT_BED_DB}, under the voices.` },
+          snapToBeats: { type: "BOOLEAN", description: "Optional; default true when music is given." },
         },
         required: ["prompt"],
       },
@@ -264,5 +286,7 @@ export function storyInstruction(host: NleHost): string {
   run_story_editor: it reads the interviews' transcripts (transcribe_clips first if they have none),
   asks the Story Editor for the cut, with B-roll when asked, and puts it in a draft. Tell the user
   what it chose (its narrativeSummary), then send_to_${host} makes the new ${noun}; refine the draft
-  with remove_time_ranges or rearrange_sections first if the user wants changes.`;
+  with remove_time_ranges or rearrange_sections first if the user wants changes. With music (only when
+  the user asks for it or names a track), the cut lands on its beats and the bed goes under it; after
+  sending, fade the music's end with set_clip_fade.`;
 }

@@ -112,6 +112,50 @@ describe("run_story_editor", () => {
     expect(outcome.result).toMatchObject({ narrativeSummary: "How it began.", warnings: RESULT.warnings });
   });
 
+  it("lays a music bed under the cut and moves its edit points onto the beats (Phase 16d)", async () => {
+    const twoCuts = {
+      ...RESULT,
+      resolvedSegments: [
+        { track: "main", source_id: "s1", source_name: "ana.mov", in_seconds: 2, out_seconds: 9 },
+        { track: "main", source_id: "s1", source_name: "ana.mov", in_seconds: 20, out_seconds: 26 },
+      ],
+    };
+    jobs.runJob.mockImplementation(async (command: string) =>
+      command === "media-beats"
+        ? { id: "b", status: "done", result: { bpm: 120, confidence: 0.8, beats: [0.04, 7.1, 7.6, 8.1], start: 0, end: 60 }, error: null }
+        : { id: "a", status: "done", result: twoCuts, error: null },
+    );
+    const outcome = await run({ prompt: "How the bakery began", music: "/m/song.wav" });
+    // The music is read first, so a bad file never costs a Story Editor run.
+    expect(jobs.runJob.mock.calls.map((c) => c[0])).toEqual(["media-beats", "assemble"]);
+    expect(jobs.runJob.mock.calls[0][2]).toEqual({ path: "/m/song.wav", start: 0, end: 1200 });
+    const draft = useConnectionStore.getState().connections.resolve.draft!;
+    // The second cut (at 7 s) moved onto the beat at 7.1 s; the first stays at the head, off the 0.04 s beat.
+    expect(draft.audio[0].clips.map((c) => c.start)).toEqual([0, 7.12]);
+    const bed = draft.audio[draft.audio.length - 1].clips;
+    expect(bed.map((c) => [c.sourcePath, c.start, c.end, c.sourceIn, c.volumeDb])).toEqual([["/m/song.wav", 0, 13.12, 0, -18]]);
+    expect(outcome.summary).toContain('music bed "song.wav" on A2 at -18 dB (120 BPM); 1 cut(s) moved onto a beat. After sending, fade its end with set_clip_fade');
+    expect(outcome.result).toMatchObject({ music: { file: "song.wav", track: "A2", levelDb: -18, bpm: 120, cutsOnBeat: 1 } });
+  });
+
+  it("leaves the cuts alone on music with no steady beat, and stops before the Story Editor on unreadable music", async () => {
+    jobs.runJob.mockImplementation(async (command: string) =>
+      command === "media-beats"
+        ? { id: "b", status: "done", result: { bpm: null, confidence: 0.1, beats: [], start: 0, end: 4 }, error: null }
+        : { id: "a", status: "done", result: RESULT, error: null },
+    );
+    const outcome = await run({ prompt: "x", music: "/m/pad.wav", musicLevelDb: -24 });
+    expect(outcome.summary).toContain("ending at 4.0s before the cut does; the music has no steady beat (confidence 0.10), so the cuts weren't moved");
+    const draft = useConnectionStore.getState().connections.resolve.draft!;
+    expect(draft.audio[draft.audio.length - 1].clips[0]).toMatchObject({ end: 4, volumeDb: -24 });
+
+    useConnectionStore.setState({ connections: { premiere: emptyConnection("Doc"), resolve: emptyConnection("Doc") } });
+    jobs.runJob.mockReset();
+    jobs.runJob.mockResolvedValue({ id: "b", status: "failed", result: null, error: "The file isn't there (is its drive attached?)" });
+    await expect(run({ prompt: "x", music: "/m/gone.wav" })).rejects.toThrow("The music couldn't be read: The file isn't there");
+    expect(jobs.runJob.mock.calls.map((c) => c[0])).toEqual(["media-beats"]);
+  });
+
   it("keeps the questions when the brief asks for them", async () => {
     await run({ prompt: "Keep the questions, Q&A style" });
     expect((sentRequest().sources as { segments: unknown[] }[])[0].segments).toHaveLength(2);
