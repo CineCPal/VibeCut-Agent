@@ -16,7 +16,7 @@ const timeline = (over: Partial<HostTimeline> = {}): HostTimeline => ({
       name: "Video 1",
       enabled: true,
       clips: [
-        { id: "v1", name: "A.mov", start: 0, end: 3, enabled: true, sourceIn: 2, linkedIds: ["a1"] },
+        { id: "v1", name: "A.mov", start: 0, end: 3, enabled: true, sourceIn: 2, color: "Teal", linkedIds: ["a1"] },
         { id: "x1", name: "Cross Dissolve", start: 2.5, end: 3.5, enabled: true, kind: "effect" },
       ],
     },
@@ -36,7 +36,7 @@ describe("snapshot", () => {
   it("lists tracks, clips, links and markers like VibeCut's", () => {
     expect(timelineLines(timeline())).toEqual([
       'V1 "Video 1": 2 clip(s)',
-      '  v1 "A.mov" 0.0s–3.0s (from 2.0s, link L1)',
+      '  v1 "A.mov" 0.0s–3.0s (from 2.0s, colour Teal, link L1)',
       '  x1 "Cross Dissolve" 2.5s–3.5s (transition/generator)',
       "A1 (off): 1 clip(s)",
       '  a1 "A.mov" 0.0s–3.0s (speed 200%, -6 dB, off, link L1)',

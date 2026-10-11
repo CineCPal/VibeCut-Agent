@@ -30,12 +30,25 @@ class Item:
         )
         self.speed = 100.0
         self.transition = None  # Resolve's name for it, when the item is a transition
+        self.name = None  # set by SetName
 
     def GetUniqueId(self):
         return self.uid
 
     def GetName(self):
+        if self.name is not None:
+            return self.name
         return self.media.GetName() if self.media else (self.transition or "Cross Dissolve")
+
+    def SetName(self, name):
+        """As Resolve 21.1 did (Phase 16b): the linked clips take the new name too."""
+        for item in (self, *self.links):
+            item.name = name
+        return True
+
+    def ClearClipColor(self):
+        self.color = ""
+        return True
 
     def GetStart(self):
         return self.start
@@ -736,3 +749,61 @@ def test_captions_refused_off_the_open_timeline_with_a_bad_language_and_when_non
     with pytest.raises(HostError, match="language must be"):
         call(host, "create_captions", language="klingon")
     assert call(host, "create_captions")["refused"][0]["reason"].startswith("Resolve made no subtitles")
+
+
+def test_label_clips_names_and_colours_and_reverts_with_the_linked_sound(edit):
+    host, timeline, _project, c = edit
+    result = call(host, "label_clips", labels=[{"itemId": c["v"].uid, "name": "Hero wide", "color": "teal"}])
+    (change,) = result["changes"]
+    assert change == {
+        "kind": "label",
+        "itemId": c["v"].uid,
+        "name": "A.mov",
+        "before": {"name": "A.mov", "color": ""},
+        "after": {"name": "Hero wide", "color": "Teal"},
+        "partners": {c["a"].uid: "A.mov"},
+    }
+    assert (c["a"].GetName(), c["a"].GetClipColor()) == ("Hero wide", "")
+    read = host._read_track(timeline, "video", 1, timeline.GetStartFrame(), 25.0, True)
+    assert read["clips"][0]["color"] == "Teal"
+    # The same again changes nothing.
+    again = call(host, "label_clips", labels=[{"itemId": c["v"].uid, "name": "Hero wide", "color": "Teal"}])
+    assert again["changes"] == []
+    reverted = call(host, "revert_timeline_changes", changes=[change])
+    assert reverted["reverted"] == [{"kind": "label", "name": "A.mov"}]
+    assert (c["v"].GetName(), c["v"].GetClipColor(), c["a"].GetName()) == ("A.mov", "", "A.mov")
+
+
+def test_label_clips_clears_a_colour_and_a_changed_clip_isnt_reverted(edit):
+    host, _timeline, _project, c = edit
+    c["v"].color = "Orange"
+    (change,) = call(host, "label_clips", labels=[{"itemId": c["v"].uid, "color": "None"}])["changes"]
+    assert (change["before"]["color"], change["after"]["color"], c["v"].GetClipColor()) == ("Orange", "", "")
+    c["v"].SetClipColor("Pink")
+    result = call(host, "revert_timeline_changes", changes=[change])
+    assert result["reverted"] == [] and result["changedSince"][0]["reason"].startswith("its name or colour")
+    assert c["v"].GetClipColor() == "Pink"
+
+
+@pytest.mark.parametrize(
+    "labels, message",
+    [
+        ([], "labels must list"),
+        ([{"itemId": "x"}], "a name, a color or both"),
+        ([{"itemId": "x", "color": "Mauve"}], "color must be one of"),
+        ([{"itemId": "x", "name": "  "}], "name must be one line"),
+        ([{"itemId": "x", "name": "a\nb"}], "name must be one line"),
+        ([{"itemId": "x", "name": "a"}, {"itemId": "x", "color": "Teal"}], "once"),
+    ],
+)
+def test_label_clips_refuses_bad_requests(edit, labels, message):
+    host, _timeline, _project, _c = edit
+    with pytest.raises(HostError, match=message):
+        call(host, "label_clips", labels=labels)
+
+
+def test_label_clips_refuses_a_transition(edit):
+    host, timeline, _project, _c = edit
+    effect = timeline.place("video", 1, None, 240, 260, left=None)
+    result = call(host, "label_clips", labels=[{"itemId": effect.uid, "color": "Teal"}])
+    assert result["changes"] == [] and "transition" in result["refused"][0]["reason"]

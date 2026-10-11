@@ -25,6 +25,7 @@ describe("agent tools", () => {
       "add_clips",
       "delete_clips",
       "set_clips_enabled",
+      "label_timeline_clips",
       "set_clip_levels",
       "set_clip_fade",
       "split_clip",

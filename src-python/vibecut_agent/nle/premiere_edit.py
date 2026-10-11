@@ -646,6 +646,62 @@ def set_clips_enabled(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def label_clips(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, labels: [{itemId, name?, color?}]} -> names sequence clips and sets their label colour
+    (Phase 16b). Every Premiere clip has a label, so a colour can be changed but not cleared. Only the
+    named clip changes, not its linked partners. A Premiere whose scripting has no track item labels
+    refuses the colour (panel 0.12.0 checks)."""
+    from vibecut_agent.nle.labels import label_wants
+    from vibecut_agent.nle.premiere_pool import PREMIERE_LABEL_COLORS, label_name
+
+    timeline = host._name(args)
+    wants = label_wants(args, PREMIERE_LABEL_COLORS, None)
+    seq = _read(host, timeline)
+    settings, befores, refused = [], {}, []
+    for want in wants:
+        clip = seq.clip(want["itemId"])
+        before = {"name": clip.get("name", ""), "color": label_name(clip.get("label")) or ""}
+        setting: dict[str, Any] = {"id": clip["id"]}
+        if "name" in want and want["name"] != before["name"]:
+            setting["name"] = want["name"]
+        if "color" in want and not isinstance(clip.get("label"), int):
+            # The read has no label: this Premiere (or a panel before 0.12.0) can't script one.
+            refused.append(
+                {
+                    "itemId": clip["id"],
+                    "reason": "Premiere can't set a sequence clip's colour from a script here",
+                }
+            )
+        elif "color" in want and want["color"] != before["color"]:
+            setting["label"] = PREMIERE_LABEL_COLORS.index(want["color"])
+        if len(setting) > 1:
+            settings.append(setting)
+            befores[clip["id"]] = before
+    if settings:
+        host._send("set_items", {"timeline": timeline, "items": settings})
+    now = _read(host, timeline)
+    changes = []
+    for setting in settings:
+        before = befores[setting["id"]]
+        clip = now.clips.get(setting["id"]) or {}
+        after = {"name": clip.get("name", ""), "color": label_name(clip.get("label")) or ""}
+        wanted_name = setting.get("name", before["name"])
+        wanted_color = PREMIERE_LABEL_COLORS[setting["label"]] if "label" in setting else before["color"]
+        if after != {"name": wanted_name, "color": wanted_color}:
+            refused.append({"itemId": setting["id"], "reason": "Premiere didn't take the name or colour"})
+        if after != before:
+            changes.append(
+                {
+                    "kind": "label",
+                    "itemId": setting["id"],
+                    "name": before["name"],
+                    "before": before,
+                    "after": after,
+                }
+            )
+    return {"changes": changes, "refused": refused}
+
+
 def set_clip_levels(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     timeline = host._name(args)
     levels = args.get("levels")
@@ -1248,6 +1304,8 @@ REVERTIBLE = (
     "speed", "transition", "track", "trackOptions",
     # Phase 15a: Premiere can't remove a caption track from a script, so a revert reports it.
     "captions",
+    # Phase 16b.
+    "label",
 )  # fmt: skip
 
 
@@ -1434,6 +1492,22 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 continue
             clip = seq.clips[item_id]
             after, before = change.get("after"), change.get("before")
+            if kind == "label":
+                from vibecut_agent.nle.premiere_pool import PREMIERE_LABEL_COLORS, label_name
+
+                was: dict[str, Any] = before if isinstance(before, dict) else {}
+                labelled = {"name": clip.get("name", ""), "color": label_name(clip.get("label")) or ""}
+                if labelled != after:
+                    changed_since.append({"name": label, "reason": "its name or colour was changed since"})
+                    continue
+                setting: dict[str, Any] = {"id": item_id}
+                if was.get("name") != labelled["name"]:
+                    setting["name"] = was.get("name") or ""
+                if was.get("color") != labelled["color"] and was.get("color") in PREMIERE_LABEL_COLORS:
+                    setting["label"] = PREMIERE_LABEL_COLORS.index(was["color"])
+                host._send("set_items", {"timeline": timeline, "items": [setting]})
+                reverted.append({"kind": kind, "name": label})
+                continue
             if kind == "enabled":
                 same = (not clip.get("disabled", False)) == after
                 setting = {"id": item_id, "disabled": not before}

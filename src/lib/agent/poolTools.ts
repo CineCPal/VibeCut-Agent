@@ -15,7 +15,7 @@ import { bool, optStr, strArray, type Args, type Executor, type ToolOutcome } fr
 import { aliasOf, poolClipId, refreshPool } from "./projectTools";
 import type { ToolContext, ToolDeclaration } from "./tools";
 
-const RESOLVE_CLIP_COLORS = [
+export const RESOLVE_CLIP_COLORS = [
   "Orange", "Apricot", "Yellow", "Lime", "Olive", "Green", "Teal", "Navy",
   "Blue", "Purple", "Violet", "Pink", "Tan", "Beige", "Brown", "Chocolate",
 ] as const; // prettier-ignore
@@ -27,7 +27,7 @@ const RESOLVE_FLAG_COLORS = [
 ] as const; // prettier-ignore
 
 /** Premiere's label colours by index, as its preferences name them by default (premiere_pool.py). */
-const PREMIERE_LABEL_COLORS = [
+export const PREMIERE_LABEL_COLORS = [
   "Violet", "Iris", "Caribbean", "Lavender", "Cerulean", "Forest", "Rose", "Mango",
   "Purple", "Blue", "Teal", "Magenta", "Tan", "Green", "Brown", "Yellow",
 ] as const; // prettier-ignore

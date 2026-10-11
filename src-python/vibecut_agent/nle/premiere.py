@@ -145,6 +145,12 @@ def _clip(raw: dict[str, Any], kind: str) -> dict[str, Any]:
         "end": seconds(raw["endTicks"]),
         "enabled": not raw.get("disabled", False),
     }
+    if isinstance(raw.get("label"), int):
+        from vibecut_agent.nle.premiere_pool import label_name
+
+        color = label_name(raw["label"])
+        if color:
+            clip["color"] = color  # Phase 16b: panel 0.12.0 reads it where Premiere can
     if raw.get("adjustment"):
         clip["kind"] = "effect"  # an adjustment layer: no source file
         return clip

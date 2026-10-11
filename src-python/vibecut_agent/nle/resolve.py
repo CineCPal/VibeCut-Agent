@@ -298,6 +298,9 @@ class ResolveHost:
                 "end": _seconds(item.GetEnd() - start, fps),
                 "enabled": bool(item.GetClipEnabled()),
             }
+            color = item.GetClipColor() if hasattr(item, "GetClipColor") else ""
+            if color:
+                clip["color"] = color  # Phase 16b
             if left is None:
                 clip["kind"] = "effect"  # a transition or generator: no source file
             else:

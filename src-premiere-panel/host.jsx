@@ -217,6 +217,8 @@ function vcReadClip(clip, isAudio, effects) {
     inTicks: clip.inPoint.ticks,
     outTicks: clip.outPoint.ticks,
     disabled: clip.disabled === true,
+    // Phase 16b: a track item's label colour, where this Premiere's scripting has one.
+    label: vcTrackItemLabel(clip),
     speed: typeof clip.getSpeed === "function" ? clip.getSpeed() : 1,
     reversed: typeof clip.isSpeedReversed === "function" ? clip.isSpeedReversed() === 1 : false,
     adjustment: typeof clip.isAdjustmentLayer === "function" ? clip.isAdjustmentLayer() === true : false,
@@ -775,18 +777,40 @@ function vcLevelProperty(clip) {
   return null;
 }
 
-// args: {timeline, items: [{id, disabled?, level?, inTicks?, outTicks?, startTicks?, endTicks?}]}.
-// Sets what each names, in that order (source points, then the place), and reads it back.
+function vcTrackItemLabel(clip) {
+  try {
+    return typeof clip.getColorLabel === "function" ? clip.getColorLabel() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// args: {timeline, items: [{id, disabled?, level?, name?, label?, inTicks?, outTicks?, startTicks?,
+// endTicks?}]}. Sets what each names, in that order (source points, then the place), and reads it back.
 function vcSetItems(args) {
   return vcAnswer(function (a) {
     var sequence = vcSequenceNamed(a.timeline);
     var out = [];
-    for (var i = 0; i < a.items.length; i++) {
+    var i;
+    // A colour this Premiere can't script refuses the whole call before anything changes.
+    for (i = 0; i < a.items.length; i++) {
+      if (a.items[i].label !== undefined && a.items[i].label !== null && typeof vcItemWithId(sequence, a.items[i].id).item.setColorLabel !== "function") {
+        vcRefuse("This Premiere can't set a sequence clip's label colour from a script");
+      }
+    }
+    for (i = 0; i < a.items.length; i++) {
       var want = a.items[i];
       var entry = vcItemWithId(sequence, want.id);
       var clip = entry.item;
       if (want.disabled !== undefined && want.disabled !== null) {
         clip.disabled = want.disabled === true;
+      }
+      // Phase 16b: a clip's name on the sequence, and its label colour (0-15).
+      if (want.name !== undefined && want.name !== null) {
+        clip.name = String(want.name);
+      }
+      if (want.label !== undefined && want.label !== null) {
+        clip.setColorLabel(want.label);
       }
       if (want.level !== undefined && want.level !== null) {
         var level = vcLevelProperty(clip);

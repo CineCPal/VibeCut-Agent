@@ -52,6 +52,7 @@ class FakePremiere:
             "projectItemId": "pi-" + path.rsplit("/", 1)[-1].replace(".", "-"),
             "linkedIds": [],
             "level": (gain(0) if level is None else level) if track_kind == "audio" else None,
+            "label": 9,  # Blue, as panel 0.12.0 reads it (Phase 16b)
         }
         (self.video if track_kind == "video" else self.audio)[track - 1].append(clip)
         return clip
@@ -190,6 +191,9 @@ class FakePremiere:
                 clip["disabled"] = want["disabled"]
             if "level" in want:
                 clip["level"] = want["level"]
+            for key in ("name", "label"):
+                if key in want:
+                    clip[key] = want[key]
             for key in ("inTicks", "outTicks", "startTicks", "endTicks"):
                 if key in want:
                     clip[key] = want[key]
@@ -820,3 +824,48 @@ def test_captions_become_an_srt_caption_track_and_a_revert_says_to_delete_it_in_
         )
     with pytest.raises(HostError, match="no folder for caption files"):
         call(host, "create_captions", cues=[{"start": 0, "end": 1, "text": "x"}])
+
+
+def test_label_clips_names_and_colours_one_clip_and_reverts(setup):
+    host, premiere, _ = setup
+    (picture,) = ids_of(premiere, "A.mov")
+    sound = ids_of(premiere, "A.mov", "audio")
+    result = call(host, "label_clips", labels=[{"itemId": picture, "name": "Hero wide", "color": "teal"}])
+    assert result == {
+        "changes": [
+            {
+                "kind": "label",
+                "itemId": picture,
+                "name": "A.mov",
+                "before": {"name": "A.mov", "color": "Blue"},
+                "after": {"name": "Hero wide", "color": "Teal"},
+            }
+        ],
+        "refused": [],
+    }
+    # Only the named clip: its linked sound keeps its name.
+    assert ids_of(premiere, "A.mov", "audio") == sound
+    assert call(host, "label_clips", labels=[{"itemId": picture, "color": "Teal"}])["changes"] == []
+    reverted = revert(host, result)
+    assert reverted["reverted"] == [{"kind": "label", "name": "A.mov"}]
+    assert premiere.find(picture)["name"] == "A.mov" and premiere.find(picture)["label"] == 9
+
+
+def test_label_clips_cant_clear_a_premiere_label_and_a_panel_without_labels_refuses_the_colour(setup):
+    host, premiere, _ = setup
+    (picture,) = ids_of(premiere, "A.mov")
+    with pytest.raises(HostError, match="color must be one of"):
+        call(host, "label_clips", labels=[{"itemId": picture, "color": "None"}])
+    del premiere.find(picture)["label"]  # an older panel, or a Premiere without track item labels
+    result = call(host, "label_clips", labels=[{"itemId": picture, "name": "Hero", "color": "Teal"}])
+    assert [c["after"] for c in result["changes"]] == [{"name": "Hero", "color": ""}]
+    assert "can't set" in result["refused"][0]["reason"]
+
+
+def test_label_revert_leaves_a_clip_renamed_since(setup):
+    host, premiere, _ = setup
+    (picture,) = ids_of(premiere, "A.mov")
+    result = call(host, "label_clips", labels=[{"itemId": picture, "name": "Hero"}])
+    premiere.find(picture)["name"] = "Mine"
+    reverted = revert(host, result)
+    assert reverted["reverted"] == [] and premiere.find(picture)["name"] == "Mine"

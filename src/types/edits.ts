@@ -6,7 +6,7 @@ import type { NleHost } from "./nle";
  * to `revert_timeline_changes`; only the fields the app reads are typed, the rest ride along.
  */
 export interface TimelineChange {
-  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions" | "captions";
+  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions" | "captions" | "label";
   name?: string;
   itemId?: string;
   itemIds?: string[];

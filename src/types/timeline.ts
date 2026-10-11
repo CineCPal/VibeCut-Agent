@@ -16,6 +16,8 @@ export interface HostClip {
   start: number;
   end: number;
   enabled: boolean;
+  /** The clip's colour on the timeline (Phase 16b): Resolve's clip colour, Premiere's label where it can read one. */
+  color?: string;
   /** "effect": a transition, generator or adjustment layer, with no source file. */
   kind?: "effect";
   sourceIn?: number;

@@ -10,6 +10,7 @@ import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 import { bool, clock, num, optNum, optStr, strArray, type Args, type Executor } from "./args";
 import { duckMusic } from "./duck";
+import { PREMIERE_LABEL_COLORS, RESOLVE_CLIP_COLORS } from "./poolTools";
 import { count, describeTimelineChange, edit, readTimeline, revertTimelineEdits, TIMELINE_NOUN, type EditContext } from "./edits";
 import type { ToolDeclaration } from "./tools";
 
@@ -61,6 +62,32 @@ export function editToolDeclarations(host: NleHost): ToolDeclaration[] {
       name: "set_clips_enabled",
       description: `Switches clips on the open ${noun} on or off (an off clip stays in place but doesn't play). ${DIRECT}`,
       parameters: { type: "OBJECT", properties: { itemIds: itemIdsArg, enabled: { type: "BOOLEAN" } }, required: ["itemIds", "enabled"] },
+    },
+    {
+      name: "label_timeline_clips",
+      description:
+        host === "premiere"
+          ? `Names clips on the open ${noun} and/or sets their label colour (Phase 16b), e.g. to mark selects, takes or sections. Each entry gives a name, a color or both. Only that clip changes, not its linked sound. Every Premiere clip has a label, so a colour can be changed but not cleared; a Premiere that can't script clip colours refuses the colour and says so. ${DIRECT}`
+          : `Names clips on the open ${noun} and/or sets their clip colour (Phase 16b), e.g. to mark selects, takes or sections. Each entry gives a name, a color or both; color "None" clears it. A picture clip's new name also goes to its linked sound (Resolve does that); a colour is the clip's own. ${DIRECT}`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          labels: {
+            type: "ARRAY",
+            description: "One entry per clip.",
+            items: {
+              type: "OBJECT",
+              properties: {
+                itemId: clipIdArg,
+                name: { type: "STRING", description: "Optional; one line." },
+                color: { type: "STRING", enum: host === "premiere" ? [...PREMIERE_LABEL_COLORS] : [...RESOLVE_CLIP_COLORS, "None"], description: "Optional." },
+              },
+              required: ["itemId"],
+            },
+          },
+        },
+        required: ["labels"],
+      },
     },
     {
       name: "set_clip_levels",
@@ -248,6 +275,24 @@ export function editExecutors(ctx: EditContext): Record<string, Executor> {
     set_clips_enabled: async (args) => {
       const enabled = bool(args, "enabled", true);
       return edit(ctx, "set_clips_enabled", "set_clips_enabled", { itemIds: ids(args), enabled }, (r) => `Switched ${count(r.changes.length, "clip")} ${enabled ? "on" : "off"}`);
+    },
+
+    label_timeline_clips: async (args) => {
+      const labels = args.labels;
+      if (!Array.isArray(labels) || labels.length === 0) throw new Error("labels must be a non-empty array of {itemId, name, color}");
+      const request = labels.map((raw, i) => {
+        const entry = (raw ?? {}) as Args;
+        const itemId = optStr(entry, "itemId");
+        if (!itemId) throw new Error(`labels[${i}].itemId must be a timeline clip id`);
+        const name = optStr(entry, "name");
+        const color = optStr(entry, "color");
+        if (!name && !color) throw new Error(`labels[${i}] must give a name, a color or both`);
+        return { itemId, ...(name ? { name } : {}), ...(color ? { color } : {}) };
+      });
+      return edit(ctx, "label_timeline_clips", "label_clips", { labels: request }, (r) => {
+        const what = r.changes.map((c) => describeTimelineChange(c));
+        return what.length ? `Labelled ${count(r.changes.length, "clip")}: ${what.join("; ")}` : "Nothing changed: the clips already had those names and colours";
+      });
     },
 
     set_clip_levels: async (args) => {

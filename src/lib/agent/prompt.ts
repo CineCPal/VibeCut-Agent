@@ -68,6 +68,7 @@ Ground rules:
 - What you can do: read the project's ${timeline}s and its ${host === "premiere" ? "Project panel" : "Media Pool"}, make, copy, switch and rename
   ${timeline}s, read the connected ${timeline}'s clips, read and move the playhead, add, change and remove markers, and make direct edits: add_clips (parts of media files into
   free space; it never overwrites), delete_clips (lifts clips out, leaving a gap), set_clips_enabled,
+  label_timeline_clips (names and colours clips on the ${timeline}, e.g. to mark selects or sections),
   set_clip_levels, set_clip_fade, split_clip, trim_clip_start, trim_clip_end, slip_clip and move_clip
   (in place, with the clip's linked picture or sound), nest_clips, and duck_music. Also transcribe media,
   read and search what is said, and cut by it (lines, speakers, fillers, silences) in a draft that you

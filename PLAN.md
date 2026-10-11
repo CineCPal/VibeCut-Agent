@@ -2044,6 +2044,36 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Pending:** the XML in Premiere, which reads the same timecode block (the user's try), and `npm run install-app`.
 
+## Phase 16b: Names and colours for clips on a timeline (2026-10-10)
+
+**Why (the user):** they picked four next features: clip colours and names, speed ramps, a Story Editor music bed, and the agent driving the Analyzer. Colour and names for timeline clips had been left for later in Phase 12, pending a probe.
+
+**Probe (Resolve 21.1, scratch "VCA 16 probe"):**
+- `TimelineItem.SetName` works, and a picture clip's linked sound takes the new name too. It even takes `""`, so empty names are refused before the call.
+- `SetClipColor` takes one of the 16 clip colours, and an unknown one returns False. The colour is the item's own: neither the linked sound nor the Media Pool clip changes. `ClearClipColor` clears it.
+- Ids stay the same.
+
+**What was built:**
+- **`label_timeline_clips`** (agent tool) sends `label_clips`: `{labels: [{itemId, name?, color?}]}`, up to 200, each giving a name, a colour or both.
+- It's a direct edit, so it's backed up, in the edit log, revertible and reviewed under Review edits first ("Name or colour"). The change kind is `"label"`, with `{name, color}` before and after.
+- The request check is shared by both editors: `nle/labels.py` (`label_wants`), standard library only.
+- **Resolve** (`resolve_edit.label_clips`): colours are Resolve's clip colours, and "None" clears one. The change keeps the linked clips' old names (`partners`), so Revert gives them back too. Revert leaves a clip whose name or colour changed since. Transitions and generators are refused. `read_timeline` gives each clip's `color`.
+- **Premiere** (`premiere_edit.label_clips`, panel **0.12.0**): `set_items` sets a track item's `name` and `setColorLabel(index)`, and the clip read gives `label` from `getColorLabel()`.
+  - The 16 label colours (`PREMIERE_LABEL_COLORS`) can be changed but not cleared, and only the named clip changes.
+  - Where Premiere's scripting has no track item labels (or an older panel), the colour is refused up front, and the panel refuses the whole call before changing anything. Whether 26.5.2 has `TrackItem.setColorLabel` is the open question for the user's try.
+- **The snapshot** shows `colour Teal` on a clip.
+
+**Tests:**
+- Resolve and Premiere fakes cover label then revert (the linked sound's name included), a clear, "changed since", bad requests, transitions, and a Premiere without labels.
+- `editTools.test.ts` covers the request and the summary; `snapshot.test.ts` covers the colour.
+
+**Checked live in Resolve (2026-10-10)**, through a real `resolve-watch` on "VCA 16 probe":
+- Renaming the picture clip renamed its sound, and Teal and Pink read back.
+- "None" cleared the colour.
+- Reverting three changes newest first gave back the names and no colour, read back the same.
+
+**Pending:** Premiere, after Settings → Editors → Update panel (0.12.0) and a restart.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2119,6 +2149,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-10)* **Phase 16b:** `label_timeline_clips` names and colours clips on the timeline (one Revert). Checked live in Resolve; Premiere needs panel 0.12.0. Next: 16c speed ramps (the draft's existing `setDraftSpeedRamp` as a tool), 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16a:** the Analyze tab's XML now imports in Resolve (File › Import › Timeline). It carries each source's real start timecode, which Resolve needs; checked live. Next: the XML in Premiere (the user's try), `npm run install-app`, then the next chat features.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
@@ -2371,3 +2402,6 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **2026-10-10 (Claude): Phase 16a: the B-roll XML links in Resolve.**
   - Resolve refused the Analyze tab's XML because every file started at 00:00:00:00. The export now probes each source's start timecode, and the paths are percent-encoded under `file://localhost/`.
   - Checked live in Resolve with a five-variant repro. See "Phase 16a".
+- **2026-10-10 (Claude): Phase 16b: names and colours for timeline clips.**
+  - The agent's `label_timeline_clips` uses `label_clips` in both editors (panel 0.12.0).
+  - Checked live in Resolve. See "Phase 16b".

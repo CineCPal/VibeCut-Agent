@@ -25,6 +25,8 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "nest_clips": premiere_edit.nest_clips,
         "set_clips_enabled": premiere_edit.set_clips_enabled,
         "set_clip_levels": premiere_edit.set_clip_levels,
+        # Phase 16b.
+        "label_clips": premiere_edit.label_clips,
         "reshape_clip": premiere_edit.reshape_clip,
         "set_clip_fades": premiere_effects.set_clip_fades,
         "duck_clip": premiere_effects.duck_clip,
@@ -59,6 +61,8 @@ def resolve_edits() -> dict[str, Edit]:
         "nest_clips": resolve_edit.nest_clips,
         "set_clips_enabled": resolve_edit.set_clips_enabled,
         "set_clip_levels": resolve_edit.set_clip_levels,
+        # Phase 16b.
+        "label_clips": resolve_edit.label_clips,
         "reshape_clip": resolve_reshape.reshape_clip,
         "set_clip_fades": resolve_effects.set_clip_fades,
         # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts); also a tool (12c).

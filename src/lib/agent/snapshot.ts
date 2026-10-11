@@ -78,6 +78,7 @@ export function timelineLines(snapshot: HostTimeline): string[] {
         clip.fadeIn ? `fade in ${clock(clip.fadeIn)}` : null,
         clip.fadeOut ? `fade out ${clock(clip.fadeOut)}` : null,
         clip.enabled ? null : "off",
+        clip.color ? `colour ${clip.color}` : null,
         groups.has(clip.id) ? `link ${tags.get(groups.get(clip.id)!)}` : null,
       ].filter(Boolean);
       clips.push(`  ${clip.id} "${clip.name}" ${clock(clip.start)}–${clock(clip.end)}${extras.length ? ` (${extras.join(", ")})` : ""}`);

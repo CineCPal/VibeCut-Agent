@@ -231,6 +231,16 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
       return `${name} removed from ${change.track ? trackLabel(change.track[0], change.track[1]) : "its track"} at ${clock(change.start ?? 0)}`;
     case "enabled":
       return `${name} switched ${change.after ? "on" : "off"}`;
+    case "label": {
+      // Phase 16b: {name, color} before and after.
+      const was = (change.before ?? {}) as { name?: string; color?: string };
+      const now = (change.after ?? {}) as { name?: string; color?: string };
+      const parts = [
+        was.name !== now.name ? `renamed "${now.name ?? ""}"` : null,
+        was.color !== now.color ? (now.color ? `colour ${now.color}` : "colour cleared") : null,
+      ].filter(Boolean);
+      return `${name} ${parts.join(", ") || "labelled"}`;
+    }
     case "level":
       return `${name} level ${String(change.before ?? 0)} → ${String(change.after)} dB`;
     case "reshaped": {

@@ -65,6 +65,22 @@ describe("edit tools", () => {
     await expect(run.set_clip_levels({ levels: [{ volumeDb: 1 }] })).rejects.toThrow("levels[0].itemId");
   });
 
+  it("names and colours timeline clips through label_clips, and says what changed", async () => {
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+      if (command === "read_timeline") return VIEW;
+      if (command === "backup_timeline") return { backup: "Main (before VibeCut 1)" };
+      return {
+        changes: [{ kind: "label", name: "A.mov", itemId: "v1", before: { name: "A.mov", color: "" }, after: { name: "Hero", color: "Teal" } }],
+        refused: [],
+      };
+    });
+    const out = await run.label_timeline_clips({ labels: [{ itemId: "v1", name: "Hero", color: "Teal" }, { itemId: "v2", color: "Pink" }] });
+    expect(sent("label_clips")).toEqual([{ timeline: "Main", labels: [{ itemId: "v1", name: "Hero", color: "Teal" }, { itemId: "v2", color: "Pink" }] }]);
+    expect(JSON.stringify(out)).toContain('Labelled 1 clip: \\"A.mov\\" renamed \\"Hero\\", colour Teal');
+    await expect(run.label_timeline_clips({ labels: [{ itemId: "v1" }] })).rejects.toThrow("a name, a color or both");
+    await expect(run.label_timeline_clips({ labels: [] })).rejects.toThrow("labels must be");
+  });
+
   it("fades named clips", async () => {
     await run.set_clip_fade({ clipIds: ["v1", "a1"], which: "fadeOut", seconds: 1.5 });
     expect(sent("set_clip_fades")).toEqual([{ timeline: "Main", itemIds: ["v1", "a1"], which: "fadeOut", seconds: 1.5 }]);

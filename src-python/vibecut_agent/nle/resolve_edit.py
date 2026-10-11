@@ -462,6 +462,68 @@ def set_clips_enabled(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     return {"changes": changes, "refused": refused}
 
 
+def label_clips(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, labels: [{itemId, name?, color?}]} -> names timeline clips and sets their clip colour
+    ("None" clears it). Resolve 21.1 gives a picture clip's linked sound its new name too (seen live,
+    Phase 16b), so the change keeps their old names for Revert; a colour is the clip's own."""
+    from vibecut_agent.nle.labels import label_wants
+    from vibecut_agent.nle.resolve_organize import CLIP_COLORS
+
+    wants = label_wants(args, CLIP_COLORS, "None")
+    _project, timeline = host._timeline(args)
+    found = _items(timeline)
+    chosen = _chosen(found, [w["itemId"] for w in wants])
+    changes, refused = [], []
+    for want, (item_id, _kind, _index, item) in zip(wants, chosen, strict=True):
+        if item.GetLeftOffset() is None:
+            refused.append(
+                {"itemId": item_id, "reason": "a transition or generator has no clip name or colour"}
+            )
+            continue
+        before = {"name": item.GetName(), "color": item.GetClipColor() or ""}
+        partners = {other.GetUniqueId(): other.GetName() for other in _linked(item)}
+        ok = True
+        if "name" in want and want["name"] != before["name"]:
+            ok = bool(item.SetName(want["name"]))
+        if ok and "color" in want and want["color"] != before["color"]:
+            ok = bool(item.SetClipColor(want["color"]) if want["color"] else item.ClearClipColor())
+        after = {"name": item.GetName(), "color": item.GetClipColor() or ""}
+        if not ok:
+            refused.append({"itemId": item_id, "reason": "Resolve didn't take the name or colour"})
+        if after == before:
+            continue
+        now = {i: found[i][2].GetName() for i in partners if i in found}
+        changes.append(
+            {
+                "kind": "label",
+                "itemId": item_id,
+                "name": before["name"],
+                "before": before,
+                "after": after,
+                "partners": {i: old for i, old in partners.items() if now.get(i) != old},
+            }
+        )
+    return {"changes": changes, "refused": refused}
+
+
+def _revert_label(found: dict[str, Any], item: Any, change: dict[str, Any]) -> str:
+    """ "reverted", "changed" (its name or colour isn't what the change left) or "failed"."""
+    before, after = change.get("before") or {}, change.get("after") or {}
+    if item.GetName() != after.get("name") or (item.GetClipColor() or "") != after.get("color"):
+        return "changed"
+    ok = True
+    if before.get("name") != after.get("name"):
+        ok = bool(item.SetName(before.get("name") or ""))
+    if before.get("color") != after.get("color"):
+        color = before.get("color") or ""
+        ok = (bool(item.SetClipColor(color)) if color else bool(item.ClearClipColor())) and ok
+    for partner_id, old in (change.get("partners") or {}).items():
+        partner = found.get(partner_id)
+        if partner is not None and partner[2].GetName() != old:
+            ok = bool(partner[2].SetName(old)) and ok
+    return "reverted" if ok else "failed"
+
+
 def set_clip_levels(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline, levels: [{itemId, volumeDb}]} -> sets sound clips' level (-100 to +30 dB). A picture
     clip's id means its linked sound."""
@@ -626,6 +688,8 @@ REVERTIBLE = (
     "speed", "track", "trackOptions",
     # Phase 15a.
     "captions",
+    # Phase 16b.
+    "label",
 )  # fmt: skip
 
 
@@ -836,6 +900,17 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                     item.SetFades(source.GetFades())
                     if source.CopyGrades([item]):
                         graded.append(label)
+        elif kind == "label":
+            if current(change.get("itemId")) not in found:
+                changed_since.append({"name": label, "reason": "it isn't on the timeline any more"})
+                continue
+            outcome = _revert_label(found, found[current(change["itemId"])][2], change)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": "its name or colour was changed since"})
+            else:
+                failed.append({"name": label, "reason": "Resolve didn't put its name or colour back"})
         else:
             if current(change.get("itemId")) not in found:
                 changed_since.append({"name": label, "reason": "it isn't on the timeline any more"})
