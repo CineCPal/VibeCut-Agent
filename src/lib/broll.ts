@@ -8,8 +8,8 @@ import { awaitJob, jobId, runJob } from "./jobs";
 import { addClips } from "./agent/editTools";
 import { count, HOST_SHORT, TIMELINE_NOUN } from "./agent/edits";
 import { draftOf } from "./agent/draft";
-import { timelineLayout, type Selects } from "./brollSelects";
-import { runParams, useBrollStore } from "../store/useBrollStore";
+import { selects, timelineLayout, type Selects } from "./brollSelects";
+import { runParams, useBrollStore, type RunParams } from "../store/useBrollStore";
 import { useConnectionStore } from "../store/useConnectionStore";
 import { selectActiveHost, useNleStateStore } from "../store/useNleStateStore";
 import { useSidecarStore } from "../store/useSidecarStore";
@@ -18,6 +18,30 @@ import type { NleHost } from "../types/nle";
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The `broll-analyze` request for a folder with the panel's options (the tab and the agent's
+ * analyze_broll_folder, Phase 16e). */
+export function analysisRequest(folder: string, params: RunParams, workers: number | null): Record<string, unknown> {
+  return {
+    folder,
+    enableEnergy: params.contentAware,
+    windowSec: params.windowSec,
+    maxSegments: params.maxSegments,
+    minGapSec: params.minGapSec,
+    ...(params.contentAware ? { energyWeight: params.energyWeight / 100 } : {}),
+    ...(params.brief ? { brief: params.brief, relevanceWeight: params.relevanceWeight / 100 } : {}),
+    ...(params.dedupe ? { dedupe: true } : {}),
+    ...(workers ? { workers } : {}),
+  };
+}
+
+/** The selects the tab shows now: its kept result for its folder, its options and its unticked
+ * segments (near-duplicates are always left out, as the analyzer's own export does). Null with no result. */
+export function currentSelects(): Selects | null {
+  const s = useBrollStore.getState();
+  if (!s.folder || !s.lastResult || s.lastResult.folder !== s.folder) return null;
+  return selects(s.lastResult.result.ranked, { topMode: s.topMode, topN: s.topN, minScore: s.minScore, sequenceOrder: s.sequenceOrder }, s.excluded, true);
 }
 
 /** Scores every clip in the folder: technical quality, plus energy and brief relevance when on, with
@@ -32,17 +56,7 @@ export async function startAnalysis(): Promise<void> {
   useSidecarStore.getState().addJob({ id, command: "broll-analyze", label: `Analyze ${name}` });
   useBrollStore.getState().setAnalyzeJob(id);
   try {
-    await startSidecar(id, "broll-analyze", {
-      folder,
-      enableEnergy: params.contentAware,
-      windowSec: params.windowSec,
-      maxSegments: params.maxSegments,
-      minGapSec: params.minGapSec,
-      ...(params.contentAware ? { energyWeight: params.energyWeight / 100 } : {}),
-      ...(params.brief ? { brief: params.brief, relevanceWeight: params.relevanceWeight / 100 } : {}),
-      ...(params.dedupe ? { dedupe: true } : {}),
-      ...(state.workers ? { workers: state.workers } : {}),
-    });
+    await startSidecar(id, "broll-analyze", analysisRequest(folder, params, state.workers));
   } catch (error) {
     useSidecarStore.getState().fail(id, describeError(error));
     return;
@@ -113,13 +127,14 @@ const clockLength = (seconds: number) => {
 /** The sequence name to use: the option, or the default when it's blank. */
 const nameOf = (name: string) => name.trim().replace(/\s+/g, " ") || "B-Roll Selects";
 
-/** Asks where to save, then writes the selects as an XML for Premiere or Resolve (`broll-export`, read from the folder's
- * cache, no decoding). Returns what happened, or null if the user cancelled the save dialog. */
-export async function exportSelectsXml(chosen: Selects, onStart?: (id: string) => void): Promise<{ text: string; path: string } | null> {
+/** Asks where to save (unless `savePath` is given: the agent's export_broll_selects, Phase 16e), then
+ * writes the selects as an XML for Premiere or Resolve (`broll-export`, read from the folder's cache, no
+ * decoding). Returns what happened, or null if the user cancelled the save dialog. */
+export async function exportSelectsXml(chosen: Selects, onStart?: (id: string) => void, savePath?: string): Promise<{ text: string; path: string } | null> {
   const { folder, sequenceName, contentAware, lastResult } = useBrollStore.getState();
   if (!folder || !chosen.clips.length) throw new Error("No segments are selected.");
   const folderName = folder.split("/").filter(Boolean).pop() ?? "B-roll";
-  const path = await chooseSavePath("Export XML for Premiere or Resolve", `${folder}/${folderName} selects.xml`, ["xml"]);
+  const path = savePath ?? (await chooseSavePath("Export XML for Premiere or Resolve", `${folder}/${folderName} selects.xml`, ["xml"]));
   if (!path) return null;
   const outputPath = path.toLowerCase().endsWith(".xml") ? path : `${path}.xml`;
   const job = await runJob(
@@ -165,7 +180,11 @@ export async function buildSelectsTimeline(chosen: Selects, onProgress?: (text: 
   const { timeline } = await nleCall<{ timeline: string }>(host, "create_timeline", { ...(current ? { timeline: current } : {}), name });
   useConnectionStore.getState().addMadeTimeline(host, timeline);
 
-  const layout = timelineLayout(chosen.clips);
+  // The new timeline's rate, so the segments meet on whole frames (Phase 16e).
+  const fps = await nleCall<{ fps?: number }>(host, "read_timeline", { timeline })
+    .then((v) => v.fps)
+    .catch(() => undefined);
+  const layout = timelineLayout(chosen.clips, fps);
   const ctx = { host, timeline, step: `broll-${jobId()}`, stepText: `Build "${timeline}" from B-roll selects` };
   let placed = 0;
   const refused: string[] = [];

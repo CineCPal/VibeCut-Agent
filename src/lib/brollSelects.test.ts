@@ -62,4 +62,16 @@ describe("selects", () => {
       ["a.mov", 1, 5, 12],
     ]);
   });
+
+  it("lays them on whole frames at the timeline's rate, each starting where the last ends (Phase 16e)", () => {
+    const clips = [
+      { path: "/f/a.mov", filename: "a.mov", score: 90, energy: null, segments: [{ start: 1.4333, end: 3.8667, index: 0 }, { start: 5.7667, end: 8, index: 1 }] },
+      { path: "/f/b.mov", filename: "b.mov", score: 80, energy: null, segments: [{ start: 0, end: 2.4333, index: 0 }] },
+    ];
+    expect(timelineLayout(clips, 25).map((x) => [x.sourceIn, x.sourceOut, x.at])).toEqual([
+      [1.44, 3.88, 0],
+      [5.76, 8, 2.44],
+      [0, 2.44, 4.68],
+    ]);
+  });
 });

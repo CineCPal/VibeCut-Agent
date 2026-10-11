@@ -110,7 +110,7 @@ export function withBrollOffsets(result: Record<string, unknown>, broll: StoryBr
 }
 
 /** Stops the Story Editor's job when the user presses Stop (VibeCut's Stop cancelled it too). */
-function cancelOnStop(): { started: (id: string) => void; stopped: () => boolean; done: () => void } {
+export function cancelOnStop(): { started: (id: string) => void; stopped: () => boolean; done: () => void } {
   let jobId: string | null = null;
   let stopped = false;
   const check = () => {

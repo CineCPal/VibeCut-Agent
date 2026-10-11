@@ -18,6 +18,7 @@ import { projectExecutors, projectToolDeclarations } from "./projectTools";
 import { transcriptExecutors, transcriptToolDeclarations } from "./transcriptTools";
 import { draftExecutors, draftToolDeclarations, refuseWhileDrafting } from "./draft";
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
+import { analyzerExecutors, analyzerToolDeclarations } from "./analyzerTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
 import { timingExecutors, timingToolDeclarations } from "./timingTools";
 import { poolExecutors, poolToolDeclarations } from "./poolTools";
@@ -58,6 +59,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...syncToolDeclarations(host),
     ...storyToolDeclarations(host),
     ...SPYGLASS_TOOLS,
+    ...analyzerToolDeclarations(host),
     ...visionToolDeclarations(host),
     ...notesToolDeclarations(),
     ...audioToolDeclarations(host),
@@ -309,6 +311,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...poolExecutors(context),
     ...syncExecutors(context),
     ...storyExecutors(context),
+    ...analyzerExecutors(),
   };
 }
 

@@ -66,7 +66,24 @@ export function selectedPaths(ranked: RankedClip[], options: SelectOptions, skip
 }
 
 /** Where each segment goes on a new timeline: back to back from 0, in selects order. */
-export function timelineLayout(clips: SelectClip[]): { path: string; filename: string; sourceIn: number; sourceOut: number; at: number }[] {
+export function timelineLayout(clips: SelectClip[], fps?: number): { path: string; filename: string; sourceIn: number; sourceOut: number; at: number }[] {
+  // With the timeline's rate, each segment starts and ends on a whole frame and the next starts on the
+  // frame this one ends: unrounded lengths (2.2333 s) let the editor round a placement a frame early,
+  // onto the clip before it, and add_clips then put it on another track (seen live, Phase 16e).
+  if (fps && fps > 0) {
+    let frame = 0;
+    const out = [];
+    for (const clip of clips) {
+      for (const s of clip.segments) {
+        const first = Math.round(s.start * fps);
+        const length = Math.max(1, Math.round(s.end * fps) - first);
+        const r3 = (n: number) => Math.round(n * 1000) / 1000;
+        out.push({ path: clip.path, filename: clip.filename, sourceIn: r3(first / fps), sourceOut: r3((first + length) / fps), at: r3(frame / fps) });
+        frame += length;
+      }
+    }
+    return out;
+  }
   let at = 0;
   const out = [];
   for (const clip of clips) {

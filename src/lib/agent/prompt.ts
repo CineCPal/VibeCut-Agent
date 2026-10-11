@@ -14,6 +14,7 @@ import { draftInstruction } from "./draft";
 import { timingInstruction } from "./timingTools";
 import { poolInstruction } from "./poolTools";
 import { storyInstruction } from "./storyTools";
+import { ANALYZER_INSTRUCTION } from "./analyzerTools";
 import { syncInstruction } from "./syncTools";
 
 const WORDS: Record<NleHost, { product: string; editor: string; timeline: string; colors: string[]; ids: string }> = {
@@ -93,6 +94,7 @@ ${timingInstruction(host)}
 ${syncInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}
+${ANALYZER_INSTRUCTION}
 ${VISION_INSTRUCTION}
 ${NOTES_INSTRUCTION}
 ${AUDIO_INSTRUCTION}

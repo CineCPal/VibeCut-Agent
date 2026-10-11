@@ -2133,6 +2133,37 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - The first run had moved the first cut to 0.04 s, which led to the first-cut rule.
 - **Cleanup:** the "VCA 16d" timelines and the test clips were deleted, and "Timeline 28" is current.
 
+## Phase 16e: The agent drives the Analyzer (2026-10-10)
+
+**What was built** (`lib/agent/analyzerTools.ts`, after VibeCut's `analyze_broll`): three tools that use the Analyze tab's own code and store, so the tab shows the agent's run, options and selects. The user can untick segments there before the agent exports or builds.
+- **`analyze_broll_folder`** `{folder?, contentAware?, brief?, dedupe?, segmentsPerClip?, segmentSeconds?}`:
+  - It runs `broll-analyze`, with the request built by the tab's new shared `analysisRequest`.
+  - The chat's Stop cancels it (`cancelOnStop`, now exported from storyTools).
+  - It keeps the result in the tab (`keepResult`) and lists the best 15 clips with their segments.
+  - Content-aware scoring (a 2 GB model on first use) is on only when asked, and the description says to ask the user. A brief or dedupe without it is reported as unused.
+- **`export_broll_selects`** `{include?, best?, minScore?, order?, sequenceName?, outputPath?}` writes `broll-export`'s XML: Phase 16a's, for both editors.
+  - It writes to `outputPath`, or the user picks a place in the save dialog. `exportSelectsXml` gained a `savePath`.
+  - It isn't reviewed, since it doesn't touch the editor.
+- **`build_broll_selects_timeline`** (selection arguments as above) is the tab's `buildSelectsTimeline`: a new timeline, one Revert. It's reviewed under Review edits first.
+- The selection arguments set the tab's own options. `currentSelects()` (in `lib/broll.ts`) is the tab's selection, with near-duplicates left out.
+- The MCP bridge counts `analyze_broll_folder` and `build_broll_selects_timeline` as long tools (15 min).
+
+**Found and fixed: Build timeline laid segments a frame early** (Phase 10's, seen live here).
+- Segment lengths that aren't whole frames (e.g. 2.2333 s) made Resolve round a placement onto the clip before it, so `add_clips` put it on V2.
+- `timelineLayout(clips, fps)` now puts each segment on whole frames of the new timeline, each starting on the frame the last one ends. `buildSelectsTimeline` reads the new timeline's rate.
+
+**Tests:**
+- `analyzerTools.test.ts`: the request and options, the tab's kept result, the listing, a failed run, export by path, through the dialog and when cancelled, and nothing to export yet.
+- `brollSelects.test.ts`: the frame layout.
+
+**Checked live in Resolve (2026-10-10)** with the scratch harness:
+- **Setup:** the real `broll-analyze` and `broll-export` (as Rust runs them) and a real `resolve-watch`, on three generated clips.
+- **Result:**
+  - The analysis ranked sharp (65.8) > soft (54.9) > dark (45.4).
+  - The export of the best 2 wrote 4 segments with encoded `file://localhost/` paths.
+  - The build made "VCA 16e selects 2" with all 4 segments back to back on V1/A1 (0–2.44–4.68–7.12–9.56 s). The first build, before the fix, had put the last one on V2.
+- **Cleanup:** the "VCA 16e" timelines, their backups and the test clips were deleted, and "Timeline 28" is current.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2208,6 +2239,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-10)* **Phase 16e:** `analyze_broll_folder`, `export_broll_selects` and `build_broll_selects_timeline`; Build timeline now lays selects on whole frames. Checked live in Resolve. **Phase 16 (a–e) is done.** Next: `npm run install-app`, then the user's try; in Premiere, update the panel to 0.12.0 for clip colours, and try the 16a XML and a ramp.
   - *(2026-10-10)* **Phase 16d:** the Story Editor's music bed (`music`, `musicLevelDb`, `snapToBeats`). Checked live in Resolve. Next: 16e, the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16c:** `set_speed_ramp` and `clear_clip_speed` (the draft's ramp, sent as constant-speed pieces). Checked live in Resolve. Next: 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16b:** `label_timeline_clips` names and colours clips on the timeline (one Revert). Checked live in Resolve; Premiere needs panel 0.12.0. Next: 16c speed ramps (the draft's existing `setDraftSpeedRamp` as a tool), 16d the Story Editor music bed, 16e the agent driving the Analyzer.
@@ -2472,3 +2504,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **2026-10-10 (Claude): Phase 16d: the Story Editor's music bed.**
   - The cut snaps to the music's beats, and the bed goes on its own track of the draft.
   - Checked live in Resolve. See "Phase 16d".
+- **2026-10-10 (Claude): Phase 16e: the agent drives the Analyzer.**
+  - Three tools analyze a folder, export the selects as XML and build them as a timeline.
+  - Build timeline lays selects on whole frames (a Phase 10 bug, fixed).
+  - Checked live in Resolve. See "Phase 16e".

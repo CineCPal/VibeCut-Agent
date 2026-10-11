@@ -65,6 +65,9 @@ LONG_TOOLS = frozenset(
         "create_captions",
         "export_video",
         "export_audio",
+        # Phase 16e: a folder of footage can take minutes to score.
+        "analyze_broll_folder",
+        "build_broll_selects_timeline",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0
