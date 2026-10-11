@@ -5,7 +5,7 @@
  *
  * Not reviewed: reads and searches; the selection and the playhead; transcribing (it writes only a
  * transcript beside the media); the Story Editor (it only opens a draft); and the draft's own cuts
- * (remove_time_ranges, rearrange_sections, the transcript-line cuts), which reach the editor only
+ * (remove_time_ranges, rearrange_sections, the transcript-line cuts, set_speed_ramp), which reach the editor only
  * through send_to_*, which is reviewed.
  */
 import { lastTimelineView } from "./context";
@@ -46,6 +46,7 @@ export const CHANGING_TOOLS = new Set([
   "discard_draft",
   // Phase 12b-12d.
   "set_clip_speed",
+  "clear_clip_speed",
   "set_transition",
   "add_track",
   "remove_track",
@@ -103,6 +104,7 @@ export const NOT_REVIEWED = new Set([
   "transcribe_clips",
   "run_story_editor",
   "remove_time_ranges",
+  "set_speed_ramp",
   "rearrange_sections",
   "remove_transcript_lines",
   "remove_speaker_lines",
@@ -146,6 +148,7 @@ const VERB: Record<string, string> = {
   send_to_resolve: "Send the draft to Resolve as a new timeline",
   discard_draft: "Discard the draft",
   set_clip_speed: "Change the speed of",
+  clear_clip_speed: "Put back to normal speed",
   set_transition: "Set the transition after",
   add_track: "Add a track",
   remove_track: "Remove a track",

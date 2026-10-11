@@ -71,6 +71,37 @@ describe("speed, transitions and tracks (Phase 12b–12d)", () => {
     expect(outcome.summary).toMatch(/^Draft: /);
   });
 
+  it("ramps a clip in a draft (Phase 16c): half speed from 2 s of source, rippling what follows", async () => {
+    const run = timingExecutors(ctx("resolve"));
+    const outcome = await run.set_speed_ramp({ clipId: "v1", changes: [{ sourceTime: 2, speed: 0.5 }] });
+    expect(sent("set_clip_speed")).toEqual([]);
+    const draft = useConnectionStore.getState().connections.resolve.draft!;
+    const [a, b] = draft.video[0].clips;
+    // 2 s at 1x, then 2 s of source at 0.5x = 4 s: the clip is 6 s long and B moves 2 s later.
+    expect([a.start, a.end, b.start, b.end]).toEqual([0, 6, 6, 11]);
+    expect(a.timeRemap?.map((p) => [p.t, p.s])).toEqual([
+      [0, 0],
+      [2, 2],
+      [6, 4],
+    ]);
+    // Its linked sound ramps with it.
+    expect(draft.audio[0].clips[0].timeRemap?.length).toBe(3);
+    expect(outcome.summary).toContain("send_to_resolve builds it as a new timeline, the ramp as pieces at constant speeds");
+    await expect(run.set_speed_ramp({ clipId: "v1", changes: [] })).rejects.toThrow("non-empty");
+    await expect(run.set_speed_ramp({ clipId: "v1", changes: [{ speed: 30 }] })).rejects.toThrow("0.05 to 20");
+    await expect(run.set_speed_ramp({ clipId: "v1", changes: [{ speed: 2 }], easeSeconds: -1 })).rejects.toThrow("easeSeconds");
+  });
+
+  it("clears a ramp in the draft, and without a draft sets 1x on the timeline", async () => {
+    const run = timingExecutors(ctx("resolve"));
+    await run.clear_clip_speed({ clipId: "v1" });
+    expect(sent("set_clip_speed")).toEqual([{ timeline: "Main", itemId: "v1", speed: 1, ripple: true }]);
+    await run.set_speed_ramp({ clipId: "v1", changes: [{ sourceTime: 2, speed: 0.5 }] });
+    await run.clear_clip_speed({ clipId: "v1" });
+    const [a, b] = useConnectionStore.getState().connections.resolve.draft!.video[0].clips;
+    expect([a.end, a.timeRemap, a.speed, b.start]).toEqual([4, undefined, 1, 4]);
+  });
+
   it("names a draft's clip by the timeline clip it was cut from", () => {
     const draft = draftFromSnapshot(VIEW);
     expect([draftIdFor(draft, "v2"), draftIdFor(draft, "a1"), draftIdFor(draft, "draft-1")]).toEqual(["draft-1", "draft-2", "draft-1"]);

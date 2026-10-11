@@ -7,9 +7,13 @@
  *
  * A speed change with a draft open changes the draft; Premiere can't ripple a speed change from a
  * script, so a ripple there is made in a draft too (opened if needed), as VibeCut does.
+ *
+ * Phase 16c: set_speed_ramp and clear_clip_speed, from VibeCut's hostSpeed.ts. Neither editor can script
+ * a ramp on a clip already on a timeline, so a ramp goes into the draft (opened if needed), and send_to_*
+ * builds it as consecutive pieces at constant speeds (interchange/time_remap.speed_pieces).
  */
 import type { NleHost } from "../../types/nle";
-import { setDraftSpeed, type HostDraft } from "../../vibecut/lib/connect/hostDraft";
+import { setDraftSpeed, setDraftSpeedRamp, type HostDraft } from "../../vibecut/lib/connect/hostDraft";
 import { bool, num, optNum, optStr, type Args, type Executor } from "./args";
 import { draftOf, openDraft, refuseWhileDrafting, saveDraft } from "./draft";
 import { describeTimelineChange, edit, HOST_SHORT, TIMELINE_NOUN, type EditContext } from "./edits";
@@ -34,6 +38,19 @@ export function draftIdFor(draft: HostDraft, clipId: string): string {
   throw new Error(`There is no clip ${clipId} in the draft; the snapshot lists the draft's clips`);
 }
 
+/** set_speed_ramp's changes: "from this source time on, play at this speed" (VibeCut's changesArg). */
+function changesArg(args: Args): { sourceTime: number; speed: number }[] {
+  const raw = args.changes;
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error("changes must be a non-empty list of {sourceTime, speed}");
+  if (raw.length > 50) throw new Error("At most 50 speed changes on one clip");
+  return raw.map((c, i) => {
+    if (typeof c !== "object" || c === null) throw new Error(`changes[${i}] must be an object`);
+    const item = c as Args;
+    // Without a sourceTime, it's the starting speed (0 is at or before any clip's in point).
+    return { sourceTime: optNum(item, "sourceTime") ?? 0, speed: num(item, "speed") };
+  });
+}
+
 function trackType(args: Args): "video" | "audio" {
   const type = optStr(args, "type");
   if (type !== "video" && type !== "audio") throw new Error('type must be "video" or "audio"');
@@ -46,7 +63,7 @@ export function timingToolDeclarations(host: NleHost): ToolDeclaration[] {
   return [
     {
       name: "set_clip_speed",
-      description: `Plays a clip (with its linked picture or sound) at a constant speed: 2 is twice as fast, 0.5 half speed (0.05 to 20). Without ripple it keeps its place and length and shows more or less of its source (a speed-up needs that much more media). ripple=true keeps its source range instead, so it gets longer or shorter and everything after it on every track moves with its end: ${host === "resolve" ? "Resolve does that on the timeline itself" : "Premiere can't do that from a script, so it's made in a draft (send it afterwards)"}.${host === "premiere" ? " A clip with fades is refused (its fade keys wouldn't follow)." : ""} No reverse, and no speed ramps. With a draft open it changes the draft. Otherwise: ${DIRECT}`,
+      description: `Plays a clip (with its linked picture or sound) at a constant speed: 2 is twice as fast, 0.5 half speed (0.05 to 20). Without ripple it keeps its place and length and shows more or less of its source (a speed-up needs that much more media). ripple=true keeps its source range instead, so it gets longer or shorter and everything after it on every track moves with its end: ${host === "resolve" ? "Resolve does that on the timeline itself" : "Premiere can't do that from a script, so it's made in a draft (send it afterwards)"}.${host === "premiere" ? " A clip with fades is refused (its fade keys wouldn't follow)." : ""} No reverse; for a speed change partway through use set_speed_ramp. With a draft open it changes the draft. Otherwise: ${DIRECT}`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -56,6 +73,32 @@ export function timingToolDeclarations(host: NleHost): ToolDeclaration[] {
         },
         required: ["clipId", "speed"],
       },
+    },
+    {
+      name: "set_speed_ramp",
+      description: `Changes a clip's speed partway through (a speed ramp / time remap), with its linked picture or sound. changes are "from this source time on, play at this speed" (0.05 to 20): sourceTime is seconds into the clip's SOURCE file, between its sourceIn and sourceOut (the snapshot's "from"); a change at or before sourceIn (or without sourceTime) sets the starting speed, otherwise it starts at normal speed. easeSeconds smooths each change over that much source instead of switching at once. The clip keeps its source range, so its length follows; ripple (default true) moves everything after it on every track. ${HOST_SHORT[host]} can't script a ramp on its ${noun}, so this works in the DRAFT (opened if needed), and send_to_${host} builds the ramp as consecutive pieces at constant speeds (an ease becomes several short steps). Replaces any earlier speed change on the clip.`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          clipId: { type: "STRING", description: "A timeline clip id (a draft clip's while a draft is open)." },
+          changes: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: { sourceTime: { type: "NUMBER", description: "Seconds into the clip's source file; leave it out for the starting speed." }, speed: { type: "NUMBER" } },
+              required: ["speed"],
+            },
+          },
+          easeSeconds: { type: "NUMBER", description: "Optional; default 0 (a sudden change)." },
+          ripple: { type: "BOOLEAN", description: "Optional; default true." },
+        },
+        required: ["clipId", "changes"],
+      },
+    },
+    {
+      name: "clear_clip_speed",
+      description: `Puts a clip back to normal speed, removing a constant speed change or a ramp. With a draft open it changes the draft (ripple, default true, moves what follows); otherwise it's set_clip_speed at 1 on the ${noun} itself.`,
+      parameters: { type: "OBJECT", properties: { clipId: { type: "STRING", description: "A timeline clip id (a draft clip's while a draft is open)." }, ripple: { type: "BOOLEAN", description: "Optional; default true." } }, required: ["clipId"] },
     },
     {
       name: "set_transition",
@@ -116,7 +159,7 @@ export function timingExecutors(context: ToolContext): Record<string, Executor> 
     return ctx();
   };
 
-  return {
+  const executors: Record<string, Executor> = {
     set_clip_speed: async (args) => {
       const clipId = optStr(args, "clipId");
       if (!clipId) throw new Error("clipId must be a timeline clip id");
@@ -132,6 +175,26 @@ export function timingExecutors(context: ToolContext): Record<string, Executor> 
         const line = describeTimelineChange(r.changes[0]);
         return `${upper(line)}${host === "premiere" ? " (with its linked clips)" : " (its linked sound follows)"}`;
       });
+    },
+
+    set_speed_ramp: async (args) => {
+      const clipId = optStr(args, "clipId");
+      if (!clipId) throw new Error("clipId must be a timeline clip id");
+      const changes = changesArg(args);
+      const ease = optNum(args, "easeSeconds") ?? 0;
+      if (!(ease >= 0 && ease <= 30)) throw new Error("easeSeconds must be from 0 to 30");
+      const base = draftOf(host) ?? (await openDraft(context));
+      const outcome = saveDraft(host, setDraftSpeedRamp(base, draftIdFor(base, clipId), changes, ease, bool(args, "ripple", true)));
+      return { ...outcome, summary: `${outcome.summary}. It's in the draft: send_to_${host} builds it as a new ${TIMELINE_NOUN[host]}, the ramp as pieces at constant speeds` };
+    },
+
+    clear_clip_speed: async (args) => {
+      const clipId = optStr(args, "clipId");
+      if (!clipId) throw new Error("clipId must be a timeline clip id");
+      const ripple = bool(args, "ripple", true);
+      const draft = draftOf(host);
+      if (draft) return saveDraft(host, setDraftSpeed(draft, draftIdFor(draft, clipId), 1, ripple));
+      return executors.set_clip_speed({ clipId, speed: 1, ripple });
     },
 
     set_transition: async (args) => {
@@ -167,6 +230,7 @@ export function timingExecutors(context: ToolContext): Record<string, Executor> 
       return edit(direct("switch a track"), "set_track_options", "set_track_options", { type, index, options }, (r) => upper(describeTimelineChange(r.changes[0])));
     },
   };
+  return executors;
 }
 
 export function timingInstruction(host: NleHost): string {
@@ -174,5 +238,8 @@ export function timingInstruction(host: NleHost): string {
   shorter and moves everything after it${host === "premiere" ? ", which Premiere does in a draft" : ""}), set_transition (a dissolve or dip to black on a
   cut, or none to remove one), add_track and remove_track (the last empty one), set_track_options (switch a
   track on/off${host === "premiere" ? ", mute, lock, target, sync lock" : " or lock it, on the timeline open in Resolve"}). Split first (split_clip) to treat part of a clip
-  differently. These are direct edits with the backup and Revert.`;
+  differently. These are direct edits with the backup and Revert.
+- Speed ramps: set_speed_ramp (speed changes partway through a clip, eased or sudden; a slow-motion moment,
+  a speed-up through a dull stretch) works in the draft and is sent as pieces at constant speeds; clear_clip_speed
+  puts a clip back to normal speed.`;
 }

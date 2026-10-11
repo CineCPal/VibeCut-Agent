@@ -37,6 +37,8 @@ describe("agent tools", () => {
       "duck_music",
       "revert_timeline_edits",
       "set_clip_speed",
+      "set_speed_ramp",
+      "clear_clip_speed",
       "set_transition",
       "add_track",
       "remove_track",

@@ -2074,6 +2074,30 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Pending:** Premiere, after Settings → Editors → Update panel (0.12.0) and a restart.
 
+## Phase 16c: Speed ramps (2026-10-10)
+
+**Probe (Resolve 21.1):** Resolve's scripting sets only one constant speed per clip (`SetSpeed`, `SpeedOptions`); it has no keyframed retime.
+- An xmeml clip with a variable **Time Remap** (`graphdict` keyframes) imports as a smooth ramp. Stills at timeline frames 10/25/60/75/100/140 matched source frames 9/24/54/62/74/94, against an expected 10/25/55/62.5/75/95 (a steady one-frame offset).
+- So a smooth ramp would need the Resolve rebuild to import xmeml instead of OTIO. That's left as a possible upgrade.
+
+**What was built:** the draft already had VibeCut's ramp (`setDraftSpeedRamp`, Phase 8b there), and the rebuilds already send a ramp as consecutive pieces at constant speeds (`interchange/time_remap.speed_pieces`). Neither was offered to the agent. Now, in `timingTools.ts`, from VibeCut's `hostSpeed.ts`:
+- **`set_speed_ramp`** `{clipId, changes: [{sourceTime?, speed}], easeSeconds?, ripple?}`: "from this source time on, play at this speed" (0.05–20, up to 50 changes, ease 0–30 s), with the clip's linked clips.
+  - It works in the draft (opened if needed), and `send_to_*` builds it.
+  - It isn't reviewed by itself; the send is.
+- **`clear_clip_speed`**: back to 1×. It works in the draft when one is open; otherwise it's a direct `set_clip_speed` at 1 (reviewed).
+- `set_clip_speed`'s description points to the ramp, and the prompt names both.
+
+**Tests:** `timingTools.test.ts` covers a ramp (2 s at 1×, then 0.5×: a 6 s clip, the next clip rippled 2 s, and the linked sound ramped too), the refusals, and clear in and out of a draft.
+
+**Checked live in Resolve (2026-10-10)** with the scratch Vitest harness: the app's real `set_speed_ramp` and `sendDraft` against a real `resolve-watch`, on "VCA 16 probe" (a 10 s clip).
+- A ramp to 0.5× from 2 s and back to 1× from 4 s made "VCA 16c ramp", 12.0 s long.
+- Picture and sound were each three pieces: 0–2 s at 1×, source 2–4 s over 2–6 s at 0.5×, and 6–12 s at 1×.
+- The original timeline was unchanged.
+- An eased ramp makes about 20 pieces for a 0.5 s ease.
+- Cleanup: the "VCA 16" timelines and the probe clip were deleted, and "Timeline 28" is current.
+
+**Pending:** Premiere (its rebuild places the pieces from the project's own clips; a ramp comes in as XML, as the draft's description says), for the user's try.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2149,6 +2173,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-10)* **Phase 16c:** `set_speed_ramp` and `clear_clip_speed` (the draft's ramp, sent as constant-speed pieces). Checked live in Resolve. Next: 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16b:** `label_timeline_clips` names and colours clips on the timeline (one Revert). Checked live in Resolve; Premiere needs panel 0.12.0. Next: 16c speed ramps (the draft's existing `setDraftSpeedRamp` as a tool), 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16a:** the Analyze tab's XML now imports in Resolve (File › Import › Timeline). It carries each source's real start timecode, which Resolve needs; checked live. Next: the XML in Premiere (the user's try), `npm run install-app`, then the next chat features.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
@@ -2405,3 +2430,6 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **2026-10-10 (Claude): Phase 16b: names and colours for timeline clips.**
   - The agent's `label_timeline_clips` uses `label_clips` in both editors (panel 0.12.0).
   - Checked live in Resolve. See "Phase 16b".
+- **2026-10-10 (Claude): Phase 16c: speed ramps.**
+  - `set_speed_ramp` and `clear_clip_speed`, from VibeCut, work in the draft.
+  - A ramp sent to Resolve was checked live. Resolve also imports a smooth xmeml ramp, noted as a later upgrade.
