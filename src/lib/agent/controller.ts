@@ -41,7 +41,12 @@ import type { SavedChat } from "../../types/history";
 /** How much of a call's arguments, and of its result, a card keeps (and the saved chat with it). */
 export const TOOL_DETAIL_CHARS = 4000;
 
-const PROVIDER_LABEL: Record<ChatProvider, string> = { gemini: "Gemini", claude: "Claude", "claude-code": "Claude (subscription)" };
+const PROVIDER_LABEL: Record<ChatProvider, string> = {
+  gemini: "Gemini",
+  claude: "Claude",
+  "claude-code": "Claude (subscription)",
+  antigravity: "Gemini (subscription)",
+};
 
 interface ToolCall {
   id: string;
@@ -138,9 +143,10 @@ function jobPlan() {
   const host = selectActiveHost(nle);
   const timeline = host ? nle.hosts[host].timeline : null;
   const choice = AI_CHOICES.find((c) => c.id === store.aiChoice) ?? AI_CHOICES[0];
-  // Settings' effort for this Claude model (Phase 9a). A change starts a new job, like a model switch.
+  // Settings' effort for this Claude model (Phase 9a), or Gemini (subscription)'s (Phase 17). A change
+  // starts a new job, like a model switch.
   const family = familyOf(choice);
-  const effort = family ? store.effort[family] : null;
+  const effort = family ? store.effort[family] : choice.chatProvider === "antigravity" ? store.antigravityEffort : null;
   const key = `${choice.id}:${effort ?? "-"}:${host ?? "none"}`;
   const chatProvider = choice.chatProvider;
   const history = store.historyProvider === chatProvider ? store.history : [];

@@ -30,6 +30,17 @@ def _organize(module: Any) -> dict[str, Call]:
     return {name: getattr(module, name) for name in names}
 
 
+def _clip_export() -> dict[str, Call]:
+    """Each timeline clip by itself, cut from its source with ffmpeg; the same on each editor."""
+    from vibecut_agent.nle import clip_export
+
+    return {
+        "export_clips": clip_export.export_clips,
+        "clip_export_status": clip_export.clip_export_status,
+        "cancel_clip_export": clip_export.cancel_clip_export,
+    }
+
+
 def premiere_project(imports: Path | None = None) -> dict[str, Call]:
     """`imports` is the bridge folder's imports/, the only folder the panel imports a sequence from."""
     from vibecut_agent.nle import (
@@ -62,6 +73,7 @@ def premiere_project(imports: Path | None = None) -> dict[str, Call]:
     calls["render_audio"] = lambda host, args: premiere_render.render_audio(host, args, imports)
     calls["render_status"] = premiere_render.render_status
     calls["cancel_render"] = premiere_render.cancel_render
+    calls.update(_clip_export())
     return calls
 
 
@@ -93,4 +105,5 @@ def resolve_project() -> dict[str, Call]:
         "render_status": resolve_render.render_status,
         "cancel_render": resolve_render.cancel_render,
         **_organize(resolve_organize),
+        **_clip_export(),
     }

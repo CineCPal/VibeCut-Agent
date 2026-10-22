@@ -60,6 +60,27 @@ pub fn default_position(screen: (f64, f64, f64)) -> (f64, f64) {
     (x + width - MINI_WIDTH - MARGIN, y + MENU_BAR)
 }
 
+/// Whether a bar at `position` would show on one of `screens` (`(x, y, width, height)` in logical
+/// points): its centre must be on one. A place saved on a monitor that's since been unplugged isn't.
+pub fn on_a_screen(position: (f64, f64), screens: &[(f64, f64, f64, f64)]) -> bool {
+    let (cx, cy) = (position.0 + MINI_WIDTH / 2.0, position.1 + MINI_HEIGHT / 2.0);
+    screens.iter().any(|&(x, y, width, height)| cx >= x && cx < x + width && cy >= y && cy < y + height)
+}
+
+fn screens(window: &WebviewWindow) -> Vec<(f64, f64, f64, f64)> {
+    window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let scale = m.scale_factor();
+            let position = m.position().to_logical::<f64>(scale);
+            let size = m.size().to_logical::<f64>(scale);
+            (position.x, position.y, size.width, size.height)
+        })
+        .collect()
+}
+
 fn frame_of(window: &WebviewWindow) -> Option<Frame> {
     let scale = window.scale_factor().ok()?;
     let position = window.outer_position().ok()?.to_logical::<f64>(scale);
@@ -119,7 +140,11 @@ fn round_corners(window: &WebviewWindow, radius: f64) {
 
 fn enter(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let full = frame_of(window).ok_or("The window's size couldn't be read")?;
-    let saved = parse_position(crate::window_mode::read_file(app).get("miniPosition"));
+    // A saved place off every screen (its monitor unplugged) put the bar out of sight (seen live,
+    // 2026-10-22); the bar goes to the top-right instead.
+    let screens = screens(window);
+    let saved = parse_position(crate::window_mode::read_file(app).get("miniPosition"))
+        .filter(|&p| screens.is_empty() || on_a_screen(p, &screens));
     let (x, y) = saved.or_else(|| screen_of(window).map(default_position)).unwrap_or((full.x, full.y));
     if let Ok(mut inner) = app.state::<MiniPlayer>().0.lock() {
         inner.full = Some(full);
@@ -218,5 +243,18 @@ mod tests {
         assert_eq!(default_position((0.0, 0.0, 1512.0)), (1512.0 - MINI_WIDTH - MARGIN, MENU_BAR));
         // A second screen to the left of the main one.
         assert_eq!(default_position((-1920.0, 0.0, 1920.0)), (-MINI_WIDTH - MARGIN, MENU_BAR));
+    }
+
+    #[test]
+    fn a_saved_place_off_every_screen_is_not_used() {
+        let laptop = (0.0, 0.0, 1728.0, 1117.0);
+        let external = (1728.0, 0.0, 2560.0, 1440.0);
+        // Saved on the external monitor: fine while it's plugged in, off-screen once it isn't.
+        assert!(on_a_screen((3057.0, 100.0), &[laptop, external]));
+        assert!(!on_a_screen((3057.0, 100.0), &[laptop]));
+        // Half over the edge still counts if the centre is on a screen.
+        assert!(on_a_screen((1728.0 - MINI_WIDTH / 2.0 - 1.0, 100.0), &[laptop]));
+        assert!(!on_a_screen((1728.0 - MINI_WIDTH / 2.0, 100.0), &[laptop]));
+        assert!(!on_a_screen((100.0, -500.0), &[laptop]));
     }
 }

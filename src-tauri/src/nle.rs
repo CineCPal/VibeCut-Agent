@@ -31,6 +31,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 /// A rebuild imports a whole new timeline (Premiere's XML import alone may take 170 s; Phase 6b), or
 /// (Phase 12a) clones, razors and moves a long sequence inside Premiere in several calls.
 const REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
+/// A send built clip by clip inside Premiere: each placement may wait several minutes for a busy
+/// Premiere (seen 2026-10-14), so a send gets as long as send_to_premiere does over MCP.
+const SEND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Resolve's own transcription of a whole timeline for captions (Phase 15a).
 const CAPTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -40,7 +43,9 @@ pub fn call_timeout(command: &str) -> Duration {
     if command == "create_captions" {
         // Phase 15a: Resolve transcribes the timeline itself, about 40 s for 30 s of speech.
         CAPTION_TIMEOUT
-    } else if command == "rebuild" || command == "make_social_version" || command == "render_video" || command == "render_audio" {
+    } else if command == "rebuild" {
+        SEND_TIMEOUT
+    } else if command == "make_social_version" || command == "render_video" || command == "render_audio" {
         // Phase 15b: a render answers once it has started, but starting Media Encoder can take two minutes.
         REBUILD_TIMEOUT
     } else {
@@ -486,7 +491,7 @@ mod tests {
         let (c, rc) = pending.register();
         pending.forget(&c);
         assert!(rc.recv_timeout(Duration::from_millis(10)).is_err());
-        assert_eq!(call_timeout("rebuild"), Duration::from_secs(300));
+        assert_eq!(call_timeout("rebuild"), Duration::from_secs(900));
         assert_eq!(call_timeout("make_social_version"), Duration::from_secs(300));
         assert_eq!(call_timeout("render_video"), Duration::from_secs(300));
         assert_eq!(call_timeout("create_captions"), Duration::from_secs(1800));

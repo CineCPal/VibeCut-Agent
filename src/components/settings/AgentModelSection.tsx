@@ -1,18 +1,44 @@
 import { useAgentStore } from "../../store/useAgentStore";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES, EFFORT_LEVELS, claudeCodeUsable, type ChoiceAccess, type ClaudeCodeStatus, type ClaudeFamily, type EffortLevel } from "../../types/agent";
+import {
+  AI_CHOICES,
+  ANTIGRAVITY_EFFORTS,
+  EFFORT_LEVELS,
+  antigravityUsable,
+  claudeCodeUsable,
+  type AntigravityEffort,
+  type AntigravityStatus,
+  type ChoiceAccess,
+  type ClaudeCodeStatus,
+  type ClaudeFamily,
+  type EffortLevel,
+} from "../../types/agent";
 import type { KeyStatus } from "../../types/system";
 import { Section } from "../common/Section";
 
-export function providerReady(keys: KeyStatus | null, provider: ChoiceAccess, claudeCode: ClaudeCodeStatus | null = null): boolean {
+export function providerReady(
+  keys: KeyStatus | null,
+  provider: ChoiceAccess,
+  claudeCode: ClaudeCodeStatus | null = null,
+  antigravity: AntigravityStatus | null = null,
+): boolean {
   if (provider === "claude-code") return claudeCodeUsable(claudeCode);
+  if (provider === "antigravity") return antigravityUsable(antigravity);
   return keys?.[provider] ?? false;
 }
+
+const MISSING: Record<ChoiceAccess, string> = {
+  gemini: " — key missing",
+  anthropic: " — key missing",
+  "claude-code": " — Claude Code not ready",
+  antigravity: " — Antigravity not ready",
+};
 
 export const fieldClass = "w-full rounded-md border border-border bg-canvas px-2 py-1.5 text-sm text-white";
 
 const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 const FAMILY_LABELS: Record<ClaudeFamily, string> = { opus: "Opus effort", sonnet: "Sonnet effort" };
+const ANTIGRAVITY_EFFORT_LABELS: Record<AntigravityEffort, string> = { low: "Low", medium: "Medium (default)", high: "High" };
 
 /** Settings → Agent → Agent model: the chat's model, Claude's effort per model, and the Story Editor's first read. */
 export function AgentModelSection() {
@@ -24,8 +50,11 @@ export function AgentModelSection() {
   const setStoryFirstPass = useAgentStore((s) => s.setStoryFirstPass);
   const effort = useAgentStore((s) => s.effort);
   const setEffort = useAgentStore((s) => s.setEffort);
+  const antigravityEffort = useAgentStore((s) => s.antigravityEffort);
+  const setAntigravityEffort = useAgentStore((s) => s.setAntigravityEffort);
   const keys = useSystemStore((s) => s.keys);
   const claudeCode = useSystemStore((s) => s.claudeCode);
+  const antigravity = useSystemStore((s) => s.antigravity);
 
   return (
     <Section title="Agent model">
@@ -39,8 +68,9 @@ export function AgentModelSection() {
         onChange={(event) => setAiChoice(event.target.value as typeof aiChoice)}
       >
         {AI_CHOICES.map((choice) => {
-          const ready = providerReady(keys, choice.provider, claudeCode);
-          const missing = choice.provider === "claude-code" ? " — Claude Code not ready" : " — key missing";
+          const offered = choice.provider !== "antigravity" || !choice.model || !antigravity?.models.length || antigravity.models.includes(choice.model);
+          const ready = providerReady(keys, choice.provider, claudeCode, antigravity) && offered;
+          const missing = offered ? MISSING[choice.provider] : " — not on your plan";
           return (
             <option key={choice.id} value={choice.id} disabled={!ready && choice.id !== aiChoice}>
               {choice.label}
@@ -75,6 +105,21 @@ export function AgentModelSection() {
         How long Claude thinks in the chat, on an API key and on your subscription. Higher thinks longer and uses more of your plan or API budget. The next
         message uses it.
       </p>
+      <label htmlFor="settings-effort-antigravity" className="mt-2 block text-[11px] text-cool-grey">
+        Gemini (subscription) effort
+      </label>
+      <select
+        id="settings-effort-antigravity"
+        className={`${fieldClass} mt-0.5`}
+        value={antigravityEffort}
+        onChange={(event) => setAntigravityEffort(event.target.value as AntigravityEffort)}
+      >
+        {ANTIGRAVITY_EFFORTS.map((level) => (
+          <option key={level} value={level}>
+            {ANTIGRAVITY_EFFORT_LABELS[level]}
+          </option>
+        ))}
+      </select>
       <label htmlFor="settings-first-pass" className="mt-2 block text-[11px] text-cool-grey">
         Story Editor on long footage (over 2,000 transcript lines): first read
       </label>

@@ -23,11 +23,18 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from vibecut_agent.nle.errors import HostError, Unreachable
+from vibecut_agent.nle.errors import Busy, HostError, Unreachable
 
 # The panel stamps alive.json every second; this long without a stamp means it isn't running.
 ALIVE_WITHIN_S = 5.0
+# While the panel has a request running, Premiere can be too busy with it to let the panel stamp:
+# encodeSequence held a 4K sequence for 9 s (2026-10-21), and the agent said Premiere had quit while
+# Media Encoder went on to render the file. Only a gap this long then means Premiere is gone.
+RUNNING_WITHIN_S = 60.0
 POLL_S = 0.02
+# A request the panel has started (renamed to .running) gets this much longer while its heartbeat stays
+# fresh: a busy Premiere answered one place_clip 2.5 minutes after its 20 s were up (seen 2026-10-14).
+STILL_WORKING_S = 180.0
 
 NOT_INSTALLED = (
     "VibeCut Agent's panel isn't running in Premiere Pro. Install it from Settings > Editors, "
@@ -62,6 +69,9 @@ class PremiereBridge:
         self._sleep = sleep
         self._session = secrets.token_hex(4)
         self._next = 0
+        # Replies to requests this side stopped waiting for; Premiere may still write them (seen 2026-10-16:
+        # 30 late `status` answers left in replies/), so each request clears those that have arrived.
+        self._late: set[Path] = set()
 
     def prepare(self) -> None:
         """Makes the folders and clears the requests and replies a previous run left behind."""
@@ -79,34 +89,56 @@ class PremiereBridge:
         return value if isinstance(value, dict) else None
 
     def check_alive(self) -> dict[str, Any]:
-        """The panel's latest heartbeat, or Unreachable saying why there is none."""
+        """The panel's latest heartbeat, or Unreachable saying why there is none. A late heartbeat is
+        allowed RUNNING_WITHIN_S while the panel is running a request."""
         alive = self.heartbeat()
         if alive is None:
             raise Unreachable(NOT_INSTALLED)
         stamp = alive.get("time")
         age = self._clock() - stamp if isinstance(stamp, (int, float)) else None
-        if age is None or age > ALIVE_WITHIN_S:
+        if age is None:
             raise Unreachable("Premiere Pro isn't running.")
+        if age > ALIVE_WITHIN_S:
+            if not self._running():
+                raise Unreachable("Premiere Pro isn't running.")
+            if age > RUNNING_WITHIN_S:
+                raise Unreachable(
+                    f"Premiere Pro hasn't responded for {round(age)} s while working on a request from "
+                    "VibeCut Agent. If it's frozen or has quit, restart it."
+                )
         return alive
 
-    def request(self, command: str, args: dict[str, Any], timeout_s: float) -> Any:
-        """Sends one request and returns the panel's result, or raises HostError with its error."""
+    def request(self, command: str, args: dict[str, Any], timeout_s: float, *, patient: bool = True) -> Any:
+        """Sends one request and returns the panel's result, or raises HostError with its error.
+
+        No answer in time raises Busy while the panel's heartbeat is fresh (Premiere is running but working,
+        or a dialog is open), else Unreachable. A request the panel has started gets STILL_WORKING_S more,
+        unless `patient` is False (the watcher's probe, which mustn't hold up the calls queued behind it)."""
+        self._sweep()
         self.check_alive()
         self._next += 1
         request_id = f"{self._session}-{self._next}"
         job = self.jobs / f"{request_id}.json"
         reply = self.replies / f"{request_id}.json"
         _write_json(job, {"id": request_id, "command": command, "args": args})
-        deadline = self._clock() + timeout_s
-        last_check = self._clock()
+        started = self._clock()
+        deadline = started + timeout_s
+        extended = False
+        last_check = started
         while not reply.exists():
             now = self._clock()
             if now >= deadline:
+                taken = self._taken(job)
+                if taken and patient and not extended:
+                    extended = True
+                    deadline += STILL_WORKING_S
+                    continue
                 self._withdraw(job)
-                raise Unreachable(
-                    f"Premiere didn't answer {command} within {round(timeout_s)} s. A dialog open in "
-                    "Premiere stops it answering; close it and try again."
-                )
+                if self._taken(job) or reply.exists():
+                    self._late.add(reply)
+                message = self._no_answer(command, taken, round(now - started))
+                self.check_alive()  # a stale heartbeat raises Unreachable: Premiere is gone, not busy
+                raise Busy(message)
             if now - last_check >= 1.0:
                 last_check = now
                 try:
@@ -122,6 +154,7 @@ class PremiereBridge:
         finally:
             with contextlib.suppress(FileNotFoundError):
                 reply.unlink()
+            self._sweep()  # the panel answers in order, so an earlier late reply is in by now
         if not isinstance(answer, dict) or answer.get("id") != request_id:
             raise HostError(f"Premiere's reply to {command} was for another request")
         if answer.get("ok") is True:
@@ -137,6 +170,43 @@ class PremiereBridge:
                 "in Window > Extensions), then try again. This step wasn't done."
             )
         raise HostError(error)
+
+    def _sweep(self) -> None:
+        """Removes late replies that have arrived, and forgets those that never will (the panel no longer
+        has the request: it was restarted)."""
+        for reply in list(self._late):
+            if reply.exists():
+                with contextlib.suppress(FileNotFoundError):
+                    reply.unlink()
+                self._late.discard(reply)
+            elif not self._taken(self.jobs / reply.name):
+                self._late.discard(reply)
+
+    def _running(self) -> bool:
+        """The panel has started a request (this one or one this side stopped waiting for)."""
+        return any(self.jobs.glob("*.json.running"))
+
+    @staticmethod
+    def _taken(job: Path) -> bool:
+        """The panel renames a request to <id>.json.running when it starts on it."""
+        return job.with_name(job.name + ".running").exists()
+
+    def _no_answer(self, command: str, taken: bool, waited: int) -> str:
+        if taken:
+            return (
+                f"Premiere started {command} but hadn't finished it after {waited} s. It may be busy "
+                "(loading or conforming media, or rendering), or a dialog may be open. VibeCut Agent "
+                "stopped waiting, but Premiere may still finish it; wait until it's idle, then try again."
+            )
+        if (self.heartbeat() or {}).get("busy") is True:
+            return (
+                f"Premiere didn't start {command} within {waited} s because it was still working on an "
+                "earlier request. Wait until it's idle, then try again."
+            )
+        return (
+            f"Premiere didn't answer {command} within {waited} s. A dialog open in Premiere stops it "
+            "answering; close it and try again."
+        )
 
     def _withdraw(self, job: Path) -> None:
         """Takes back a request the panel hasn't started, so it doesn't run after this side gave up."""

@@ -23,7 +23,7 @@ from typing import Any
 
 import requests
 
-from vibecut_agent.agent import claude_client, claude_code_json
+from vibecut_agent.agent import antigravity_json, claude_client, claude_code_json
 from vibecut_agent.agent.claude_schema import strict_schema
 from vibecut_agent.agent.gemini_client import (
     GEMINI_ENDPOINT,
@@ -247,6 +247,47 @@ def claude_code_story(
 ) -> dict[str, Any]:
     """The same brief to Claude through Claude Code, answered as JSON matching the story schema."""
     return claude_code_json_answer(
+        setup,
+        STORY_SYSTEM_INSTRUCTION,
+        user_content(prompt, sources, catalog, target_seconds),
+        STORY_RESPONSE_SCHEMA,
+        model,
+        effort="high",
+        should_abort=should_abort,
+    )
+
+
+def antigravity_json_answer(
+    setup: Any,
+    system: str,
+    user_text: UserTurn,
+    schema: dict[str, Any],
+    model: str | None = None,
+    effort: str = "high",
+    should_abort: Callable[[], bool] = lambda: False,
+) -> dict[str, Any]:
+    """One answer from the user's own Antigravity CLI (Gemini subscription, no key; Phase 17). `schema`
+    is in Gemini's dialect and converted with claude_schema.strict_schema (agy takes plain JSON Schema).
+    Text only: a turn with images is refused."""
+    try:
+        return antigravity_json.run_json(
+            setup, model, system, user_text, strict_schema(schema), effort=effort, should_abort=should_abort
+        )
+    except antigravity_json.AntigravityJsonError as e:
+        raise StoryModelError(str(e)) from None
+
+
+def antigravity_story(
+    setup: Any,
+    prompt: str,
+    sources: list[dict[str, Any]],
+    catalog: list[dict[str, Any]],
+    target_seconds: float | None,
+    model: str | None = None,
+    should_abort: Callable[[], bool] = lambda: False,
+) -> dict[str, Any]:
+    """The same brief to Gemini through Antigravity, answered as JSON matching the story schema."""
+    return antigravity_json_answer(
         setup,
         STORY_SYSTEM_INSTRUCTION,
         user_content(prompt, sources, catalog, target_seconds),

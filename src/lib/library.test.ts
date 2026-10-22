@@ -19,17 +19,20 @@ vi.mock("./broll", () => broll);
 import {
   changePool,
   clearScope,
+  DRIVE_RECHECK_MS,
   dragShot,
   importShots,
   missingDrives,
   openLibrary,
   placeShot,
   previewShot,
+  recheckDrives,
   resetLibraryForTests,
   scopeLabel,
   searchLibrary,
   setScope,
   showAgentResults,
+  toggleFolder,
 } from "./library";
 import { useLibraryStore, type LibraryShot } from "../store/useLibraryStore";
 import { initialHosts, useNleStateStore } from "../store/useNleStateStore";
@@ -137,6 +140,63 @@ describe("the B-roll Library", () => {
     expect(spyglass.browseSpyglass).toHaveBeenCalledTimes(1);
     // The page's shots are got ready to drag in the background.
     expect(spyglass.prepareShotDrags).toHaveBeenCalledWith([1, 2]);
+  });
+
+  describe("drives attached or ejected after it opened", () => {
+    const root = (online: boolean) => ({ name: "2025-2026", path: "/Volumes/Archive", isRoot: true, shotCount: 3, hasChildren: true, online, topTags: [], dateRange: null });
+    const sub = (online: boolean) => ({ ...root(online), name: "Athletics", path: "/Volumes/Archive/Athletics", isRoot: false });
+
+    it("shows a drive that was attached, and reads the page again for its shots' status", async () => {
+      spyglass.spyglassFolderChildren.mockResolvedValue([root(false)]);
+      spyglass.browseSpyglass.mockResolvedValue({ summary: SUMMARY, shots: [browseShot(1, { status: "offline" })] });
+      await openLibrary();
+      spyglass.spyglassFolderChildren.mockResolvedValue([root(true)]);
+      spyglass.browseSpyglass.mockResolvedValue({ summary: SUMMARY, shots: [browseShot(1)] });
+      await recheckDrives();
+      const s = useLibraryStore.getState();
+      expect(s.children[""][0].online).toBe(true);
+      expect(s.results[0].status).toBe("ok");
+      expect(spyglass.browseSpyglass).toHaveBeenCalledTimes(2);
+    });
+
+    it("changes nothing when no drive came or went", async () => {
+      spyglass.spyglassFolderChildren.mockResolvedValue([root(true)]);
+      await openLibrary();
+      const before = useLibraryStore.getState().children;
+      await recheckDrives();
+      expect(useLibraryStore.getState().children).toBe(before);
+      expect(spyglass.browseSpyglass).toHaveBeenCalledTimes(1);
+    });
+
+    it("rechecks opened subfolders too, and doesn't re-run a search", async () => {
+      spyglass.spyglassFolderChildren.mockImplementation(async (parent?: string) => (parent ? [sub(true)] : [root(true)]));
+      await openLibrary();
+      await toggleFolder("/Volumes/Archive");
+      useLibraryStore.setState({ mode: "search", query: "crowd" });
+      spyglass.spyglassFolderChildren.mockImplementation(async (parent?: string) => (parent ? [sub(false)] : [root(false)]));
+      await recheckDrives();
+      const s = useLibraryStore.getState();
+      expect(s.children["/Volumes/Archive"][0].online).toBe(false);
+      expect(s.children[""][0].online).toBe(false);
+      expect(spyglass.browseSpyglass).toHaveBeenCalledTimes(1);
+      expect(spyglass.resolveSpyglassScope).not.toHaveBeenCalled();
+    });
+
+    it("looks every few seconds and when the window comes back", async () => {
+      spyglass.spyglassFolderChildren.mockResolvedValue([root(true)]);
+      vi.useFakeTimers();
+      try {
+        await openLibrary();
+        spyglass.spyglassFolderChildren.mockClear();
+        window.dispatchEvent(new Event("focus"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(spyglass.spyglassFolderChildren).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(DRIVE_RECHECK_MS);
+        expect(spyglass.spyglassFolderChildren).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("says there's nothing to browse without an index", async () => {

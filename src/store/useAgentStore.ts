@@ -1,7 +1,22 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { AgentStatus, AiChoiceId, ChatMention, ChatMessage, ChatProvider, ChatUsage, ClaudeFamily, EffortLevel, LastTurn, PendingImage, QueuedMessage, StoryFirstPass, CriticModel } from "../types/agent";
-import { AI_CHOICES, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
+import type {
+  AgentStatus,
+  AiChoiceId,
+  AntigravityEffort,
+  ChatMention,
+  ChatMessage,
+  ChatProvider,
+  ChatUsage,
+  ClaudeFamily,
+  EffortLevel,
+  LastTurn,
+  PendingImage,
+  QueuedMessage,
+  StoryFirstPass,
+  CriticModel,
+} from "../types/agent";
+import { AI_CHOICES, ANTIGRAVITY_EFFORTS, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
 import type { SavedChat } from "../types/history";
@@ -17,6 +32,8 @@ export interface AgentState {
   aiChoice: AiChoiceId;
   /** How long each Claude model thinks in the chat (Settings → Agent model, Phase 9a). Remembered. */
   effort: Record<ClaudeFamily, EffortLevel>;
+  /** How long Gemini (subscription) thinks (Phase 17): agy's model variant. Remembered. */
+  antigravityEffort: AntigravityEffort;
   /** Which model reads long footage first for the Story Editor (Phase 7e). */
   storyFirstPass: StoryFirstPass;
   criticModel: CriticModel;
@@ -61,6 +78,7 @@ export interface AgentState {
   setStoryFirstPass: (choice: StoryFirstPass) => void;
   setCriticModel: (choice: CriticModel) => void;
   setEffort: (family: ClaudeFamily, level: EffortLevel) => void;
+  setAntigravityEffort: (level: AntigravityEffort) => void;
   setDraft: (draft: string) => void;
   setPendingImages: (images: PendingImage[]) => void;
   setDraftMentions: (mentions: ChatMention[]) => void;
@@ -105,6 +123,7 @@ export const useAgentStore = create<AgentState>()(
       storyFirstPass: "same",
       criticModel: "gemini",
       effort: { opus: DEFAULT_EFFORT, sonnet: DEFAULT_EFFORT },
+      antigravityEffort: "medium",
       draft: "",
       pendingImages: [],
       draftMentions: [],
@@ -145,6 +164,9 @@ export const useAgentStore = create<AgentState>()(
       setCriticModel: (criticModel) => set({ criticModel: criticModel === "same" ? "same" : "gemini" }),
       setEffort: (family, level) => {
         if (EFFORT_LEVELS.includes(level)) set((state) => ({ effort: { ...state.effort, [family]: level } }));
+      },
+      setAntigravityEffort: (level) => {
+        if (ANTIGRAVITY_EFFORTS.includes(level)) set({ antigravityEffort: level });
       },
       setDraft: (draft) => set({ draft }),
       setPendingImages: (pendingImages) => set({ pendingImages }),
@@ -224,6 +246,7 @@ export const useAgentStore = create<AgentState>()(
         storyFirstPass: state.storyFirstPass,
         criticModel: state.criticModel,
         effort: state.effort,
+        antigravityEffort: state.antigravityEffort,
         chatId: state.chatId,
         autoTitles: state.autoTitles,
         reviewEdits: state.reviewEdits,

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import pytest
+
 from tests.nle.fakes import FakePanel, FakeProject, FakeResolve, FakeTimeline
-from vibecut_agent.nle.errors import HostError, Unreachable
+from vibecut_agent.nle.errors import Busy, HostError, Unreachable
 from vibecut_agent.nle.premiere_bridge import PremiereBridge
-from vibecut_agent.nle.watch import PremiereAdapter, ResolveAdapter, Tracker, watch
+from vibecut_agent.nle.watch import PROBE_TIMEOUT_S, PremiereAdapter, ResolveAdapter, Tracker, watch
 from vibecut_agent.protocol import RequestError, StdinClosed
 
 
@@ -219,3 +222,81 @@ def test_resolve_adapter_reconnects_after_resolve_quits():
             raise AssertionError("expected Unreachable")
     assert adapter.probe()["timeline"] == "Main"
     assert adapter.call("status", {})["project"] == "Doc"
+
+
+class SlowPanel:
+    """A panel on a fake clock: it stamps alive.json (unless `alive` is False), starts each request
+    (renaming it to .running, as bridge.js does) and answers only while `answering`."""
+
+    def __init__(self, folder):
+        self.folder = folder
+        self.now = 1000.0
+        self.alive = True
+        self.busy = False
+        self.answering = True
+        self.sent = 0
+        for sub in ("jobs", "replies"):
+            (folder / sub).mkdir(parents=True, exist_ok=True)
+        self.beat()
+
+    def beat(self):
+        if self.alive:
+            stamp = {"time": self.now, "busy": self.busy, "instance": "inst-1"}
+            (self.folder / "alive.json").write_text(json.dumps(stamp))
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.beat()
+        for job in (self.folder / "jobs").glob("*.json"):
+            self.sent += 1
+            job.rename(job.with_name(job.name + ".running"))
+        if self.answering:
+            for running in (self.folder / "jobs").glob("*.json.running"):
+                request = json.loads(running.read_text())
+                running.unlink()
+                result = {"project": "Doc", "sequences": ["Main"], "activeSequence": "Main"}
+                reply = {"id": request["id"], "ok": True, "result": result}
+                (self.folder / "replies" / f"{request['id']}.json").write_text(json.dumps(reply))
+
+
+def test_a_busy_premiere_stays_connected_and_only_a_stale_heartbeat_loses_it(tmp_path):
+    # Seen 2026-10-16: during per-clip Media Encoder renders the probe's status answered after 20 s, and
+    # the app showed Premiere disconnected mid-export.
+    panel = SlowPanel(tmp_path)
+    adapter = PremiereAdapter(PremiereBridge(tmp_path, clock=lambda: panel.now, sleep=panel.sleep))
+    first = adapter.probe()
+    assert first["timeline"] == "Main" and first["instance"] == "inst-1"
+
+    panel.answering = False
+    before = panel.now
+    assert adapter.probe() == first
+    # The probe waited its own 10 s, not the 180 s more a started edit gets.
+    assert panel.now - before == pytest.approx(PROBE_TIMEOUT_S, abs=0.5)
+
+    # While the panel says it's busy, no status is queued behind its work.
+    panel.busy = True
+    panel.beat()
+    sent = panel.sent
+    assert adapter.probe() == first
+    assert panel.sent == sent
+
+    # Once it answers again, the late reply is cleared rather than left in replies/.
+    panel.busy = False
+    panel.answering = True
+    panel.beat()
+    assert adapter.probe() == first
+    assert list((tmp_path / "replies").iterdir()) == []
+
+    panel.alive = False
+    panel.now += 30
+    with pytest.raises(Unreachable, match="isn't running") as exc:
+        adapter.probe()
+    assert not isinstance(exc.value, Busy)
+
+
+def test_a_premiere_that_never_answered_isnt_shown_connected(tmp_path):
+    panel = SlowPanel(tmp_path)
+    panel.answering = False
+    adapter = PremiereAdapter(PremiereBridge(tmp_path, clock=lambda: panel.now, sleep=panel.sleep))
+    with pytest.raises(Busy, match="hadn't finished it"):
+        adapter.probe()

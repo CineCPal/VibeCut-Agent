@@ -5,6 +5,8 @@ Media Encoder events do."""
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -175,3 +177,42 @@ def test_a_late_progress_event_cant_hide_the_end(env):
     (tmp_path / "bridge" / "renders" / "job-1.progress.json.123-1-5.tmp").write_text("{}")
     assert run_command(host, "render_status", {"jobId": "job-1"})["state"] == "done"
     assert list((tmp_path / "bridge" / "renders").iterdir()) == []
+
+
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg isn't installed")
+
+
+def movie(path: Path, seconds: float) -> None:
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=black:s=64x36:r=25:d={seconds}",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
+        check=True,
+    )  # fmt: skip
+
+
+@needs_ffmpeg
+def test_a_render_of_the_whole_sequence_instead_of_the_range_is_refused(env):
+    # Seen 2026-10-16: 2 of 42 per-clip renders came out as the whole sequence (130 s for 3 s asked).
+    host, _requests, tmp_path = env
+    started = run_command(host, "render_video", {"timeline": "Interview", "range": {"start": 5, "end": 8}})
+    movie(Path(started["path"]), 20)
+    event(tmp_path, "job-1", "done", path=started["path"])
+    status = run_command(host, "render_status", {"jobId": "job-1"})
+    assert status["state"] == "failed"
+    assert status["error"].startswith("Media Encoder rendered 20.0 s instead of 5–8 s")
+    assert not Path(started["path"]).exists()
+
+    again = run_command(host, "render_video", {"timeline": "Interview", "range": {"start": 5, "end": 8}})
+    movie(Path(again["path"]), 3)
+    event(tmp_path, "job-2", "done", path=again["path"])
+    assert run_command(host, "render_status", {"jobId": "job-2"})["state"] == "done"
+
+
+@needs_ffmpeg
+def test_without_ffprobe_the_length_isnt_checked(env, monkeypatch):
+    host, _requests, tmp_path = env
+    monkeypatch.setenv("VIBECUT_FFPROBE", str(tmp_path / "no-ffprobe"))
+    started = run_command(host, "render_video", {"timeline": "Interview", "range": {"start": 5, "end": 8}})
+    movie(Path(started["path"]), 20)
+    event(tmp_path, "job-1", "done", path=started["path"])
+    assert run_command(host, "render_status", {"jobId": "job-1"})["state"] == "done"

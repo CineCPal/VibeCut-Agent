@@ -690,6 +690,8 @@ REVERTIBLE = (
     "captions",
     # Phase 16b.
     "label",
+    # Phase 16f.
+    "transform",
 )  # fmt: skip
 
 
@@ -900,6 +902,19 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                     item.SetFades(source.GetFades())
                     if source.CopyGrades([item]):
                         graded.append(label)
+        elif kind == "transform":
+            from vibecut_agent.nle.resolve_transform import revert_transform
+
+            if current(change.get("itemId")) not in found:
+                changed_since.append({"name": label, "reason": "it isn't on the timeline any more"})
+                continue
+            outcome = revert_transform(found[current(change["itemId"])][2], change)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": "its scale or position was changed since"})
+            else:
+                failed.append({"name": label, "reason": "Resolve didn't put its scale or position back"})
         elif kind == "label":
             if current(change.get("itemId")) not in found:
                 changed_since.append({"name": label, "reason": "it isn't on the timeline any more"})

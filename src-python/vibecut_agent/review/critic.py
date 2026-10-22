@@ -17,7 +17,8 @@ What differs from VibeCut's:
 - There are no editor-rendered stills, so the rubric's sentence about them is left out.
 
 request: {
-    "provider": "gemini" | "claude" | "claude-code" (optional, "gemini"; the chat's), "model": str (optional),
+    "provider": "gemini" | "claude" | "claude-code" | "antigravity" (optional, "gemini"; the chat's; on
+        "antigravity" the stills can't be sent, so it's refused), "model": str (optional),
     "apiKey": str (injected by Rust; not for "claude-code"), "claudeCode": {...} (injected by Rust),
     "frames": [{"path": a media file, "sourceTime": seconds in it, "time": timeline seconds, "label": str}]
               (1..MAX_FRAMES, timeline order),
@@ -49,7 +50,12 @@ MAX_FINDINGS = 20
 MAX_TEXT = 20_000
 MAX_LINT = 60
 CLAUDE_MAX_TOKENS = 8000
-WHO = {"gemini": "Gemini", "claude": "Claude", "claude-code": "Claude (subscription)"}
+WHO = {
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "claude-code": "Claude (subscription)",
+    "antigravity": "Gemini (subscription)",
+}
 
 SEVERITIES = ("high", "medium", "low")
 CATEGORIES = ("pacing", "continuity", "framing", "broll_relevance", "audio", "story", "other")
@@ -261,12 +267,23 @@ def run(
 ) -> int:
     from vibecut_agent.story.models import StoryModelError, claude_code_json_answer, claude_json, gemini_json
 
+    if provider_of(request) == "antigravity":
+        # agy's headless mode takes text only (Phase 17), and the critic's whole job is the stills.
+        emitter.error(
+            "Gemini (subscription) can't look at stills: Antigravity's headless mode accepts text only. "
+            "Set Settings → Agent model → Edit review critic to Gemini Flash (needs a Gemini key)."
+        )
+        return 1
+
     register_secret(request.get("apiKey"))
     provider = provider_of(request)
     api_key = (request.get("apiKey") or "").strip()
     if provider == "claude-code":
         if not isinstance(request.get("claudeCode"), dict):
             raise RequestError("Claude Code isn't set up. See Settings → Claude subscription.")
+    elif provider == "antigravity":
+        if not isinstance(request.get("antigravity"), dict):
+            raise RequestError("Antigravity isn't set up. See Settings → Gemini subscription.")
     elif not api_key:
         raise RequestError(f"No {WHO[provider]} API key was provided.")
     frames = parse_frames(request.get("frames"))

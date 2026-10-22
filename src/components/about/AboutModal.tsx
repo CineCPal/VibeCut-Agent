@@ -7,7 +7,7 @@ import { useLibraryStore } from "../../store/useLibraryStore";
 import { INDEX_SOURCE } from "../settings/LibrarySection";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES, KEY_ENV, claudeCodeUsable } from "../../types/agent";
+import { AI_CHOICES, KEY_ENV, antigravityUsable, claudeCodeUsable } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
 import { DependencyList } from "../common/DependencyList";
 import { Modal } from "../common/Modal";
@@ -23,6 +23,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
   const keys = useSystemStore((s) => s.keys);
   const claudeCode = useSystemStore((s) => s.claudeCode);
+  const antigravity = useSystemStore((s) => s.antigravity);
   const hwAccel = useSystemStore((s) => s.hwAccel);
   const storage = useSystemStore((s) => s.storage);
   const sidecar = useSystemStore((s) => s.sidecar);
@@ -45,11 +46,26 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  const subscription = model?.provider === "claude-code";
-  const modelKeyReady = !model ? false : model.provider === "claude-code" ? claudeCodeUsable(claudeCode) : keys ? keys[model.provider] : false;
-  const modelChecked = subscription ? claudeCode !== null : keys !== null;
-  const readyText = subscription ? "Claude Code signed in" : "Key configured";
-  const missingText = subscription ? "Claude Code not ready" : "Key missing";
+  const provider = model?.provider;
+  const modelKeyReady = !model
+    ? false
+    : model.provider === "claude-code"
+      ? claudeCodeUsable(claudeCode)
+      : model.provider === "antigravity"
+        ? antigravityUsable(antigravity)
+        : keys
+          ? keys[model.provider]
+          : false;
+  const modelChecked = provider === "claude-code" ? claudeCode !== null : provider === "antigravity" ? antigravity !== null : keys !== null;
+  const readyText = provider === "claude-code" ? "Claude Code signed in" : provider === "antigravity" ? "Antigravity signed in" : "Key configured";
+  const missingText = provider === "claude-code" ? "Claude Code not ready" : provider === "antigravity" ? "Antigravity not ready" : "Key missing";
+  const modelDetail = !model
+    ? undefined
+    : model.provider === "claude-code"
+      ? "Your Claude subscription, through Claude Code"
+      : model.provider === "antigravity"
+        ? "Your Google AI plan, through Antigravity"
+        : KEY_ENV[model.provider];
 
   return (
     <Modal title="About This App" onClose={onClose}>
@@ -64,13 +80,19 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label={`Active model: ${model?.label ?? aiChoice}`}
             tone={!modelChecked ? "off" : modelKeyReady ? "ok" : "warn"}
             value={!modelChecked ? "Unknown" : modelKeyReady ? readyText : missingText}
-            detail={!model ? undefined : model.provider === "claude-code" ? "Your Claude subscription, through Claude Code" : KEY_ENV[model.provider]}
+            detail={modelDetail}
           />
           <StatusRow
             label="Claude Code (subscription)"
             tone={claudeCodeUsable(claudeCode) ? "ok" : "off"}
             value={claudeCode === null ? "Unknown" : claudeCodeUsable(claudeCode) ? `Signed in${claudeCode.subscription ? ` (${claudeCode.subscription})` : ""}` : "Not ready"}
             detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent) and, when Settings sets the critic to the agent's model, review_edit's critic (stills from the cut and what is said) · counts against your Claude plan's usage limits · the usage meter reads the plan's limits from Claude Code's own reports and its /usage (answered without a model call) · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
+          />
+          <StatusRow
+            label="Antigravity (Gemini subscription)"
+            tone={antigravityUsable(antigravity) ? "ok" : "off"}
+            value={antigravity === null ? "Unknown" : antigravityUsable(antigravity) ? "Signed in" : "Not ready"}
+            detail={`Your own Antigravity CLI (${antigravity?.program ?? "agy"}), which calls Google's servers · only while chatting with a Gemini "(subscription)" model (text only: images can't be attached), for its Story Editor cuts (the interviews' transcripts are sent) and for naming its chats · Settings checks sign-in with agy models · counts against your Google AI plan's limits · each turn sends agy's own prompt (about 11,000 tokens on VibeCut's agent) with the conversation so far · VibeCut's tools are added to agy's MCP config only when you press Add in Settings, and come back through VibeCut's MCP bridge (files, no network port)`}
           />
           <StatusRow
             label="Gemini API"

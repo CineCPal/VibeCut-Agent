@@ -11,13 +11,14 @@
 import { nleCall } from "../ipc";
 import { useAgentStore } from "../../store/useAgentStore";
 import type { NleHost } from "../../types/nle";
-import { type Args, clock, type Executor, optNum, optStr, type ToolOutcome } from "./args";
+import { type Args, bool, clock, type Executor, optNum, optStr, strArray, type ToolOutcome } from "./args";
 import { draftOf } from "./draft";
 import { HOST_SHORT, TIMELINE_NOUN } from "./edits";
 import type { ToolContext, ToolDeclaration } from "./tools";
 
 export const VIDEO_PRESETS = ["source", "1080p", "720p", "prores"] as const;
 export const AUDIO_FORMATS = ["wav", "aac"] as const;
+export const CLIP_FORMATS = ["source", "1080p", "720p", "prores", "copy"] as const;
 const POLL_MS = 1000;
 
 interface RenderStart {
@@ -36,7 +37,33 @@ export interface RenderState {
   note?: string;
 }
 
+interface ClipExportStart {
+  jobId: string;
+  folder: string;
+  total: number;
+  skipped: { id: string; name: string; reason: string }[];
+  notes: string[];
+}
+
+export interface ClipExportState {
+  state: "rendering" | "done" | "failed" | "cancelled";
+  done: number;
+  total: number;
+  fraction?: number;
+  etaSeconds?: number;
+  folder: string;
+  files: string[];
+  failed: { clip: string; error: string }[];
+}
+
 const fileName = (path: string) => path.split("/").pop() ?? path;
+
+/** The progress line while clips are cut. */
+export function clipProgressLine(folder: string, state: ClipExportState): string {
+  const percent = state.fraction ? ` ${Math.round(state.fraction * 100)}%` : "";
+  const eta = state.etaSeconds ? `, about ${Math.max(1, Math.round(state.etaSeconds))} s left` : "";
+  return `Exporting clips ${Math.min(state.done + 1, state.total)}/${state.total} → ${fileName(folder)}${percent}${eta}`;
+}
 
 /** range: "all" (default) or "in_out" (the editor's own marks); start/end (seconds) for a part. */
 export function rangeArg(args: Args): unknown {
@@ -95,7 +122,47 @@ export function renderExecutors(context: ToolContext, pollMs = POLL_MS): Record<
     throw new Error(final.error ?? `${name}'s render ${final.state === "rendering" ? "didn't finish" : final.state}`);
   };
 
+  /** export_clips: each clip's source cut by ffmpeg in the watcher (clip_export.py), polled like a render. */
+  const exportClips = async (args: Args): Promise<ToolOutcome> => {
+    const format = optStr(args, "format") ?? "source";
+    if (!(CLIP_FORMATS as readonly string[]).includes(format)) throw new Error(`format must be one of ${CLIP_FORMATS.join(", ")}`);
+    const request: Record<string, unknown> = { timeline: timelineToRender(), format };
+    if (args.clipIds !== undefined) request.clipIds = strArray(args, "clipIds");
+    const track = optStr(args, "track");
+    if (track !== undefined) request.track = track;
+    const handles = optNum(args, "handles");
+    if (handles !== undefined) request.handles = handles;
+    if (bool(args, "includeDisabled")) request.includeDisabled = true;
+    const label = optStr(args, "name");
+    if (label) request.name = label;
+    const started = await nleCall<ClipExportStart>(host, "export_clips", request);
+    let final: ClipExportState;
+    for (;;) {
+      const stopping = useAgentStore.getState().status === "stopping";
+      final = await nleCall<ClipExportState>(host, stopping ? "cancel_clip_export" : "clip_export_status", { jobId: started.jobId });
+      if (final.state !== "rendering" || stopping) break;
+      useAgentStore.getState().setActivity(clipProgressLine(started.folder, final));
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+    const skipped = started.skipped.map((s) => `${s.name || s.id} (${s.reason})`);
+    const failed = final.failed.map((f) => `${f.clip} (${f.error})`);
+    const extra = [
+      skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}.` : "",
+      failed.length ? ` Failed ${failed.length}: ${failed.join("; ")}.` : "",
+      started.notes.length ? ` ${started.notes.join(". ")}.` : "",
+    ].join("");
+    const result = { folder: final.folder, files: final.files, skipped: started.skipped, failed: final.failed, notes: started.notes };
+    if (final.state === "cancelled") {
+      return { summary: `Stopped exporting clips after ${final.files.length} of ${final.total}; the finished files are kept in ${final.folder}.`, result: { exported: final.files.length, cancelled: true, ...result } };
+    }
+    if (final.state === "done") {
+      return { summary: `Exported ${final.files.length} of ${final.total} clips, each by itself, to ${final.folder}.${extra}`, result: { exported: final.files.length, ...result } };
+    }
+    throw new Error(`No clip was exported.${extra}`);
+  };
+
   return {
+    export_clips: exportClips,
     export_video: async (args) => {
       const preset = optStr(args, "preset") ?? "source";
       if (!(VIDEO_PRESETS as readonly string[]).includes(preset)) throw new Error(`preset must be one of ${VIDEO_PRESETS.join(", ")}`);
@@ -131,12 +198,31 @@ export function renderToolDeclarations(host: NleHost): ToolDeclaration[] {
       description: `Renders the open ${noun}'s sound only, mixed as the editor plays it: wav (uncompressed, the default) or aac (${host === "resolve" ? ".m4a" : ".aac"}). Answers with the file's path in ~/Movies/VibeCut Renders/<project>/. Only when the user asks.`,
       parameters: { type: "OBJECT", properties: { format: { type: "STRING", enum: [...AUDIO_FORMATS] }, ...range } },
     },
+    {
+      name: "export_clips",
+      description: `Exports clips of the open ${noun} each to its own file, cut from the clip's own source media between its In and Out (plus handles): the clip by itself, with no effects, grades, titles or other tracks, at normal speed (a speed change isn't applied). A video clip includes its linked sound from the same file; an audio-only clip becomes a .wav. Choose clipIds (ids from list_timeline_clips), or track (e.g. "V1", "A2"), or neither for every clip. Transitions, adjustment layers, titles, nested sequences, stills, offline media and disabled clips are skipped, each with its reason. format: source (H.264 .mp4 at the clip's own size, the default), 1080p or 720p (H.264, the short side, never enlarged), prores (ProRes 422 HQ .mov), or copy (fast, no re-encode, but each cut lands on the keyframe before its In). Waits for every clip, showing progress, and answers with a new folder in ~/Movies/VibeCut Renders/<project>/. For the ${noun} as the editor plays it, use export_video instead. Only when the user asks.`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          clipIds: { type: "ARRAY", items: { type: "STRING" }, description: "Ids of the clips to export." },
+          track: { type: "STRING", description: 'Every clip on one track, e.g. "V1" or "A2". Ignored with clipIds.' },
+          handles: { type: "NUMBER", description: "Extra seconds of source before and after each clip (0 to 60, default 0)." },
+          format: { type: "STRING", enum: [...CLIP_FORMATS] },
+          includeDisabled: { type: "BOOLEAN", description: "Also export clips that are disabled on the timeline." },
+          name: { type: "STRING", description: 'Optional words added to the folder name, e.g. "for colour".' },
+        },
+      },
+    },
   ];
 }
 
 /** The ground rule the system prompt gains (VibeCut's RENDER_INSTRUCTION, without stills). */
 export const RENDER_INSTRUCTION = `- Renders: export_video (H.264 at source size, 1080p or 720p, or ProRes) and export_audio (WAV or AAC)
-  render what the editor has: the whole timeline, its own In to Out (range "in_out") or start/end. Files
+  render what the editor has: the whole timeline, its own In to Out (range "in_out") or start/end. To
+  export clips individually (each clip, the selects, every shot on V1 as its own file, at any of its
+  formats including 1080p), use export_clips once, never a series of export_video calls: it cuts each
+  clip from its source file by itself. Only when the user wants each clip as the editor plays it
+  (effects, grades, titles, other tracks) use one export_video per clip with its start/end. Files
   always go to ~/Movies/VibeCut Renders/<project>/ under a new name; you can't choose the folder. Tell the
   user the file's path when it's done. A render is of the editor's timeline, not a draft: send the draft
   first if that's what they want rendered. Only render when the user asks. Before a delivery render,

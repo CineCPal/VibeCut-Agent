@@ -93,6 +93,39 @@ def ffmpeg() -> str:
     return found
 
 
+def ffprobe() -> str | None:
+    """`VIBECUT_FFPROBE`, else the ffprobe beside ffmpeg, else the one on PATH; None when there is none."""
+    custom = os.environ.get("VIBECUT_FFPROBE")
+    if custom:
+        return custom
+    try:
+        beside = os.path.join(os.path.dirname(ffmpeg()), "ffprobe")
+    except RenderError:
+        beside = ""
+    if beside and os.path.isfile(beside):
+        return beside
+    return shutil.which("ffprobe")
+
+
+def media_duration(path: str) -> float | None:
+    """The file's length in seconds, or None when ffprobe is missing or can't read it (the caller then
+    doesn't check)."""
+    probe = ffprobe()
+    if not probe:
+        return None
+    try:
+        done = subprocess.run(
+            [probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return float(done.stdout.strip()) if done.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
 def _run(args: list[str], what: str) -> None:
     try:
         done = subprocess.run(

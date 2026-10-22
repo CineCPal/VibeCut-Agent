@@ -45,6 +45,7 @@ function namedIds(args: Record<string, unknown>): string[] {
   add(args.itemId);
   if (Array.isArray(args.itemIds)) args.itemIds.forEach(add);
   if (Array.isArray(args.levels)) for (const entry of args.levels as Record<string, unknown>[]) add(entry?.itemId);
+  if (Array.isArray(args.transforms)) for (const entry of args.transforms as Record<string, unknown>[]) add(entry?.itemId);
   return out;
 }
 
@@ -221,6 +222,16 @@ export async function revertLastRequest(): Promise<ToolOutcome> {
   return revertTimelineEdits(lastEditStep());
 }
 
+/** A clip's scale and position (Phase 16f) as the chat says it: "120% at (96, -54)", or its keys. */
+export function describeLook(look: unknown): string {
+  type Still = { scale: number; x: number; y: number };
+  const still = (v: Still) => `${v.scale}%${v.x || v.y ? ` at (${v.x}, ${v.y})` : ""}`;
+  if (!look || typeof look !== "object") return "unknown";
+  const keys = (look as { keys?: (Still & { at: number })[] }).keys;
+  if (Array.isArray(keys) && keys.length) return `animated from ${still(keys[0])} to ${still(keys[keys.length - 1])} over ${clock(keys[keys.length - 1].at - keys[0].at)} (${keys.length} keyframes)`;
+  return still(look as Still);
+}
+
 /** One change as the chat lists it (VibeCut's describeTimelineChange, for the kinds made here). */
 export function describeTimelineChange(change: TimelineChange, fps = 25): string {
   const name = change.name ? `"${change.name}"` : "a clip";
@@ -243,6 +254,9 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
     }
     case "level":
       return `${name} level ${String(change.before ?? 0)} → ${String(change.after)} dB`;
+    case "transform":
+      // Phase 16f: {scale, x, y} still, or {keys: [{at, scale, x, y}]}.
+      return `${name} ${describeLook(change.before)} → ${describeLook(change.after)}`;
     case "reshaped": {
       const first = change.items?.[0];
       if (!first) return `${name} ${change.how ?? "reshaped"}`;

@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.12.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.13.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -113,6 +113,11 @@ describe("Premiere panel bridge.js", () => {
       ["p3", { command: "set_fades", args: { timeline: "Main", items: [] } }, "items must list 1 to 200 clips"],
       ["p4", { command: "nest_range", args: { timeline: "Main", ids: ["n1"], name: "a/b", inTicks: "0", outTicks: "1" } }, 'name must be one line of at most 255 characters, without "/"'],
       ["p5", { command: "add_tracks", args: { timeline: "Main", video: 9, audio: 0 } }, "video must be 0 to 8 tracks"],
+      // Phase 16f.
+      ["p6", { command: "read_motion", args: { timeline: "Main", ids: [] } }, "ids must list 1 to 500 project item ids"],
+      ["p7", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1" }] } }, "items[0] must set scale or position"],
+      ["p8", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1", position: { keys: [], value: [0.5] } }] } }, "items[0].position.value must be [x, y]"],
+      ["p9", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1", scale: { keys: [{ ticks: "x", value: 100 }], value: 100 } }] } }, "items[0].scale.keys[0].ticks must be ticks"],
     ];
     for (const [id, request] of cases) writeJob(dir, { id, ...request });
     await panel.context.poll();

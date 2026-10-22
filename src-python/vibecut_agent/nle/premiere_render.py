@@ -12,8 +12,13 @@ same commands and answers as resolve_render.py. Ported from VibeCut's host-premi
 
 What Premiere 26.5.2 and Media Encoder 2026 do (checked live in VibeCut's "7c.0 probe"): encodeSequence
 returns a job id and the events keep firing after the request that bound them; workArea 1 renders
-the sequence's In to Out, which can be set for the job and put back straight away; Media Encoder
-has no stop of its own through Premiere, and stopping its batch stops every job in it.
+the sequence's In to Out, which is set for the job; Media Encoder has no stop of its own through
+Premiere, and stopping its batch stops every job in it.
+
+Media Encoder doesn't always read the In and Out when the job is queued (2026-10-16: 2 of 42 per-clip
+renders came out as the whole sequence after the panel put the marks back straight away). Panel 0.12.1
+keeps them until the job ends, and a finished file whose length isn't what was asked for is refused
+here (`_wrong_length`), so a wrong render is never handed over as done.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from typing import Any
 from vibecut_agent.nle.premiere import HostError, _number, seconds
 from vibecut_agent.nle.renders import (
     inside,
+    media_duration,
     output_stem,
     remove_quietly,
     renders_root,
@@ -80,6 +86,7 @@ def _start(host: Any, args: dict[str, Any], key: str, imports: Path | None) -> d
     if not os.path.isfile(preset):
         raise HostError(f"Media Encoder's preset {os.path.basename(preset)!r} isn't installed")
     request: dict[str, Any] = {"timeline": name, "preset": preset}
+    asked: tuple[float, float] | None = None
     value = args.get("range")
     if value is None or value == "all":
         request["workArea"] = 0
@@ -92,6 +99,7 @@ def _start(host: Any, args: dict[str, Any], key: str, imports: Path | None) -> d
         if start < 0 or end > length or end - start < 0.04:
             raise HostError(f"range must be within the sequence (0 to {length} s) and at least a frame long")
         request.update(workArea=1, inSeconds=round(start, 3), outSeconds=round(end, 3))
+        asked = (round(start, 3), round(end, 3))
     else:
         raise HostError('range must be "all", "in_out" or {start, end} in seconds')
     folder, stem = output_stem(_project(host), name, args.get("name"), (ext,))
@@ -107,6 +115,7 @@ def _start(host: Any, args: dict[str, Any], key: str, imports: Path | None) -> d
         "states": str(_states(imports)),
         "state": "rendering",
         "fraction": 0.0,
+        "range": asked,
     }
     return {"jobId": job, "path": path, "seconds": JOBS[job]["seconds"]}
 
@@ -173,6 +182,20 @@ def _end(record: dict[str, Any], job: str, state: str, error: str | None) -> Non
         record["error"] = error
 
 
+def _wrong_length(record: dict[str, Any]) -> str | None:
+    """Why the finished file can't be handed over (its length isn't the length asked for), or None."""
+    expected = float(record.get("seconds") or 0)
+    actual = media_duration(record["path"])
+    if expected <= 0 or actual is None or abs(actual - expected) <= max(0.5, expected * 0.02):
+        return None
+    asked = record.get("range")
+    what = f"{asked[0]:g}–{asked[1]:g} s" if asked else f"{expected:g} s"
+    return (
+        f"Media Encoder rendered {actual:.1f} s instead of {what} (it didn't keep the sequence's In and "
+        "Out), so the file was removed. Try this render again."
+    )
+
+
 def render_status(_host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{jobId} -> {state: rendering | done | failed | cancelled, fraction?, path?, error?}. The end of a
     job has a file of its own, so a progress event Media Encoder delivers late can't hide it."""
@@ -186,7 +209,8 @@ def render_status(_host: Any, args: dict[str, Any]) -> dict[str, Any]:
         if written != record["path"] and inside(written, renders_root()) and os.path.isfile(written):
             record["path"] = written
         if os.path.isfile(record["path"]) and os.path.getsize(record["path"]) > 0:
-            _end(record, job, "done", None)
+            wrong = _wrong_length(record)
+            _end(record, job, "failed" if wrong else "done", wrong)
         else:
             _end(
                 record,

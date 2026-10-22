@@ -13,7 +13,7 @@ import { browseSpyglass, findSpyglassIndex, prepareShotDrags, resolveSpyglassSco
 import { MAX_POOL, useLibraryStore, type LibraryShot, type LibraryState } from "../store/useLibraryStore";
 import { selectActiveHost, useNleStateStore } from "../store/useNleStateStore";
 import type { NleHost } from "../types/nle";
-import type { SpyglassBrowseShot, SpyglassMatch, SpyglassSearchResult } from "../types/spyglass";
+import type { SpyglassBrowseShot, SpyglassFolder, SpyglassMatch, SpyglassSearchResult } from "../types/spyglass";
 
 export const PAGE = 60;
 export const SEARCH_TOP = 40;
@@ -90,12 +90,56 @@ async function loadFolders(parent: string): Promise<void> {
   }
 }
 
+/** How often the loaded folders' drives are looked at again, so a drive attached or ejected after the
+ * Library opened shows (here and in the Premiere panel) without a restart. */
+export const DRIVE_RECHECK_MS = 10_000;
+let recheckTimer: ReturnType<typeof setInterval> | null = null;
+let rechecking = false;
+
+/**
+ * Asks again which loaded folders are online (Rust looks at the disk on each call; its archive is cached,
+ * so this is cheap). The store changes only when a folder's drive came or went, and then a browsed page
+ * with shots under that folder is read again for their status. A search is not re-run: that's a model job.
+ */
+export async function recheckDrives(): Promise<void> {
+  if (!opened || rechecking || store().busy || !store().index) return;
+  rechecking = true;
+  try {
+    const before = store().children;
+    const changed: string[] = [];
+    const fresh: Record<string, SpyglassFolder[]> = {};
+    for (const parent of Object.keys(before)) {
+      const kids = await spyglassFolderChildren(parent || undefined);
+      const was = new Map(before[parent].map((f) => [f.path, f.online]));
+      for (const f of kids) if (was.has(f.path) && was.get(f.path) !== f.online) changed.push(f.path);
+      fresh[parent] = kids;
+    }
+    if (changed.length === 0 || store().children !== before) return;
+    patch({ children: { ...store().children, ...fresh } });
+    const { mode, results } = store();
+    if (mode === "browse" && results.some((r) => changed.some((p) => r.path.startsWith(`${p.replace(/\/+$/, "")}/`)))) await browse(0);
+  } catch {
+    // The next check tries again; a failed one changes nothing.
+  } finally {
+    rechecking = false;
+  }
+}
+
+function watchDrives(): void {
+  if (recheckTimer !== null) return;
+  recheckTimer = setInterval(() => void recheckDrives(), DRIVE_RECHECK_MS);
+  window.addEventListener("focus", onFocus);
+}
+
+const onFocus = () => void recheckDrives();
+
 /** The tab was opened: the index, the watched roots and the scope's first page, once per run. */
 export async function openLibrary(): Promise<void> {
   if (opened) return;
   opened = true;
   await refreshIndex();
   if (!store().index) return;
+  watchDrives();
   await loadFolders("");
   for (const path of store().expanded) await loadFolders(path);
   void ensureKeyframes(store().pool);
@@ -357,4 +401,8 @@ export async function dragShot(shot: LibraryShot): Promise<void> {
 export function resetLibraryForTests(): void {
   opened = false;
   generation = 0;
+  rechecking = false;
+  if (recheckTimer !== null) clearInterval(recheckTimer);
+  recheckTimer = null;
+  window.removeEventListener("focus", onFocus);
 }

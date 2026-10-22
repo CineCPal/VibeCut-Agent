@@ -30,6 +30,9 @@ class FakePremiere:
         self.drags_links = False  # whether set_items also slips a clip's linked clips
         self.transitions: dict[int, list[dict]] = {}  # id(track list) -> its transitions
         self.fades: dict[str, dict] = {}  # clip id -> {"keys": [...], "value": v}
+        # clip id -> {"scale": {keys, value}, "position": {keys, value}, "uniform": bool} (Phase 16f)
+        self.motions: dict[str, dict] = {}
+        self.motion_ignored = False  # as if Premiere answered but kept the old Motion
         self.speed_ignored = False  # as if Premiere answered but kept the old speed
         self.razor_offset = 0  # ticks a razor lands off the asked frame
         self.effects: set[str] = set()  # clip ids with effects a re-placement would lose
@@ -107,6 +110,8 @@ class FakePremiere:
             "zeroPoint": "0",
             "endTicks": str(60 * T),
             "isActive": True,
+            "frameWidth": 1920,
+            "frameHeight": 1080,
             "video": [track(t) for t in self.video],
             "audio": [track(t) for t in self.audio],
             "markers": [],
@@ -220,6 +225,32 @@ class FakePremiere:
                 "value": None if want["keys"] else want["value"],
             }
         return {"items": [self._fade(w["id"]) for w in a["items"]]}
+
+    # -------------------------------------------------------------- Motion (Phase 16f)
+
+    def _motion(self, clip_id):
+        assert self.find(clip_id) in [c for _k, _i, c in self.everything() if _k == "video"]
+        return self.motions.setdefault(
+            clip_id,
+            {
+                "scale": {"keys": [], "value": 100.0},
+                "position": {"keys": [], "value": [0.5, 0.5]},
+                "uniform": True,
+            },
+        )
+
+    def read_motion(self, a):
+        return {"items": [{"id": i, **copy.deepcopy(self._motion(i))} for i in a["ids"]]}
+
+    def set_motion(self, a):
+        for want in a["items"]:
+            motion = self._motion(want["id"])
+            for key in ("scale", "position"):
+                if key in want and not self.motion_ignored:
+                    keys = copy.deepcopy(want[key]["keys"])
+                    # As the panel reads it back: keyed, the value is Premiere's at the playhead.
+                    motion[key] = {"keys": keys, "value": copy.deepcopy(want[key]["value"])}
+        return self.read_motion({"ids": [w["id"] for w in a["items"]]})
 
     def _track_of(self, clip_id):
         for tracks in (self.video, self.audio):

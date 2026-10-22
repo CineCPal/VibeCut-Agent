@@ -17,7 +17,7 @@ import type {
 } from "../types/sidecar";
 import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
 import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
-import type { ClaudeCodeStatus } from "../types/agent";
+import type { AntigravityStatus, ClaudeCodeStatus } from "../types/agent";
 import type { ChatSearchHit, ChatSummary, SavedChat, SavedEditLog } from "../types/history";
 
 export const NAVIGATE_EVENT = "navigate";
@@ -270,6 +270,26 @@ export function setClaudeCode(program: string | null, configDir: string | null):
 /** The Claude plan's usage, as Claude Code's `/usage` reports it (its text; Phase 9b). No model call. */
 export function getClaudeCodeUsage(): Promise<string> {
   return invoke<string>("claude_code_usage");
+}
+
+/** Whether agy is installed and signed in, its Gemini models, and whether it has VibeCut's tools (Phase 17). */
+export function getAntigravityStatus(): Promise<AntigravityStatus> {
+  return invoke<AntigravityStatus>("antigravity_status");
+}
+
+/** Saves the agy program (null: forget it and look in the usual places), then checks again. */
+export function setAntigravity(program: string | null): Promise<AntigravityStatus> {
+  return invoke<AntigravityStatus>("antigravity_set", { program });
+}
+
+/** Adds (or updates) VibeCut's tools in the user's agy config (`agy mcp add vibecut …`). Only on a click. */
+export function addAntigravityTools(): Promise<AntigravityStatus> {
+  return invoke<AntigravityStatus>("antigravity_add_tools");
+}
+
+/** Takes VibeCut's tools back out of the user's agy config (`agy mcp remove vibecut`). */
+export function removeAntigravityTools(): Promise<AntigravityStatus> {
+  return invoke<AntigravityStatus>("antigravity_remove_tools");
 }
 
 /** Past chats, newest first (chat_store.rs, Phase 8a). */

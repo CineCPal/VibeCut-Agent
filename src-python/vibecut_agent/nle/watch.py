@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 from vibecut_agent.nle import resolve
 from vibecut_agent.nle.edits import premiere_edits, resolve_edits
-from vibecut_agent.nle.errors import HostError, Unreachable
+from vibecut_agent.nle.errors import Busy, HostError, Unreachable
 from vibecut_agent.nle.media import premiere_media, resolve_media
 from vibecut_agent.nle.premiere import PremiereHost
 from vibecut_agent.nle.premiere_bridge import PremiereBridge
@@ -76,12 +76,26 @@ def _snapshot(status: dict[str, Any], instance: str | None) -> dict[str, Any]:
     }
 
 
+# The probe's own wait: past it, a Premiere whose panel is alive reads as busy, not gone.
+PROBE_TIMEOUT_S = 10.0
+
+
 class PremiereAdapter:
+    """While Premiere is busy (rendering through Media Encoder, conforming, a long request) its panel keeps
+    stamping alive.json but answers late. Seen 2026-10-16: each per-clip render left the probe's `status`
+    unanswered for over 20 s, and the app showed Premiere disconnected mid-export. So a probe doesn't
+    queue a `status` behind the panel's work, waits at most PROBE_TIMEOUT_S, and while the heartbeat is
+    fresh reports the last state it read: only a stale heartbeat is a lost connection."""
+
     host = "premiere"
 
     def __init__(self, bridge: PremiereBridge | None = None) -> None:
         self.bridge = bridge or PremiereBridge()
         self.api = PremiereHost(self.bridge.request)
+        self._probe_api = PremiereHost(
+            lambda c, a, _t: self.bridge.request(c, a, PROBE_TIMEOUT_S, patient=False)
+        )
+        self._last: dict[str, Any] | None = None
         self._prepared = False
         # The direct edits, plus the B-roll Library's import and source preview (media.py).
         self._edits = {
@@ -97,7 +111,20 @@ class PremiereAdapter:
             self.bridge.prepare()
             self._prepared = True
         instance = alive.get("instance")
-        return _snapshot(self.api.status({}), instance if isinstance(instance, str) else None)
+        instance = instance if isinstance(instance, str) else None
+        same = self._last is not None and self._last["instance"] == instance
+        if same and alive.get("busy") is True:
+            assert self._last is not None
+            return self._last
+        try:
+            snapshot = _snapshot(self._probe_api.status({}), instance)
+        except Busy:
+            if not same:
+                raise
+            assert self._last is not None
+            return self._last
+        self._last = snapshot
+        return snapshot
 
     def call(self, command: str, args: dict[str, Any]) -> Any:
         self.bridge.check_alive()

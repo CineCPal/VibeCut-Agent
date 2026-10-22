@@ -6,11 +6,12 @@ request: {
     "sources": [{"sourceId": str, "segments": [{"start", "end", "text", "speaker"}, ...]}, ...],
     "media": {sourceId: absolute video path}   (optional; names each cut after its video),
     "fps": 25,
-    "provider": "gemini" | "claude" | "claude-code"   (optional, "gemini" when absent; the chat's),
+    "provider": "gemini" | "claude" | "claude-code" | "antigravity"   (optional, "gemini"; the chat's),
     "model": str                               (optional),
     "apiKey": str                              (injected by Rust, sidecar.rs `prepare_request`; not for
                                                 "claude-code"),
     "claudeCode": {...}                        (injected by Rust for "claude-code": claude_code.rs),
+    "antigravity": {...}                       (injected by Rust for "antigravity": antigravity.rs),
     "extraction": "same" | "gemini"            (optional, Phase 7e: the model of the first pass over
                                                 long footage; "same" is the story's provider, on
                                                 Sonnet or Gemini Flash),
@@ -41,6 +42,8 @@ from vibecut_agent.story import extract
 from vibecut_agent.story.assemble import Story, parse_duration_string
 from vibecut_agent.story.models import (
     StoryModelError,
+    antigravity_json_answer,
+    antigravity_story,
     claude_code_json_answer,
     claude_code_story,
     claude_json,
@@ -50,10 +53,17 @@ from vibecut_agent.story.models import (
 )
 
 TOOL = "story-editor"
-WHO = {"gemini": "Gemini", "claude": "Claude", "claude-code": "Claude (subscription)"}
+WHO = {
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "claude-code": "Claude (subscription)",
+    "antigravity": "Gemini (subscription)",
+}
 # The first pass's models: quicker and lighter on a plan's limits than the story's.
 EXTRACT_CLAUDE_MODEL = "claude-sonnet-5-5"
 EXTRACT_GEMINI_MODEL = "gemini-flash-latest"
+# On Gemini (subscription): agy's Flash family (antigravity_chat.MODELS).
+EXTRACT_AGY_MODEL = "gemini-3.8-flash"
 
 
 def extraction_asker(
@@ -80,6 +90,13 @@ def extraction_asker(
                 key, system, text, schema, EXTRACT_GEMINI_MODEL, on_retry
             )
         ), "Gemini Flash"
+    if provider == "antigravity":
+        agy_setup = request.get("antigravity")
+        return (
+            lambda system, text, schema: antigravity_json_answer(
+                agy_setup, system, text, schema, EXTRACT_AGY_MODEL, effort="medium", should_abort=should_abort
+            )
+        ), "Gemini Flash (subscription)"
     if provider == "claude-code":
         setup = request.get("claudeCode")
         return (
@@ -144,6 +161,9 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     if provider == "claude-code":
         if not isinstance(request.get("claudeCode"), dict):
             raise RequestError("Claude Code isn't set up. See Settings → Claude subscription.")
+    elif provider == "antigravity":
+        if not isinstance(request.get("antigravity"), dict):
+            raise RequestError("Antigravity isn't set up. See Settings → Gemini subscription.")
     elif not api_key:
         raise RequestError(f"No {WHO[provider]} API key was provided.")
     prompt = request.get("prompt")
@@ -206,7 +226,11 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
                 f"shortlisted {extract.line_count(sources)} for the story."
             )
         emitter.emit("status", phase="generating", detail=f"Waiting for {who}")
-        if provider == "claude-code":
+        if provider == "antigravity":
+            raw = antigravity_story(
+                request.get("antigravity"), brief, sources, catalog, target_seconds, model, should_abort
+            )
+        elif provider == "claude-code":
             raw = claude_code_story(
                 request.get("claudeCode"), brief, sources, catalog, target_seconds, model, should_abort
             )

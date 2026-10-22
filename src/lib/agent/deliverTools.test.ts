@@ -6,7 +6,7 @@ const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => tauri);
 
 import { captionCues } from "./captionTools";
-import { progressLine, rangeArg, renderExecutors } from "./renderTools";
+import { clipProgressLine, progressLine, rangeArg, renderExecutors } from "./renderTools";
 import { executorsFor, runTool, type ToolContext } from "./tools";
 import { useAgentStore } from "../../store/useAgentStore";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
@@ -149,6 +149,65 @@ describe("renders (Phase 15b)", () => {
     expect(errorOf(await runTool(renderExecutors(context, 0), "export_audio", { format: "mp3" }))).toMatch(/format must be one of wav, aac/);
     useConnectionStore.setState((s) => ({ connections: { ...s.connections, resolve: { ...s.connections.resolve, draft: { base: "Main", changes: ["x"] } as never } } }));
     expect(errorOf(await runTool(renderExecutors(context, 0), "export_video", {}))).toMatch(/A draft is open/);
+    expect(ipc.nleCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("export_clips", () => {
+  const context: ToolContext = { host: "resolve", timeline: "Main", step: "s1", stepText: "export each clip" };
+  const folder = "/Users/me/Movies/VibeCut Renders/Doc/Main clips";
+  const start = { jobId: "c1", folder, total: 2, skipped: [{ id: "adj", name: "Adjustment Layer", reason: "a transition, adjustment layer or generator has no source file" }], notes: ["B plays at 200% on the timeline; its file is the source at normal speed"] };
+
+  it("cuts each clip, shows its progress and answers with the folder, the skips and the notes", async () => {
+    const states = [
+      { state: "rendering", done: 1, total: 2, fraction: 0.5, etaSeconds: 3, folder, files: [`${folder}/01 A.mp4`], failed: [] },
+      { state: "done", done: 2, total: 2, fraction: 1, folder, files: [`${folder}/01 A.mp4`, `${folder}/02 B.mp4`], failed: [] },
+    ];
+    const seen: (string | null)[] = [];
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+      if (command === "export_clips") return start;
+      if (command === "clip_export_status") {
+        seen.push(useAgentStore.getState().activity);
+        return states.shift();
+      }
+      throw new Error(`unexpected ${command}`);
+    });
+    const out = await runTool(renderExecutors(context, 0), "export_clips", { track: "V1", handles: 1, format: "prores" });
+    expect(sent("export_clips")).toEqual([{ timeline: "Main", format: "prores", track: "V1", handles: 1 }]);
+    expect(seen[1]).toBe("Exporting clips 2/2 → Main clips 50%, about 3 s left");
+    expect(out.summary).toBe(
+      `Exported 2 of 2 clips, each by itself, to ${folder}. Skipped 1: Adjustment Layer (a transition, adjustment layer or generator has no source file). B plays at 200% on the timeline; its file is the source at normal speed.`,
+    );
+    expect(out.result).toMatchObject({ exported: 2, files: [`${folder}/01 A.mp4`, `${folder}/02 B.mp4`] });
+    expect(clipProgressLine(folder, { state: "rendering", done: 0, total: 3, folder, files: [], failed: [] })).toBe("Exporting clips 1/3 → Main clips");
+  });
+
+  it("stops when the chat is stopped, keeping the finished files, and fails when no clip was written", async () => {
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+      if (command === "export_clips") return start;
+      if (command === "clip_export_status") {
+        useAgentStore.setState({ status: "stopping" });
+        return { state: "rendering", done: 0, total: 2, folder, files: [], failed: [] };
+      }
+      if (command === "cancel_clip_export") return { state: "cancelled", done: 1, total: 2, folder, files: [`${folder}/01 A.mp4`], failed: [] };
+      throw new Error(`unexpected ${command}`);
+    });
+    const stopped = await runTool(renderExecutors(context, 0), "export_clips", { clipIds: ["v1", "v2"] });
+    expect(sent("export_clips")).toEqual([{ timeline: "Main", format: "source", clipIds: ["v1", "v2"] }]);
+    expect(sent("cancel_clip_export")).toEqual([{ jobId: "c1" }]);
+    expect(stopped.summary).toBe(`Stopped exporting clips after 1 of 2; the finished files are kept in ${folder}.`);
+
+    useAgentStore.setState({ status: "thinking" });
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) =>
+      command === "export_clips" ? { ...start, skipped: [], notes: [] } : { state: "failed", done: 2, total: 2, folder, files: [], failed: [{ clip: "A", error: "Invalid data found" }] },
+    );
+    expect(errorOf(await runTool(renderExecutors(context, 0), "export_clips", {}))).toBe("No clip was exported. Failed 1: A (Invalid data found).");
+  });
+
+  it("refuses a bad format, and while a draft is open", async () => {
+    expect(errorOf(await runTool(renderExecutors(context, 0), "export_clips", { format: "gif" }))).toMatch(/format must be one of source, 1080p, 720p, prores, copy/);
+    useConnectionStore.setState((s) => ({ connections: { ...s.connections, resolve: { ...s.connections.resolve, draft: { base: "Main", changes: ["x"] } as never } } }));
+    expect(errorOf(await runTool(renderExecutors(context, 0), "export_clips", {}))).toMatch(/A draft is open/);
     expect(ipc.nleCall).not.toHaveBeenCalled();
   });
 });

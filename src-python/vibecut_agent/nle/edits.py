@@ -16,7 +16,14 @@ Edit = Callable[[Any, dict[str, Any]], Any]
 
 def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
     """`imports` is the bridge folder's imports/, where create_captions writes its SRT (Phase 15a)."""
-    from vibecut_agent.nle import links, premiere_edit, premiere_effects, premiere_structure, premiere_timing
+    from vibecut_agent.nle import (
+        links,
+        premiere_edit,
+        premiere_effects,
+        premiere_structure,
+        premiere_timing,
+        premiere_transform,
+    )
 
     return {
         "backup_timeline": premiere_edit.backup_timeline,
@@ -27,6 +34,9 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "set_clip_levels": premiere_edit.set_clip_levels,
         # Phase 16b.
         "label_clips": premiere_edit.label_clips,
+        # Phase 16f.
+        "set_clip_transform": premiere_transform.set_clip_transform,
+        "read_clip_transforms": premiere_transform.read_clip_transforms,
         "reshape_clip": premiere_edit.reshape_clip,
         "set_clip_fades": premiere_effects.set_clip_fades,
         "duck_clip": premiere_effects.duck_clip,
@@ -52,6 +62,7 @@ def resolve_edits() -> dict[str, Edit]:
         resolve_reshape,
         resolve_structure,
         resolve_timing,
+        resolve_transform,
     )
 
     return {
@@ -63,6 +74,9 @@ def resolve_edits() -> dict[str, Edit]:
         "set_clip_levels": resolve_edit.set_clip_levels,
         # Phase 16b.
         "label_clips": resolve_edit.label_clips,
+        # Phase 16f.
+        "set_clip_transform": resolve_transform.set_clip_transform,
+        "read_clip_transforms": resolve_transform.read_clip_transforms,
         "reshape_clip": resolve_reshape.reshape_clip,
         "set_clip_fades": resolve_effects.set_clip_fades,
         # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts); also a tool (12c).

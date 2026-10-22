@@ -14,9 +14,11 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.12.0";
+const PANEL_VERSION = "0.13.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
+// At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).
+const MAX_MOTION_KEYS = 400;
 const BRIDGE_DIR =
   process.env.VIBECUT_AGENT_PREMIERE_BRIDGE_DIR ||
   path.join(os.homedir(), "Library", "Application Support", "VibeCut Agent", "host-bridge", "premiere");
@@ -57,6 +59,9 @@ const COMMANDS = {
   remove_tracks: "vcRemoveTracks",
   read_fades: "vcReadFades",
   set_fades: "vcSetFades",
+  // Phase 16f: a picture clip's Motion Scale and Position (premiere_transform.py).
+  read_motion: "vcReadMotion",
+  set_motion: "vcSetMotion",
   razor: "vcRazor",
   import_media: "vcImportMedia",
   source_preview: "vcSourcePreview",
@@ -346,6 +351,34 @@ const CHECKS = {
       if (typeof item.value !== "number" || !Number.isFinite(item.value)) throw new Error(`items[${i}].value must be a number`);
     });
   },
+  // Phase 16f: Scale is a number (percent), Position [x, y] fractions of the frame.
+  read_motion(args) {
+    checkSequenceName(args.timeline);
+    checkIds(args.ids, "ids");
+  },
+  set_motion(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.items) || !args.items.length || args.items.length > 200) throw new Error("items must list 1 to 200 clips");
+    const scale = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 10000;
+    const point = (v) => Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= 100);
+    args.items.forEach((item, i) => {
+      if (!isPlainObject(item)) throw new Error(`items[${i}] must be an object`);
+      checkId(item.id, `items[${i}].id`);
+      let any = false;
+      for (const [key, ok, what] of [["scale", scale, "a percentage"], ["position", point, "[x, y]"]]) {
+        const prop = item[key];
+        if (prop === undefined || prop === null) continue;
+        any = true;
+        if (!isPlainObject(prop) || !Array.isArray(prop.keys) || prop.keys.length > MAX_MOTION_KEYS) throw new Error(`items[${i}].${key}.keys must list at most ${MAX_MOTION_KEYS} keys`);
+        prop.keys.forEach((k, n) => {
+          if (!isPlainObject(k) || typeof k.ticks !== "string" || !/^\d{1,20}$/.test(k.ticks)) throw new Error(`items[${i}].${key}.keys[${n}].ticks must be ticks`);
+          if (!ok(k.value)) throw new Error(`items[${i}].${key}.keys[${n}].value must be ${what}`);
+        });
+        if (!ok(prop.value)) throw new Error(`items[${i}].${key}.value must be ${what}`);
+      }
+      if (!any) throw new Error(`items[${i}] must set scale or position`);
+    });
+  },
   move_items(args) {
     checkSequenceName(args.timeline);
     const offset = (value, where) => {
@@ -582,13 +615,17 @@ function hostVersion() {
   }
 }
 
+// Read once: getHostEnvironment waits on Premiere, so asking each beat stalled the heartbeat while a
+// request held Premiere (encodeSequence on a 4K sequence, 2026-10-21).
+const PREMIERE_VERSION = hostVersion();
+
 function heartbeat() {
   try {
     writeJson(ALIVE, {
       time: Date.now() / 1000,
       busy,
       panelVersion: PANEL_VERSION,
-      premiereVersion: hostVersion(),
+      premiereVersion: PREMIERE_VERSION,
       instance: INSTANCE,
       startedAt: STARTED_AT,
     });

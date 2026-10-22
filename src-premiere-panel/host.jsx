@@ -1151,6 +1151,104 @@ function vcSetFades(args) {
   }, args);
 }
 
+// ------------------------------------------------------------------------------ Motion (Phase 16f)
+
+// A picture clip's Motion property by display name ("Scale", "Position", "Uniform Scale"), or null.
+function vcMotionProperty(clip, name) {
+  for (var c = 0; c < clip.components.numItems; c++) {
+    var component = clip.components[c];
+    if (component.matchName !== "AE.ADBE Motion") {
+      continue;
+    }
+    for (var p = 0; p < component.properties.numItems; p++) {
+      if (component.properties[p].displayName === name) {
+        return component.properties[p];
+      }
+    }
+  }
+  return null;
+}
+
+// A Motion property's keys ({ticks (source), value}) and its value; Position's are [x, y] fractions.
+function vcReadMotionProperty(prop) {
+  var keys = [];
+  if (typeof prop.isTimeVarying === "function" && prop.isTimeVarying()) {
+    var times = prop.getKeys() || [];
+    for (var k = 0; k < times.length; k++) {
+      var value = prop.getValueAtKey(times[k]);
+      keys.push({ ticks: times[k].ticks, value: value instanceof Array ? [value[0], value[1]] : value });
+    }
+  }
+  var now = prop.getValue();
+  return { value: now instanceof Array ? [now[0], now[1]] : now, keys: keys };
+}
+
+function vcReadMotionOf(entry, id) {
+  if (entry.type !== "video") {
+    vcRefuse("\"" + entry.item.name + "\" is sound, with no Motion");
+  }
+  var scale = vcMotionProperty(entry.item, "Scale");
+  var position = vcMotionProperty(entry.item, "Position");
+  if (!scale || !position) {
+    vcRefuse("\"" + entry.item.name + "\" has no Motion Scale and Position to read");
+  }
+  var uniform = vcMotionProperty(entry.item, "Uniform Scale");
+  var even = null;
+  if (uniform) {
+    var shown = uniform.getValue();
+    even = shown === true || shown === 1 || shown === "true";
+  }
+  return { id: id, scale: vcReadMotionProperty(scale), position: vcReadMotionProperty(position), uniform: even };
+}
+
+// args: {timeline, ids}. Each picture clip's Motion Scale and Position, and whether its scale is uniform.
+function vcReadMotion(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.ids.length; i++) {
+      out.push(vcReadMotionOf(vcItemWithId(sequence, a.ids[i]), a.ids[i]));
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {timeline, items: [{id, scale?: {keys, value}, position?: {keys, value}}]}. Replaces each named
+// property as set_fades does its fade: every key cleared, then `keys` set; with none, it's left at `value`.
+function vcSetMotion(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var names = { scale: "Scale", position: "Position" };
+    var out = [];
+    for (var i = 0; i < a.items.length; i++) {
+      var want = a.items[i];
+      var entry = vcItemWithId(sequence, want.id);
+      for (var key in names) {
+        if (!names.hasOwnProperty(key) || want[key] === undefined || want[key] === null) {
+          continue;
+        }
+        var prop = vcMotionProperty(entry.item, names[key]);
+        if (!prop) {
+          vcRefuse("\"" + entry.item.name + "\" has no Motion " + names[key]);
+        }
+        prop.setTimeVarying(false);
+        if (want[key].keys.length) {
+          prop.setTimeVarying(true);
+          for (var k = 0; k < want[key].keys.length; k++) {
+            var at = vcTime(want[key].keys[k].ticks);
+            prop.addKey(at);
+            prop.setValueAtKey(at, want[key].keys[k].value, true);
+          }
+        } else {
+          prop.setValue(want[key].value, true);
+        }
+      }
+      out.push(vcReadMotionOf(vcItemWithId(sequence, want.id), want.id));
+    }
+    return { items: out };
+  }, args);
+}
+
 // args: {timeline, ids, timecode}. Razors the track of each clip at the timecode (the sequence's own
 // frames, "HH:MM:SS:FF"); premiere_timing.py reads the sequence before and after to find the new pieces.
 function vcRazor(args) {
@@ -2029,24 +2127,70 @@ function vcWriteRenderState(stateDir, jobId, kind, state) {
   }
 }
 
+// The marks a ranged job's sequence had before it, by job id, put back once Media Encoder is done with the
+// job. Kept on $.global: this file is evaluated again for every request.
+function vcPendingMarks() {
+  if (!$.global.vcPendingMarks) {
+    $.global.vcPendingMarks = {};
+  }
+  return $.global.vcPendingMarks;
+}
+
+function vcSequenceById(sequenceID) {
+  var project = vcProject();
+  for (var i = 0; i < project.sequences.numSequences; i++) {
+    if (project.sequences[i].sequenceID === sequenceID) {
+      return project.sequences[i];
+    }
+  }
+  return null;
+}
+
+// Puts back the marks job `jobId` changed (all pending jobs' with no id). Never throws: it runs inside
+// Media Encoder's events.
+function vcRestoreMarks(jobId) {
+  var pending = vcPendingMarks();
+  for (var id in pending) {
+    if (!pending.hasOwnProperty(id) || (jobId !== undefined && id !== String(jobId))) {
+      continue;
+    }
+    var marks = pending[id];
+    delete pending[id];
+    try {
+      var sequence = vcSequenceById(marks.sequenceID);
+      if (sequence) {
+        sequence.setInPoint(marks.inTicks);
+        sequence.setOutPoint(marks.outTicks);
+      }
+    } catch (e) {
+      // The sequence was closed or deleted while it rendered: nothing to put back.
+    }
+  }
+}
+
 // Media Encoder's events for every job queued from here. Binding again replaces nothing that matters:
-// each handler only writes its job's own files.
+// each handler only writes its job's own files. A job's marks are put back before its end is written, so
+// the next ranged job (queued once this one is done) never meets a late restore.
 function vcBindRenderEvents(stateDir) {
   app.encoder.bind("onEncoderJobProgress", function (jobId, progress) {
     vcWriteRenderState(stateDir, jobId, "progress", { fraction: Number(progress) || 0 });
   });
   app.encoder.bind("onEncoderJobComplete", function (jobId, outputPath) {
+    vcRestoreMarks(jobId);
     vcWriteRenderState(stateDir, jobId, "done", { path: String(outputPath) });
   });
   app.encoder.bind("onEncoderJobError", function (jobId, errorMessage) {
+    vcRestoreMarks(jobId);
     vcWriteRenderState(stateDir, jobId, "failed", { error: String(errorMessage) });
   });
 }
 
 // args: {timeline, out, preset, workArea (0 the whole sequence, 1 In to Out), inSeconds?, outSeconds?,
 // stateDir}. Queues the sequence in Media Encoder and starts its batch. With inSeconds/outSeconds the
-// sequence's In and Out are set for the job and put back straight after it is queued; without them,
-// workArea 1 uses the sequence's own. bridge.js checks out, preset and stateDir.
+// sequence's In and Out are set for the job and put back when Media Encoder reports it done or failed
+// (vcRestoreMarks); without them, workArea 1 uses the sequence's own. bridge.js checks out, preset and
+// stateDir. Putting them back straight after queuing (before 0.12.1) let Media Encoder sometimes read the
+// sequence after the restore and render all of it: 2 of 42 per-clip renders, seen 2026-10-16.
 function vcEncode(args) {
   return vcAnswer(function (a) {
     var sequence = vcSequenceNamed(a.timeline);
@@ -2069,19 +2213,34 @@ function vcEncode(args) {
     app.encoder.setSidecarXMPEnabled(0);
     vcBindRenderEvents(a.stateDir);
     var jobId;
+    var before = { sequenceID: sequence.sequenceID, inTicks: markedIn.ticks, outTicks: markedOut.ticks };
     if (ranged) {
+      // A job that never reported back still holds this sequence's original marks: keep those.
+      var pending = vcPendingMarks();
+      for (var id in pending) {
+        if (pending.hasOwnProperty(id) && pending[id].sequenceID === sequence.sequenceID) {
+          before = pending[id];
+          delete pending[id];
+        }
+      }
       sequence.setInPoint(a.inSeconds);
       sequence.setOutPoint(a.outSeconds);
     }
+    var queued = false;
     try {
       jobId = app.encoder.encodeSequence(sequence, a.out, a.preset, a.workArea, 1);
+      queued = !!jobId && jobId !== "0";
     } finally {
       if (ranged) {
-        sequence.setInPoint(markedIn.ticks);
-        sequence.setOutPoint(markedOut.ticks);
+        if (queued) {
+          vcPendingMarks()[String(jobId)] = before;
+        } else {
+          sequence.setInPoint(before.inTicks);
+          sequence.setOutPoint(before.outTicks);
+        }
       }
     }
-    if (!jobId || jobId === "0") {
+    if (!queued) {
       vcRefuse("Media Encoder didn't take the render");
     }
     app.encoder.startBatch();
@@ -2094,6 +2253,7 @@ function vcEncode(args) {
 function vcEncodeCancel(args) {
   return vcAnswer(function () {
     if (!BridgeTalk.isRunning("ame")) {
+      vcRestoreMarks();
       return { stopped: false };
     }
     var bt = new BridgeTalk();
@@ -2110,6 +2270,8 @@ function vcEncodeCancel(args) {
     if (answer === null || answer.indexOf("error") === 0) {
       vcRefuse("Media Encoder didn't stop" + (answer ? ": " + answer : ""));
     }
+    // A stopped job may never report an end, so its sequence's marks are put back now.
+    vcRestoreMarks();
     return { stopped: true };
   }, args);
 }

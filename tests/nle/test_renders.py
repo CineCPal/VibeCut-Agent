@@ -9,6 +9,7 @@ import pytest
 from vibecut_agent.nle.renders import (
     RenderError,
     extract_wav,
+    media_duration,
     output_stem,
     safe_name,
 )
@@ -75,3 +76,16 @@ def test_a_broken_carrier_fails_cleanly(tmp_path):
     with pytest.raises(RenderError, match="take the sound out"):
         extract_wav(str(carrier), str(tmp_path / "c.wav"))
     assert not carrier.exists() and not (tmp_path / "c.wav").exists()
+
+
+@needs_ffmpeg
+def test_media_duration(tmp_path, monkeypatch):
+    clip = tmp_path / "c.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=black:s=64x36:r=25:d=2", str(clip)], check=True
+    )
+    assert media_duration(str(clip)) == pytest.approx(2.0, abs=0.05)
+    (tmp_path / "text.mp4").write_text("not a movie")
+    assert media_duration(str(tmp_path / "text.mp4")) is None
+    monkeypatch.setenv("VIBECUT_FFPROBE", str(tmp_path / "missing"))
+    assert media_duration(str(clip)) is None

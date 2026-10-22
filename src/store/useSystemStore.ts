@@ -1,8 +1,16 @@
 import { create } from "zustand";
 import type { DependencyInfo, HwAccel, KeyStatus, StoragePaths } from "../types/system";
 import type { SidecarInfo } from "../types/sidecar";
-import type { ClaudeCodeStatus } from "../types/agent";
-import { getClaudeCodeStatus, getDependencyStatus, getHardwareAcceleration, getKeyStatus, getSidecarInfo, getStoragePaths } from "../lib/ipc";
+import type { AntigravityStatus, ClaudeCodeStatus } from "../types/agent";
+import {
+  getAntigravityStatus,
+  getClaudeCodeStatus,
+  getDependencyStatus,
+  getHardwareAcceleration,
+  getKeyStatus,
+  getSidecarInfo,
+  getStoragePaths,
+} from "../lib/ipc";
 
 export interface SystemState {
   keys: KeyStatus | null;
@@ -12,6 +20,8 @@ export interface SystemState {
   sidecar: SidecarInfo | null;
   /** Claude (subscription): whether Claude Code is there and signed in. Null until checked. */
   claudeCode: ClaudeCodeStatus | null;
+  /** Gemini (subscription), Phase 17: whether agy is there, signed in and has VibeCut's tools. Null until checked. */
+  antigravity: AntigravityStatus | null;
   loading: boolean;
   error: string | null;
   checkedAt: number | null;
@@ -21,6 +31,9 @@ export interface SystemState {
   /** Runs `claude auth status` again (a second or so; not part of `refresh`'s wait). */
   refreshClaudeCode: () => Promise<void>;
   setClaudeCode: (status: ClaudeCodeStatus) => void;
+  /** Runs `agy models` again (two seconds or so; not part of `refresh`'s wait). */
+  refreshAntigravity: () => Promise<void>;
+  setAntigravity: (status: AntigravityStatus) => void;
 }
 
 function message(error: unknown): string {
@@ -34,6 +47,7 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
   storage: null,
   sidecar: null,
   claudeCode: null,
+  antigravity: null,
   loading: false,
   error: null,
   checkedAt: null,
@@ -46,10 +60,21 @@ export const useSystemStore = create<SystemState>()((set, get) => ({
       set({ claudeCode: { program: null, programSaved: null, configDir: null, signedIn: null, email: null, subscription: null, detail: message(error) } });
     }
   },
+  setAntigravity: (antigravity) => set({ antigravity }),
+  refreshAntigravity: async () => {
+    try {
+      set({ antigravity: await getAntigravityStatus() });
+    } catch (error) {
+      set({
+        antigravity: { program: null, programSaved: null, signedIn: null, models: [], toolsAdded: false, toolsCurrent: false, detail: message(error) },
+      });
+    }
+  },
   refresh: async () => {
     if (get().loading) return;
     set({ loading: true, error: null });
     void get().refreshClaudeCode();
+    void get().refreshAntigravity();
     try {
       const [keys, dependencies, hwAccel, storage, sidecar] = await Promise.all([
         getKeyStatus(),

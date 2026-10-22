@@ -39,6 +39,33 @@ describe("availability", () => {
     expect(availability(ready, noKeys, "claude-code-opus-5-5", { ...code, signedIn: null }).status).toBe("idle");
   });
 
+  it("needs agy installed, signed in and with VibeCut's tools for a Gemini subscription model (Phase 17)", () => {
+    const noKeys = { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null };
+    const agy = {
+      program: "/u/.local/bin/agy",
+      programSaved: null,
+      signedIn: true,
+      models: ["gemini-4-argon", "gemini-3.8-flash"],
+      toolsAdded: true,
+      toolsCurrent: true,
+      detail: null,
+    };
+    const choice = "antigravity-gemini-4-argon";
+    expect(availability(ready, noKeys, choice, null, null)).toEqual({ status: "offline", detail: "Checking Antigravity…" });
+    expect(availability(ready, noKeys, choice, null, agy)).toEqual({ status: "idle", detail: null });
+    expect(availability(ready, noKeys, choice, null, { ...agy, toolsAdded: false, toolsCurrent: false, detail: "VibeCut's tools aren't added to Antigravity yet." })).toEqual({
+      status: "offline",
+      detail: "VibeCut's tools aren't added to Antigravity yet. See Settings → Gemini subscription, or choose another model.",
+    });
+    expect(availability(ready, noKeys, choice, null, { ...agy, signedIn: false }).status).toBe("offline");
+    expect(availability(ready, noKeys, choice, null, { ...agy, models: ["gemini-3.8-flash"] })).toEqual({
+      status: "offline",
+      detail: "Antigravity doesn't offer Gemini 4 Argon on your account. Choose another model.",
+    });
+    // An unread list (no models reported) doesn't block it.
+    expect(availability(ready, noKeys, choice, null, { ...agy, models: [] }).status).toBe("idle");
+  });
+
   describe("refreshAgentStatus", () => {
     beforeEach(() => {
       useSidecarStore.setState({ session: ready });

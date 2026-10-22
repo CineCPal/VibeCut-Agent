@@ -92,6 +92,7 @@ It is designed to run locally in the background, launching independently and int
 | event | `mcp-request` | `mcp_bridge.rs` | `onMcpRequest(cb)` | 7a: `{ id, caller, kind: list_tools \| call_tool, name?, args? }`, checked and rebuilt by Rust; refused requests (outside while Allow is off, a chat job that isn't running) never arrive |
 | event | `mcp-outside` | `mcp_bridge.rs` | `onMcpOutside(cb)` | 7a: the `mcp_status` shape, after Allow changes |
 | command | `claude_code_status` / `claude_code_set` | `claude_code.rs` | `getClaudeCodeStatus()`, `setClaudeCode(program, configDir)` | 7b: `{ program, programSaved, configDir, signedIn, email, subscription, detail }` from `claude auth status --json`; the program and profile folder are saved in `claude-code.json` |
+| command | `antigravity_status` / `antigravity_set` / `antigravity_add_tools` / `antigravity_remove_tools` | `antigravity.rs` | `getAntigravityStatus()`, `setAntigravity(program)`, `addAntigravityTools()`, `removeAntigravityTools()` | 17: `{ program, programSaved, signedIn, models, toolsAdded, toolsCurrent, detail }`. Sign-in and the Gemini families come from `agy models` (no model call). The tools' state is read from `~/.gemini/config/mcp_config.json`. Add and Remove run `agy mcp add vibecut -- /usr/bin/env K=V … <shim>` and `agy mcp remove vibecut`, only on the user's click. The program is saved in `antigravity.json` |
 | event | `navigate` | `tray.rs` → main window | `onNavigate(cb)` | `"chat" \| "library" \| "broll" \| "settings" \| "about"` (`"broll"` is the Analyze tab) |
 | event | `sidecar-event` | `sidecar.rs` | `onSidecarEvent(cb)` | `{ jobId, command, event }`; `event` is one protocol object `{ type, ... }`. Chat: `status`, `retry`, `tool_calls`, `result`, `error`. B-roll: `starting`, `status`, `progress {fraction, phase, detail}`, `result`, `error`, `done` |
 | plugin | dialog `open` | `tauri-plugin-dialog` | `chooseFolder(title)` | the B-roll folder picker (`dialog:allow-open`) |
@@ -315,6 +316,7 @@ The B-roll panel's **Place** puts a pick's best stretch at the playhead the same
 **Fixed after the first live try (2026-10-05):** "drag and double-click do nothing in Premiere" was every shot being offline. All 12,134 indexed clips sit on the Blair archive drives (`2024 Main Drive - Blair`, `2026 Main Drive - Blair`, `Blair 2223`), none of them was mounted, and offline cards turned drag and double-click off without a word.
 - Now a drag or double-click on an offline shot names the drive to attach (`unusable`, `driveOf`).
 - The Library shows an "attach these drives" line (`missingDrives`).
+- Folder online state is rechecked every 10 s and when the window gets focus (`recheckDrives`, `DRIVE_RECHECK_MS`), so a drive attached or ejected after the Library opened shows here and in the Premiere panel without a restart. A browsed page with shots under a changed folder is read again; a search is not re-run.
 - The thumbnail is a plain element, not a `<button>`, so grabbing it starts the card's drag (WebKit won't start a drag from a form control).
 - `source_preview` was then sent straight through the live 0.4.0 panel on a local clip: `{marked: true, atIn: true}`.
 
@@ -1165,6 +1167,7 @@ The user's choices: an effort picker per Claude model, medium by default; a usag
   - **Going mini:** remembers the full frame in memory. The window goes undecorated, not resizable, 380×112, floating over full-screen apps (`window_mode::apply(true)`), at the saved `miniPosition` or the top-right of the screen.
   - **Expanding:** puts the frame, decorations and limits back and re-applies the saved Keep on Top.
   - `WindowEvent::Moved` tracks the bar. Its place is saved to `window.json` (`miniPosition`) on expand or quit.
+  - *(2026-10-22)* A saved `miniPosition` whose bar centre is on no connected screen (its monitor unplugged) is ignored, and the bar goes to the top-right (`on_a_screen`, +1 Rust test). Before, the bar opened off-screen and looked like it had vanished.
   - `window_mode::save_field` now merges into `window.json` instead of overwriting it. Keep on Top changes made while mini apply on expand.
 - **Tray:** a "Mini Player" check item (⌥⌘M). Every "open" item expands first.
 - **Capability:** `core:window:allow-start-dragging`, for `data-tauri-drag-region`.
@@ -2164,6 +2167,128 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - The build made "VCA 16e selects 2" with all 4 segments back to back on V1/A1 (0–2.44–4.68–7.12–9.56 s). The first build, before the fix, had put the last one on V2.
 - **Cleanup:** the "VCA 16e" timelines, their backups and the test clips were deleted, and "Timeline 28" is current.
 
+## Phase 16f: Scale and position, still or keyframed (2026-10-22)
+
+**Why (the user):** the agent told them it couldn't complete a prompt because it couldn't set scale or position in Premiere. They asked for still and animated looks, in both Premiere and Resolve.
+
+**What was built:**
+- **`set_clip_transform`** (agent tool) sends `set_clip_transform`: `{transforms: [{itemId, scale?, x?, y?} | {itemId, keyframes: [{at, scale?, x?, y?}]}]}`, up to 50 clips and 2 to 30 keys each.
+  - Units are the same in both editors (`nle/transforms.py`, standard library only): scale in percent (100 is the clip as placed), x and y in the timeline's pixels from the frame's centre, x to the right and y up. `at` is seconds from the clip's start, and every key gives the same fields. Fields left out keep the clip's current value.
+  - It's a direct edit: backed up, in the edit log, revertible and reviewed under Review edits first ("Scale or move"). The change kind is `"transform"`. `before` and `after` are looks (`{scale, x, y}` or `{keys}`) for the chat, and `motion` (Premiere) or `state` (Resolve) holds the editor's own values for Revert. Revert leaves a clip whose transform changed since.
+- **`get_clip_transform`** (read only, not reviewed) sends `read_clip_transforms` `{itemIds}` and answers each picture clip's look in the same units.
+- **Premiere** (`premiere_transform.py`, panel **0.13.0**): the panel's new `read_motion` and `set_motion` (`host.jsx`) read and replace the Motion effect's Scale (percent) and Position (`[x, y]` fractions of the sequence frame, y down). They clear and set keys as `set_fades` does, at source times.
+  - A still value replaces that property's keys; the other property keeps its own.
+  - Refused: sound clips, the scale of a clip with Uniform Scale off, keys on a clip with a speed change, keys past the clip's end, and two keys on one frame.
+  - The sequence's frame size comes from `read_sequence` (`frameWidth`/`frameHeight`, Phase 14d).
+- **Resolve** (`resolve_transform.py`): a still look is the Inspector's ZoomX/ZoomY, Pan and Tilt (`SetProperties`, read back).
+  - Resolve can't keyframe the Inspector from a script, so an animation is a Fusion composition named **"VibeCut Move"**: MediaIn1 → Transform (`VibeCutMove`, Size and Center keyed) → MediaOut1, keys at the comp's `COMPN_RenderStart` plus the clip frame. The Inspector goes back to 100% at the centre so the move is the whole look.
+  - Every key is read back. If Resolve didn't take them, the comp is removed, the Inspector put back and the clip refused.
+  - A still look on a clip with VibeCut's move replaces the move, and Revert rebuilds it.
+  - Refused: sound, transitions and generators; keys on a clip with its own Fusion comp or a speed change; scale (and keys) where Zoom X and Y differ.
+
+**Tests:**
+- Premiere and Resolve fakes (`test_premiere_transform.py`, `test_resolve_transform.py`) cover still and keyed looks with revert, fields left out, a still look replacing keys or a move, refusals, the editor not taking it, "changed since", reads and bad requests.
+- The Resolve fake has a Fusion comp (`FusionComp`, `FusionTool` in `test_resolve_edit.py`) with comps starting at frame 0 and 1000.
+- `bridge.test.ts` covers the panel's checks of `read_motion` and `set_motion`; `editTools.test.ts` the request and the summaries.
+
+**Checked live in Premiere (2026-10-22, Premiere 26.5.2, panel 0.13.0)**, on a scratch "VCA 16f probe" sequence (1920×1080, 59.94 fps, deleted afterwards). The calls went through `PremiereHost` and the real bridge.
+- Motion's display names are "Scale", "Position" and "Uniform Scale" (true). Position reads and sets as `[x, y]` fractions, with y down.
+- A still 120% at (96, −54) read back as Scale 120 and Position [0.55, 0.55]. Revert gave back 100 and [0.5, 0.5].
+- Keys at 0 s and 5 s (100%→130%, x −192→+192) landed at source ticks, Position at [0.4, 0.5]→[0.6, 0.5]. `get_clip_transform` read them back; 5 s snapped to 5.005 s, the nearest frame at 59.94. Revert cleared the keys.
+- With keys set, `getValue()` still answers the un-keyed value; the module reads the keys instead.
+- Not looked at: how the move looks on screen, or the keys' interpolation (Premiere's default for scripted keys).
+
+**Not checked live yet in Resolve.** Open questions for the live check:
+- Resolve 21.1:
+  - whether Pan is +right and Tilt +up in pixels;
+  - whether a timeline clip's comp starts at `COMPN_RenderStart`;
+  - whether `SetInput("Center", {1: x, 2: y}, frame)` keys an XYPath;
+  - whether MediaIn delivers the clip at the timeline's resolution, so Center fractions match pixels;
+  - whether Fusion's default key smoothing is acceptable (keys are linear in Premiere).
+- The read-back check refuses rather than leaves a wrong move.
+
+## Phase 17: Gemini (subscription), through the Antigravity CLI (2026-10-17)
+
+**Why (the user, 2026-10-17):** use Gemini with the user's signed-in Antigravity CLI (`agy`, 1.2.1 at `~/.local/bin/agy`) instead of a Gemini API key, the way Phase 7b runs `claude -p` on the Claude subscription. The step-0 checks below were run live first, with the user's go-ahead. What was built is under "What was built".
+
+**What was built:**
+- **Choices** (`types/agent.ts`): "Gemini 4 Argon (subscription)" and "Gemini 3.8 Flash (subscription)" (`chatProvider: "antigravity"`; models `gemini-4-argon`, `gemini-3.8-flash`).
+  - Settings → Agent model gains "Gemini (subscription) effort" (low, medium or high; remembered as `antigravityEffort`). It picks agy's `-low`/`-medium`/`-high` variant, and Claude's xhigh and max count as high.
+  - A family the account doesn't offer (from `agy models`) is shown as "not on your plan".
+- **Python:**
+  - `agent/antigravity_chat.py` runs a chat turn. `agent/antigravity_json.py` gives one `--json-schema` answer (`structured_output`), used for chat titles and the Story Editor; its first pass runs on `gemini-3.8-flash`.
+  - `chat.py`, `titles.py`, `story/commands.py` and `story/models.py` (`antigravity_json_answer`, `antigravity_story`) route `"antigravity"`.
+  - The critic refuses it: its job is the stills, and agy takes text only. The message points to Settings → Edit review critic → Gemini Flash.
+- **How a run is locked down:**
+  - Each run writes its own agent, `<app data>/antigravity/.agents/agents/vibecut-<id>.md` (`tools: [finish]`; its body is the system instruction), and removes it afterwards.
+  - The run must start on that agent (`init.agent`), and any tool step that isn't `mcp_vibecut_*` or `finish` stops it. That includes the MCP servers the user added to agy themselves.
+  - A JSON run has no caller tag, and any tool step stops it.
+  - Google keys (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, ADC, Vertex) are dropped from agy's environment. agy is signalled SIGINT, then SIGTERM, then SIGKILL on Stop.
+  - The step limit counts tool steps. A sign-in prompt on stderr stops the run at once with "isn't signed in". Images are refused.
+- **History:** the app's own, `[{role: "user"|"model", text, tools?}]`, two entries a turn. It goes in with each message as `<earlier_conversation>` (newest first, up to 60,000 characters). Retry and Edit cut it like the API providers' histories (`rewind.ts`, unchanged).
+- **Rust:**
+  - `antigravity.rs` (commands above).
+  - `sidecar::prepare_request`'s last argument is now any subscription's setup, injected as `claudeCode` or `antigravity` by provider. Both names are dropped from what the webview sends.
+  - `setup_for` refuses when VibeCut's tools aren't added, or are an older build's.
+- **UI:** Settings → Accounts → Gemini subscription (`AntigravitySection`): status, program, the plan's Gemini models, and Add/Update/Remove for VibeCut's tools. About gains an "Antigravity (Gemini subscription)" row; availability, the chat-history labels and the controller's provider labels know the new provider.
+- **Tests:**
+  - `tests/agent/test_antigravity_chat.py` (18, against a fake `agy` replaying 1.2.1's events).
+  - Title, critic and Story Editor routing tests.
+  - `antigravity.rs` tests and a `prepare_request` test.
+  - `AntigravitySection.test.tsx`, plus availability, controller-effort and persisted-state cases.
+- **Checked live (2026-10-17), on the real agy, through `antigravity_chat` and `antigravity_json`, with no MCP server registered:**
+  - Two turns: the second answered from the first ("marigold"), so the app's history fixes the resume problem below.
+  - The agent's system prompt applied on both turns.
+  - No agent file was left behind.
+  - A title came back as `structured_output`.
+  - About 11k prompt tokens a turn on VibeCut's agent, against about 20.7k on agy's default agent.
+- **Not checked live yet:** a turn that calls VibeCut's tools through the real shim with the app running, after Settings → Add. Nor how long agy lets one MCP tool call run (a reviewed edit can wait up to 30 min).
+
+**Step-0 checks (before building):**
+
+**What `agy -p` offers:**
+- `--input-format stream-json` (needs `--output-format stream-json`), `--model`, `--effort`, `--conversation <id>`, `--agent <name>` and `--print-timeout`.
+- **Models:** `agy models` lists only Gemini 3.8 Flash (`gemini-3.8-flash-{low,medium,high}`) among the Gemini models; there is no Pro. It also lists Claude 5.5 and GPT-OSS, which this phase leaves out.
+- **No equivalents for:** `--mcp-config`/`--strict-mcp-config`, `--tools`/`--allowedTools`, `--system-prompt`, `--max-turns`, `--fork-session` and `auth status --json`.
+
+**Checked live (2026-10-17):**
+- **Config isolation, no:**
+  - `HOME=<scratch>` does move agy's config (`<scratch>/.gemini/config/`), but it also signs agy out.
+  - Linking `~/.gemini/oauth_creds.json`, `google_accounts.json` and `jetski-standalone-oauth-token` doesn't sign it back in. The sign-in lives somewhere else, which wasn't looked for (Claude Code's auto mode blocked it as credential exploration).
+  - So VibeCut runs agy under the real home.
+- **Signed out:** a run waits for a browser login until `--print-timeout`, then ends with `result.status: "ERROR"`, `error: "authentication failed or timed out"`. The exit code isn't reliable (0 once, 1 once), so read `result.status`. Always pass a short `--print-timeout`.
+- **Caller tag, yes:** a stdio MCP server inherits agy's environment. `VIBECUT_MCP_CALLER=<jobId>` on the `agy` process reached a stub server at its start and on its call, with no `env` in `mcp_config.json`.
+- **MCP tools:** they are named `mcp_<server>_<tool>`. In `-p` they ran with no permission prompt.
+- **Workspace agents, yes:** agy reads `<cwd>/.agents/agents/<name>.md` (also `.agent/agents/`; not `.gemini/agents` or `.antigravity/agents`). `agy agents` doesn't list them, but `--agent <name>` finds them. An unknown name exits 1 before any model call.
+  - The body is the system prompt (a tag it asked for came back on the first turn).
+- **Tool lockdown, yes:**
+  - The frontmatter `tools:` takes built-in names only: `mcp_…` and `call_mcp_tool` are refused ("not found in registry").
+  - With `tools: [finish]`, the agent had no shell or file tool: it reported `ls /` and a file read as unavailable and tried neither. MCP tools stayed available.
+  - `init.tools` still lists all 60 built-ins, so the lockdown can't be confirmed from the stream.
+  - Every MCP server in the user's global config reaches the agent, not just VibeCut's.
+- **stream-json events:**
+  - `init` `{conversation_id, init: {model, cwd, agent?, tools, permission_mode}}`.
+  - `step_update` `{step_index, state: ACTIVE|DONE, step_type: user_input|agent_response|tool|system_message|error_message|finish, text_delta?, tool_name?, tool_info: {name, output?}, usage?}`.
+  - `result` `{conversation_id, status: SUCCESS|ERROR, response, error?, num_turns, usage: {input_tokens, output_tokens, thinking_tokens, cache_read_tokens}}`.
+  - No rate-limit events were seen.
+- **Resume, unreliable:**
+  - `--conversation <id>` adds to the same conversation: the step index carries on and `num_turns` grows. But the model didn't see the earlier turn ("No code word has been mentioned"), with or without `--agent`. The resumed turn also dropped the agent's tag.
+  - So the app would keep the history itself (as `gemini_chat.py` does) and send it with each turn.
+- **Cost:** about 20.7k input tokens per turn even for "pong" (agy's own prompt), mostly read from cache on later steps.
+- **Checked during the build:**
+  - **The stream-json input line** is `{"event": "user", "message": {"role": "user", "content": [{"type": "text", "text"}]}}`. It needs `-p=`, or `-p` takes the next flag as its prompt.
+  - **Images:** content blocks of type `image` are refused ("only text").
+  - **`--json-schema`:** the checked object is the result's `structured_output`, next to the prose `response`.
+  - **SIGINT:** ends a run in about 0.4 s with `result.status: "ERROR"`, `error: "interrupted"`.
+  - **`agy models`:** exits 1 in about 1.5 s when signed out ("Please sign in"). The list changes on Google's side: Gemini 4 Argon appeared during the day.
+
+**Design changes from the step-0 plan (as built):**
+- Each turn runs in its own empty work folder holding `.agents/agents/vibecut.md` (`tools: [finish]`; the body is VibeCut's system prompt). Nothing is written to `~/.gemini` for the agent.
+- VibeCut's MCP shim still has to be in the user's global `mcp_config.json`, under a fixed name. Adding it is an explicit, confirmed step in Settings. The caller tag comes from the `agy` process's environment.
+- The history is the app's own and is sent with each turn. Retry and edit work as on the API providers.
+
+**Cleanup:** the stub server was removed (`agy mcp remove vcprobe`), and `~/.gemini/config/mcp_config.json` is `{"mcpServers": {}}` again. It was a 0-byte file before; agy treats both the same.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2239,6 +2364,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
     14a, 14c and 14d were checked live in Resolve, and the critic with Gemini and Claude Code. Next: `npm run install-app` and the user's try; Premiere's Auto Reframe after a panel update. Later candidates: captions (SRT from the transcripts, onto a subtitle track) and renders (the Resolve render queue, Media Encoder).
   - *(2026-10-09)* **Phase 15a, a tidier Agent row:** the chat's name (opens History) on the left; `Revert N` and a New chat icon on the right; Review edits first is a shield in the composer. Next: the user's try after `npm run install-app`, then the next chat features.
+  - *(2026-10-22)* **Phase 16f:** `set_clip_transform` and `get_clip_transform`: scale and position, still or keyframed, in both editors (Premiere panel 0.13.0; Resolve's animation is a "VibeCut Move" Fusion comp). Checked live in Premiere (panel 0.13.0). Next: the Resolve live check (see "Phase 16f" for the open questions).
   - *(2026-10-10)* **Phase 16e:** `analyze_broll_folder`, `export_broll_selects` and `build_broll_selects_timeline`; Build timeline now lays selects on whole frames. Checked live in Resolve. **Phase 16 (a–e) is done.** Next: `npm run install-app`, then the user's try; in Premiere, update the panel to 0.12.0 for clip colours, and try the 16a XML and a ramp.
   - *(2026-10-10)* **Phase 16d:** the Story Editor's music bed (`music`, `musicLevelDb`, `snapToBeats`). Checked live in Resolve. Next: 16e, the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16c:** `set_speed_ramp` and `clear_clip_speed` (the draft's ramp, sent as constant-speed pieces). Checked live in Resolve. Next: 16d the Story Editor music bed, 16e the agent driving the Analyzer.
@@ -2508,3 +2634,82 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - Three tools analyze a folder, export the selects as XML and build them as a timeline.
   - Build timeline lays selects on whole frames (a Phase 10 bug, fixed).
   - Checked live in Resolve. See "Phase 16e".
+- **2026-10-14 (Claude): Fix: a busy Premiere no longer fails a send halfway through.**
+  - **Seen live:** sending a 33-clip resequence of "Best B-Roll Selects - Outdoor School Meeting" failed with "Premiere didn't answer place_clip within 20 s. A dialog open in Premiere stops it answering". No dialog was open. Premiere was busy (about 118% CPU) and answered that `place_clip` 2.5 minutes later. The rollback then deleted the half-built copy, and the next calls queued behind it timed out too.
+  - **Bridge:** a request the panel has started (`<id>.json.running`) gets `STILL_WORKING_S` (180 s) more while its heartbeat stays fresh. A timeout now says which case it was: started but not finished; not started because Premiere is busy with an earlier request; or, only when neither applies, the dialog message (`premiere_bridge.py`).
+  - **Timeouts:** `place_clip` 90 s, plus `set_items`, `add_tracks`, `remove_transitions`, `open_sequence` and `delete_sequence`, which had the 20 s default (`premiere.py`). The app now waits 15 minutes for a `rebuild`, up from 300 s, the same as `send_to_premiere` gets over MCP (`nle.rs`).
+  - Tests in `test_premiere.py`. Not checked live yet: the next send to a busy Premiere is the check.
+- **2026-10-15 (Claude): Fix: Library folders no longer stay "(offline)" after their drives are attached.**
+  - **Seen live:** all four watched roots were mounted, but the Library and the Premiere panel still showed them offline. The folder tree, with each folder's `online` flag, was read once per app run (`openLibrary`), so drives mounted after it opened never showed.
+  - **Fix:** `recheckDrives` (`src/lib/library.ts`) reads the loaded folder levels again every 10 s and on window focus, using the existing `spyglass_folder_children`. The store changes only when a folder's drive came or went. No IPC change.
+  - Tests in `library.test.ts`. Not checked live yet.
+- **2026-10-16 (Claude): New: `export_clips` exports timeline clips each by itself.**
+  - **Seen live:** asking the agent to export individual clips from a Premiere sequence failed with an error. No tool could export a clip by itself. The agent's only option was a run of `export_video` calls over each clip's span. That renders the whole mix (every track, titles, music) through Media Encoder one job at a time, and the sequence's In/Out marks are set and put back for each job.
+  - **What it does:** each chosen clip is cut from its own source file between its `sourceIn` and `sourceOut` (plus `handles`, 0–60 s, clamped at the file's start) by ffmpeg. Nothing goes through the editor's render.
+    - A video clip takes its linked sound from the same file, including the channel tracks Premiere splits a recording across. An audio-only clip becomes a 24-bit `.wav`.
+    - Formats: `source` (H.264 CRF 18 + AAC `.mp4`), `prores` (422 HQ + PCM `.mov`), or `copy` (no re-encode; cuts land on the keyframe before the In).
+    - Speed and reverse aren't applied, and the answer's `notes` says so for each such clip.
+  - **Skipped, each with a reason, never failing the call:** transitions, adjustment layers and generators, titles, nested sequences and compound clips, stills, offline or missing files (naming the drive to attach), and disabled clips unless `includeDisabled`.
+  - **Output:** a new folder `~/Movies/VibeCut Renders/<project>/<timeline> clips[ - name][ N]/`, with files `NN <clip name>.<ext>` in timeline order.
+  - **Boundary:** three new watcher commands on both editors (`project.py` `_clip_export`), the same shared code for each (`nle/clip_export.py`, standard library only):
+    - `export_clips {timeline, clipIds? | track?, handles?, format?, includeDisabled?, name?} -> {jobId, folder, total, skipped, notes}` reads the timeline and answers right away. A worker thread runs ffmpeg clip by clip.
+    - `clip_export_status {jobId} -> {state, done, total, fraction, etaSeconds?, folder, files, failed}`. One clip failing doesn't stop the rest.
+    - `cancel_clip_export {jobId}` keeps the finished files and removes the partial one.
+    - No Tauri change: every call is quick, so the 35 s default timeout applies.
+  - **Agent:** the `export_clips` tool (`renderTools.ts`) polls the status like a render, shows "Exporting clips n/N" as its activity, and stops with the chat. `RENDER_INSTRUCTION` sends per-clip requests here instead of a loop of `export_video`. Over MCP it is one of the `LONG_TOOLS`.
+  - Tests in `tests/nle/test_clip_export.py` (real ffmpeg on generated sources) and `deliverTools.test.ts`. Not checked live yet in Premiere or Resolve. The exact Premiere error from the failed attempt wasn't recorded.
+- **2026-10-16 (Claude): Fix: a busy Premiere no longer reads as a lost connection.**
+  - **Seen live:** while the agent exported clips one at a time with `export_video` (two Media Encoder renders are in `renders/`, 09:47 and 10:29), the app kept showing Premiere disconnected.
+    - About 30 replies sat unread in the bridge's `replies/` from 09:48 to 11:22. Nearly all were the watcher probe's `status`, plus two `sequence_info`.
+    - Premiere answered each one after the bridge's 20 s wait. The panel's heartbeat stayed fresh, so Premiere was working, not gone.
+    - Any probe timeout counted as `disconnected`, and the app then dropped Premiere as the active editor mid-export.
+    - With the 2026-10-14 change, a probe whose `status` the panel had started could also wait 180 s more, holding up every call queued behind it.
+  - **Fix:**
+    - `errors.Busy` (a kind of `Unreachable`) is raised by `PremiereBridge.request` when nothing answered in time but the heartbeat is fresh. A stale heartbeat still raises plain `Unreachable`.
+    - `request(..., patient=False)` skips the `STILL_WORKING_S` extension.
+    - Replies to requests the bridge stopped waiting for are removed when they arrive (`_late`, `_sweep`), instead of piling up in `replies/`.
+  - **Watcher (`PremiereAdapter.probe`):**
+    - It waits at most `PROBE_TIMEOUT_S` (10 s) with `patient=False`.
+    - It sends no `status` while the heartbeat says `busy`.
+    - On `Busy` it reports the last state it read, so Premiere stays connected. Only a stale heartbeat, a new instance, or never having answered changes the state.
+  - Calls that time out still fail with the same messages.
+  - `export_clips` runs ffmpeg at `nice` 10 so a transcode doesn't slow Premiere.
+  - Tests in `test_watch.py`. Not checked live yet.
+- **2026-10-16 (Claude): Fix: per-clip Premiere renders that came out as the whole sequence (panel 0.12.1).**
+  - **Seen live:** asked to export the 42 clips of "Oct Wall (no gaps)" as H.264 1080p files, the agent (a build without `export_clips`) made 42 `export_video` calls, each with the clip's `start`/`end`.
+    - Files 21 and 40 are 130.163 s long, the whole sequence, at 330 MB each. Every other file is 3.003 s.
+    - Both requests were ranged (60.06–63.063 and 117.15–124.157), and the panel answered 3.0 s and 7.0 s for them, yet Media Encoder ignored the In/Out.
+    - The agent reported all 42 as done.
+  - **Cause:** `vcEncode` set the sequence's In/Out, queued the job and put the old marks back straight after `encodeSequence` returned. Here that cleared them, because the sequence had none. Media Encoder doesn't always read the sequence by then, and workArea 1 with no marks renders all of it.
+  - **Fix, panel (`host.jsx`):**
+    - A ranged job's earlier marks are kept in `$.global.vcPendingMarks` and put back by `vcRestoreMarks` in the job's `onEncoderJobComplete`/`onEncoderJobError` handler, before its end is written. So the next per-clip job is queued only after the restore.
+    - `vcEncodeCancel` puts back every pending job's marks, and a job Media Encoder refuses puts them back at once.
+    - A job that never reported back hands its saved marks to the next ranged job on that sequence, so the user's own marks aren't lost.
+    - Checked against a faked Premiere and Media Encoder in Node (there is no ExtendScript harness).
+    - Panel 0.12.1: update it in Settings > Editors, then restart Premiere.
+  - **Fix, check (`premiere_render.render_status`):** a finished file whose length (`renders.media_duration`, ffprobe) differs from what was asked by more than max(0.5 s, 2 %) is reported as failed and removed. The error names both lengths ("Media Encoder rendered 130.2 s instead of 60.06–63.063 s …"), so a wrong render is never handed over as done. Without ffprobe the check is skipped.
+  - **`export_clips`** gains the `1080p` and `720p` formats (the short side, never enlarged, even sizes). `RENDER_INSTRUCTION` sends per-clip requests at any of these formats to `export_clips`, and uses one `export_video` per clip only when the user wants the clips as the editor plays them.
+  - Tests in `test_premiere_render.py`, `test_renders.py` and `test_clip_export.py`. Not checked live yet. The earlier 2026-10-16 entries (`export_clips`, the busy probe) reach the app only after it is restarted.
+- **2026-10-17 (Claude): Phase 17 step 0, Gemini through the Antigravity CLI.** Live checks of `agy -p` 1.2.1 are recorded under "Phase 17 (proposed)":
+  - The caller tag reaches the MCP shim through agy's environment.
+  - Workspace agents (`.agents/agents/`) give a system prompt, and `tools: [finish]` locks out shell and file tools.
+  - `--conversation` doesn't carry earlier turns, so the app would keep the history itself.
+  - Only Gemini 3.8 Flash is offered.
+- **2026-10-17 (Claude): Phase 17 built: Gemini (subscription) through the Antigravity CLI.** See "Phase 17" for what was built and checked.
+  - New files: `antigravity_chat.py`, `antigravity_json.py`, `antigravity.rs` and `AntigravitySection.tsx`.
+  - The chat, chat titles and the Story Editor run on it. The critic refuses it (text only).
+  - VibeCut's tools reach agy only after Settings → Gemini subscription → Add.
+  - Tests: pytest, cargo and vitest all pass. Two chat turns and a title were checked live on the real agy. A tool call through the real shim isn't checked yet.
+- **2026-10-21 (Claude): Fix: "Premiere Pro isn't running" in the middle of a render (panel 0.12.1).**
+  - **Seen live:** asked to export 34 clips of a 2160×3840 sequence as H.264, the first `export_video` failed at 15:41:47 with "Premiere Pro isn't running." The agent told the user Premiere had disconnected.
+    - Premiere answered that request 9 s later (`ok`, a Media Encoder job id), and Media Encoder rendered the file at 15:43.
+    - Media Encoder was already running, so this wasn't a cold start: `encodeSequence` held Premiere for those 9 s.
+  - **Cause:** the panel's heartbeat called `getHostEnvironment()` every beat, and that call waits on Premiere. So `alive.json` went stale while a request held Premiere. The bridge checks the heartbeat every second against `ALIVE_WITHIN_S` (5 s), so it gave up on a request the panel was running. The watcher then probed the same stale heartbeat and reported `disconnected`.
+  - **Fix, panel (`bridge.js`):** the Premiere version is read once at load, so the heartbeat no longer calls into Premiere.
+  - **Fix, bridge (`premiere_bridge.check_alive`):** while any request is `<id>.json.running`, a heartbeat up to `RUNNING_WITHIN_S` (60 s) old still counts as alive. Past that, the error says Premiere hasn't responded for that long and to restart it if it's frozen. With no request running, 5 s still means it isn't running.
+  - Tests in `test_premiere.py` (a panel that stops stamping while it runs a request, both answering at 9 s and never answering). Not checked live yet. The bridge fix reaches the app on restart; the panel fix needs panel 0.12.1 installed and Premiere restarted.
+- **2026-10-22 (Claude): Phase 16f: scale and position, still or keyframed (panel 0.13.0).**
+  - The agent couldn't set a clip's scale or position in either editor. New tools: `set_clip_transform` and `get_clip_transform`.
+  - New files: `nle/transforms.py`, `nle/premiere_transform.py` and `nle/resolve_transform.py`. The panel has the new `read_motion` and `set_motion` commands.
+  - The change kind `"transform"` reverts in both editors.
+  - Tests: pytest, vitest, mypy and ruff pass, and so does the panel version test in cargo. Checked live in Premiere; Resolve not yet. See "Phase 16f".

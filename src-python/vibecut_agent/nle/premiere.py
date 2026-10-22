@@ -45,6 +45,14 @@ TIMEOUTS = {
     "remove_items": 60.0,
     # Phase 12b: each clip is asked again until its speed holds (up to 12 times).
     "set_speed": 60.0,
+    # Each placement can import its file and overwrites into a sequence that grows as it goes (a busy
+    # Premiere took 2.5 minutes over one, 2026-10-14).
+    "place_clip": 90.0,
+    "set_items": 60.0,
+    "add_tracks": 30.0,
+    "remove_transitions": 60.0,
+    "open_sequence": 30.0,
+    "delete_sequence": 60.0,
 }
 DEFAULT_TIMEOUT_S = 20.0
 

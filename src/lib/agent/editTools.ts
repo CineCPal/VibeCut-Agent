@@ -11,7 +11,7 @@ import type { HostTimeline } from "../../types/timeline";
 import { bool, clock, num, optNum, optStr, strArray, type Args, type Executor } from "./args";
 import { duckMusic } from "./duck";
 import { PREMIERE_LABEL_COLORS, RESOLVE_CLIP_COLORS } from "./poolTools";
-import { count, describeTimelineChange, edit, readTimeline, revertTimelineEdits, TIMELINE_NOUN, type EditContext } from "./edits";
+import { count, describeLook, describeTimelineChange, edit, readTimeline, revertTimelineEdits, TIMELINE_NOUN, type EditContext } from "./edits";
 import type { ToolDeclaration } from "./tools";
 
 const itemIdsArg = { type: "ARRAY", items: { type: "STRING" }, description: "Timeline clip ids from the snapshot." };
@@ -108,6 +108,53 @@ export function editToolDeclarations(host: NleHost): ToolDeclaration[] {
         properties: { clipIds: itemIdsArg, which: { type: "STRING", enum: ["fadeIn", "fadeOut"] }, seconds: { type: "NUMBER" } },
         required: ["clipIds", "which", "seconds"],
       },
+    },
+    {
+      name: "set_clip_transform",
+      description: `Sets the scale and position of picture clips on the open ${noun} (${host === "premiere" ? "their Motion effect" : "their Inspector zoom and position"}), still or animated (Phase 16f). scale is percent (100 is the clip as placed, unscaled); x and y are pixels of the ${noun}'s frame from its centre, x to the right and y up (0, 0 is centred). Give scale, x and/or y for a still look, or keyframes to animate (2 to 30, at = seconds from the clip's start, every keyframe giving the same fields), e.g. a slow push-in [{at: 0, scale: 100}, {at: <clip length>, scale: 115}]. Fields left out keep the clip's current value. ${
+        host === "premiere"
+          ? "A still value replaces any keyframes on that property (Scale or Position). Clips with a speed change can't take keyframes, and clips with Uniform Scale off can't have their scale changed."
+          : `Resolve can't keyframe the Inspector from a script, so an animation is a Fusion composition on the clip called "VibeCut Move" (a Transform node), with the Inspector set back to 100% at the centre; a clip with its own Fusion composition or a speed change can't be animated, and a still look on a clip with VibeCut's move replaces the move.`
+      } Read the current values with get_clip_transform first when the change is relative ("zoom in a bit more"). ${DIRECT}`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          transforms: {
+            type: "ARRAY",
+            description: "One entry per clip.",
+            items: {
+              type: "OBJECT",
+              properties: {
+                itemId: clipIdArg,
+                scale: { type: "NUMBER", description: "Percent, 1 to 1000. Optional." },
+                x: { type: "NUMBER", description: "Pixels right of centre (negative is left). Optional." },
+                y: { type: "NUMBER", description: "Pixels above centre (negative is below). Optional." },
+                keyframes: {
+                  type: "ARRAY",
+                  description: "Instead of scale/x/y: an animation.",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      at: { type: "NUMBER", description: "Seconds from the clip's start." },
+                      scale: { type: "NUMBER" },
+                      x: { type: "NUMBER" },
+                      y: { type: "NUMBER" },
+                    },
+                    required: ["at"],
+                  },
+                },
+              },
+              required: ["itemId"],
+            },
+          },
+        },
+        required: ["transforms"],
+      },
+    },
+    {
+      name: "get_clip_transform",
+      description: `Reads picture clips' current scale and position on the open ${noun}, with their keyframes when animated, in set_clip_transform's units.`,
+      parameters: { type: "OBJECT", properties: { clipIds: itemIdsArg }, required: ["clipIds"] },
     },
     {
       name: "split_clip",
@@ -319,6 +366,32 @@ export function editExecutors(ctx: EditContext): Record<string, Executor> {
         const clamped = r.changes.some((c) => c.clamped);
         return `Set the ${which === "fadeIn" ? "fade in" : "fade out"} of ${count(r.changes.length, "clip")} to ${clock(seconds)}${clamped ? " (cut shorter on some to fit the clip)" : ""}: ${r.changes.map((c) => `"${c.name}"`).join(", ")}`;
       });
+    },
+
+    set_clip_transform: async (args) => {
+      const transforms = args.transforms;
+      if (!Array.isArray(transforms) || transforms.length === 0) throw new Error("transforms must be a non-empty array of {itemId, scale, x, y} or {itemId, keyframes}");
+      const request = transforms.map((raw, i) => {
+        const entry = (raw ?? {}) as Args;
+        const itemId = optStr(entry, "itemId");
+        if (!itemId) throw new Error(`transforms[${i}].itemId must be a timeline clip id`);
+        const out: Record<string, unknown> = { itemId };
+        for (const key of ["scale", "x", "y"] as const) if (entry[key] !== undefined && entry[key] !== null) out[key] = entry[key];
+        if (Array.isArray(entry.keyframes)) out.keyframes = entry.keyframes;
+        if (Object.keys(out).length === 1) throw new Error(`transforms[${i}] must give scale, x, y or keyframes`);
+        return out;
+      });
+      return edit(ctx, "set_clip_transform", "set_clip_transform", { transforms: request }, (r) => `Set the scale and position of ${count(r.changes.length, "clip")}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
+    },
+
+    get_clip_transform: async (args) => {
+      const read = await nleCall<{ clips: ({ itemId: string; name: string } & Record<string, unknown>)[]; refused: { reason: string }[] }>(ctx.host, "read_clip_transforms", {
+        timeline: ctx.timeline,
+        itemIds: strArray(args, "clipIds"),
+      });
+      const lines = read.clips.map((c) => `"${c.name}" ${describeLook(c)}`);
+      if (read.refused.length) lines.push(...read.refused.map((r) => r.reason));
+      return { summary: lines.join("; "), result: read };
     },
 
     split_clip: async (args) => {

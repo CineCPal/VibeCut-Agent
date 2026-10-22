@@ -58,6 +58,7 @@ def test_each_provider_uses_its_own_helper_at_low_effort(monkeypatch: pytest.Mon
     monkeypatch.setattr(models, "gemini_json", fake("gemini"))
     monkeypatch.setattr(models, "claude_json", fake("claude"))
     monkeypatch.setattr(models, "claude_code_json_answer", fake("code"))
+    monkeypatch.setattr(models, "antigravity_json_answer", fake("agy"))
 
     for request, expected in [
         ({"apiKey": "g", "request": "Mark the hook"}, "gemini title"),
@@ -72,6 +73,15 @@ def test_each_provider_uses_its_own_helper_at_low_effort(monkeypatch: pytest.Mon
             "claude title",
         ),
         ({"provider": "claude-code", "claudeCode": {"program": "/x"}, "request": "Mark it"}, "code title"),
+        (
+            {
+                "provider": "antigravity",
+                "antigravity": {"program": "/agy"},
+                "model": "gemini-3.8-flash",
+                "request": "Mark it",
+            },
+            "agy title",
+        ),
     ]:
         cap = Capture()
         assert titles.run(request, cap.emitter) == 0
@@ -80,6 +90,8 @@ def test_each_provider_uses_its_own_helper_at_low_effort(monkeypatch: pytest.Mon
     assert seen["claude"][1]["effort"] == "low"
     assert seen["claude"][0][4] == "claude-opus-5-5", "the chat's own model"
     assert seen["code"][1]["effort"] == "low"
+    assert seen["agy"][1]["effort"] == "low"
+    assert seen["agy"][0][0] == {"program": "/agy"} and seen["agy"][0][4] == "gemini-3.8-flash"
     assert "The assistant answered:\nDone" in seen["claude"][0][2]
 
 
@@ -88,6 +100,8 @@ def test_no_key_no_setup_or_no_request_is_refused() -> None:
         titles.run({"request": "x"}, Capture().emitter)
     with pytest.raises(RequestError, match="Claude Code isn't set up"):
         titles.run({"provider": "claude-code", "request": "x"}, Capture().emitter)
+    with pytest.raises(RequestError, match="Antigravity isn't set up"):
+        titles.run({"provider": "antigravity", "request": "x"}, Capture().emitter)
     with pytest.raises(RequestError, match="first message"):
         titles.run({"apiKey": "k", "request": "  "}, Capture().emitter)
 

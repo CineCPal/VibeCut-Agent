@@ -85,8 +85,9 @@ export interface ChatMessage {
 export type AgentStatus = "offline" | "idle" | "thinking" | "stopping" | "error";
 
 /** The sidecar's name for each provider (chat.py's PROVIDER_NAMES). "claude-code": Claude (subscription),
- * the user's own signed-in Claude Code CLI (Phase 7b). */
-export type ChatProvider = "gemini" | "claude" | "claude-code";
+ * the user's own signed-in Claude Code CLI (Phase 7b). "antigravity": Gemini (subscription), the user's
+ * own signed-in Antigravity CLI (Phase 17). */
+export type ChatProvider = "gemini" | "claude" | "claude-code" | "antigravity";
 
 /** The last message's turn as it can be taken back (Phase 8c): the history exactly as it was sent with
  * that message. Retry and Edit put it back, then send again. */
@@ -108,17 +109,24 @@ export interface ChatUsage {
 }
 
 /** Same ids as VibeCut's `useAiProviderStore`, so preferences carry over. */
-export type AiChoiceId = "gemini" | "claude-opus-5-5" | "claude-sonnet-5-5" | "claude-code-opus-5-5" | "claude-code-sonnet-5-5";
+export type AiChoiceId =
+  | "gemini"
+  | "claude-opus-5-5"
+  | "claude-sonnet-5-5"
+  | "claude-code-opus-5-5"
+  | "claude-code-sonnet-5-5"
+  | "antigravity-gemini-4-argon"
+  | "antigravity-gemini-3.8-flash";
 
 export type AiProvider = "gemini" | "anthropic";
 
-/** What a choice needs to run: an API key (`AiProvider`), or the user's signed-in Claude Code. */
-export type ChoiceAccess = AiProvider | "claude-code";
+/** What a choice needs to run: an API key (`AiProvider`), or the user's signed-in Claude Code or agy. */
+export type ChoiceAccess = AiProvider | "claude-code" | "antigravity";
 
 export interface AiChoice {
   id: AiChoiceId;
   label: string;
-  /** Whose API key it needs (KeyStatus), or "claude-code" for none (the user's Claude subscription). */
+  /** Whose API key it needs (KeyStatus), or "claude-code" / "antigravity" for none (the user's plan). */
   provider: ChoiceAccess;
   /** How the chat sidecar names the provider, and the model id it's given (none: the sidecar's default). */
   chatProvider: ChatProvider;
@@ -131,6 +139,20 @@ export const AI_CHOICES: readonly AiChoice[] = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", provider: "anthropic", chatProvider: "claude", model: "claude-sonnet-5-5" },
   { id: "claude-code-opus-5-5", label: "Claude Opus 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-opus-5-5" },
   { id: "claude-code-sonnet-5-5", label: "Claude Sonnet 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-sonnet-5-5" },
+  {
+    id: "antigravity-gemini-4-argon",
+    label: "Gemini 4 Argon (subscription)",
+    provider: "antigravity",
+    chatProvider: "antigravity",
+    model: "gemini-4-argon",
+  },
+  {
+    id: "antigravity-gemini-3.8-flash",
+    label: "Gemini 3.8 Flash (subscription)",
+    provider: "antigravity",
+    chatProvider: "antigravity",
+    model: "gemini-3.8-flash",
+  },
 ];
 
 /** How long Claude thinks (Phase 9a): the API's `output_config.effort`, Claude Code's `--effort`. */
@@ -141,9 +163,13 @@ export const DEFAULT_EFFORT: EffortLevel = "medium";
 /** Effort is set per Claude model, the same on the API and on the subscription. */
 export type ClaudeFamily = "opus" | "sonnet";
 
-/** Which Claude model a choice runs, or null for Gemini. */
+/** How long Gemini (subscription) thinks (Phase 17): agy's `-low`, `-medium` or `-high` model variant. */
+export type AntigravityEffort = "low" | "medium" | "high";
+export const ANTIGRAVITY_EFFORTS: readonly AntigravityEffort[] = ["low", "medium", "high"];
+
+/** Which Claude model a choice runs, or null for Gemini (on a key or the subscription). */
 export function familyOf(choice: AiChoice): ClaudeFamily | null {
-  if (choice.chatProvider === "gemini") return null;
+  if (choice.chatProvider === "gemini" || choice.chatProvider === "antigravity") return null;
   return choice.model?.includes("opus") ? "opus" : "sonnet";
 }
 
@@ -165,6 +191,27 @@ export interface ClaudeCodeStatus {
   subscription: string | null;
   /** Why it isn't usable, when it isn't. */
   detail: string | null;
+}
+
+/** Mirrors `AntigravityStatus` in src-tauri/src/antigravity.rs (Phase 17). */
+export interface AntigravityStatus {
+  program: string | null;
+  programSaved: string | null;
+  /** Null when it couldn't be checked. */
+  signedIn: boolean | null;
+  /** The Gemini families the account offers (e.g. "gemini-4-argon"), without the effort suffix. */
+  models: string[];
+  /** Whether VibeCut's tools are in agy's MCP config, and whether they're this build's. */
+  toolsAdded: boolean;
+  toolsCurrent: boolean;
+  /** Why it isn't usable, when it isn't. */
+  detail: string | null;
+}
+
+/** Whether an agy check says a Gemini (subscription) turn can start: installed, not signed out, with
+ * this build's tools added. */
+export function antigravityUsable(status: AntigravityStatus | null): boolean {
+  return Boolean(status?.program) && status?.signedIn !== false && Boolean(status?.toolsCurrent);
 }
 
 /** Whether a Claude Code check says a subscription turn can start. */

@@ -219,6 +219,15 @@ describe("agent controller", () => {
     useAgentStore.getState().setEffort("opus", "medium");
   });
 
+  it("sends Gemini (subscription) its own effort, and no Claude one (Phase 17)", async () => {
+    useAgentStore.getState().setAiChoice("antigravity-gemini-3.8-flash");
+    useAgentStore.getState().setAntigravityEffort("high");
+    await sendUserMessage("go");
+    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "antigravity", model: "gemini-3.8-flash", effort: "high" });
+    useAgentStore.getState().setAntigravityEffort("medium");
+    useAgentStore.getState().setAiChoice("gemini");
+  });
+
   it("gives Gemini no effort", async () => {
     await sendUserMessage("go");
     expect(ipc.startSidecar.mock.calls[0][2].effort).toBeUndefined();

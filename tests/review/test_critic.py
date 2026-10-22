@@ -231,6 +231,15 @@ def test_failures_are_reported_without_the_key(monkeypatch: pytest.MonkeyPatch) 
         critic.run(request(provider="claude-code"), Capture().emitter, grab=fake_grab)
 
 
+def test_gemini_subscription_is_refused_since_it_cant_take_stills() -> None:
+    code, events = run(
+        request(provider="antigravity", apiKey=None, antigravity={"program": "/agy", "workDir": "/w"})
+    )
+    assert code == 1
+    error = next(e for e in events if e["type"] == "error")["message"]
+    assert "can't look at stills" in error and "Edit review critic" in error
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 def test_real_frames_are_read_as_small_jpegs(tmp_path: Path) -> None:
     clip = tmp_path / "red.mov"

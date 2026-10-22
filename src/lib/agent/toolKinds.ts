@@ -17,6 +17,8 @@ export const CHANGING_TOOLS = new Set([
   "delete_clips",
   "set_clips_enabled",
   "label_timeline_clips",
+  // Phase 16f.
+  "set_clip_transform",
   "set_clip_levels",
   "set_clip_fade",
   "split_clip",
@@ -74,6 +76,8 @@ export const NOT_REVIEWED = new Set([
   "find_filler_words",
   "find_silences",
   "get_clip_info",
+  // Phase 16f: reads only.
+  "get_clip_transform",
   "get_edit_log",
   "get_playhead_time",
   "get_transcript",
@@ -97,6 +101,8 @@ export const NOT_REVIEWED = new Set([
   // Phase 15b: renders write a new file and leave the timeline as it was (only when the user asks).
   "export_video",
   "export_audio",
+  // Each clip's source cut to its own file, outside the editor (renderTools.ts).
+  "export_clips",
   "search_media_pool",
   "search_transcript",
   "select_clip",
@@ -123,6 +129,7 @@ const VERB: Record<string, string> = {
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",
   label_timeline_clips: "Name or colour",
+  set_clip_transform: "Scale or move",
   set_clip_levels: "Change the level of",
   set_clip_fade: "Fade",
   split_clip: "Split",

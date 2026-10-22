@@ -81,6 +81,39 @@ describe("edit tools", () => {
     await expect(run.label_timeline_clips({ labels: [] })).rejects.toThrow("labels must be");
   });
 
+  it("scales and moves clips through set_clip_transform, still or keyed, and reads them back", async () => {
+    const keyed = { keys: [{ at: 0, scale: 100, x: 0, y: 0 }, { at: 4, scale: 115, x: 0, y: 0 }] };
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+      if (command === "read_timeline") return VIEW;
+      if (command === "backup_timeline") return { backup: "Main (before VibeCut 1)" };
+      if (command === "read_clip_transforms") return { clips: [{ itemId: "v1", name: "A.mov", ...keyed }, { itemId: "v2", name: "B.mov", scale: 120, x: 96, y: -54 }], refused: [{ reason: "A.mov is sound" }] };
+      return {
+        changes: [
+          { kind: "transform", name: "A.mov", itemId: "v1", before: { scale: 100, x: 0, y: 0 }, after: keyed },
+          { kind: "transform", name: "B.mov", itemId: "v2", before: { scale: 100, x: 0, y: 0 }, after: { scale: 120, x: 96, y: -54 } },
+        ],
+        refused: [],
+      };
+    });
+    const out = await run.set_clip_transform({
+      transforms: [
+        { itemId: "v1", keyframes: [{ at: 0, scale: 100 }, { at: 4, scale: 115 }] },
+        { itemId: "v2", scale: 120, x: 96, y: -54, extra: "dropped" },
+      ],
+    });
+    expect(sent("set_clip_transform")).toEqual([
+      { timeline: "Main", transforms: [{ itemId: "v1", keyframes: [{ at: 0, scale: 100 }, { at: 4, scale: 115 }] }, { itemId: "v2", scale: 120, x: 96, y: -54 }] },
+    ]);
+    expect(out.summary).toContain('"A.mov" 100% → animated from 100% to 115% over 4.0s (2 keyframes)');
+    expect(out.summary).toContain('"B.mov" 100% → 120% at (96, -54)');
+    await expect(run.set_clip_transform({ transforms: [{ itemId: "v1" }] })).rejects.toThrow("scale, x, y or keyframes");
+    await expect(run.set_clip_transform({ transforms: [] })).rejects.toThrow("transforms must be");
+
+    const read = await run.get_clip_transform({ clipIds: ["v1", "v2", "a1"] });
+    expect(sent("read_clip_transforms")).toEqual([{ timeline: "Main", itemIds: ["v1", "v2", "a1"] }]);
+    expect(read.summary).toBe('"A.mov" animated from 100% to 115% over 4.0s (2 keyframes); "B.mov" 120% at (96, -54); A.mov is sound');
+  });
+
   it("fades named clips", async () => {
     await run.set_clip_fade({ clipIds: ["v1", "a1"], which: "fadeOut", seconds: 1.5 });
     expect(sent("set_clip_fades")).toEqual([{ timeline: "Main", itemIds: ["v1", "a1"], which: "fadeOut", seconds: 1.5 }]);

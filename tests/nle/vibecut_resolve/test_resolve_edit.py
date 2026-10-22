@@ -15,6 +15,76 @@ START = 90000  # 01:00:00:00 at 25 fps
 ids = itertools.count(1)
 
 
+class FusionTool:
+    """A Fusion tool as Resolve's scripting shows it (Phase 16f): inputs set still, or keyed per frame
+    once a modifier animates them. `ignores_time` acts as if a keyed SetInput were taken as a still one."""
+
+    def __init__(self, comp, kind, name):
+        self.comp, self.kind, self.name = comp, kind, name
+        self.inputs = {"Size": 1.0, "Center": {1: 0.5, 2: 0.5, 3: 0.0}}
+        self.splines: dict[str, dict[int, object]] = {}
+        self.connected: dict[str, FusionTool] = {}
+
+    def SetAttrs(self, attrs):
+        self.name = attrs.get("TOOLS_Name", self.name)
+
+    def ConnectInput(self, name, tool):
+        self.connected[name] = tool
+        return True
+
+    def AddModifier(self, name, kind):
+        assert kind in ("BezierSpline", "XYPath")
+        self.splines[name] = {}
+        return True
+
+    def SetInput(self, name, value, time=None):
+        if name in self.splines and time is not None and not self.comp.ignores_time:
+            self.splines[name][int(time)] = value
+        else:
+            self.inputs[name] = value
+
+    def GetInput(self, name, time=None):
+        keys = self.splines.get(name)
+        if not keys:
+            return self.inputs[name]
+        frames = sorted(keys)
+        before = [f for f in frames if f <= (time if time is not None else frames[0])]
+        return keys[before[-1] if before else frames[0]]
+
+    def GetKeyFrames(self):
+        frames = sorted({f for keys in self.splines.values() for f in keys})
+        return {i + 1: float(f) for i, f in enumerate(frames)}
+
+
+class FusionComp:
+    """A clip's new Fusion composition: MediaIn1 -> MediaOut1, its frames from `start`."""
+
+    start = 0
+    ignores_time = False
+
+    def __init__(self):
+        self.tools = {n: FusionTool(self, n[:-1], n) for n in ("MediaIn1", "MediaOut1")}
+        self.tools["MediaOut1"].ConnectInput("Input", self.tools["MediaIn1"])
+        self.locked = False
+
+    def FindTool(self, name):
+        return next((t for t in self.tools.values() if t.name == name), None)
+
+    def AddTool(self, kind, x, y):
+        tool = FusionTool(self, kind, f"{kind}1")
+        self.tools[id(tool)] = tool
+        return tool
+
+    def GetAttrs(self):
+        return {"COMPN_RenderStart": float(self.start), "COMPN_RenderEnd": float(self.start + 1000)}
+
+    def Lock(self):
+        self.locked = True
+
+    def Unlock(self):
+        self.locked = False
+
+
 class Item:
     def __init__(self, timeline, kind, media, start, end, left=0, enabled=True, volume=0.0):
         self.timeline, self.kind, self.media = timeline, kind, media
@@ -130,6 +200,24 @@ class Item:
 
     def GetFusionCompNameList(self):
         return [name for name, _ in self.comps]
+
+    def AddFusionComp(self):
+        comp = FusionComp()
+        self.comps.append((f"Composition {len(self.comps) + 1}", comp))
+        return comp
+
+    def GetFusionCompByName(self, name):
+        return next((c for n, c in self.comps if n == name and isinstance(c, FusionComp)), None)
+
+    def RenameFusionCompByName(self, old, new):
+        self.comps = [(new if n == old else n, c) for n, c in self.comps]
+        return True
+
+    def DeleteFusionCompByName(self, name):
+        kept = [(n, c) for n, c in self.comps if n != name]
+        gone = len(kept) != len(self.comps)
+        self.comps = kept
+        return gone
 
     def ExportFusionComp(self, path, index):
         with open(path, "w") as f:

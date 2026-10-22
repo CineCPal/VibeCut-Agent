@@ -1306,6 +1306,8 @@ REVERTIBLE = (
     "captions",
     # Phase 16b.
     "label",
+    # Phase 16f.
+    "transform",
 )  # fmt: skip
 
 
@@ -1423,8 +1425,8 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 changed_since.append({"name": label, "reason": "it was changed since"})
             else:
                 failed.append({"name": label, "reason": "Premiere didn't put it back"})
-        elif kind in ("fade", "duck", "transition"):
-            from vibecut_agent.nle import premiere_effects
+        elif kind in ("fade", "duck", "transition", "transform"):
+            from vibecut_agent.nle import premiere_effects, premiere_transform
 
             item_id = current(change.get("itemId"))
             if item_id not in seq.clips:
@@ -1434,6 +1436,8 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                 "fade": premiere_effects.revert_fade,
                 "duck": premiere_effects.revert_duck,
                 "transition": premiere_effects.revert_transition,
+                # Phase 16f.
+                "transform": premiere_transform.revert_transform,
             }[kind]
             outcome = revert(host, timeline, seq, item_id, change)
             if outcome == "reverted":

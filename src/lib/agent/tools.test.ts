@@ -28,6 +28,8 @@ describe("agent tools", () => {
       "label_timeline_clips",
       "set_clip_levels",
       "set_clip_fade",
+      "set_clip_transform",
+      "get_clip_transform",
       "split_clip",
       "trim_clip_start",
       "trim_clip_end",
@@ -97,6 +99,7 @@ describe("agent tools", () => {
       "create_captions",
       "export_video",
       "export_audio",
+      "export_clips",
     ]);
     // The same tools, sending the draft to each one's own editor.
     expect(names("resolve")).toEqual(names("premiere").map((n) => (n === "send_to_premiere" ? "send_to_resolve" : n)));

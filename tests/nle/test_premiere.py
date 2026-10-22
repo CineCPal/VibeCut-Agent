@@ -1,7 +1,9 @@
+import json
+
 import pytest
 
 from tests.nle.fakes import FakePanel, sequence
-from vibecut_agent.nle.errors import HostError, Unreachable
+from vibecut_agent.nle.errors import Busy, HostError, Unreachable
 from vibecut_agent.nle.premiere import PremiereHost, level_db, timecode, timeline
 from vibecut_agent.nle.premiere_bridge import NOT_INSTALLED, PremiereBridge
 
@@ -122,6 +124,75 @@ def test_bridge_withdraws_a_request_nobody_answers(tmp_path):
     panel.beat(at=0.0)
     bridge = PremiereBridge(tmp_path, clock=clock, sleep=sleep)
     with pytest.raises(Unreachable, match="didn't answer status within 3 s"):
+        bridge.request("status", {}, 3.0)
+    assert list((tmp_path / "jobs").iterdir()) == []
+
+
+def _slow_panel(
+    tmp_path, *, takes: bool, busy: bool, answers_at: float | None = None, stalls_at: float | None = None
+):
+    """A clock and sleep for a panel that stays alive (busy or not), may start the request (renaming
+    it to .running, as bridge.js does) and may answer it at `answers_at`. From `stalls_at` until it
+    answers, it doesn't stamp alive.json (Premiere is held by the request)."""
+    now = [0.0]
+    jobs, replies = tmp_path / "jobs", tmp_path / "replies"
+    jobs.mkdir()
+    replies.mkdir()
+
+    def beat() -> None:
+        (tmp_path / "alive.json").write_text(json.dumps({"time": now[0], "busy": busy}))
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+        held = stalls_at is not None and now[0] >= stalls_at and any(jobs.glob("*.json.running"))
+        if not held:
+            beat()
+        for job in jobs.glob("*.json"):
+            if takes:
+                job.rename(job.with_name(job.name + ".running"))
+        for running in jobs.glob("*.json.running"):
+            if answers_at is not None and now[0] >= answers_at:
+                request = json.loads(running.read_text())
+                running.unlink()
+                reply = {"id": request["id"], "ok": True, "result": {"placed": []}}
+                (replies / f"{request['id']}.json").write_text(json.dumps(reply))
+
+    beat()
+    return PremiereBridge(tmp_path, clock=lambda: now[0], sleep=sleep)
+
+
+def test_bridge_waits_longer_for_a_request_premiere_has_started(tmp_path):
+    # Seen 2026-10-14: a busy Premiere answered place_clip 2.5 minutes after its 20 s were up.
+    bridge = _slow_panel(tmp_path, takes=True, busy=True, answers_at=150.0)
+    assert bridge.request("place_clip", {}, 20.0) == {"placed": []}
+
+
+def test_bridge_gives_up_on_a_started_request_without_blaming_a_dialog_first(tmp_path):
+    bridge = _slow_panel(tmp_path, takes=True, busy=True)
+    with pytest.raises(Unreachable) as exc:
+        bridge.request("place_clip", {}, 20.0)
+    message = str(exc.value)
+    assert message.startswith(f"Premiere started place_clip but hadn't finished it after {20 + 180} s")
+    assert "Premiere may still finish it" in message
+
+
+def test_bridge_keeps_waiting_while_a_request_holds_premiere_past_its_heartbeat(tmp_path):
+    # Seen 2026-10-21: encodeSequence held Premiere 9 s, the heartbeat went stale, and export_video said
+    # Premiere wasn't running while Media Encoder went on to render the file.
+    bridge = _slow_panel(tmp_path, takes=True, busy=True, answers_at=9.0, stalls_at=0.5)
+    assert bridge.request("export_video", {}, 100.0) == {"placed": []}
+
+
+def test_bridge_gives_up_when_premiere_stays_silent_on_a_started_request(tmp_path):
+    bridge = _slow_panel(tmp_path, takes=True, busy=True, stalls_at=0.5)
+    with pytest.raises(Unreachable, match="hasn't responded for 60 s") as exc:
+        bridge.request("export_video", {}, 100.0)
+    assert not isinstance(exc.value, Busy)
+
+
+def test_bridge_says_premiere_is_busy_with_an_earlier_request(tmp_path):
+    bridge = _slow_panel(tmp_path, takes=False, busy=True)
+    with pytest.raises(Unreachable, match="still working on an earlier request"):
         bridge.request("status", {}, 3.0)
     assert list((tmp_path / "jobs").iterdir()) == []
 

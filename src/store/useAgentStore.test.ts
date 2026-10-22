@@ -45,6 +45,7 @@ describe("useAgentStore", () => {
       storyFirstPass: "same",
       criticModel: "gemini",
       effort: { opus: "medium", sonnet: "medium" },
+      antigravityEffort: "medium",
       chatId: useAgentStore.getState().chatId,
       autoTitles: true,
       reviewEdits: false,

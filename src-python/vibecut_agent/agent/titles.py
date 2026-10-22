@@ -3,10 +3,11 @@ chat's own model after its first answer, for the History list. ``python -u -m vi
 one JSON request on stdin.
 
 request: {
-    "provider": "gemini" | "claude" | "claude-code"   (optional, "gemini" when absent; the chat's),
+    "provider": "gemini" | "claude" | "claude-code" | "antigravity"   (optional, "gemini"; the chat's),
     "model": str                                      (optional; the chat's),
     "apiKey": str                                     (injected by Rust; not for "claude-code"),
     "claudeCode": {...}                               (injected by Rust for "claude-code"),
+    "antigravity": {...}                              (injected by Rust for "antigravity", Phase 17),
     "request": str                                    (the first message, without the timeline snapshot),
     "reply": str                                      (optional; the first answer)
 }
@@ -27,7 +28,12 @@ from vibecut_agent.protocol import CancelFlag, Emitter, RequestError, read_reque
 TITLE_CHARS = 60
 REQUEST_CHARS = 2000
 REPLY_CHARS = 2000
-WHO = {"gemini": "Gemini", "claude": "Claude", "claude-code": "Claude (subscription)"}
+WHO = {
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "claude-code": "Claude (subscription)",
+    "antigravity": "Gemini (subscription)",
+}
 CLAUDE_MAX_TOKENS = 1024
 
 TITLE_SCHEMA: dict[str, Any] = {
@@ -64,7 +70,13 @@ def user_text(request_text: str, reply: str) -> str:
 
 
 def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None) -> int:
-    from vibecut_agent.story.models import StoryModelError, claude_code_json_answer, claude_json, gemini_json
+    from vibecut_agent.story.models import (
+        StoryModelError,
+        antigravity_json_answer,
+        claude_code_json_answer,
+        claude_json,
+        gemini_json,
+    )
 
     register_secret(request.get("apiKey"))
     provider = provider_of(request)
@@ -72,6 +84,9 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     if provider == "claude-code":
         if not isinstance(request.get("claudeCode"), dict):
             raise RequestError("Claude Code isn't set up. See Settings → Claude subscription.")
+    elif provider == "antigravity":
+        if not isinstance(request.get("antigravity"), dict):
+            raise RequestError("Antigravity isn't set up. See Settings → Gemini subscription.")
     elif not api_key:
         raise RequestError(f"No {WHO[provider]} API key was provided.")
     first = request.get("request")
@@ -83,7 +98,17 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     text = user_text(first.strip(), reply)
     should_abort = cancel.is_set if cancel else (lambda: False)
     try:
-        if provider == "claude-code":
+        if provider == "antigravity":
+            answer = antigravity_json_answer(
+                request.get("antigravity"),
+                SYSTEM,
+                text,
+                TITLE_SCHEMA,
+                model,
+                effort="low",
+                should_abort=should_abort,
+            )
+        elif provider == "claude-code":
             answer = claude_code_json_answer(
                 request.get("claudeCode"),
                 SYSTEM,

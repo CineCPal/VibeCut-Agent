@@ -208,31 +208,38 @@ pub fn build_args(root: &Path, command: &str, extras: &[&str]) -> Vec<String> {
 pub const GEMINI_KEY_ENV: &str = "GEMINI_API_KEY";
 pub const CLAUDE_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
-/// The request as handed to the sidecar. A key or a Claude Code setup sent by the frontend is discarded,
-/// so the webview can never name a key or a program. `chat` gets its provider's key from this process's
-/// environment (ported from VibeCut's `prepare_request`); a missing `provider` means Gemini. The
-/// "Claude (subscription)" provider (claude_code.rs, Phase 7b) needs no key: a chat or Story Editor run
-/// on it gets `claudeCode`, the program and profile Rust chose, instead.
+/// The request as handed to the sidecar. A key or a subscription setup sent by the frontend is
+/// discarded, so the webview can never name a key or a program. `chat` gets its provider's key from this
+/// process's environment (ported from VibeCut's `prepare_request`); a missing `provider` means Gemini.
+/// The two subscription providers need no key: a run on "Claude (subscription)" (claude_code.rs,
+/// Phase 7b) gets `claudeCode`, and one on "Gemini (subscription)" (antigravity.rs, Phase 17) gets
+/// `antigravity`: the `subscription` setup Rust chose for that provider.
 pub fn prepare_request(
     command: &str,
     mut request: Value,
     gemini_key: Option<&str>,
     claude_key: Option<&str>,
-    claude_code: Option<Value>,
+    subscription: Option<Value>,
 ) -> Result<Value, String> {
     let Some(object) = request.as_object_mut() else {
         return Err("The request must be a JSON object".into());
     };
     object.remove("apiKey");
     object.remove("claudeCode");
+    object.remove("antigravity");
     object.remove("extractionKey");
     if !needs_llm_key(command) {
         return Ok(request);
     }
     let provider = object.get("provider").and_then(Value::as_str).unwrap_or("gemini");
     if provider == crate::claude_code::PROVIDER {
-        let setup = claude_code.ok_or("Claude Code isn't set up. See Settings → Claude subscription.")?;
+        let setup = subscription.ok_or("Claude Code isn't set up. See Settings → Claude subscription.")?;
         object.insert("claudeCode".into(), setup);
+        return Ok(request);
+    }
+    if provider == crate::antigravity::PROVIDER {
+        let setup = subscription.ok_or("Antigravity isn't set up. See Settings → Gemini subscription.")?;
+        object.insert("antigravity".into(), setup);
         return Ok(request);
     }
     let (key, env, other) = match provider {
@@ -813,11 +820,15 @@ pub async fn sidecar_start(
     } else {
         (None, None)
     };
-    // A chat on Claude (subscription) gets the program and profile Rust chose (claude_code.rs).
-    let wants_claude_code =
-        needs_llm_key(spec.name) && request.get("provider").and_then(Value::as_str) == Some(crate::claude_code::PROVIDER);
-    let claude_code = if wants_claude_code { Some(crate::claude_code::setup_for(&app, &job_id)?) } else { None };
-    let mut request = prepare_request(spec.name, request, gemini_key.as_deref(), claude_key.as_deref(), claude_code)?;
+    // A run on a subscription gets the program (and, for Claude, the profile) Rust chose: claude_code.rs
+    // for Claude (subscription), antigravity.rs for Gemini (subscription).
+    let provider = if needs_llm_key(spec.name) { request.get("provider").and_then(Value::as_str) } else { None };
+    let subscription = match provider {
+        Some(crate::claude_code::PROVIDER) => Some(crate::claude_code::setup_for(&app, &job_id)?),
+        Some(crate::antigravity::PROVIDER) => Some(crate::antigravity::setup_for(&app, &job_id)?),
+        _ => None,
+    };
+    let mut request = prepare_request(spec.name, request, gemini_key.as_deref(), claude_key.as_deref(), subscription)?;
     if spec.name == "assemble" {
         // The Story Editor's first pass over long footage may be set to Gemini (Phase 7e).
         set_extraction_key(&mut request, gemini_key.as_deref());
@@ -1058,6 +1069,24 @@ mod tests {
         assert!(story.get("extractionKey").is_none());
         let later = prepare_request("", json!({"type": "user_message", "claudeCode": {"program": "/bin/rm"}}), None, None, None).unwrap();
         assert!(later.get("claudeCode").is_none(), "a later line can't name a program");
+    }
+
+    #[test]
+    fn gemini_subscription_runs_get_rusts_setup_and_no_key() {
+        let setup = json!({"program": "/u/.local/bin/agy", "jobId": "j1", "workDir": "/w"});
+        let sent = json!({"provider": "antigravity", "apiKey": "ui", "antigravity": {"program": "/bin/rm"}, "claudeCode": {"program": "/bin/rm"}});
+        let chat = prepare_request("chat", sent, Some("g-key"), Some("c-key"), Some(setup.clone())).unwrap();
+        assert_eq!(chat["antigravity"], setup);
+        assert!(chat.get("apiKey").is_none(), "the plan, never a Gemini key");
+        assert!(chat.get("claudeCode").is_none());
+        assert!(prepare_request("chat", json!({"provider": "antigravity"}), Some("g"), None, None).unwrap_err().contains("Gemini subscription"));
+        for command in ["assemble", "chat-title", "critique"] {
+            let run = prepare_request(command, json!({"provider": "antigravity", "apiKey": "ui"}), Some("g"), None, Some(setup.clone())).unwrap();
+            assert_eq!(run["antigravity"], setup, "{command} runs on the chat's provider");
+            assert!(run.get("apiKey").is_none());
+        }
+        let later = prepare_request("", json!({"type": "user_message", "antigravity": {"program": "/bin/rm"}}), None, None, None).unwrap();
+        assert!(later.get("antigravity").is_none(), "a later line can't name a program");
     }
 
     #[test]

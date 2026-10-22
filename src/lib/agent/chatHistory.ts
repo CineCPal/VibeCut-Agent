@@ -27,8 +27,13 @@ export const TITLE_CHARS = 60;
 export const HISTORY_DROPPED_NOTE =
   "This chat is too long to keep the model's memory of it after a restart; the transcript is saved.";
 
-const PROVIDERS: readonly ChatProvider[] = ["gemini", "claude", "claude-code"];
-const PROVIDER_NAME: Record<ChatProvider, string> = { gemini: "Gemini", claude: "Claude (API key)", "claude-code": "Claude (subscription)" };
+const PROVIDERS: readonly ChatProvider[] = ["gemini", "claude", "claude-code", "antigravity"];
+const PROVIDER_NAME: Record<ChatProvider, string> = {
+  gemini: "Gemini",
+  claude: "Claude (API key)",
+  "claude-code": "Claude (subscription)",
+  antigravity: "Gemini (subscription)",
+};
 const ROLES: readonly ChatMessage["role"][] = ["user", "assistant", "system", "tool", "error"];
 
 type ChatFields = Pick<AgentState, "chatId" | "messages" | "history" | "historyProvider" | "aiChoice"> &
