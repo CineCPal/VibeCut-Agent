@@ -128,7 +128,7 @@ export function withSpeakers(host: NleHost, path: string, data: TranscriptData):
   return { ...data, speakerInfo: Object.fromEntries([...ids].map((id) => [id, { ...data.speakerInfo?.[id], ...saved[id] }])) };
 }
 
-interface HeardView {
+export interface HeardView {
   view: HostTimeline;
   clips: HostClips;
   /** By asset id (`fileKey`). */
@@ -137,7 +137,7 @@ interface HeardView {
 }
 
 /** The connected timeline (or draft), what is heard on it, and those files' transcripts. */
-async function heardView(context: ToolContext): Promise<HeardView> {
+export async function heardView(context: ToolContext): Promise<HeardView> {
   const view = await connectedView(context);
   const clips = hostClips(view);
   const ids = [...new Set(Object.values(clips.heard).map((c) => c.mediaAssetId))];

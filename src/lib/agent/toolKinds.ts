@@ -68,6 +68,8 @@ export const CHANGING_TOOLS = new Set([
   "make_social_version",
   // Phase 15a: a caption or subtitle track, reverted like any edit (Premiere's is deleted by hand).
   "create_captions",
+  // Phase 18c: cleaned sound laid under the clips, the originals switched off.
+  "clean_dialogue",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -117,6 +119,10 @@ export const NOT_REVIEWED = new Set([
   "rearrange_sections",
   "remove_transcript_lines",
   "remove_speaker_lines",
+  // Phase 18a: a draft cut, like the other draft tools.
+  "cut_by_speaker",
+  // Phase 18b: also a draft cut.
+  "make_split_edit",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);
@@ -126,6 +132,7 @@ const VERB: Record<string, string> = {
   cut_to_beats: "Cut to the beat with shots",
   make_social_version: "Make a social version",
   create_captions: "Add captions",
+  clean_dialogue: "Clean the dialogue of",
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",
   label_timeline_clips: "Name or colour",

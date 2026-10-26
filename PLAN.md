@@ -2289,6 +2289,67 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 
 **Cleanup:** the stub server was removed (`agy mcp remove vcprobe`), and `~/.gemini/config/mcp_config.json` is `{"mcpServers": {}}` again. It was a 0-byte file before; agy treats both the same.
 
+## Phase 18: Interview and podcast polish (2026-10-26)
+
+**Why (the user):** asked what would make the agent a better editor. The roadmap picked from what the tools can't do yet, by value to interviews and podcasts:
+- **18a:** `cut_by_speaker`, multicam by who's talking. Built.
+- **18b:** `make_split_edit`, J/L cuts. Built.
+- **18c:** `clean_dialogue`. Built; `fill_room_tone` left for later.
+- **18d:** `add_lower_thirds`, from speaker names and roles.
+
+Later phases on that roadmap:
+- **19:** shot changes; `close_gaps`, `replace_clip` and `insert_clip`; colour and colour matching.
+- **20:** client notes to edits; learning a style from a reference edit; pacing checks; YouTube packaging.
+- **21:** an SFX and music library; offline media, relink and proxies.
+- **Alongside any phase:** plan-then-execute with a checkpoint per step, workflow recipes, and an agent eval suite.
+
+### 18a: `cut_by_speaker`
+- **What it does:** takes synced angles, each on a video track of its own (as `sync_and_place` lays them), plus an optional `wideTrack`. Over each stretch it switches the talking person's angle on and the other angles off. This happens in the **draft**, so it reaches the editor only through `send_to_*` (like the other draft cuts, it's in `NOT_REVIEWED`).
+  - Clips stay on their tracks, switched off, so the user can re-enable another angle by hand.
+  - The sound, other video tracks (B-roll, titles) and anything outside `start`–`end` are left as they are.
+- **Who's talking**, `by`:
+  - **`loudness`** (the default when every angle has a `mic`): each mic's peaks (the `audio-peaks` job) at 10 samples/s, averaged over 0.5 s. The loudest mic above `thresholdDb` (−40) wins, and any other within 4 dB counts as talking too.
+  - **`transcript`:** the lines heard on the timeline (`heardView`, now exported from `transcriptTools.ts`). A line counts for the angle that names its speaker, or, when an angle names no speakers, the angle whose mic file it came from.
+- **Planning** (`planShots`, pure):
+  - Cuts land `leadFrames` (4) before the words.
+  - Two people talking at once go to the wide (else the current angle holds); a pause holds the current angle.
+  - An angle with no switched-on clip at a moment is never chosen there.
+  - Shots under `minShotSeconds` (2) fold into the shot before, or the one after when the shot before's angle has no picture there.
+  - A shot held past `maxShotSeconds` (12) gets evenly spaced cutaways of `cutawaySeconds` (2.5). `cutaway` is `wide` (the default with a wide), `listener` (the angle of the shot before) or `none`.
+  - Shots are snapped to frames.
+- **Applying** (`applyShots`, pure): each angle's clips are cut only where its on/off state changes. A ramped clip is refused (`clear_clip_speed` first). Split pieces keep their `linkGroup`; `rebuildRequest` links only pieces cut at the same moment, so the sound stays one clip.
+- **Files:** `src/lib/agent/multicamTools.ts` (new; `MULTICAM_INSTRUCTION` in the system prompt), registered in `tools.ts`, `toolKinds.ts` and `mcp_server.py`'s `LONG_TOOLS`.
+- **Tests:** `multicamTools.test.ts` (13) covers who's talking from lines, mics and levels; holds, folding short shots, the lead, the wide, missing pictures and both kinds of cutaway; applying in and outside a range; and the tool end to end by loudness and by transcript, plus its refusals.
+- **Not checked live yet.** For the live check:
+  - On a scratch two-camera timeline in Resolve, with a mic each: `cut_by_speaker` by loudness, `look_at_timeline` on a few cuts, `send_to_resolve`, and switched-off clips showing as disabled in the new timeline.
+  - Then the same in Premiere.
+  - Watch whether 4 frames of lead and −40 dB suit real lavs that pick up the other voice (bleed); `overlapDb` may need to be an argument.
+
+### 18b: `make_split_edit` (J and L cuts)
+- **What it does:** at a picture cut (one shot ending and the next starting on a video track), **J** brings the next shot's sound in `seconds` early (default 0.5, snapped to frames) and **L** lets the shot's sound run on that long. On each audio track the sound being extended (incoming for J, outgoing for L) and the sound it meets are trimmed and extended together. A track without the sound being extended is left alone, so a J never just leaves a hole.
+- **In the draft**, not live: neither editor can trim a clip's sound apart from its linked picture from a script without unlinking it (several edits and backups; Resolve's trim even replaces the clip). In the draft it is one change per edit, and `send_to_*` builds it.
+  - In the new timeline the moved sound isn't linked to its picture: `rebuildRequest` links only pieces that start on the same frame.
+- **Refused, per edit (the rest are made):** no picture cut there; not enough media past the edge (the file's length comes from `media-info`); running into another clip; a speed ramp; less than a frame.
+- **Files:** `src/lib/agent/splitEditTools.ts` (`splitEdit` is pure; `SPLIT_EDIT_INSTRUCTION`), in `NOT_REVIEWED`. Tests: `splitEditTools.test.ts` (6).
+
+### 18c: `clean_dialogue`
+- **The sidecar command `media-clean`** (`media/clean.py`, in `headless.COMMANDS`, `sidecar.rs` and `SidecarCommand`): `{paths (1–16), strength}` → `{files: [{path, output, duration, reused} | {path, error}]}`.
+  - Each file's first sound stream goes through ffmpeg:
+    - light: `highpass=f=80,afftdn=nr=6:nf=-45:tn=1`
+    - medium: `highpass=f=90,afftdn=nr=12:nf=-40:tn=1,deesser=i=0.3`
+    - strong: `highpass=f=100,afftdn=nr=20:nf=-35:tn=1,deesser=i=0.5`
+  - Output: `<name>.vca-clean-<strength>.wav` (24-bit, the source's rate and channels) beside the source, written as `.part` then renamed.
+  - The whole file is cleaned, so source points carry over. A cleaned file newer than its source is reused. A read-only folder is refused with a hint.
+- **The tool** (`src/lib/agent/dialogueTools.ts`): picture or sound clip ids. A picture means its linked sound, and the channel clips of one recording at one place are cleaned and laid once.
+  - It runs `media-clean`, then `add_clips` with the cleaned file (sound only, same `at` and source points, the clip's level, on a free audio track) and `set_clips_enabled` false on the originals whose cleaned copy was placed.
+  - One request means one backup and one Revert. It's reviewed ("Clean the dialogue of") and refused while a draft is open. Speed-changed clips are refused.
+- **Tests:** `tests/media/test_clean.py` (4, real ffmpeg: same rate, channels and length; reuse until the source changes; a missing file reported) and `dialogueTools.test.ts` (5).
+- **Not checked live yet.** For the live check:
+  - That the cleaned WAV (no timecode) places at the right source points in Resolve and Premiere.
+  - That `afftdn` adds no delay: compare against the original by ear, and on the waveform.
+  - How each strength sounds on a real noisy interview.
+  - A stereo file in Premiere (`add_clips` lays channels its own way).
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2370,6 +2431,8 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - *(2026-10-10)* **Phase 16c:** `set_speed_ramp` and `clear_clip_speed` (the draft's ramp, sent as constant-speed pieces). Checked live in Resolve. Next: 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16b:** `label_timeline_clips` names and colours clips on the timeline (one Revert). Checked live in Resolve; Premiere needs panel 0.12.0. Next: 16c speed ramps (the draft's existing `setDraftSpeedRamp` as a tool), 16d the Story Editor music bed, 16e the agent driving the Analyzer.
   - *(2026-10-10)* **Phase 16a:** the Analyze tab's XML now imports in Resolve (File › Import › Timeline). It carries each source's real start timecode, which Resolve needs; checked live. Next: the XML in Premiere (the user's try), `npm run install-app`, then the next chat features.
+  - *(2026-10-26)* **Phase 18a:** `cut_by_speaker` switches a multicam's angles by who's talking (loudest mic or transcript speakers), in the draft. Unit-tested; not checked live. Next: the live check in Resolve (see "Phase 18").
+  - *(2026-10-26)* **Phases 18b and 18c:** `make_split_edit` (J/L cuts, in the draft) and `clean_dialogue` (ffmpeg cleanup beside the source, laid under the clip with the original switched off; the new sidecar command `media-clean`). Unit-tested; not checked live. Next: live checks of 18a–18c, then 18d lower thirds, which needs live probes (Resolve Text+ via `InsertFusionTitleIntoTimeline`, a bundled MOGRT in Premiere).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2713,3 +2776,10 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
   - New files: `nle/transforms.py`, `nle/premiere_transform.py` and `nle/resolve_transform.py`. The panel has the new `read_motion` and `set_motion` commands.
   - The change kind `"transform"` reverts in both editors.
   - Tests: pytest, vitest, mypy and ruff pass, and so does the panel version test in cargo. Checked live in Premiere; Resolve not yet. See "Phase 16f".
+- **2026-10-26 (Claude): Phase 18a: `cut_by_speaker`, a multicam cut by who's talking.**
+  - New: `src/lib/agent/multicamTools.ts` and its tests. `heardView` is exported from `transcriptTools.ts`. The tool is registered in `tools.ts`, `toolKinds.ts` (not reviewed: a draft cut), the system prompt and the MCP bridge's long tools.
+  - Roadmap for Phases 18b–21 recorded under "Phase 18".
+  - Tests: vitest (757), tsc, eslint, pytest and ruff pass. Not checked live yet.
+- **2026-10-26 (Claude): Phases 18b and 18c: `make_split_edit` and `clean_dialogue`.**
+  - New: `splitEditTools.ts`, `dialogueTools.ts`, `media/clean.py` and their tests. The sidecar command `media-clean` is added to `headless.py`, `sidecar.rs` and `src/types/sidecar.ts`.
+  - Tests: vitest (768), tsc, eslint, pytest (966), mypy, ruff and cargo pass. Not checked live yet.

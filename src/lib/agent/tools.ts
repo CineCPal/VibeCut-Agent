@@ -27,6 +27,9 @@ import { notesExecutors, notesToolDeclarations } from "./notesTools";
 import { audioExecutors, audioToolDeclarations } from "./audioTools";
 import { reviewExecutors, reviewToolDeclarations } from "./reviewTools";
 import { beatExecutors, beatToolDeclarations } from "./beatTools";
+import { multicamExecutors, multicamToolDeclarations } from "./multicamTools";
+import { splitEditExecutors, splitEditToolDeclarations } from "./splitEditTools";
+import { dialogueExecutors, dialogueToolDeclarations } from "./dialogueTools";
 import { captionExecutors, captionToolDeclarations } from "./captionTools";
 import { renderExecutors, renderToolDeclarations } from "./renderTools";
 
@@ -65,6 +68,9 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...audioToolDeclarations(host),
     ...reviewToolDeclarations(host),
     ...beatToolDeclarations(host),
+    ...multicamToolDeclarations(host),
+    ...splitEditToolDeclarations(host),
+    ...dialogueToolDeclarations(host),
     ...captionToolDeclarations(host),
     ...renderToolDeclarations(host),
   ];
@@ -304,6 +310,9 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...audioExecutors(context),
     ...reviewExecutors(context),
     ...beatExecutors(context),
+    ...multicamExecutors(context),
+    ...splitEditExecutors(context),
+    ...dialogueExecutors(context),
     ...captionExecutors(context),
     ...renderExecutors(context),
     ...draftExecutors(context),

@@ -62,6 +62,10 @@ LONG_TOOLS = frozenset(
         "find_beats",
         "review_edit",
         "cut_to_beats",
+        # Phase 18a: reads every mic's peaks.
+        "cut_by_speaker",
+        # Phase 18c: cleans whole files with ffmpeg.
+        "clean_dialogue",
         "create_captions",
         "export_video",
         "export_audio",

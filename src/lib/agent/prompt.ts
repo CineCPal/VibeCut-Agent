@@ -6,6 +6,9 @@ import { NOTES_INSTRUCTION } from "./notesTools";
 import { AUDIO_INSTRUCTION } from "./audioTools";
 import { REVIEW_INSTRUCTION } from "./reviewTools";
 import { BEAT_INSTRUCTION } from "./beatTools";
+import { MULTICAM_INSTRUCTION } from "./multicamTools";
+import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
+import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
 import { CAPTION_INSTRUCTION } from "./captionTools";
 import { RENDER_INSTRUCTION } from "./renderTools";
 import { projectInstruction } from "./projectTools";
@@ -101,6 +104,9 @@ ${NOTES_INSTRUCTION}
 ${AUDIO_INSTRUCTION}
 ${REVIEW_INSTRUCTION}
 ${BEAT_INSTRUCTION}
+${MULTICAM_INSTRUCTION}
+${SPLIT_EDIT_INSTRUCTION}
+${DIALOGUE_INSTRUCTION}
 ${CAPTION_INSTRUCTION}
 ${RENDER_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.
