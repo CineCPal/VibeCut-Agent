@@ -175,7 +175,9 @@ export function planShots(activity: Activity, angles: Angle[], options: PlanOpti
     current = track;
     runs.push({ a: i, b: i + 1, track, reason });
   }
-  // Short shots go into the one before, or the one after when that one's angle has no picture there.
+  // Short shots go into the one before, or the one after when that one's angle has no picture there. A
+  // short overlap at a handoff (the mics' smoothing makes one; so does a line that starts before the last
+  // ends) goes to the incoming speaker, so the cut keeps its lead instead of landing after the words.
   const min = Math.max(1, Math.round(options.minShotSeconds * RATE));
   const spans = (s: Run, track: number) => Array.from({ length: s.b - s.a }, (_, k) => covered(s.a + k, track)).every(Boolean);
   let shots = joined(runs);
@@ -183,7 +185,8 @@ export function planShots(activity: Activity, angles: Angle[], options: PlanOpti
     const i = shots.findIndex((s) => shots.length > 1 && s.b - s.a < min);
     if (i < 0) break;
     const [before, after] = [shots[i - 1], shots[i + 1]];
-    if (before && (spans(shots[i], before.track) || !after)) before.b = shots[i].b;
+    const handoff = before && after && shots[i].reason === "both" && before.track !== after.track && after.reason === "speaker" && spans(shots[i], after.track);
+    if (before && !handoff && (spans(shots[i], before.track) || !after)) before.b = shots[i].b;
     else after.a = shots[i].a;
     shots.splice(i, 1);
     shots = joined(shots);

@@ -84,6 +84,15 @@ describe("planning the shots", () => {
     ]);
   });
 
+  it("gives a short overlap at a handoff to the incoming speaker, so the lead isn't lost", () => {
+    // Ben starts at 7.8 s, before Ana's line ends at 8.2 s (as smoothed mic levels overlap at a handoff).
+    const activity = speakerActivity([turn(0, 8.2, "Ana"), turn(7.8, 16, "Ben")], ANGLES, 0, 16);
+    expect(brief(planShots(activity, ANGLES, options({ leadFrames: 5, wideTrack: 3 })))).toEqual([
+      [0, 7.6, 1],
+      [7.6, 16, 2],
+    ]);
+  });
+
   it("goes to the wide when both talk, and never to an angle with no picture", () => {
     const both = speakerActivity([turn(0, 10, "Ana"), turn(4, 10, "Ben")], ANGLES, 0, 10);
     expect(brief(planShots(both, ANGLES, options({ wideTrack: 3 })))).toEqual([
