@@ -116,6 +116,13 @@ def media_shots(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-shots", shots.run, stdin, emitter)
 
 
+def media_roomtone(emitter: Emitter, stdin: TextIO) -> int:
+    """Room tone from a recording's quietest stretch, looped as long as needed (Phase 18e)."""
+    from vibecut_agent.media import commands, roomtone
+
+    return commands.main("media-roomtone", roomtone.run, stdin, emitter)
+
+
 def assemble(emitter: Emitter, stdin: TextIO) -> int:
     """The Story Editor: a story cut from transcripts (and a B-roll catalog) with the chat's model."""
     from vibecut_agent.story import commands
@@ -169,6 +176,7 @@ COMMANDS: dict[str, Command] = {
     "media-clean": media_clean,
     "media-titles": media_titles,
     "media-shots": media_shots,
+    "media-roomtone": media_roomtone,
     "assemble": assemble,
     "chat-title": chat_title,
     "critique": critique,

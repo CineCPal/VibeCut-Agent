@@ -66,6 +66,8 @@ LONG_TOOLS = frozenset(
         "cut_by_speaker",
         # Phase 18c: cleans whole files with ffmpeg.
         "clean_dialogue",
+        # Phase 18e: searches recordings for room tone and loops it with ffmpeg.
+        "fill_room_tone",
         # Phase 18d: renders each lower third with ffmpeg.
         "add_lower_thirds",
         # Phase 19b: decodes the picture of a whole clip or file.

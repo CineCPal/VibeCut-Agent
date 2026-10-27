@@ -106,6 +106,7 @@ describe("agent tools", () => {
       "replace_clip",
       "find_shot_changes",
       "clean_dialogue",
+      "fill_room_tone",
       "add_lower_thirds",
       "create_captions",
       "export_video",

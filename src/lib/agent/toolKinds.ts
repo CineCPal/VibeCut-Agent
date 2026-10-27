@@ -71,6 +71,8 @@ export const CHANGING_TOOLS = new Set([
   "create_captions",
   // Phase 18c: cleaned sound laid under the clips, the originals switched off.
   "clean_dialogue",
+  // Phase 18e: room tone laid in the holes in the dialogue.
+  "fill_room_tone",
   // Phase 18d: rendered lower thirds laid on a track above the picture.
   "add_lower_thirds",
   // Phase 19c.
@@ -147,6 +149,7 @@ const VERB: Record<string, string> = {
   make_social_version: "Make a social version",
   create_captions: "Add captions",
   clean_dialogue: "Clean the dialogue of",
+  fill_room_tone: "Fill room tone in the dialogue",
   add_lower_thirds: "Add lower thirds",
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",

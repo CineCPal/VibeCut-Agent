@@ -2299,8 +2299,9 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 **Why (the user):** asked what would make the agent a better editor. The roadmap picked from what the tools can't do yet, by value to interviews and podcasts:
 - **18a:** `cut_by_speaker`, multicam by who's talking. Built.
 - **18b:** `make_split_edit`, J/L cuts. Built.
-- **18c:** `clean_dialogue`. Built; `fill_room_tone` left for later.
+- **18c:** `clean_dialogue`. Built; `fill_room_tone` left for later, then built as 18e.
 - **18d:** `add_lower_thirds`, from speaker names and the titles the user gives. Built.
+- **18e:** `fill_room_tone`, left over from 18c. Built; not checked live in the editors yet.
 
 Later phases on that roadmap:
 - **19:** shot changes; `close_gaps`, `replace_clip` and `insert_clip`; colour and colour matching.
@@ -2387,6 +2388,21 @@ Later phases on that roadmap:
 - **Checked live (2026-10-26)** on the speech interview (camA V1, camB V2, the two talking mics, speakers named Daniel and Samantha), by speaker with titles:
   - **Premiere 26.5.2:** Daniel at 1.00 s and Samantha at 9.16 s (her own first line is at 8.16 s; the bleed copy at 0 s was dropped), on the free V3. An exported frame showed both composited with transparency. Revert took them off.
   - **Resolve 21.1**, look `clean`: the same places, on a V3 the tool added. A render showed them over the picture. Revert took them and the track off.
+
+### 18e: `fill_room_tone` (2026-10-26)
+- **What it does:** fills the holes in the dialogue with room tone, so the background doesn't drop to dead silence between cuts. A direct edit like `clean_dialogue`: one request, one backup, one Revert, reviewed ("Fill room tone in the dialogue"), refused while a draft is open. In `src/lib/agent/dialogueTools.ts` beside `clean_dialogue`; `DIALOGUE_INSTRUCTION` gained a line.
+- **Where (`roomToneGaps`, pure):** the dialogue tracks are `tracks`, else every audio track with sound linked to a picture (with none, `tracks` is asked for). A hole is a stretch between the dialogue's first and last sound where **none** of those tracks has a switched-on clip, so a hole one mic covers isn't filled. `start`/`end` narrow it; holes under `minSeconds` (default a frame) are skipped, and over `maxSeconds` (default 10, at most 60) left alone and reported (likely meant to be quiet, or under music).
+  - Each hole is filled on every dialogue track whose clip ends where it starts: a split stereo recording's two channel clips both do, so each channel gets its own. A hole opened by `start` is filled from the clips after it. Edges are snapped to frames **inward**, so a fill never reaches into a clip whose edge is off a frame.
+  - A clip with no media file beside a hole (nested, offline) leaves that hole alone, reported.
+- **The room tone (the sidecar command `media-roomtone`, `media/roomtone.py`, in `headless.COMMANDS`, `sidecar.rs` and `SidecarCommand`):** `{sources: [{path, channel?, start?, end?, seconds}] (1–16), project}` → `{files: [{path, channel?, output, duration, sample: {start, seconds}, levelDb, contrastDb, quiet, reused} | {path, error}], folder}`.
+  - One per recording (and channel, for a clip that plays one channel of it), searched from 30 s before to 30 s after everything its clips play (`SEARCH_MARGIN`). Or `path`, a room tone recording the user gives, for every hole.
+  - **The quietest stretch:** the mono mix (or the channel) at 16 kHz, read from ffmpeg a piece at a time, as 50 ms RMS levels. For 3, 2, 1 and 0.5 s, the stretch whose loudest block, with 0.1 s either side, is lowest; the longest within 3 dB of the shortest is kept. Digital silence (under −90 dBFS) doesn't count.
+  - **No real pause near the clip** (the stretch under 10 dB below the 90th-percentile level): the whole recording is searched, and used when it does better. Still none: `quiet: false`, and the tool says to check by ear or give `path`.
+  - **Made to length:** the stretch, at the source's rate, is looped to `seconds` (the longest hole + 3 s), alternating forward and reversed copies with 0.25 s equal-power crossfades, as a 24-bit WAV keeping the source's channels (one channel when `channel` is given). The files go in `~/Movies/VibeCut Renders/<project>/Room tone/`, named from the source and a hash of the request and the source's size and time, with a `.json` of the facts beside each, so asking again reuses them.
+- **Laid** with `add_clips` (sound only) on the track of the clip it follows, at the hole and its length, at that clip's level. Each further hole from the same room tone starts 1.7 s further into it (wrapping, floored to a frame), so neighbouring fills don't repeat each other.
+- **Tests:** `tests/media/test_roomtone.py` (7: the quietest stretch skips words and digital silence; the loop's level holds through its seams; request checks; from ffmpeg-made sound, the stretch is inside the pause at the noise's level with the channels' balance kept; one channel alone, reused until the source changes; a range with no pause falls back to the whole file; missing and silent files reported) and `dialogueTools.test.ts` (+7: holes on every dialogue track from the clip they follow, long ones left; a hole one track covers, `start` and `minSeconds`; tracks needed without linked sound; the job and `add_clips` requests under one step; a given recording and a "no clear pause" note; nothing to fill and a draft open; a failed recording).
+- **Checked on real speech (2026-10-26),** outside the editors: two `say` sentences with a 2.5 s pause (5.87–8.37 s) under brown noise. The stretch was taken at 5.95–7.95 s; the made room tone measured −54.1 dB against the pause's −54.0 dB (speech −18.5 dB).
+- **Not checked live in the editors yet.** To check: a mono room tone placed on a stereo track (a channel clip of a split stereo recording) in each editor, and the fill butting its neighbours with no frame overlap in Premiere (sound-only files were placed a frame early before the `place_clip_exact` fix).
 
 ## Phase 19: Timeline edits, shot changes and colour (2026-10-26)
 
@@ -2525,6 +2541,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - *(2026-10-26)* **Phase 19b is built and checked live in Premiere:** `find_shot_changes` (the new `media-shots` command), calibrated on a real edited film. Next: 19c, colour and colour matching (probes in both editors first).
   - *(2026-10-26)* **Phase 19c is built** (colour: `set_clip_color`, `match_clip_color`, `get_clip_color`; Premiere panel 0.14.0) and checked live in Resolve with the watcher's commands. Next: install panel 0.14.0 and restart Premiere for its live check, then the tools through the app.
   - *(2026-10-26)* **Phase 19c is checked live in Premiere** through the app (panel 0.14.0). **Phase 19 (a-c) is done.** Next: Phase 20 (client notes to edits, learning a style from a reference edit, pacing checks, YouTube packaging), or `fill_room_tone`.
+  - *(2026-10-26)* **Phase 18e is built:** `fill_room_tone` (the new `media-roomtone` command: the quietest stretch near each clip, looped to length; laid in the holes in the dialogue on the dialogue's own tracks, one Revert). Unit-tested and checked on real speech outside the editors; not checked live in Resolve or Premiere. Next: its live check in both editors (see "18e"), then Phase 20.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2910,3 +2927,6 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - Tests: vitest (802), tsc, eslint, pytest (996, 2 skipped), mypy, ruff and cargo (142) pass. The app was reinstalled (`npm run install-app`). Checked live in Resolve; the panel isn't installed in Premiere yet.
   - Left on Resolve's "VCA 18 probe": the "19c chart" timeline (the chart and its "off" copy, which keeps a CDL from the probe) and "19c chart (before VibeCut 1)". Probe stills and frames are in this session's scratchpad only.
 - **2026-10-26 (Claude): Phase 19c live pass in Premiere.** See "19c". No code changes. Left on "VCA 19 probe" (unsaved): "19c colour" and its backup, the copy's Lumetri set back to neutral. The frames were deleted.
+- **2026-10-26 (Claude): Phase 18e: `fill_room_tone`.** See "18e".
+  - New: `media/roomtone.py` (the sidecar command `media-roomtone`, added to `headless.py`, `sidecar.rs` and `src/types/sidecar.ts`) and its test. `fill_room_tone` and `roomToneGaps` are in `dialogueTools.ts`. Registered in `toolKinds.ts` (reviewed, "Fill room tone in the dialogue"), the system prompt (`DIALOGUE_INSTRUCTION`) and the MCP shim's long tools; `tools.test.ts` lists it.
+  - Tests: vitest (809), tsc, eslint, pytest (1003, 2 skipped), mypy, ruff and cargo (142) pass. Not checked live in the editors.
