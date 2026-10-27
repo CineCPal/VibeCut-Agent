@@ -221,5 +221,7 @@ describe("the draft edit tools", () => {
     expect(draft().audio[0].clips[1].sourcePath).toBe("/m/c.mov");
     const short = await runTool(executorsFor(ctx), "replace_clip", { clipId: "draft-0", path: "/m/c.mov", sourceIn: 18 });
     expect(String((short.result as { error?: unknown }).error)).toContain("c.mov is 20s long");
+    const still = await runTool(executorsFor(ctx), "replace_clip", { clipId: "draft-0", path: "/m/card.png" });
+    expect(String((still.result as { error?: unknown }).error)).toContain("card.png is a still");
   });
 });

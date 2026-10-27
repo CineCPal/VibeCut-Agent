@@ -30,7 +30,8 @@ import { factsOf, learnFacts, type MediaFacts } from "./mediaInfo";
 import { draftIdFor } from "./timingTools";
 import type { ToolContext, ToolDeclaration } from "./tools";
 
-/** Stills: their file has a frame, not a length, so any length can be cut from one. */
+/** Stills: the rebuild can't lay one for a length (Resolve's Media Pool gives a PNG one frame, and
+ * Premiere an hour-long range; seen live, 2026-10-26), so the draft doesn't take them. */
 const STILL = /\.(png|jpe?g|tiff?|psd|exr|dpx|heic|webp|bmp|gif)$/i;
 const FACTS_WAIT_MS = 5_000;
 
@@ -105,7 +106,7 @@ export interface Replacement {
   keepLinked: boolean;
   hasPicture: boolean;
   hasSound: boolean;
-  /** The file's length, when known (not for a still). */
+  /** The file's length, when known. */
   length?: number;
   /** The file's sound channels, when known. */
   channels?: number;
@@ -172,13 +173,13 @@ export function replaceDraftClip(draft: HostDraft, id: string, r: Replacement): 
 }
 
 /** What a file has, from its probed facts or, when they aren't back, its extension. */
-async function fileParts(path: string): Promise<{ facts?: MediaFacts; picture: boolean; sound: boolean; still: boolean }> {
+async function fileParts(path: string): Promise<{ facts?: MediaFacts; picture: boolean; sound: boolean }> {
   if (!path.startsWith("/")) throw new Error("path must be an absolute file path");
+  if (STILL.test(path)) throw new Error(`${fileName(path)} is a still, which a draft can't carry; send the draft first, then place it with add_clips`);
   await learnFacts([path], FACTS_WAIT_MS);
   const facts = factsOf(path);
-  const still = STILL.test(path);
-  if (facts) return { facts, picture: !!facts.video, sound: !!facts.audio, still };
-  return { picture: !isSoundOnly(path), sound: !still, still };
+  if (facts) return { facts, picture: !!facts.video, sound: !!facts.audio };
+  return { picture: !isSoundOnly(path), sound: true };
 }
 
 export function draftEditToolDeclarations(host: NleHost): ToolDeclaration[] {
@@ -199,7 +200,7 @@ export function draftEditToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "insert_clip",
-      description: `Edits part of a media file into the ${noun} ${inDraft}. mode "insert" (the default) cuts every track at \`at\` and moves everything from there later by the clip's length, on all tracks together, so sync holds; "overwrite" lays it over what's on its tracks there and moves nothing. Its picture goes on videoTrack (default V1) and its sound on audioTrack (default A1), linked; a track one past the last is added. A sound-only file goes on audio alone; picture/sound false leaves that part out. One clip per call; later times move after an insert, so read the result's draft before the next.`,
+      description: `Edits part of a media file into the ${noun} ${inDraft}. mode "insert" (the default) cuts every track at \`at\` and moves everything from there later by the clip's length, on all tracks together, so sync holds; "overwrite" lays it over what's on its tracks there and moves nothing. Its picture goes on videoTrack (default V1) and its sound on audioTrack (default A1), linked; a track one past the last is added. A sound-only file goes on audio alone; picture/sound false leaves that part out. Not stills (place those with add_clips after sending). One clip per call; later times move after an insert, so read the result's draft before the next.`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -218,7 +219,7 @@ export function draftEditToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "replace_clip",
-      description: `Replaces a clip ${inDraft} with part of another file, from sourceIn, at the clip's own place and length (a replace edit): nothing else moves. Its linked picture or sound is replaced with the new file's too, unless keepLinked (keep the interview sound under a new picture); a linked part the new file doesn't have is taken out. The file must have enough media from sourceIn to fill the clip. To change the length as well, replace, then trim.`,
+      description: `Replaces a clip ${inDraft} with part of another file, from sourceIn, at the clip's own place and length (a replace edit): nothing else moves. Its linked picture or sound is replaced with the new file's too, unless keepLinked (keep the interview sound under a new picture); a linked part the new file doesn't have is taken out. The file must have enough media from sourceIn to fill the clip, and not be a still. To change the length as well, replace, then trim.`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -251,7 +252,7 @@ export function draftEditExecutors(context: ToolContext): Record<string, Executo
       const withSound = bool(args, "sound", parts.sound);
       if (withPicture && !parts.picture) throw new Error(`${fileName(path)} has no picture`);
       if (withSound && !parts.sound) throw new Error(`${fileName(path)} has no sound; sound false`);
-      const length = parts.still ? null : parts.facts?.duration;
+      const length = parts.facts?.duration;
       if (length && sourceOut > length + 1e-3) throw new Error(`${fileName(path)} is ${round3(length)}s long; sourceOut ${sourceOut}s is past its end`);
       const options: EditOptions = {
         sourcePath: path,
@@ -278,7 +279,7 @@ export function draftEditExecutors(context: ToolContext): Record<string, Executo
         keepLinked: bool(args, "keepLinked"),
         hasPicture: parts.picture,
         hasSound: parts.sound,
-        ...(parts.still || !parts.facts?.duration ? {} : { length: parts.facts.duration }),
+        ...(parts.facts?.duration ? { length: parts.facts.duration } : {}),
         ...(parts.facts?.audio?.channels ? { channels: parts.facts.audio.channels } : {}),
       });
       return saveDraft(host, next);
