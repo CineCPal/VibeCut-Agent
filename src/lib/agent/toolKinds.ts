@@ -5,7 +5,8 @@
  *
  * Not reviewed: reads and searches; the selection and the playhead; transcribing (it writes only a
  * transcript beside the media); the Story Editor (it only opens a draft); and the draft's own cuts
- * (remove_time_ranges, rearrange_sections, the transcript-line cuts, set_speed_ramp), which reach the editor only
+ * (remove_time_ranges, rearrange_sections, the transcript-line cuts, set_speed_ramp, close_gaps, insert_clip,
+ * replace_clip), which reach the editor only
  * through send_to_*, which is reviewed.
  */
 import { lastTimelineView } from "./context";
@@ -125,6 +126,10 @@ export const NOT_REVIEWED = new Set([
   "cut_by_speaker",
   // Phase 18b: also a draft cut.
   "make_split_edit",
+  // Phase 19a: draft edits too.
+  "close_gaps",
+  "insert_clip",
+  "replace_clip",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);

@@ -2388,6 +2388,21 @@ Later phases on that roadmap:
   - **Premiere 26.5.2:** Daniel at 1.00 s and Samantha at 9.16 s (her own first line is at 8.16 s; the bleed copy at 0 s was dropped), on the free V3. An exported frame showed both composited with transparency. Revert took them off.
   - **Resolve 21.1**, look `clean`: the same places, on a V3 the tool added. A render showed them over the picture. Revert took them and the track off.
 
+## Phase 19: Timeline edits, shot changes and colour (2026-10-26)
+
+**Why (the user):** next on the Phase 18 roadmap. 19a first, as basic edits the other workflows lean on; then shot changes; colour and colour matching last (they need probes in both editors).
+
+### 19a: `close_gaps`, `insert_clip` and `replace_clip`
+- **All three are draft edits** (`src/lib/agent/draftEditTools.ts`, `DRAFT_EDIT_INSTRUCTION`): a ripple moves every later clip on every track, which neither editor does from a script in one edit (Premiere's insert moves only its targeted tracks; "7b.0 probe"). They open a draft if there isn't one, reach the editor only through `send_to_*`, and are in `NOT_REVIEWED` with the other draft cuts. The MCP bridge lists them from the same declarations.
+- **`close_gaps`** `{minSeconds?, from?, to?}`: a gap is a stretch where **no** track has a clip (an off clip counts as one), the end of the timeline included. Each is ripple-deleted through `arrangeSections`, so every track moves together and sync holds. A stretch where only some tracks are empty (B-roll on V2) isn't a gap. Unlike `remove_time_ranges`, a marker in a gap is kept, moved to where the gap was.
+- **`insert_clip`** `{path, sourceIn?, sourceOut, at, mode?: insert|overwrite, videoTrack?, audioTrack?, picture?, sound?}`: wraps the draft's existing `insertDraftClip` / `overwriteDraftClip` (Phase 7b), which had no tool. Insert cuts every track at `at` and moves the rest later. `EditOptions` gained `withPicture`, so a sound-only file (by its probed facts, else its extension) goes on audio alone. `sourceOut` past the file's end is refused (not for stills).
+- **`replace_clip`** `{clipId, path, sourceIn?, keepLinked?}` (`replaceDraftClip`): a replace edit. The new file fills the clip's own place and length from `sourceIn`; nothing moves. Its linked picture or sound is replaced too unless `keepLinked`, and a linked part the new file lacks is taken out (the sound under a picture from a silent file). Each replaced clip keeps its track, on/off and level, and a split-stereo channel when the new file has it. The new clips have no `originId`, so no grade is copied in Resolve and Premiere's native send imports the file when the project hasn't got it.
+- `draftGroup` in `hostDraft.ts` is now exported.
+- **Tests:** `draftEditTools.test.ts` (13: gaps found and closed on every track with markers kept, partial-track stretches left, sound-only insert, picture-only overwrite, replace with and without linked sound, too-short and wrong-kind files, channels, and the three executors).
+- **Not checked live yet:** a send of each to Resolve and Premiere, in particular a replaced clip from a file not yet in the Premiere project, and a sound-only insert in Premiere (sound-only placement is a frame-sensitive path; see the Phase 18 live-pass fixes).
+
+Later in Phase 19: shot changes (detecting cuts in a flattened file); colour and colour matching.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2474,6 +2489,7 @@ Later phases on that roadmap:
   - *(2026-10-26)* **Phase 18 live pass (Resolve):** 18a by loudness, 18b (J) and 18c checked live; `cut_by_speaker`'s lead fixed. Text+ can't be placed on a free track from a script, so 18d lays PNG lower thirds with `add_clips`. Next: Premiere checks of 18a–18c, `cut_by_speaker` by transcript on real speech, then 18d.
   - *(2026-10-26)* **The remaining live checks are done:** 18a by transcript (Resolve and Premiere), 18a–18c in Premiere, the L cut, and 16f in Resolve. Five fixes came out of them: mic bleed in `cut_by_speaker` by transcript; Resolve's Fusion moves (read-back, removal and rendering); and three in Premiere (`add_clips` with picture-only clips, `send_to_premiere` overwriting sound under picture-only pieces, and sound-only files placed a frame early). Next: 18d lower thirds (PNG with alpha through `add_clips`).
   - *(2026-10-26)* **Phase 18d is built and checked live in both editors:** `add_lower_thirds` (ProRes 4444 lower thirds from the new `media-titles` command, placed by time or by speaker, on a track above the picture, one Revert). **Phase 18 (a–d) is done.** Next: Phase 19 (shot changes; `close_gaps`, `replace_clip` and `insert_clip`; colour matching), or `fill_room_tone`, left over from 18c.
+  - *(2026-10-26)* **Phase 19a is built:** `close_gaps`, `insert_clip` (insert or overwrite) and `replace_clip`, all in the draft. Unit-tested; not checked live. `main` was fast-forwarded to Phase 18d first, and 19 is on `phase-19-timeline-edits`. Next: live sends of 19a in both editors, then 19's shot changes.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2841,3 +2857,7 @@ Later phases on that roadmap:
   - `withoutBleed` (with `SoundPiece` and `pieceLevels`) is pulled out of `cut_by_speaker` into an export of `multicamTools.ts`, for both tools.
   - Tests: vitest (778), tsc, eslint, pytest (975, 2 skipped), mypy, ruff and cargo (142) pass. Checked live in Premiere and Resolve.
   - Premiere was closed (with a TERM signal, since a save dialog held its quit) to let the app connect to Resolve; its scratch project was discarded, as agreed.
+- **2026-10-26 (Claude): Phase 19a: `close_gaps`, `insert_clip` and `replace_clip`.** See "19a".
+  - New: `src/lib/agent/draftEditTools.ts` and its test. Registered in `tools.ts`, `toolKinds.ts` (not reviewed: draft edits) and the system prompt. The prompt's "can't do yet" line now says ripple edits (closing gaps, inserts) go through the draft.
+  - `hostDraft.ts`: `EditOptions.withPicture` (insert and overwrite without picture) and an exported `draftGroup`.
+  - Tests: vitest (791), tsc and eslint pass. No Python changes. Not checked live yet.

@@ -679,7 +679,7 @@ export function reshapeDraftClip(draft: HostDraft, id: string, options: ReshapeO
 }
 
 /** The clip `id` and the clips linked to it at the same place (its picture or sound), with where each is. */
-function draftGroup(draft: HostDraft, id: string): { main: DraftClip; group: Set<DraftClip> } {
+export function draftGroup(draft: HostDraft, id: string): { main: DraftClip; group: Set<DraftClip> } {
   const fps = draft.fps;
   const at = draftClipAt(draft, id);
   const main = draft[at.kind][at.track].clips[at.index];
@@ -753,12 +753,15 @@ export interface EditOptions {
   audioTrack?: number;
   /** Place the file's sound too (linked); default true. */
   withSound?: boolean;
+  /** Place the file's picture; default true. False for a sound-only file (PLAN.md, "Phase 19a"). */
+  withPicture?: boolean;
 }
 
 function checkEdit(draft: HostDraft, options: EditOptions): { start: number; end: number; v: number; a: number } {
   const fps = draft.fps;
   if (!options.sourcePath.startsWith("/")) throw new Error("The file must be an absolute path");
   if (!(options.sourceOut > options.sourceIn) || options.sourceIn < 0) throw new Error("sourceOut must be after sourceIn, and sourceIn at least 0");
+  if (options.withPicture === false && options.withSound === false) throw new Error("An edit needs its picture, its sound or both");
   const start = snap(options.at, fps);
   if (!(start >= 0) || start > draft.duration + 1e-6) throw new Error(`at must be on the timeline (0 to ${round3(draft.duration)}s)`);
   const v = (options.videoTrack ?? 1) - 1;
@@ -780,13 +783,13 @@ function placeEdit(tracks: { video: DraftTrack[]; audio: DraftTrack[] }, options
     speed: 1,
     enabled: true,
     volumeDb: null,
-    ...(options.withSound !== false ? { linkGroup: group } : {}),
+    ...(options.withSound !== false && options.withPicture !== false ? { linkGroup: group } : {}),
   };
   const put = (list: DraftTrack[], index: number, type: "video" | "audio") => {
     if (index === list.length) list.push({ type, clips: [] });
     list[index] = { ...list[index], clips: [...list[index].clips, clip].sort((x, y) => x.start - y.start) };
   };
-  put(tracks.video, at.v, "video");
+  if (options.withPicture !== false) put(tracks.video, at.v, "video");
   if (options.withSound !== false) put(tracks.audio, at.a, "audio");
 }
 
@@ -833,15 +836,18 @@ export function overwriteDraftClip(draft: HostDraft, options: EditOptions): Host
       return [...(c.start < at.start ? [piece(c, c.start, at.start)] : []), ...(c.end > at.end ? [piece(c, at.end, c.end)] : [])];
     }),
   });
-  const video = draft.video.map((t, i) => (i === at.v ? clear(t) : t));
-  const audio = draft.audio.map((t, i) => (i === at.a && options.withSound !== false ? clear(t) : t));
+  const picture = options.withPicture !== false;
+  const sound = options.withSound !== false;
+  const video = draft.video.map((t, i) => (i === at.v && picture ? clear(t) : t));
+  const audio = draft.audio.map((t, i) => (i === at.a && sound ? clear(t) : t));
   const tracks = { video, audio };
   placeEdit(tracks, options, at, `overwrote-${draft.changes.length}-${Math.round(at.start * draft.fps)}`);
+  const on = [picture ? `V${at.v + 1}` : "", sound ? `A${at.a + 1}` : ""].filter(Boolean).join("+");
   return {
     ...draft,
     ...tracks,
     duration: round3(Math.max(draft.duration, at.end)),
-    changes: [...draft.changes, `Overwrote ${round3(at.end - at.start)}s at ${at.start}s on V${at.v + 1}${options.withSound !== false ? `+A${at.a + 1}` : ""} with ${fileName(options.sourcePath)}`],
+    changes: [...draft.changes, `Overwrote ${round3(at.end - at.start)}s at ${at.start}s on ${on} with ${fileName(options.sourcePath)}`],
   };
 }
 
