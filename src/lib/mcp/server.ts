@@ -9,6 +9,9 @@
  * - `call_tool` from outside (7d): run on the timeline open now, one call at a time. Edits are grouped
  *   into an "outside" step, so one Revert undoes a run. While an in-app turn is running, outside calls
  *   that change anything are refused; reads go through.
+ * - A timeline an outside call moved to (create_timeline, switch_timeline, a send) is used by the next
+ *   outside calls until the editor's watcher reports a change (PLAN.md, "19a"): each call reads the
+ *   open timeline from the store, which lags a timeline made a moment ago.
  */
 import { getMcpStatus, mcpHold, mcpReply, onMcpOutside, onMcpRequest } from "../ipc";
 import { newId } from "../id";
@@ -26,6 +29,8 @@ import { NLE_LABELS, type NleHost } from "../../types/nle";
 
 /** A pause this long between outside calls starts a new outside step (a new Revert group). */
 export const OUTSIDE_STEP_GAP_MS = 2 * 60_000;
+/** How long a timeline an outside call moved to is kept while the watcher hasn't reported a change. */
+export const MOVED_TIMELINE_MS = 30_000;
 export const OUTSIDE_LABEL = "Claude Code (outside)";
 
 const CONTEXT_TOOL = "get_editor_context";
@@ -50,10 +55,24 @@ export function isReadTool(name: string): boolean {
   return name === CONTEXT_TOOL || name === INSTRUCTIONS_TOOL || /^(list|get|find|describe|search|look_at|measure|review)_/.test(name);
 }
 
+/** The timeline the last outside call moved to, and the store's timeline then. */
+let moved: { host: NleHost; timeline: string; reported: string | null; at: number } | null = null;
+
+/** For tests. */
+export function forgetMovedTimeline(): void {
+  moved = null;
+}
+
 function activeEditor(): { host: NleHost; timeline: string | null } | null {
   const nle = useNleStateStore.getState();
   const host = selectActiveHost(nle);
-  return host ? { host, timeline: nle.hosts[host].timeline } : null;
+  if (!host) return null;
+  const state = nle.hosts[host];
+  // Kept until the watcher reports another open timeline (the new one, or one the user opened since). A
+  // state for another reason (the list of timelines grew) can come first, so only the name counts.
+  const pending = moved && moved.host === host && state.timeline === moved.reported && Date.now() - moved.at < MOVED_TIMELINE_MS;
+  if (!pending) moved = null;
+  return { host, timeline: pending ? moved!.timeline : state.timeline };
 }
 
 export function listTools(): McpReply {
@@ -90,6 +109,9 @@ async function callOutside(name: string, args: Record<string, unknown>): Promise
   if (!editor) return { ok: false, error: NO_EDITOR };
   const context = { host: editor.host, timeline: editor.timeline, step: outsideStep(Date.now()), stepText: OUTSIDE_LABEL };
   const outcome = withImagesKept(await runTool(executorsFor(context), name, args), name, context.step);
+  if (context.timeline && context.timeline !== editor.timeline) {
+    moved = { host: editor.host, timeline: context.timeline, reported: useNleStateStore.getState().hosts[editor.host].timeline, at: Date.now() };
+  }
   if (outcome.summary) agent.addMessage({ role: "tool", text: `${OUTSIDE_LABEL}: ${outcome.summary}` });
   return { ok: true, result: outcome.result, summary: outcome.summary, ...imagesOf(outcome) };
 }

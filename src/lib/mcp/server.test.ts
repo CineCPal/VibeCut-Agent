@@ -16,7 +16,7 @@ const ipc = vi.hoisted(() => ({
 }));
 vi.mock("../ipc", () => ipc);
 
-import { handleRequest, isReadTool, OUTSIDE_LABEL, OUTSIDE_STEP_GAP_MS } from "./server";
+import { forgetMovedTimeline, handleRequest, isReadTool, MOVED_TIMELINE_MS, OUTSIDE_LABEL, OUTSIDE_STEP_GAP_MS } from "./server";
 import { sendUserMessage, startAgentService } from "../agent/controller";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useMcpStore } from "../../store/useMcpStore";
@@ -51,7 +51,8 @@ describe("MCP bridge requests", () => {
     ipc.startSidecar.mockResolvedValue(undefined);
     ipc.sendToSidecar.mockResolvedValue(undefined);
     ipc.nleCall.mockImplementation(async (_host: string, command: string, args: Record<string, unknown>) => {
-      if (command === "read_timeline") return TIMELINE;
+      if (command === "read_timeline") return { ...TIMELINE, timeline: args.timeline };
+      if (command === "create_timeline") return { timeline: "Probe", fps: 25 };
       if (command === "list_markers") return { markers: [] };
       if (command === "add_markers") {
         const markers = args.markers as { time: number; name: string }[];
@@ -67,6 +68,7 @@ describe("MCP bridge requests", () => {
     useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
     useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null });
     useMcpStore.setState({ outsideAllowed: true, lastOutsideAt: null, outsideRunning: 0, outsideStep: null });
+    forgetMovedTimeline();
     startAgentService();
     await flush();
   });
@@ -102,6 +104,30 @@ describe("MCP bridge requests", () => {
     expect(reply).toMatchObject({ summary: 'Added 1 marker(s) in Resolve: "Hook" at 1.0s' });
     expect(agent().messages.at(-1)).toMatchObject({ role: "tool", text: `${OUTSIDE_LABEL}: Added 1 marker(s) in Resolve: "Hook" at 1.0s` });
     expect(useMcpStore.getState().outsideRunning).toBe(0);
+  });
+
+  it("keeps using a timeline an outside call made until the editor reports it", async () => {
+    await call("create_timeline", { name: "Probe" });
+    // The watcher hasn't caught up: the store still has Main open.
+    await call("add_markers", { markers: [{ time: 1, name: "Hook" }] });
+    expect(ipc.nleCall).toHaveBeenLastCalledWith("resolve", "add_markers", expect.objectContaining({ timeline: "Probe" }));
+    expect(String(result(await call("get_editor_context")).context)).toContain('"Probe"');
+    // The user opens another timeline: theirs wins.
+    useNleStateStore.getState().applyState(nleState("resolve", { timeline: "Other", changedAt: 20 }));
+    await call("add_markers", { markers: [{ time: 2, name: "Two" }] });
+    expect(ipc.nleCall).toHaveBeenLastCalledWith("resolve", "add_markers", expect.objectContaining({ timeline: "Other" }));
+  });
+
+  it("stops using it after a while if the editor never reports it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await call("create_timeline", { name: "Probe" });
+      vi.setSystemTime(Date.now() + MOVED_TIMELINE_MS + 1);
+      await call("add_markers", { markers: [{ time: 1, name: "Hook" }] });
+      expect(ipc.nleCall).toHaveBeenLastCalledWith("resolve", "add_markers", expect.objectContaining({ timeline: "Main" }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a failed tool as an error result the model can read", async () => {
