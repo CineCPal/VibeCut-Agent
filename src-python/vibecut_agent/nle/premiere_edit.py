@@ -325,8 +325,10 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
                     else "free them, add tracks in Premiere, or use a draft"
                 )
             )
-    occupied = ([("video", video_track, at, end)] if has_video else []) + [
-        ("audio", audio_track + c, at, end) for c in range(channels)
+    # Only the parts that stay hold their tracks for the clips after it: the rest is removed again
+    # before the next clip is placed (_place), so a picture-only camera leaves A1 for its mic.
+    occupied = ([("video", video_track, at, end)] if picture else []) + [
+        ("audio", audio_track + c, at, end) for c in range(channels if sound else 0)
     ]
     extra.extend(occupied)
     volume = spec.get("volumeDb")
@@ -349,24 +351,53 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
     }
 
 
+def place_clip_exact(host: Any, timeline: str, request: dict[str, Any]) -> list[dict[str, Any]]:
+    """place_clip, and for a file with no picture a check of its source range. Seen live (Premiere
+    26.5.2, 2026-10-26, a 48 kHz WAV at 25 fps): such a file lands a frame earlier in it than asked, and
+    from 0 a frame short, so every send or cleaned copy put a mic a frame off its picture. A placement
+    that's off by up to two frames is lifted and placed again that much later."""
+    placed: list[dict[str, Any]] = host._send("place_clip", request)["placed"]
+    if not placed or any(p["type"] == "video" for p in placed):
+        return placed
+    after = _read(host, timeline)
+    want_in = round(request["inSeconds"] * TICKS_PER_SECOND)
+    want_out = round(request["outSeconds"] * TICKS_PER_SECOND)
+    got = [after.clips[p["id"]] for p in placed if p["id"] in after.clips]
+    offs = {(int(c["inTicks"]) - want_in, int(c["outTicks"]) - want_out) for c in got}
+    if len(offs) != 1:
+        return placed
+    off_in, off_out = offs.pop()
+    # From 0 the in point can't go earlier, so only the out point shows how far off it is.
+    off = off_in or off_out
+    if off == 0 or abs(off) > 2 * after.timebase or (off_in and abs(off_in - off_out) > after.timebase // 2):
+        return placed
+    host._send("remove_items", {"timeline": timeline, "ids": [p["id"] for p in placed]})
+    shift = off / TICKS_PER_SECOND
+    again = {
+        **request,
+        "inSeconds": request["inSeconds"] - shift,
+        "outSeconds": request["outSeconds"] - shift,
+    }
+    replaced: list[dict[str, Any]] = host._send("place_clip", again)["placed"]
+    return replaced
+
+
 def _place(host: Any, timeline: str, plan: dict[str, Any], before: Sequence) -> list[dict[str, Any]]:
     """Runs one planned placement; removes the half that wasn't wanted, sets the level, and checks
     that nothing that was there before changed."""
-    placed = host._send(
-        "place_clip",
-        {
-            "timeline": timeline,
-            "path": plan["path"],
-            "inSeconds": plan["inSeconds"],
-            "outSeconds": plan["outSeconds"],
-            "atTicks": str(plan["atTicks"]),
-            # The panel's tracks are 0-based; -1 is none.
-            "videoTrack": plan["videoTrack"] - 1 if plan["videoTrack"] > 0 else -1,
-            "audioTrack": plan["audioTrack"] - 1 if plan["audioTrack"] > 0 else -1,
-            "bin": BIN_NAME,
-            **({"itemId": plan["itemId"]} if plan.get("itemId") else {}),
-        },
-    )["placed"]
+    request = {
+        "timeline": timeline,
+        "path": plan["path"],
+        "inSeconds": plan["inSeconds"],
+        "outSeconds": plan["outSeconds"],
+        "atTicks": str(plan["atTicks"]),
+        # The panel's tracks are 0-based; -1 is none.
+        "videoTrack": plan["videoTrack"] - 1 if plan["videoTrack"] > 0 else -1,
+        "audioTrack": plan["audioTrack"] - 1 if plan["audioTrack"] > 0 else -1,
+        "bin": BIN_NAME,
+        **({"itemId": plan["itemId"]} if plan.get("itemId") else {}),
+    }
+    placed = place_clip_exact(host, timeline, request)
     unwanted = [
         p["id"]
         for p in placed

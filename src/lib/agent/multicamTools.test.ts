@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ ...core, convertFileSrc: (p: string) =>
 const jobs = vi.hoisted(() => ({ runJob: vi.fn() }));
 vi.mock("../jobs", () => jobs);
 
-import { type Angle, applyShots, levelActivity, planShots, RATE, speakerActivity, type PlanOptions } from "./multicamTools";
+import { type Angle, applyShots, bleedGroups, keepLoudest, levelActivity, planShots, RATE, speakerActivity, type PlanOptions } from "./multicamTools";
 import { executorsFor, runTool, type ToolContext } from "./tools";
 import { emptyConnection, useConnectionStore } from "../../store/useConnectionStore";
 import { initialHosts, useNleStateStore } from "../../store/useNleStateStore";
@@ -49,6 +49,30 @@ describe("who is talking", () => {
   it("maps a line to the angle of its mic when the angle names no speakers", () => {
     const angles = [{ track: 1, speakers: [], mics: ["/m/ana.wav"] }, ANGLES[1]];
     expect(speakerActivity([{ start: 0, end: 1, speaker: "SPEAKER_00", file: "/m/ana.wav" }], angles, 0, 1)[3]).toEqual([0]);
+  });
+
+  it("keeps a line heard in another mic's bleed only on the louder mic, but not two people talking at once", () => {
+    const line = (start: number, end: number, file: string, text: string) => ({ start, end, speaker: "Speaker 1", file, text });
+    const turns = [
+      line(0, 7, "/m/ana.wav", "Thanks for having me."),
+      line(0.1, 7, "/m/ben.wav", "Thanks for having me"),
+      line(8, 12, "/m/ben.wav", "What taught you editing?"),
+      line(8.2, 12, "/m/ana.wav", "What taught you editing?"),
+      line(13, 15, "/m/ana.wav", "I disagree."),
+      line(13, 15, "/m/ben.wav", "No, wait, listen."),
+    ];
+    const groups = bleedGroups(turns);
+    expect(groups).toEqual([
+      [0, 1],
+      [2, 3],
+    ]);
+    const levelOf = (file: string, start: number) => ((file === "/m/ana.wav") === start < 8 ? -20 : -40);
+    expect(keepLoudest(turns, groups, levelOf).map((t) => [t.start, t.file])).toEqual([
+      [0, "/m/ana.wav"],
+      [8, "/m/ben.wav"],
+      [13, "/m/ana.wav"],
+      [13, "/m/ben.wav"],
+    ]);
   });
 
   it("picks the loudest mic, and both when they're within a few dB", () => {
@@ -255,6 +279,32 @@ describe("cut_by_speaker", () => {
       [10, true],
     ]);
     expect(out.summary).toContain("not transcribed: ben.wav");
+  });
+
+  it("cuts by each mic's transcript when every mic also transcribed the other's bleed", async () => {
+    const both: TranscriptData = {
+      segments: [
+        { start: 0, end: 9, text: "Welcome to the show.", speaker: "Speaker 1" },
+        { start: 10, end: 20, text: "Thanks for having me.", speaker: "Speaker 1" },
+      ],
+      speakers: ["Speaker 1"],
+      speakerLabels: {},
+      excludedSpeakers: [],
+    };
+    core.invoke.mockImplementation(async (cmd: string) => (cmd === "read_transcript" ? both : null));
+    jobs.runJob.mockResolvedValue({ result: { peaks: { "/m/ana.wav": peaks((t) => t < 9.5), "/m/ben.wav": peaks((t) => t >= 9.5) } } });
+    const out = await run({ by: "transcript", angles: [{ track: 1, mic: "/m/ana.wav" }, { track: 2, mic: "/m/ben.wav" }], leadFrames: 0, cutaway: "none" });
+    expect(jobs.runJob.mock.calls[0][0]).toBe("audio-peaks");
+    expect(out.summary).toContain("2 line(s) heard on more than one mic kept on the loudest");
+    const draft = useConnectionStore.getState().connections.resolve.draft!;
+    expect(draft.video[0].clips.map((c) => [c.start, c.enabled])).toEqual([
+      [0, true],
+      [10, false],
+    ]);
+    expect(draft.video[1].clips.map((c) => [c.start, c.enabled])).toEqual([
+      [0, false],
+      [10, true],
+    ]);
   });
 
   it("refuses unknown speakers, one angle, and a wide that's also an angle", async () => {

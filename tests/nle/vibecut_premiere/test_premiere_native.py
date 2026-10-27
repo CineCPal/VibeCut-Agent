@@ -73,15 +73,39 @@ def interview() -> dict[str, Any]:
     }
 
 
+def has_picture(path: str) -> bool:
+    return not path.endswith(".wav")
+
+
+def channels(path: str) -> int:
+    """A .wav is a mono mic; every other file has picture and stereo sound."""
+    return 1 if path.endswith(".wav") else 2
+
+
+class FakeProbe:
+    def video(self, path):
+        return {"width": 1920, "height": 1080} if has_picture(path) else None
+
+    def audio(self, path):
+        return {"channels": channels(path)}
+
+
+@pytest.fixture(autouse=True)
+def fake_probe(monkeypatch):
+    monkeypatch.setattr(premiere_native, "Probe", FakeProbe)
+
+
 class FakePremiere:
-    """The panel's commands over sequences kept here. place_clip overwrites like overwriteClip: picture
-    on its video track unless -1, and the file's two channels on the audio track and the next unless -1."""
+    """The panel's commands over sequences kept here. place_clip overwrites like overwriteClip: the file's
+    picture on its video track and its channels on the audio track and the ones after, where a track of
+    -1 is the first one (as Premiere 26.5.2 did live)."""
 
     def __init__(self, base: dict[str, Any]) -> None:
         self.sequences = {base["name"]: base}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.next_id = 0
         self.drop: set[str] = set()
+        self.sound_early = 0.0  # seconds a .wav lands earlier in its file than asked (0 clamps), as live
 
     def __call__(self, command: str, args: dict[str, Any], timeout_s: float) -> Any:
         self.calls.append((command, copy.deepcopy(args)))
@@ -142,11 +166,15 @@ class FakePremiere:
         if a["path"] in self.drop:
             return {"placed": []}
         start = int(a["atTicks"])
-        length = round((a["outSeconds"] - a["inSeconds"]) * TPS)
+        src_in, src_out = a["inSeconds"], a["outSeconds"]
+        if not has_picture(a["path"]):
+            src_in, src_out = max(0.0, src_in - self.sound_early), src_out - self.sound_early
+        length = round((src_out - src_in) * TPS)
         name = a["path"].rsplit("/", 1)[-1]
-        spots = ([("video", a["videoTrack"])] if a["videoTrack"] >= 0 else []) + (
-            [("audio", a["audioTrack"]), ("audio", a["audioTrack"] + 1)] if a["audioTrack"] >= 0 else []
-        )
+        first_audio = max(0, a["audioTrack"])
+        spots = ([("video", max(0, a["videoTrack"]))] if has_picture(a["path"]) else []) + [
+            ("audio", first_audio + c) for c in range(channels(a["path"]))
+        ]
         placed = []
         for kind, index in spots:
             while len(seq[kind]) <= index:
@@ -170,8 +198,8 @@ class FakePremiere:
             new.update(
                 startTicks=str(start),
                 endTicks=str(start + length),
-                inTicks=t(a["inSeconds"]),
-                outTicks=t(a["outSeconds"]),
+                inTicks=t(src_in),
+                outTicks=t(src_out),
             )
             track["clips"].append(new)
             placed.append({"id": new["id"], "type": kind, "track": index})
@@ -191,6 +219,14 @@ class FakePremiere:
         for kind in ("video", "audio"):
             for _ in range(a[kind]):
                 seq[kind].append({"name": "", "clips": [], "transitions": []})
+        return {}
+
+    def remove_tracks(self, a):
+        seq = self.sequences[a["timeline"]]
+        for kind in ("video", "audio"):
+            for index in sorted(a.get(kind) or [], reverse=True):
+                if index == len(seq[kind]) - 1 and not seq[kind][index]["clips"]:
+                    seq[kind].pop()
         return {}
 
     def open_sequence(self, a):
@@ -378,3 +414,36 @@ def test_plan_leaves_ramps_and_speeds_to_xml():
     faster = {"video": [[piece(None, "/m/C.mov", 0, 2, 0, speed=2)]]}
     assert premiere_native.plan(seq, premiere_native.layout_clips(ramp)) is None
     assert premiere_native.plan(seq, premiere_native.layout_clips(faster)) is None
+
+
+@pytest.mark.parametrize("early", [0.0, 0.04])
+def test_picture_only_angles_leave_the_mics_under_them_whole(files, early):
+    # Seen live (2026-10-26): a multicam cut by speaker, its angles picture-only over a mic on A1. Each
+    # angle's own sound was laid on A1 (overwriteClip's -1) and lifted, cutting the mic to the first shot.
+    # And Premiere laid the mic (a WAV, from 0) a frame short, so it's placed again.
+    fake = FakePremiere(interview())
+    fake.sound_early = early
+    layout = {
+        "video": [
+            [piece("va", "/m/A.mov", 0, 4, 10), piece("va", "/m/A.mov", 4, 8, 14, enabled=False)],
+            [piece("vb", "/m/B.mov", 0, 4, 0, enabled=False), piece("vb", "/m/B.mov", 4, 8, 4)],
+        ],
+        "audio": [[piece(None, "/m/M.wav", 0, 8, 0)]],
+    }
+    result = premiere_rebuild.rebuild(PremiereHost(fake), request(files, layout), files / "imports")
+    assert result["clips"] == 5
+    assert laid_out(fake, "Interview (VibeCut 1)")[0][:6] == ("audio", 1, "M.wav", 0, 8, 0)
+    assert [x[:5] for x in laid_out(fake, "Interview (VibeCut 1)")] == [
+        ("audio", 1, "M.wav", 0, 8),
+        ("video", 1, "A.mov", 0, 4),
+        ("video", 1, "A.mov", 4, 8),
+        ("video", 2, "B.mov", 0, 4),
+        ("video", 2, "B.mov", 4, 8),
+    ]
+    # The angles' stereo sound went on scratch tracks past the draft's A1 (A2, and A3 added for it) ...
+    assert len([p for p in fake.sent("place_clip") if p["path"] == "/m/M.wav"]) == (2 if early else 1)
+    pictures = [p for p in fake.sent("place_clip") if p["path"] != "/m/M.wav"]
+    assert {p["audioTrack"] for p in pictures} == {1}
+    # ... and the track added for it is gone again, leaving the copy's own two.
+    assert fake.sent("remove_tracks") == [{"timeline": "Interview (VibeCut 1)", "video": [], "audio": [2]}]
+    assert len(fake.sequences["Interview (VibeCut 1)"]["audio"]) == 2

@@ -3,6 +3,7 @@ lifting clips, switching them and setting levels, and reverting. The fakes behav
 when checked live (see resolve_edit.py): AppendToTimeline refuses an occupied place or a missing track
 with an empty item, and DuplicateTimeline opens the copy."""
 
+import copy
 import itertools
 
 import pytest
@@ -15,9 +16,23 @@ START = 90000  # 01:00:00:00 at 25 fps
 ids = itertools.count(1)
 
 
+class FusionSpline:
+    """A modifier's spline: its keys as 21.1 answers them, {frame: {1: value, handles}}."""
+
+    def __init__(self, name, keys):
+        self.Name, self.keys = name, keys
+
+    def GetAttrs(self):
+        return {"TOOLS_RegID": "BezierSpline", "TOOLS_Name": self.Name}
+
+    def GetKeyFrames(self):
+        return {float(f): {1: v} for f, v in self.keys.items()}
+
+
 class FusionTool:
     """A Fusion tool as Resolve's scripting shows it (Phase 16f): inputs set still, or keyed per frame
-    once a modifier animates them. `ignores_time` acts as if a keyed SetInput were taken as a still one."""
+    once a modifier animates them. `ignores_time` acts as if a keyed SetInput were taken as a still one.
+    As in 21.1, GetKeyFrames() answers the tool's valid range, not its keys (the splines have those)."""
 
     def __init__(self, comp, kind, name):
         self.comp, self.kind, self.name = comp, kind, name
@@ -52,12 +67,22 @@ class FusionTool:
         return keys[before[-1] if before else frames[0]]
 
     def GetKeyFrames(self):
-        frames = sorted({f for keys in self.splines.values() for f in keys})
-        return {i + 1: float(f) for i, f in enumerate(frames)}
+        return {1: float(self.comp.start - 125), 2: float(self.comp.start + 1000)}
+
+    def GetAttrs(self):
+        return {"TOOLS_RegID": self.kind, "TOOLS_Name": self.name}
+
+    def Delete(self):
+        self.comp.tools = {k: t for k, t in self.comp.tools.items() if t is not self}
+
+
+# Comps "exported" by Item.ExportFusionComp, by file path.
+EXPORTED: dict[str, "FusionComp"] = {}
 
 
 class FusionComp:
-    """A clip's new Fusion composition: MediaIn1 -> MediaOut1, its frames from `start`."""
+    """A clip's new Fusion composition: MediaIn1 -> MediaOut1, its frames from `start`. As in 21.1,
+    what renders is the comp as it was when added or imported (`rendered()` then), not later script edits."""
 
     start = 0
     ignores_time = False
@@ -66,6 +91,11 @@ class FusionComp:
         self.tools = {n: FusionTool(self, n[:-1], n) for n in ("MediaIn1", "MediaOut1")}
         self.tools["MediaOut1"].ConnectInput("Input", self.tools["MediaIn1"])
         self.locked = False
+        self.renders = self.rendered()
+
+    def rendered(self):
+        """What it renders: each tool's kind, name and keys."""
+        return sorted((t.kind, t.name, repr(sorted(t.splines.items()))) for t in self.tools.values())
 
     def FindTool(self, name):
         return next((t for t in self.tools.values() if t.name == name), None)
@@ -77,6 +107,16 @@ class FusionComp:
 
     def GetAttrs(self):
         return {"COMPN_RenderStart": float(self.start), "COMPN_RenderEnd": float(self.start + 1000)}
+
+    def GetToolList(self, selected, regid=None):
+        tools: list = [t for t in self.tools.values() if regid in (None, t.kind)]
+        if regid in (None, "BezierSpline"):
+            tools += [
+                FusionSpline(f"{t.name}{n}", keys)
+                for t in self.tools.values()
+                for n, keys in t.splines.items()
+            ]
+        return {i + 1: t for i, t in enumerate(tools)}
 
     def Lock(self):
         self.locked = True
@@ -98,6 +138,7 @@ class Item:
             None,
             {},
         )
+        self.active = None  # the comp Resolve has loaded on the clip
         self.speed = 100.0
         self.transition = None  # Resolve's name for it, when the item is a transition
         self.name = None  # set by SetName
@@ -204,6 +245,7 @@ class Item:
     def AddFusionComp(self):
         comp = FusionComp()
         self.comps.append((f"Composition {len(self.comps) + 1}", comp))
+        self.active = comp
         return comp
 
     def GetFusionCompByName(self, name):
@@ -214,19 +256,36 @@ class Item:
         return True
 
     def DeleteFusionCompByName(self, name):
+        if any(n == name and (c is self.active or len(self.comps) == 1) for n, c in self.comps):
+            return False  # as 21.1 won't delete the active comp, so never a clip's only one
         kept = [(n, c) for n, c in self.comps if n != name]
         gone = len(kept) != len(self.comps)
         self.comps = kept
         return gone
 
     def ExportFusionComp(self, path, index):
+        comp = self.comps[index - 1][1]
         with open(path, "w") as f:
-            f.write(self.comps[index - 1][1])
+            f.write(comp if isinstance(comp, str) else f"exported {path}")
+        if isinstance(comp, FusionComp):
+            EXPORTED[path] = copy.deepcopy(comp)
         return True
 
     def ImportFusionComp(self, path):
         with open(path) as f:
-            self.comps.append((f"Composition {len(self.comps) + 1}", f.read()))
+            text = f.read()
+        if path not in EXPORTED:
+            self.comps.append((f"Composition {len(self.comps) + 1}", text))
+            return True
+        comp = EXPORTED.pop(path)
+        comp.renders = comp.rendered()
+        # Seen live in 21.1: onto a clip with a comp, the import replaced the active one in place.
+        at = next((i for i, (_, c) in enumerate(self.comps) if c is self.active), None)
+        if at is None:
+            self.comps.append((f"Composition {len(self.comps) + 1}", comp))
+        else:
+            self.comps[at] = (self.comps[at][0], comp)
+        self.active = comp
         return True
 
     def CopyGrades(self, targets):

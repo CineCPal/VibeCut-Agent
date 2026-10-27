@@ -28,6 +28,9 @@ class FakePremiere:
         self.calls: list[str] = []
         self.qe = True  # whether Premiere's QE layer can add and remove tracks
         self.drags_links = False  # whether set_items also slips a clip's linked clips
+        # Ticks a file with no picture lands earlier in its source than asked (0 clamps, a frame short
+        # instead), as Premiere 26.5.2 placed a WAV live (2026-10-26).
+        self.sound_early = 0
         self.transitions: dict[int, list[dict]] = {}  # id(track list) -> its transitions
         self.fades: dict[str, dict] = {}  # clip id -> {"keys": [...], "value": v}
         # clip id -> {"scale": {keys, value}, "position": {keys, value}, "uniform": bool} (Phase 16f)
@@ -126,7 +129,10 @@ class FakePremiere:
             assert a["itemId"] == "pi-" + a["path"].rsplit("/", 1)[-1].replace(".", "-")
         media = self.media[a["path"]]
         start = int(a["atTicks"])
-        length = round((a["outSeconds"] - a["inSeconds"]) * T)
+        src_in, src_out = a["inSeconds"], a["outSeconds"]
+        if not media["video"] and self.sound_early:
+            src_in, src_out = max(0.0, src_in - self.sound_early / T), src_out - self.sound_early / T
+        length = round((src_out - src_in) * T)
         placed = []
         targets = ([("video", a["videoTrack"])] if media["video"] else []) + [
             ("audio", a["audioTrack"] + c) for c in range(media["channels"])
@@ -145,7 +151,7 @@ class FakePremiere:
                 index + 1,
                 start / T,
                 (start + length) / T,
-                a["inSeconds"],
+                src_in,
             )
             placed.append({**clip, "type": kind, "track": index})
         self.link(*[self.find(p["id"]) for p in placed])
@@ -519,6 +525,36 @@ def test_picture_only_removes_the_sound_it_had_to_place(setup):
     )
     assert result["changes"][0]["tracks"] == ["V2"]
     assert [k for k, _i, c in premiere.everything() if c["startTicks"] == str(90 * TB_25)] == ["video"]
+
+
+@pytest.mark.parametrize("source_in", [2.0, 0.0])
+def test_a_sound_only_file_premiere_lands_a_frame_early_is_placed_again_where_asked(setup, source_in):
+    host, premiere, media = setup
+    premiere.sound_early = TB_25
+    result = call(
+        host,
+        "add_clips",
+        clips=[{"path": media["ROLL"], "sourceIn": source_in, "sourceOut": source_in + 1, "at": 3.6}],
+    )
+    (clip,) = [premiere.find(i) for i in result["changes"][0]["itemIds"]]
+    assert (int(clip["inTicks"]), int(clip["outTicks"])) == (round(source_in * T), round((source_in + 1) * T))
+    assert (int(clip["startTicks"]), int(clip["endTicks"])) == (round(3.6 * T), round(4.6 * T))
+    assert premiere.calls.count("place_clip") == 2
+
+
+def test_a_picture_only_clip_leaves_its_sound_tracks_for_the_next_clip(setup):
+    # Seen live: a camera laid picture-only, then its mic on A1 at the same place, was refused, as if
+    # the camera's sound (removed straight after it's placed) still held A1.
+    host, premiere, media = setup
+    result = call(
+        host,
+        "add_clips",
+        clips=[
+            {"path": media["B"], "sourceIn": 0, "sourceOut": 1, "at": 3.6, "videoTrack": 2, "sound": False},
+            {"path": media["ROLL"], "sourceIn": 0, "sourceOut": 1, "at": 3.6, "audioTrack": 1},
+        ],
+    )
+    assert [c["tracks"] for c in result["changes"]] == [["V2"], ["A1"]]
 
 
 def test_delete_with_linked_then_revert_puts_the_group_back_linked(setup):

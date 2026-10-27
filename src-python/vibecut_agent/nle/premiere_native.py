@@ -8,7 +8,10 @@ Here the new sequence is made from the project's own clips instead:
 2. Each draft piece is placed with `place_clip`: the project item it was cut from (else the one for its
    file, which is imported only when the project doesn't have it), its source range, at its start, on
    its tracks. A picture and its sound from the same moment of the same file go in together; the half
-   a piece doesn't want is lifted again at once, before the next placement.
+   a piece doesn't want is lifted again at once, before the next placement. overwriteClip lays the
+   file's picture and all its sound wherever it's asked to (a track of -1 is the first one: seen live,
+   2026-10-26, a multicam's picture-only angles cut its mic on A1 to the first shot), so that half is
+   aimed at scratch tracks past the draft's own, which are removed again at the end.
 3. Levels and on/off are set as the draft has them, and the result is read back: every piece must be
    there, where the draft has it. If anything fails, the copy is deleted; the original is never touched.
 
@@ -28,8 +31,8 @@ import math
 from typing import Any
 
 from vibecut_agent.nle.premiere import TICKS_PER_SECOND, HostError, seconds
-from vibecut_agent.nle.premiere_edit import Sequence, _read, gain
-from vibecut_agent.nle.premiere_support import BIN_NAME
+from vibecut_agent.nle.premiere_edit import Sequence, _read, gain, place_clip_exact
+from vibecut_agent.nle.premiere_support import BIN_NAME, Probe
 
 IDS_CHUNK = 500
 MAX_NEW_TRACKS = 8
@@ -132,24 +135,40 @@ def _chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _place(host: Any, name: str, p: dict[str, Any]) -> list[dict[str, Any]]:
+def _scratch(
+    placements: list[dict[str, Any]], wanted: dict[str, int], video: dict[str, bool], probe: Any
+) -> dict[str, int]:
+    """The 1-based first scratch track of each kind (0 for none): past the draft's own tracks, for the
+    picture or sound a placement's file has and the placement doesn't want. `video` says, for the
+    files of placements with no picture, whether the file has one."""
+    channels: dict[str, int] = {}
+    for p in placements:
+        if not p["sounds"] and p["path"] not in channels:
+            channels[p["path"]] = int((probe.audio(p["path"]) or {}).get("channels") or 0)
+    return {
+        "video": wanted["video"] + 1 if any(video.values()) else 0,
+        "audio": wanted["audio"] + 1 if any(channels.values()) else 0,
+        "channels": max(channels.values(), default=0),
+    }
+
+
+def _place(host: Any, name: str, p: dict[str, Any], scratch: dict[str, int]) -> list[dict[str, Any]]:
     """One placement; the halves the draft doesn't have there are lifted again at once."""
     picture, sounds = p["picture"], p["sounds"]
-    placed: list[dict[str, Any]] = host._send(
-        "place_clip",
-        {
-            "timeline": name,
-            "path": p["path"],
-            "inSeconds": p["inSeconds"],
-            "outSeconds": p["outSeconds"],
-            "atTicks": str(p["atTicks"]),
-            # The panel's tracks are 0-based; -1 is none.
-            "videoTrack": picture["index"] - 1 if picture else -1,
-            "audioTrack": sounds[0]["index"] - 1 if sounds else -1,
-            "bin": BIN_NAME,
-            **({"itemId": p["itemId"]} if p["itemId"] else {}),
-        },
-    )["placed"]
+    request = {
+        "timeline": name,
+        "path": p["path"],
+        "inSeconds": p["inSeconds"],
+        "outSeconds": p["outSeconds"],
+        "atTicks": str(p["atTicks"]),
+        # The panel's tracks are 0-based. The half not wanted goes on a scratch track (-1 would be
+        # the first track, over what's there).
+        "videoTrack": (picture["index"] if picture else scratch["video"]) - 1,
+        "audioTrack": (sounds[0]["index"] if sounds else scratch["audio"]) - 1,
+        "bin": BIN_NAME,
+        **({"itemId": p["itemId"]} if p["itemId"] else {}),
+    }
+    placed = place_clip_exact(host, name, request)
     wanted_audio = {c["index"] for c in sounds}
     unwanted = [
         q["id"]
@@ -163,9 +182,16 @@ def _place(host: Any, name: str, p: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def build(
-    host: Any, base: str, name: str, bin_name: str, seq: Sequence, placements: list[dict[str, Any]]
+    host: Any,
+    base: str,
+    name: str,
+    bin_name: str,
+    seq: Sequence,
+    placements: list[dict[str, Any]],
+    probe: Any = None,
 ) -> dict[str, Any]:
     """Makes `name` from the draft (`placements` is plan()'s answer). Returns the rebuild's result."""
+    probe = probe or Probe()
     made = host._send("clone_sequence", {"timeline": base, "name": name, "bin": bin_name})
     name = made.get("name", name)
     warnings: list[str] = []
@@ -184,7 +210,13 @@ def build(
                 wanted["video"] = max(wanted["video"], p["picture"]["index"])
             for s in p["sounds"]:
                 wanted["audio"] = max(wanted["audio"], s["index"])
-        more = {kind: max(0, wanted[kind] - len(copy.tracks[kind])) for kind in wanted}
+        video = {p["path"]: probe.video(p["path"]) is not None for p in placements if p["picture"] is None}
+        scratch = _scratch(placements, wanted, video, probe)
+        needed = {
+            "video": max(wanted["video"], scratch["video"]),
+            "audio": max(wanted["audio"], scratch["audio"] + scratch["channels"] - 1),
+        }
+        more = {kind: max(0, needed[kind] - len(copy.tracks[kind])) for kind in needed}
         if any(v > MAX_NEW_TRACKS for v in more.values()):
             raise HostError("The draft has more tracks than VibeCut can add to a sequence at once")
         if any(more.values()):
@@ -192,7 +224,7 @@ def build(
 
         settings = []
         for p in placements:
-            for q in _place(host, name, p):
+            for q in _place(host, name, p, scratch):
                 draft = (
                     p["picture"]
                     if q["type"] == "video"
@@ -212,6 +244,14 @@ def build(
                 host._send("set_items", {"timeline": name, "items": chunk})
             except HostError as exc:
                 warnings.append(f"Some levels or on/off settings weren't set: {exc}")
+
+        # The scratch tracks this added (0-based), past what the draft fills; an empty one left is harmless.
+        spare = {
+            kind: list(range(max(len(copy.tracks[kind]), wanted[kind]), needed[kind])) for kind in needed
+        }
+        if any(spare.values()):
+            with contextlib.suppress(HostError):
+                host._send("remove_tracks", {"timeline": name, **spare})
 
         _check(_read(host, name), placements, name)
         host._send("open_sequence", {"timeline": name})

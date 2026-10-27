@@ -22,6 +22,20 @@ def move_of(item):
     return comp, tool
 
 
+def no_move(item):
+    """No move left: 21.1 can't delete a clip's only comp, so it stays, passing the clip through."""
+    if item.comps == []:
+        return True
+    comp, tool = move_of(item)
+    if comp.renders != comp.rendered():
+        return False  # changed by script but not reloaded, so Resolve still renders the move
+    return (
+        [n for n, _ in item.comps] == [MOVE_COMP]
+        and tool is None
+        and comp.FindTool("MediaOut1").connected["Input"] is comp.FindTool("MediaIn1")
+    )
+
+
 def test_a_still_look_sets_the_inspector_and_reverts(edit):
     host, _timeline, _project, c = edit
     result = call(
@@ -64,6 +78,8 @@ def test_keyframes_make_a_fusion_move_at_the_clips_frames_and_revert(edit, start
         and comp.FindTool("MediaOut1").connected["Input"] is tool
     )
     assert tool.splines["Size"] == {start: 1.0, start + 100: 1.2}
+    # Reloaded, so what Resolve renders is the move, not the empty comp it added.
+    assert comp.renders == comp.rendered() and any(kind == "Transform" for kind, _n, _k in comp.renders)
     # Position wasn't given, so it stays where the Inspector had it (100 px right), now in the move.
     assert tool.splines["Center"][start] == {1: pytest.approx(0.5 + 100 / 1920), 2: 0.5}
     # The Inspector goes back to 100% at the centre, so the move is the whole look.
@@ -79,7 +95,7 @@ def test_keyframes_make_a_fusion_move_at_the_clips_frames_and_revert(edit, start
     assert read["clips"] == [{"itemId": c["v"].uid, "name": "A.mov", **change["after"]}]
     reverted = call(host, "revert_timeline_changes", changes=[change])
     assert reverted["reverted"] == [{"kind": "transform", "name": "A.mov"}]
-    assert c["v"].comps == [] and (c["v"].props["ZoomX"], c["v"].props["Pan"]) == (1.5, 100.0)
+    assert no_move(c["v"]) and (c["v"].props["ZoomX"], c["v"].props["Pan"]) == (1.5, 100.0)
 
 
 def test_a_still_look_replaces_vibecuts_move_and_revert_puts_it_back(edit):
@@ -90,11 +106,11 @@ def test_a_still_look_replaces_vibecuts_move_and_revert_puts_it_back(edit):
         transforms=[{"itemId": c["v"].uid, "keyframes": [{"at": 0, "x": -192}, {"at": 2, "x": 192}]}],
     )
     still = call(host, "set_clip_transform", transforms=[{"itemId": c["v"].uid, "scale": 110}])
-    assert c["v"].comps == []
+    assert no_move(c["v"])
     # x wasn't given, so it's the move's starting x.
     assert (c["v"].props["ZoomX"], c["v"].props["Pan"]) == (pytest.approx(1.1), pytest.approx(-192.0))
     reverted = call(host, "revert_timeline_changes", changes=[*moved["changes"], *still["changes"]])
-    assert len(reverted["reverted"]) == 2 and c["v"].comps == []
+    assert len(reverted["reverted"]) == 2 and no_move(c["v"])
     # Reverting only the still look rebuilds the move.
     again = call(
         host,
@@ -105,6 +121,8 @@ def test_a_still_look_replaces_vibecuts_move_and_revert_puts_it_back(edit):
     assert call(host, "revert_timeline_changes", changes=still["changes"])["reverted"]
     _comp, tool = move_of(c["v"])
     assert sorted(tool.splines["Center"]) == [0, 50]
+    # The pass-through comp is reused, not stacked on.
+    assert [n for n, _ in c["v"].comps] == [MOVE_COMP]
     assert again["changes"][0]["after"]["keys"][1]["x"] == 192.0
 
 
@@ -118,7 +136,7 @@ def test_resolve_not_taking_the_keys_removes_the_move_and_refuses(edit, monkeypa
         transforms=[{"itemId": c["v"].uid, "keyframes": [{"at": 0, "scale": 100}, {"at": 1, "scale": 130}]}],
     )
     assert result["changes"] == [] and "didn't take" in result["refused"][0]["reason"]
-    assert c["v"].comps == [] and c["v"].props["Pan"] == 40.0
+    assert no_move(c["v"]) and c["v"].props["Pan"] == 40.0
 
 
 def test_refusals_leave_the_clip(edit):

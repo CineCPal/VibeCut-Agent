@@ -54,6 +54,49 @@ export interface Turn {
   end: number;
   speaker: string;
   file: string;
+  text?: string;
+}
+
+const wordsOf = (text: string) => new Set(text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []);
+
+/** The same words at the same time on two files: one mic's line heard in another's bleed. */
+function sameLine(a: Turn, b: Turn): boolean {
+  if (a.file === b.file || !a.text || !b.text) return false;
+  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+  if (overlap < 0.5 * Math.min(a.end - a.start, b.end - b.start)) return false;
+  const [x, y] = [wordsOf(a.text), wordsOf(b.text)];
+  const shared = [...x].filter((w) => y.has(w)).length;
+  return Math.min(x.size, y.size) > 0 && shared >= 0.6 * Math.min(x.size, y.size);
+}
+
+/**
+ * Lines heard on more than one mic, as groups of indexes into `turns`. Each person's mic picks up the
+ * others (bleed), and Whisper transcribes that too, so every line would count for every mic's angle.
+ * Two people really talking at once say different words, so they stay apart.
+ */
+export function bleedGroups(turns: Turn[]): number[][] {
+  const grouped = new Set<number>();
+  const groups: number[][] = [];
+  turns.forEach((t, i) => {
+    if (grouped.has(i)) return;
+    const same = turns.flatMap((u, j) => (j !== i && !grouped.has(j) && sameLine(t, u) ? [j] : []));
+    if (!same.length) return;
+    const group = [i, ...same];
+    for (const k of group) grouped.add(k);
+    groups.push(group);
+  });
+  return groups;
+}
+
+/** Keeps each group's line only on the file it's loudest in; `levelOf` is a file's level over a stretch. */
+export function keepLoudest(turns: Turn[], groups: number[][], levelOf: (file: string, start: number, end: number) => number): Turn[] {
+  const dropped = new Set<number>();
+  for (const group of groups) {
+    const level = group.map((k) => levelOf(turns[k].file, turns[k].start, turns[k].end));
+    const keep = group[level.indexOf(Math.max(...level))];
+    for (const k of group) if (k !== keep) dropped.add(k);
+  }
+  return turns.filter((_, i) => !dropped.has(i));
 }
 
 /** Per sample from `from`, the angles (indexes into `angles`) whose person is talking. */
@@ -372,10 +415,13 @@ export function multicamExecutors(context: ToolContext): Record<string, Executor
 
       let activity: Activity;
       const notes: string[] = [];
+      const measure = async (paths: string[]) => {
+        const job = await runJob("audio-peaks", `Measure ${paths.length} mic(s)`, { paths });
+        return { job, peaks: ((job?.result ?? {}) as { peaks?: Record<string, WaveformPeaks> }).peaks ?? {} };
+      };
       if (by === "loudness") {
         const paths = [...new Set(angles.flatMap((a) => a.mics))];
-        const job = await runJob("audio-peaks", `Measure ${paths.length} mic(s)`, { paths });
-        const peaks = ((job?.result ?? {}) as { peaks?: Record<string, WaveformPeaks> }).peaks ?? {};
+        const { job, peaks } = await measure(paths);
         const missing = paths.filter((p) => !peaks[p]);
         if (missing.length) throw new Error(`Couldn't read the sound of ${missing.map(fileName).join(", ")}${job?.error ? ` (${job.error})` : ""}`);
         const levels = angles.map((a) => micLevels(draft, a.mics[0], peaks[a.mics[0]], from, samples));
@@ -386,7 +432,22 @@ export function multicamExecutors(context: ToolContext): Record<string, Executor
         const { clips, transcripts, untranscribed } = await heardView(context);
         const lines = laneLines(clips.heard, transcripts, clips.assetsById);
         if (!lines.length) throw new Error(`Nothing heard on the ${noun} has a transcript${untranscribed.length ? ` (${untranscribed.join(", ")}); transcribe_clips with speakers: true makes them` : ""}`);
-        const turns = lines.map((l) => ({ start: l.start, end: l.end, speaker: l.speaker, file: clips.assetsById[l.assetId]?.filePath ?? "" }));
+        let turns: Turn[] = lines.map((l) => ({ start: l.start, end: l.end, speaker: l.speaker, file: clips.assetsById[l.assetId]?.filePath ?? "", text: l.text }));
+        const groups = bleedGroups(turns);
+        if (groups.length) {
+          const paths = [...new Set(groups.flat().map((k) => turns[k].file))];
+          const { peaks } = await measure(paths);
+          const levels = new Map(paths.filter((p) => peaks[p]).map((p) => [p, micLevels(draft, p, peaks[p], from, samples)]));
+          const levelOf = (file: string, start: number, end: number) => {
+            const l = levels.get(file);
+            if (!l) return -Infinity;
+            const span = l.slice(Math.max(0, Math.floor((start - from) * RATE)), Math.max(0, Math.ceil((end - from) * RATE)));
+            const sum = span.reduce((n, v) => n + (Number.isFinite(v) ? Math.pow(10, v / 20) : 0), 0);
+            return sum > 0 ? 20 * Math.log10(sum / span.length) : -Infinity;
+          };
+          turns = keepLoudest(turns, groups, levelOf);
+          notes.push(`${groups.length} line(s) heard on more than one mic kept on the loudest`);
+        }
         const known = new Set(turns.map((t) => t.speaker.toLowerCase()));
         const unknown = angles.flatMap((a) => a.speakers).filter((s) => !known.has(s));
         if (unknown.length) throw new Error(`No line is spoken by ${unknown.join(", ")} (the speakers are: ${[...known].join(", ")}); list_speakers gives the names`);

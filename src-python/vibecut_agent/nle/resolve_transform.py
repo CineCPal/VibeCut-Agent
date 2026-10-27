@@ -11,10 +11,22 @@ y up). The Inspector transform is set back to 100% at the centre so the keys say
 key is read back; when Resolve didn't take them the comp is removed and the clip refused. A clip with
 a Fusion composition of its own is refused rather than have it stacked on. A still look on a clip with
 VibeCut's move replaces the move.
+
+Seen live in 21.1: the keys are the modifiers' (BezierSpline) keys, in comp frames from
+COMPN_RenderStart; the Transform's own GetKeyFrames() answers its valid range instead. And a clip's
+active comp can't be deleted (DeleteFusionCompByName answers False), so a clip's only comp never can:
+a move is removed by taking the Transform out and wiring MediaIn1 straight to MediaOut1, leaving a
+pass-through "VibeCut Move" that counts as no move and is reused by the next one.
+
+Also seen live: Resolve renders a comp changed by script calls as it was before them, though the comp
+reads back and exports changed. So after each change the comp is exported and imported again
+(`_reload`), which Resolve renders. An import onto the clip replaced its only comp in place.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any
 
 from vibecut_agent.nle.resolve import HostError, _frame_size, _speed, _to_frame
@@ -60,6 +72,18 @@ def _point(value: Any) -> list[float]:
     return [float(value[0]), float(value[1])]
 
 
+def _passes_through(comp: Any) -> bool:
+    """Whether the comp is only MediaIn -> MediaOut (a removed move)."""
+    tools = (comp.GetToolList(False) or {}).values()
+    return all((t.GetAttrs() or {}).get("TOOLS_RegID") in ("MediaIn", "MediaOut") for t in tools)
+
+
+def _key_frames(comp: Any) -> list[int]:
+    """The comp frames its splines are keyed at."""
+    splines = (comp.GetToolList(False, "BezierSpline") or {}).values()
+    return sorted({round(float(f)) for s in splines for f in (s.GetKeyFrames() or {})})
+
+
 def _move(item: Any) -> list[dict[str, Any]] | None:
     """VibeCut's move on the clip as [{frame (from the clip's start), size, center: [x, y]}], or None."""
     if MOVE_COMP not in _comps(item):
@@ -67,10 +91,11 @@ def _move(item: Any) -> list[dict[str, Any]] | None:
     comp = item.GetFusionCompByName(MOVE_COMP)
     tool = comp.FindTool(MOVE_TOOL) if comp else None
     if tool is None:
+        if comp and _passes_through(comp):
+            return None
         raise HostError(f"its {MOVE_COMP} composition was changed in Fusion; change it there")
     start = _start(comp)
-    raw = tool.GetKeyFrames() or {}
-    frames = sorted({round(f) for f in (raw.values() if isinstance(raw, dict) else raw)})
+    frames = _key_frames(comp)
     if not frames:
         frames = [start]
     return [
@@ -119,14 +144,56 @@ def _same_state(a: dict[str, Any], b: dict[str, Any]) -> bool:
     )
 
 
+def _remove_move(item: Any) -> bool:
+    """Deletes VibeCut's comp, or, when Resolve won't, leaves it passing the clip through."""
+    if item.DeleteFusionCompByName(MOVE_COMP):
+        return True
+    comp = item.GetFusionCompByName(MOVE_COMP)
+    if comp is None:
+        return False
+    comp.Lock()
+    try:
+        tool, source, sink = comp.FindTool(MOVE_TOOL), comp.FindTool("MediaIn1"), comp.FindTool("MediaOut1")
+        if tool is not None:
+            tool.Delete()
+        if source is None or sink is None:
+            return False
+        sink.ConnectInput("Input", source)
+    finally:
+        comp.Unlock()
+    if not _reload(item):
+        return False
+    comp = item.GetFusionCompByName(MOVE_COMP)
+    return comp is not None and _passes_through(comp)
+
+
+def _reload(item: Any) -> bool:
+    """Exports VibeCut's comp and imports it again, so Resolve renders it as it now is."""
+    before = _comps(item)
+    with tempfile.TemporaryDirectory(prefix="vibecut-move-") as folder:
+        path = os.path.join(folder, "move.comp")
+        if not item.ExportFusionComp(path, before.index(MOVE_COMP) + 1) or not item.ImportFusionComp(path):
+            return False
+    after = _comps(item)
+    if len(after) > len(before):
+        # Added beside the old one, which is no longer the active comp and so can be deleted.
+        added = [n for n in after if n not in before] or after[-1:]
+        if not item.DeleteFusionCompByName(MOVE_COMP):
+            return False
+        return added[0] == MOVE_COMP or bool(item.RenameFusionCompByName(added[0], MOVE_COMP))
+    return MOVE_COMP in after
+
+
 def _make_move(item: Any, move: list[dict[str, Any]]) -> None:
-    before = set(_comps(item))
-    comp = item.AddFusionComp()
-    if not comp:
-        raise HostError("Resolve didn't add a Fusion composition")
-    added = [n for n in _comps(item) if n not in before]
-    if added and added[0] != MOVE_COMP:
-        item.RenameFusionCompByName(added[0], MOVE_COMP)
+    comp = item.GetFusionCompByName(MOVE_COMP) if MOVE_COMP in _comps(item) else None
+    if comp is None:
+        before = set(_comps(item))
+        comp = item.AddFusionComp()
+        if not comp:
+            raise HostError("Resolve didn't add a Fusion composition")
+        added = [n for n in _comps(item) if n not in before]
+        if added and added[0] != MOVE_COMP:
+            item.RenameFusionCompByName(added[0], MOVE_COMP)
     comp.Lock()
     try:
         source, sink = comp.FindTool("MediaIn1"), comp.FindTool("MediaOut1")
@@ -146,13 +213,15 @@ def _make_move(item: Any, move: list[dict[str, Any]]) -> None:
             tool.SetInput("Center", {1: key["center"][0], 2: key["center"][1]}, at)
     finally:
         comp.Unlock()
+    if not _reload(item):
+        raise HostError("Resolve didn't load the move")
 
 
 def _apply(item: Any, state: dict[str, Any]) -> bool:
     """Puts the clip in `state`; whether Resolve took it all."""
     ok = bool(item.SetProperties(dict(state["inspector"])))
     if MOVE_COMP in _comps(item):
-        ok = bool(item.DeleteFusionCompByName(MOVE_COMP)) and ok
+        ok = _remove_move(item) and ok
     if state["move"]:
         _make_move(item, state["move"])
     try:

@@ -2198,14 +2198,19 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - With keys set, `getValue()` still answers the un-keyed value; the module reads the keys instead.
 - Not looked at: how the move looks on screen, or the keys' interpolation (Premiere's default for scripted keys).
 
-**Not checked live yet in Resolve.** Open questions for the live check:
-- Resolve 21.1:
-  - whether Pan is +right and Tilt +up in pixels;
-  - whether a timeline clip's comp starts at `COMPN_RenderStart`;
-  - whether `SetInput("Center", {1: x, 2: y}, frame)` keys an XYPath;
-  - whether MediaIn delivers the clip at the timeline's resolution, so Center fractions match pixels;
-  - whether Fusion's default key smoothing is acceptable (keys are linear in Premiere).
-- The read-back check refuses rather than leaves a wrong move.
+**Checked live in Resolve (2026-10-26, Resolve Studio 21.1, "VCA 18 probe", 1920×1080, 25 fps)**, over MCP, each look checked in a render (stills from the Color page don't show the Inspector or Fusion, so the timeline was rendered to H.264 and frames pulled with ffmpeg).
+- **The open questions, answered:**
+  - Pan is +right and Tilt +up, in the timeline's pixels: 120% at (96, −54) rendered 1.2× larger, about 97 px right and 52 px down.
+  - A timeline clip's comp starts at `COMPN_RenderStart` (0, the clip's first frame; `COMPN_GlobalStart` is minus the clip's source in).
+  - `SetInput("Center", {1: x, 2: y}, frame)` keys an XYPath (its X and Y BezierSplines get the keys).
+  - MediaIn delivers the clip at the timeline's resolution (1920×1080), and Center fractions match pixels: (−192, 0) → (192, 108) rendered as 192 px left, then 192 px right and about 111 px up.
+  - Scripted keys are linear (`Flags = { Linear = true }` in the saved comp), as in Premiere.
+- **Three fixes, all in `resolve_transform.py`:**
+  - **The read-back:** `Transform.GetKeyFrames()` answers the tool's valid range (`{1: -125, 2: 625}`), not its keys, so every keyed move was read at the wrong frames and refused ("Resolve didn't take the scale or position"). The keys are now read from the comp's BezierSplines (`comp.GetToolList(False, "BezierSpline")`).
+  - **Removing a move:** `DeleteFusionCompByName` answers False for the clip's active comp, and a clip's only comp is always active, so a refused move was left on the clip and Revert couldn't take one off. A move is now removed by deleting the Transform and wiring MediaIn1 to MediaOut1. The pass-through "VibeCut Move" left behind counts as no move and is reused by the next one.
+  - **Rendering:** a comp changed by script calls renders as it was before them (it reads back and exports changed, and the Fusion page shows it, but the Edit page and a render don't). After each change the comp is now exported and imported again (`_reload`), which Resolve renders. The import replaced the clip's only comp in place.
+- **Then, on the reinstalled app, on a fresh "Move probe" timeline:** a keyed move on camA and a still look on camB in one call rendered as asked; a still 110% replacing the move rendered still at every frame; a move plus a still look, reverted as one step, rendered at 100% in the centre, and the clip stayed.
+- The fakes (`test_resolve_edit.py`) now behave as 21.1 did: the Transform's range from `GetKeyFrames`, splines in `GetToolList`, no deleting the active comp, and a comp rendering as it was when added or imported.
 
 ## Phase 17: Gemini (subscription), through the Antigravity CLI (2026-10-17)
 
@@ -2323,7 +2328,12 @@ Later phases on that roadmap:
 - **Checked live in Resolve (2026-10-26)**, through the MCP bridge on the scratch project "VCA 18 probe": synthetic 30 s media (camA, camB, a wide; two mics, A talking 0–8 s and 16–24 s with an "mm-hm" at 11 s, B 8–16 s and 24–30 s, 10% bleed and pink room noise each).
   - By loudness: four shots A, B, A, B; the "mm-hm" folded away; no wide (no real overlap); `send_to_resolve` built "Multicam probe (VibeCut 1)" with the off pieces disabled, the mics untouched and the pieces' source points right (`GetLeftOffset`; Resolve's own `GetSourceStartFrame` reads one frame low on one piece, its rounding, not ours).
   - **Fixed:** the cuts landed 0.12 s *after* each speaker started instead of 4 frames before. The mics' smoothing makes a short "both" stretch at every handoff; it held the lead and folded into the outgoing speaker's shot. A short overlap between two different speakers now goes to the incoming one (test: "gives a short overlap at a handoff to the incoming speaker"). Rechecked on the reinstalled app: the cuts land at 7.72, 15.72 and 23.72 s, 7 frames before each speaker (the overlap starts a little before the handoff, so 3 frames earlier than `leadFrames`), sent as "Multicam probe (VibeCut 2)" with source points right.
-  - Not yet: by transcript (needs a transcription of real speech), and Premiere.
+  - **By transcript, on real speech (2026-10-26):** two `say` voices (Daniel 0.5–7.4 s and 14.5–20.4 s, Samantha 8.5–13.1 s and 21.5–25.5 s), each on its own mic with the other at −20 dB and pink noise, transcribed with Whisper (`speakers: false`).
+    - **Found:** Whisper transcribed the bleed too. Each mic's transcript had all four lines, so every line counted for both angles, and the cut was one 30 s shot on the wide.
+    - **Fixed (`bleedGroups`, `keepLoudest`):** the same words at the same time on two files (time overlap at least half the shorter line, at least 60% of the shorter line's words shared) are one line heard twice. It's kept only on the file whose level (`audio-peaks`, averaged over the line) is highest. Two people really talking at once say different words, so they still go to the wide. The result notes "N line(s) heard on more than one mic kept on the loudest".
+    - Rechecked live on the reinstalled app: A, B, A, B with cuts at 7.92, 14.00 and 20.80 s (5–6 frames before Whisper's line starts), the wide off, source points right.
+    - Not solved: diarizing each mic on its own (`speakers: true`) names a different person "Speaker 1" on each mic. With one mic per person, pass `mic` and no `speakers`.
+  - **Checked live in Premiere (2026-10-26, Premiere 26.5.2, panel 0.13.0, a scratch copy of an empty project, "VCA 18 probe"):** by loudness (cuts at 8, 14 and 21 s) and by transcript (7.92, 14.00, 20.80 s), then `send_to_premiere`: every angle piece and its on/off right, and the mics whole, after the two Premiere fixes in the Change Log (2026-10-26, "Phase 18 live pass in Premiere").
 
 ### 18b: `make_split_edit` (J and L cuts)
 - **What it does:** at a picture cut (one shot ending and the next starting on a video track), **J** brings the next shot's sound in `seconds` early (default 0.5, snapped to frames) and **L** lets the shot's sound run on that long. On each audio track the sound being extended (incoming for J, outgoing for L) and the sound it meets are trimmed and extended together. A track without the sound being extended is left alone, so a J never just leaves a hole.
@@ -2331,7 +2341,9 @@ Later phases on that roadmap:
   - In the new timeline the moved sound isn't linked to its picture: `rebuildRequest` links only pieces that start on the same frame.
 - **Refused, per edit (the rest are made):** no picture cut there; not enough media past the edge (the file's length comes from `media-info`); running into another clip; a speed ramp; less than a frame.
 - **Files:** `src/lib/agent/splitEditTools.ts` (`splitEdit` is pure; `SPLIT_EDIT_INSTRUCTION`), in `NOT_REVIEWED`. Tests: `splitEditTools.test.ts` (6).
-- **Checked live in Resolve (2026-10-26):** two shots cut at 10 s (camA and camB from 5 s, picture and sound), a 1 s J, `send_to_resolve`: camA's sound ends at 9 s, camB's sound starts at 9 s from 4 s while its picture stays at 10 s from 5 s, in sync; camB's picture and sound aren't linked in the new timeline (as expected). L and Premiere not checked live.
+- **Checked live in Resolve (2026-10-26):** two shots cut at 10 s (camA and camB from 5 s, picture and sound), a 1 s J, `send_to_resolve`: camA's sound ends at 9 s, camB's sound starts at 9 s from 4 s while its picture stays at 10 s from 5 s, in sync; camB's picture and sound aren't linked in the new timeline (as expected).
+- **L, checked live in Resolve (2026-10-26):** the same two shots, a 1 s L at 10 s: camA's sound runs to 11 s, camB's sound starts at 11 s from 6 s under its picture (10 s from 5 s).
+- **Checked live in Premiere (2026-10-26):** three shots cut at 10 and 20 s, a 1 s J at 10 and a 1 s L at 20 in one call, then `send_to_premiere`: camA's sound 0–9 s; camB's sound 9–21 s from 4 s under its picture (10–20 s from 5 s); camW's sound from 21 s from 6 s. The pictures were untouched (the sound-only pieces' picture went to a scratch track; see the Change Log).
 
 ### 18c: `clean_dialogue`
 - **The sidecar command `media-clean`** (`media/clean.py`, in `headless.COMMANDS`, `sidecar.rs` and `SidecarCommand`): `{paths (1–16), strength}` → `{files: [{path, output, duration, reused} | {path, error}]}`.
@@ -2348,7 +2360,8 @@ Later phases on that roadmap:
 - **Checked live in Resolve (2026-10-26)** on the J-cut timeline above (sound clips at 0–9 s and 9–20 s, from 5 s and 4 s), medium: a picture id resolved to its linked sound; both cleaned WAVs went on a new A2 at the same places and source frames, the originals on A1 switched off; `revert_timeline_edits lastStep=true` removed A2's clips and switched A1 back on.
   - Levels on `micA.wav` (speech, bleed, pink noise): speech −29.8 dB before, −29.9 / −29.9 / −30.0 after (light / medium / strong); a stretch where only the other voice bleeds −45.9 dB before, −49.0 / −49.6 / −49.8 after. The synthetic mics have no pure room-tone stretch, so the floor itself wasn't measured; by ear on a real noisy interview is still to do.
   - Outside (MCP) calls under 2 minutes apart share one Revert step (Phase 7d), so `lastStep` also tried to undo the two earlier `add_clips` on other timelines; it reported them as failed ("Resolve didn't remove it", those timelines weren't open). As designed, but worth knowing when testing over MCP.
-  - Not yet: Premiere (a stereo file; `add_clips` lays channels its own way).
+  - **Checked live in Premiere (2026-10-26)** with a stereo WAV (10 s of it from 2 s, laid as one stereo clip on A1): medium cleaned it to a stereo WAV laid as one clip on A2 at the same place and source points (2–12 s), the original switched off.
+    - The first try put the cleaned copy a frame early (from 1.92 s against the original's 1.96 s, itself asked for at 2.00 s). Premiere places a file with no picture a frame early; fixed in `place_clip_exact` (Change Log, "Phase 18 live pass in Premiere").
 
 ### 18d probe: titles in Resolve (2026-10-26)
 - `Timeline.InsertFusionTitleIntoTimeline("Text+")` puts a 5 s Text+ at the playhead, and its text can be set: `item.GetFusionCompByIndex(1)`, the `TextPlus` tool, `SetInput("StyledText", …)`.
@@ -2439,6 +2452,7 @@ Later phases on that roadmap:
   - *(2026-10-26)* **Phase 18a:** `cut_by_speaker` switches a multicam's angles by who's talking (loudest mic or transcript speakers), in the draft. Unit-tested; not checked live. Next: the live check in Resolve (see "Phase 18").
   - *(2026-10-26)* **Phases 18b and 18c:** `make_split_edit` (J/L cuts, in the draft) and `clean_dialogue` (ffmpeg cleanup beside the source, laid under the clip with the original switched off; the new sidecar command `media-clean`). Unit-tested; not checked live. Next: live checks of 18a–18c, then 18d lower thirds, which needs live probes (Resolve Text+ via `InsertFusionTitleIntoTimeline`, a bundled MOGRT in Premiere).
   - *(2026-10-26)* **Phase 18 live pass (Resolve):** 18a by loudness, 18b (J) and 18c checked live; `cut_by_speaker`'s lead fixed. Text+ can't be placed on a free track from a script, so 18d lays PNG lower thirds with `add_clips`. Next: Premiere checks of 18a–18c, `cut_by_speaker` by transcript on real speech, then 18d.
+  - *(2026-10-26)* **The remaining live checks are done:** 18a by transcript (Resolve and Premiere), 18a–18c in Premiere, the L cut, and 16f in Resolve. Five fixes came out of them: mic bleed in `cut_by_speaker` by transcript; Resolve's Fusion moves (read-back, removal and rendering); and three in Premiere (`add_clips` with picture-only clips, `send_to_premiere` overwriting sound under picture-only pieces, and sound-only files placed a frame early). Next: 18d lower thirds (PNG with alpha through `add_clips`).
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2793,3 +2807,11 @@ Later phases on that roadmap:
   - Checked live over MCP on "VCA 18 probe": `cut_by_speaker` by loudness, `make_split_edit` (J), `clean_dialogue` and its Revert. See "Phase 18".
   - Fixed: a short overlap at a speaker handoff now goes to the incoming speaker, so cuts land before the words, not 0.12 s after. New test in `multicamTools.test.ts`.
   - Probed Text+ titles for 18d: `InsertFusionTitleIntoTimeline` ripple-inserts on V1, so lower thirds will be PNGs with alpha laid by `add_clips`.
+- **2026-10-26 (Claude): Phase 18 live pass in Premiere, 18a by transcript, and 16f in Resolve; five fixes.** See "Phase 18" and "Phase 16f" for what was checked.
+  - **`cut_by_speaker` by transcript (`multicamTools.ts`):** with a mic each, Whisper transcribes the other person's bleed, so every line counted for every angle and the cut went to the wide. `bleedGroups` finds a line heard on two files (same words, same time) and `keepLoudest` keeps it on the loudest mic (`audio-peaks`, run only when there is such a line). Tests in `multicamTools.test.ts` (pure, and end to end).
+  - **Resolve moves (`resolve_transform.py`):** keys are read from the comp's BezierSplines (the Transform's `GetKeyFrames` answers its range); a move that can't be deleted (the clip's active comp) is left as a pass-through; and each change is exported and imported again, since Resolve renders a script-changed comp as it was. The Fusion fakes in `test_resolve_edit.py` behave as 21.1 did.
+  - **Premiere `add_clips` (`premiere_edit._plan_place`):** a clip's unwanted half (a camera laid picture-only) held its tracks for the clips after it in the call, though it is lifted before the next one is placed. "Mic on A1 under a picture-only camera" was refused. Now only the parts that stay hold their tracks. Test in `test_premiere_edit.py`.
+  - **Premiere `send_to_premiere` (`premiere_native.py`):** a piece without its picture or sound was placed with that track as −1, which Premiere takes as the first track. So each picture-only angle of a multicam overwrote the mic on A1, which came out 0–8 s of 30. The unwanted half now goes on scratch tracks past the draft's (found with `Probe`), which are removed again at the end. The fake now places −1 on the first track, as Premiere did. Test in `test_premiere_native.py`.
+  - **Premiere sound-only files (`premiere_edit.place_clip_exact`, used by `add_clips`, Revert and the native send):** checked with a render (export_audio, cross-correlated with the source), Premiere 26.5.2 places a file with no picture one frame earlier in it than asked, and from 0 a frame short. Every send and cleaned copy moved a WAV mic a frame against its picture. A placement off by up to two frames is lifted and placed again that much later; camera files were exact and aren't checked. Rechecked live: from 0, mid-file and to the file's end all exact. Tests in both Premiere test files (the fakes can land sound-only files a frame early).
+  - Tests: pytest (971, 2 skipped), vitest (771), tsc, eslint, mypy and ruff pass. The app was reinstalled with all five (`npm run install-app`); no panel update is needed.
+  - Left on the scratch projects: Resolve's "VCA 18 probe" (timelines "Transcript multicam", "L cut probe", "Move probe" and their VibeCut copies) and an unsaved Premiere project opened from a scratch copy of an empty one. A render in `~/Movies/VibeCut Renders/` was deleted.
