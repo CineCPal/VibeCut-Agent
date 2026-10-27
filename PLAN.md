@@ -2300,7 +2300,7 @@ The last group from Phase 14's choice, built at the user's "continue". Both part
 - **18a:** `cut_by_speaker`, multicam by who's talking. Built.
 - **18b:** `make_split_edit`, J/L cuts. Built.
 - **18c:** `clean_dialogue`. Built; `fill_room_tone` left for later.
-- **18d:** `add_lower_thirds`, from speaker names and roles.
+- **18d:** `add_lower_thirds`, from speaker names and the titles the user gives. Built.
 
 Later phases on that roadmap:
 - **19:** shot changes; `close_gaps`, `replace_clip` and `insert_clip`; colour and colour matching.
@@ -2366,7 +2366,27 @@ Later phases on that roadmap:
 ### 18d probe: titles in Resolve (2026-10-26)
 - `Timeline.InsertFusionTitleIntoTimeline("Text+")` puts a 5 s Text+ at the playhead, and its text can be set: `item.GetFusionCompByIndex(1)`, the `TextPlus` tool, `SetInput("StyledText", …)`.
 - But it is a **ripple insert on V1**: over a clip it split it and pushed the rest later. It ignores an added V2, refuses (returns None) when V1 is locked, and a title can't be moved afterwards (no `SetStart`). So it can't place a lower third over a cut.
-- **So 18d:** render each lower third as a PNG with alpha (Pillow; this ffmpeg has no `drawtext`) and lay it with `add_clips` on a free track, in both editors, with one Revert. The text isn't live-editable in the editor; a MOGRT in Premiere can still be probed for that.
+- **So 18d:** render each lower third with Pillow (this ffmpeg has no `drawtext`) and lay it with `add_clips` on a free track, in both editors, with one Revert. The text isn't live-editable in the editor; a MOGRT in Premiere can still be probed for that.
+
+### 18d: `add_lower_thirds` (2026-10-26)
+- **Media, probed live first:** a PNG still laid for 5 s works in both editors, but Premiere gives a still an hour-long source range (it read 3599.96–3604.96 s). So each lower third is a short **ProRes 4444 clip with alpha** instead: the source range is plain (0 to `seconds`), and the fade in and out is baked into the alpha. Resolve set its alpha mode to Straight by itself, and both editors composite it over the picture (checked in renders).
+- **The sidecar command `media-titles`** (`media/titles.py`, in `headless.COMMANDS`, `sidecar.rs` and `SidecarCommand`): `{titles: [{name, title?}] (1–20), width, height, fps, seconds (1–30, default 5), fade (default 0.3 s, at most a third), look, accent, position, project}` → `{files: [{name, title, output, reused} | {name, error}], folder}`.
+  - Pillow draws the frame-sized RGBA image: the name in Helvetica Neue Bold, the title under it in Regular (Helvetica, then Pillow's own font, as fallbacks), an accent rule on the left, and under them a dark panel (`bar`, the default) or a soft shadow (`clean`).
+  - Sizes follow the frame's short side (name 5.8%, title 3.4%), so a 9:16 version is as readable as 16:9. The title-safe margin is 6% (8% vertical), and the bottom margin 11% (22% vertical, clear of an app's captions and buttons). A name too wide is shrunk to fit, and its title stays at most 60% of the name's size.
+  - ffmpeg loops the image at the timeline's rate into `prores_ks` 4444 (`yuva444p10le`), written as a hidden `.part.mov` and then renamed.
+  - Files go in `~/Movies/VibeCut Renders/<project>/Lower thirds/` (renders.py's folder), named "<name> - <title> <hash>". The hash covers the text and everything drawn, so asking for the same one again reuses it.
+- **The tool** (`src/lib/agent/titleTools.ts`, `TITLE_INSTRUCTION` in the system prompt):
+  - Each entry is `{name, title?, at? | speaker?}`.
+    - `speaker` (a name from `list_speakers`) places it `SPEAKER_LEAD` (1 s) after that person's first line.
+    - The lines go through `withoutBleed` first, so a mic's transcript of the other person's bleed doesn't place a title early. `withoutBleed` is now shared with `cut_by_speaker`, out of `multicamTools.ts`.
+  - Each lower third is kept inside the timeline. Two that would overlap are refused, since they share one track.
+  - The track is the one above the highest video track with any clip (`titleTrack`). When it doesn't exist yet, `add_track` adds it first, in the same request, so one Revert takes everything off.
+  - It's laid with `add_clips` (picture only, source 0 to `seconds`), reviewed under Review edits first ("Add lower thirds (n)"), and refused while a draft is open. The MCP bridge counts it as a long tool.
+  - Titles come from the user or the project notes: the description and the instruction tell the agent not to invent them.
+- **Tests:** `tests/media/test_titles.py` (4: real Pillow and ffmpeg; ProRes 4444 with alpha at the asked rate and length, faded in from nothing, the bar where it should be and the top clear, reuse, a long vertical name kept in the safe area, bad requests) and `titleTools.test.ts` (7: placing by time and by speaker, keeping inside, overlaps, the track, the job and `add_clips` requests, a failed render, bleed dropped before placing by speaker, refusals, review).
+- **Checked live (2026-10-26)** on the speech interview (camA V1, camB V2, the two talking mics, speakers named Daniel and Samantha), by speaker with titles:
+  - **Premiere 26.5.2:** Daniel at 1.00 s and Samantha at 9.16 s (her own first line is at 8.16 s; the bleed copy at 0 s was dropped), on the free V3. An exported frame showed both composited with transparency. Revert took them off.
+  - **Resolve 21.1**, look `clean`: the same places, on a V3 the tool added. A render showed them over the picture. Revert took them and the track off.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -2453,6 +2473,7 @@ Later phases on that roadmap:
   - *(2026-10-26)* **Phases 18b and 18c:** `make_split_edit` (J/L cuts, in the draft) and `clean_dialogue` (ffmpeg cleanup beside the source, laid under the clip with the original switched off; the new sidecar command `media-clean`). Unit-tested; not checked live. Next: live checks of 18a–18c, then 18d lower thirds, which needs live probes (Resolve Text+ via `InsertFusionTitleIntoTimeline`, a bundled MOGRT in Premiere).
   - *(2026-10-26)* **Phase 18 live pass (Resolve):** 18a by loudness, 18b (J) and 18c checked live; `cut_by_speaker`'s lead fixed. Text+ can't be placed on a free track from a script, so 18d lays PNG lower thirds with `add_clips`. Next: Premiere checks of 18a–18c, `cut_by_speaker` by transcript on real speech, then 18d.
   - *(2026-10-26)* **The remaining live checks are done:** 18a by transcript (Resolve and Premiere), 18a–18c in Premiere, the L cut, and 16f in Resolve. Five fixes came out of them: mic bleed in `cut_by_speaker` by transcript; Resolve's Fusion moves (read-back, removal and rendering); and three in Premiere (`add_clips` with picture-only clips, `send_to_premiere` overwriting sound under picture-only pieces, and sound-only files placed a frame early). Next: 18d lower thirds (PNG with alpha through `add_clips`).
+  - *(2026-10-26)* **Phase 18d is built and checked live in both editors:** `add_lower_thirds` (ProRes 4444 lower thirds from the new `media-titles` command, placed by time or by speaker, on a track above the picture, one Revert). **Phase 18 (a–d) is done.** Next: Phase 19 (shot changes; `close_gaps`, `replace_clip` and `insert_clip`; colour matching), or `fill_room_tone`, left over from 18c.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2815,3 +2836,8 @@ Later phases on that roadmap:
   - **Premiere sound-only files (`premiere_edit.place_clip_exact`, used by `add_clips`, Revert and the native send):** checked with a render (export_audio, cross-correlated with the source), Premiere 26.5.2 places a file with no picture one frame earlier in it than asked, and from 0 a frame short. Every send and cleaned copy moved a WAV mic a frame against its picture. A placement off by up to two frames is lifted and placed again that much later; camera files were exact and aren't checked. Rechecked live: from 0, mid-file and to the file's end all exact. Tests in both Premiere test files (the fakes can land sound-only files a frame early).
   - Tests: pytest (971, 2 skipped), vitest (771), tsc, eslint, mypy and ruff pass. The app was reinstalled with all five (`npm run install-app`); no panel update is needed.
   - Left on the scratch projects: Resolve's "VCA 18 probe" (timelines "Transcript multicam", "L cut probe", "Move probe" and their VibeCut copies) and an unsaved Premiere project opened from a scratch copy of an empty one. A render in `~/Movies/VibeCut Renders/` was deleted.
+- **2026-10-26 (Claude): Phase 18d: `add_lower_thirds`.** See "18d".
+  - New: `media/titles.py` (the sidecar command `media-titles`, added to `headless.py`, `sidecar.rs` and `src/types/sidecar.ts`), `src/lib/agent/titleTools.ts`, and their tests. Registered in `tools.ts`, `toolKinds.ts` (reviewed; the card counts `thirds`), the system prompt and the MCP bridge's long tools.
+  - `withoutBleed` (with `SoundPiece` and `pieceLevels`) is pulled out of `cut_by_speaker` into an export of `multicamTools.ts`, for both tools.
+  - Tests: vitest (778), tsc, eslint, pytest (975, 2 skipped), mypy, ruff and cargo (142) pass. Checked live in Premiere and Resolve.
+  - Premiere was closed (with a TERM signal, since a save dialog held its quit) to let the app connect to Resolve; its scratch project was discarded, as agreed.

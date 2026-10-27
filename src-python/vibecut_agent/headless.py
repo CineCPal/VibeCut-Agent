@@ -102,6 +102,13 @@ def media_clean(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-clean", clean.run, stdin, emitter)
 
 
+def media_titles(emitter: Emitter, stdin: TextIO) -> int:
+    """Lower thirds rendered as ProRes 4444 clips with alpha (Phase 18d)."""
+    from vibecut_agent.media import commands, titles
+
+    return commands.main("media-titles", titles.run, stdin, emitter)
+
+
 def assemble(emitter: Emitter, stdin: TextIO) -> int:
     """The Story Editor: a story cut from transcripts (and a B-roll catalog) with the chat's model."""
     from vibecut_agent.story import commands
@@ -153,6 +160,7 @@ COMMANDS: dict[str, Command] = {
     "media-loudness": media_loudness,
     "media-beats": media_beats,
     "media-clean": media_clean,
+    "media-titles": media_titles,
     "assemble": assemble,
     "chat-title": chat_title,
     "critique": critique,

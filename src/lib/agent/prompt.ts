@@ -9,6 +9,7 @@ import { BEAT_INSTRUCTION } from "./beatTools";
 import { MULTICAM_INSTRUCTION } from "./multicamTools";
 import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
+import { TITLE_INSTRUCTION } from "./titleTools";
 import { CAPTION_INSTRUCTION } from "./captionTools";
 import { RENDER_INSTRUCTION } from "./renderTools";
 import { projectInstruction } from "./projectTools";
@@ -107,6 +108,7 @@ ${BEAT_INSTRUCTION}
 ${MULTICAM_INSTRUCTION}
 ${SPLIT_EDIT_INSTRUCTION}
 ${DIALOGUE_INSTRUCTION}
+${TITLE_INSTRUCTION}
 ${CAPTION_INSTRUCTION}
 ${RENDER_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.

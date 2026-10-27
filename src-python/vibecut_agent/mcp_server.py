@@ -66,6 +66,8 @@ LONG_TOOLS = frozenset(
         "cut_by_speaker",
         # Phase 18c: cleans whole files with ffmpeg.
         "clean_dialogue",
+        # Phase 18d: renders each lower third with ffmpeg.
+        "add_lower_thirds",
         "create_captions",
         "export_video",
         "export_audio",

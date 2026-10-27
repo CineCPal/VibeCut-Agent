@@ -73,6 +73,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "media-beats", interactive: false, managed: false },
     // Dialogue cleaned with ffmpeg, written next to each file (Phase 18c).
     CommandSpec { name: "media-clean", interactive: false, managed: false },
+    // Lower thirds rendered as ProRes 4444 clips with alpha (Phase 18d).
+    CommandSpec { name: "media-titles", interactive: false, managed: false },
     // The Story Editor's one model call (Phase 6d): a story cut from transcripts and a B-roll catalog.
     CommandSpec { name: "assemble", interactive: false, managed: false },
     // A short name for a chat from its first message and answer, with the chat's model (Phase 8d).

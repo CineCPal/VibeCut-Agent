@@ -70,6 +70,8 @@ export const CHANGING_TOOLS = new Set([
   "create_captions",
   // Phase 18c: cleaned sound laid under the clips, the originals switched off.
   "clean_dialogue",
+  // Phase 18d: rendered lower thirds laid on a track above the picture.
+  "add_lower_thirds",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -133,6 +135,7 @@ const VERB: Record<string, string> = {
   make_social_version: "Make a social version",
   create_captions: "Add captions",
   clean_dialogue: "Clean the dialogue of",
+  add_lower_thirds: "Add lower thirds",
   delete_clips: "Delete",
   set_clips_enabled: "Turn on/off",
   label_timeline_clips: "Name or colour",
@@ -207,7 +210,7 @@ export function describeChange(name: string, args: unknown): string {
     const names = clipNames(ids);
     return `${verb} ${ids.length === 1 ? "" : `${ids.length} clips: `}${listed(names)}`;
   }
-  for (const key of ["clips", "shots", "markers", "paths", "markerIds", "renames"]) {
+  for (const key of ["clips", "shots", "thirds", "markers", "paths", "markerIds", "renames"]) {
     if (count(key)) return `${verb} (${count(key)})`;
   }
   const named = [a.name, a.newName, a.timeline, a.aspect].find((v): v is string => typeof v === "string" && v.length > 0);

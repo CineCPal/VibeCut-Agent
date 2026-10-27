@@ -323,9 +323,19 @@ export function coverageOf(draft: HostDraft, from: number, samples: number): Set
   });
 }
 
-/** A mic's level in dBFS per sample from `from`, through every switched-on clip of its file in the draft. */
-export function micLevels(draft: HostDraft, path: string, peaks: WaveformPeaks, from: number, samples: number): number[] {
-  const clips = draft.audio.flatMap((t) => t.clips).filter((c) => c.sourcePath === path && c.enabled);
+/** A sound clip as the levels need it, from a draft or from the timeline itself. */
+export interface SoundPiece {
+  path: string;
+  start: number;
+  end: number;
+  sourceIn: number;
+  speed: number;
+  enabled: boolean;
+}
+
+/** A mic's level in dBFS per sample from `from`, through every switched-on piece of its file. */
+export function pieceLevels(pieces: SoundPiece[], path: string, peaks: WaveformPeaks, from: number, samples: number): number[] {
+  const clips = pieces.filter((c) => c.path === path && c.enabled);
   return Array.from({ length: samples }, (_, i) => {
     const t = from + (i + 0.5) / RATE;
     const clip = clips.find((c) => c.start <= t && t < c.end);
@@ -334,6 +344,36 @@ export function micLevels(draft: HostDraft, path: string, peaks: WaveformPeaks, 
     const level = Math.max(Math.abs(peaks.mins[index] ?? 0), Math.abs(peaks.maxes[index] ?? 0));
     return level > 0 ? 20 * Math.log10(level) : -Infinity;
   });
+}
+
+/** A mic's level in dBFS per sample from `from`, through every switched-on clip of its file in the draft. */
+export function micLevels(draft: HostDraft, path: string, peaks: WaveformPeaks, from: number, samples: number): number[] {
+  const pieces = draft.audio.flatMap((t) => t.clips).map((c) => ({ path: c.sourcePath, start: c.start, end: c.end, sourceIn: c.sourceIn, speed: c.speed, enabled: c.enabled }));
+  return pieceLevels(pieces, path, peaks, from, samples);
+}
+
+/**
+ * `turns` with each line heard in another mic's bleed kept only where it's loudest (bleedGroups,
+ * keepLoudest), measured through `pieces` (the audio-peaks job runs only when some line is heard twice).
+ * Also used by add_lower_thirds (Phase 18d) to find when each person first really talks.
+ */
+export async function withoutBleed(turns: Turn[], pieces: SoundPiece[]): Promise<{ turns: Turn[]; groups: number }> {
+  const groups = bleedGroups(turns);
+  if (!groups.length) return { turns, groups: 0 };
+  const from = Math.max(0, Math.floor(Math.min(...turns.map((t) => t.start))));
+  const samples = Math.ceil((Math.max(...turns.map((t) => t.end)) - from) * RATE);
+  const paths = [...new Set(groups.flat().map((k) => turns[k].file))];
+  const job = await runJob("audio-peaks", `Measure ${paths.length} mic(s)`, { paths });
+  const peaks = ((job?.result ?? {}) as { peaks?: Record<string, WaveformPeaks> }).peaks ?? {};
+  const levels = new Map(paths.filter((p) => peaks[p]).map((p) => [p, pieceLevels(pieces, p, peaks[p], from, samples)]));
+  const levelOf = (file: string, start: number, end: number) => {
+    const l = levels.get(file);
+    if (!l) return -Infinity;
+    const span = l.slice(Math.max(0, Math.floor((start - from) * RATE)), Math.max(0, Math.ceil((end - from) * RATE)));
+    const sum = span.reduce((n, v) => n + (Number.isFinite(v) ? Math.pow(10, v / 20) : 0), 0);
+    return sum > 0 ? 20 * Math.log10(sum / span.length) : -Infinity;
+  };
+  return { turns: keepLoudest(turns, groups, levelOf), groups: groups.length };
 }
 
 // ----------------------------------------------------------------------------- the tool
@@ -415,13 +455,10 @@ export function multicamExecutors(context: ToolContext): Record<string, Executor
 
       let activity: Activity;
       const notes: string[] = [];
-      const measure = async (paths: string[]) => {
-        const job = await runJob("audio-peaks", `Measure ${paths.length} mic(s)`, { paths });
-        return { job, peaks: ((job?.result ?? {}) as { peaks?: Record<string, WaveformPeaks> }).peaks ?? {} };
-      };
       if (by === "loudness") {
         const paths = [...new Set(angles.flatMap((a) => a.mics))];
-        const { job, peaks } = await measure(paths);
+        const job = await runJob("audio-peaks", `Measure ${paths.length} mic(s)`, { paths });
+        const peaks = ((job?.result ?? {}) as { peaks?: Record<string, WaveformPeaks> }).peaks ?? {};
         const missing = paths.filter((p) => !peaks[p]);
         if (missing.length) throw new Error(`Couldn't read the sound of ${missing.map(fileName).join(", ")}${job?.error ? ` (${job.error})` : ""}`);
         const levels = angles.map((a) => micLevels(draft, a.mics[0], peaks[a.mics[0]], from, samples));
@@ -432,22 +469,10 @@ export function multicamExecutors(context: ToolContext): Record<string, Executor
         const { clips, transcripts, untranscribed } = await heardView(context);
         const lines = laneLines(clips.heard, transcripts, clips.assetsById);
         if (!lines.length) throw new Error(`Nothing heard on the ${noun} has a transcript${untranscribed.length ? ` (${untranscribed.join(", ")}); transcribe_clips with speakers: true makes them` : ""}`);
-        let turns: Turn[] = lines.map((l) => ({ start: l.start, end: l.end, speaker: l.speaker, file: clips.assetsById[l.assetId]?.filePath ?? "", text: l.text }));
-        const groups = bleedGroups(turns);
-        if (groups.length) {
-          const paths = [...new Set(groups.flat().map((k) => turns[k].file))];
-          const { peaks } = await measure(paths);
-          const levels = new Map(paths.filter((p) => peaks[p]).map((p) => [p, micLevels(draft, p, peaks[p], from, samples)]));
-          const levelOf = (file: string, start: number, end: number) => {
-            const l = levels.get(file);
-            if (!l) return -Infinity;
-            const span = l.slice(Math.max(0, Math.floor((start - from) * RATE)), Math.max(0, Math.ceil((end - from) * RATE)));
-            const sum = span.reduce((n, v) => n + (Number.isFinite(v) ? Math.pow(10, v / 20) : 0), 0);
-            return sum > 0 ? 20 * Math.log10(sum / span.length) : -Infinity;
-          };
-          turns = keepLoudest(turns, groups, levelOf);
-          notes.push(`${groups.length} line(s) heard on more than one mic kept on the loudest`);
-        }
+        const heard = lines.map((l) => ({ start: l.start, end: l.end, speaker: l.speaker, file: clips.assetsById[l.assetId]?.filePath ?? "", text: l.text }));
+        const pieces = draft.audio.flatMap((t) => t.clips).map((c) => ({ path: c.sourcePath, start: c.start, end: c.end, sourceIn: c.sourceIn, speed: c.speed, enabled: c.enabled }));
+        const { turns, groups } = await withoutBleed(heard, pieces);
+        if (groups) notes.push(`${groups} line(s) heard on more than one mic kept on the loudest`);
         const known = new Set(turns.map((t) => t.speaker.toLowerCase()));
         const unknown = angles.flatMap((a) => a.speakers).filter((s) => !known.has(s));
         if (unknown.length) throw new Error(`No line is spoken by ${unknown.join(", ")} (the speakers are: ${[...known].join(", ")}); list_speakers gives the names`);

@@ -99,6 +99,7 @@ describe("agent tools", () => {
       "cut_by_speaker",
       "make_split_edit",
       "clean_dialogue",
+      "add_lower_thirds",
       "create_captions",
       "export_video",
       "export_audio",
