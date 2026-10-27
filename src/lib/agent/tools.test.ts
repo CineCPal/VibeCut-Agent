@@ -101,6 +101,7 @@ describe("agent tools", () => {
       "close_gaps",
       "insert_clip",
       "replace_clip",
+      "find_shot_changes",
       "clean_dialogue",
       "add_lower_thirds",
       "create_captions",

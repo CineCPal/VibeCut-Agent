@@ -130,6 +130,8 @@ export const NOT_REVIEWED = new Set([
   "close_gaps",
   "insert_clip",
   "replace_clip",
+  // Phase 19b: reads only.
+  "find_shot_changes",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);

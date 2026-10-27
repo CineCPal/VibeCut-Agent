@@ -9,6 +9,7 @@ import { BEAT_INSTRUCTION } from "./beatTools";
 import { MULTICAM_INSTRUCTION } from "./multicamTools";
 import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
 import { DRAFT_EDIT_INSTRUCTION } from "./draftEditTools";
+import { SHOT_INSTRUCTION } from "./shotTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
 import { TITLE_INSTRUCTION } from "./titleTools";
 import { CAPTION_INSTRUCTION } from "./captionTools";
@@ -109,6 +110,7 @@ ${BEAT_INSTRUCTION}
 ${MULTICAM_INSTRUCTION}
 ${SPLIT_EDIT_INSTRUCTION}
 ${DRAFT_EDIT_INSTRUCTION}
+${SHOT_INSTRUCTION}
 ${DIALOGUE_INSTRUCTION}
 ${TITLE_INSTRUCTION}
 ${CAPTION_INSTRUCTION}

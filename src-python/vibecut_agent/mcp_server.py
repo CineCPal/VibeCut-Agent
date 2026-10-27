@@ -68,6 +68,8 @@ LONG_TOOLS = frozenset(
         "clean_dialogue",
         # Phase 18d: renders each lower third with ffmpeg.
         "add_lower_thirds",
+        # Phase 19b: decodes the picture of a whole clip or file.
+        "find_shot_changes",
         "create_captions",
         "export_video",
         "export_audio",

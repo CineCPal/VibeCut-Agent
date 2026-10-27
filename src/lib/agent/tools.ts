@@ -30,6 +30,7 @@ import { beatExecutors, beatToolDeclarations } from "./beatTools";
 import { multicamExecutors, multicamToolDeclarations } from "./multicamTools";
 import { splitEditExecutors, splitEditToolDeclarations } from "./splitEditTools";
 import { draftEditExecutors, draftEditToolDeclarations } from "./draftEditTools";
+import { shotExecutors, shotToolDeclarations } from "./shotTools";
 import { dialogueExecutors, dialogueToolDeclarations } from "./dialogueTools";
 import { titleExecutors, titleToolDeclarations } from "./titleTools";
 import { captionExecutors, captionToolDeclarations } from "./captionTools";
@@ -73,6 +74,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...multicamToolDeclarations(host),
     ...splitEditToolDeclarations(host),
     ...draftEditToolDeclarations(host),
+    ...shotToolDeclarations(host),
     ...dialogueToolDeclarations(host),
     ...titleToolDeclarations(host),
     ...captionToolDeclarations(host),
@@ -317,6 +319,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...multicamExecutors(context),
     ...splitEditExecutors(context),
     ...draftEditExecutors(context),
+    ...shotExecutors(context),
     ...dialogueExecutors(context),
     ...titleExecutors(context),
     ...captionExecutors(context),
