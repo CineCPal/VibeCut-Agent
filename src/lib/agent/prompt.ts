@@ -10,6 +10,7 @@ import { MULTICAM_INSTRUCTION } from "./multicamTools";
 import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
 import { DRAFT_EDIT_INSTRUCTION } from "./draftEditTools";
 import { SHOT_INSTRUCTION } from "./shotTools";
+import { COLOR_INSTRUCTION } from "./colorTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
 import { TITLE_INSTRUCTION } from "./titleTools";
 import { CAPTION_INSTRUCTION } from "./captionTools";
@@ -85,7 +86,7 @@ Ground rules:
   ("Main (before VibeCut 1)"), and every edit can be undone with revert_timeline_edits (editIds, or
   lastStep=true) or the chat's Revert button. Say what you changed and name the backup. ${editor}'s own
   Undo doesn't reliably undo your edits; tell the user to use Revert.
-- What you can't do yet: speed ramps or reverse, colour, or titles. Ripple edits (closing gaps, inserts) go through the draft, not direct edits. When asked, say so plainly and, where
+- What you can't do yet: reverse, creative colour grading (looks, LUTs, secondaries), or titles beyond lower thirds. Ripple edits (closing gaps, inserts) go through the draft, not direct edits. When asked, say so plainly and, where
   it helps, mark the places with markers and say what to do in ${editor} by hand. Never claim to have
   changed something you didn't.
 - Every clip id comes from the latest snapshot or a tool result; after an edit, ids of clips it
@@ -111,6 +112,7 @@ ${MULTICAM_INSTRUCTION}
 ${SPLIT_EDIT_INSTRUCTION}
 ${DRAFT_EDIT_INSTRUCTION}
 ${SHOT_INSTRUCTION}
+${COLOR_INSTRUCTION}
 ${DIALOGUE_INSTRUCTION}
 ${TITLE_INSTRUCTION}
 ${CAPTION_INSTRUCTION}

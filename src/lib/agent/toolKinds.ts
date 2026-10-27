@@ -73,6 +73,9 @@ export const CHANGING_TOOLS = new Set([
   "clean_dialogue",
   // Phase 18d: rendered lower thirds laid on a track above the picture.
   "add_lower_thirds",
+  // Phase 19c.
+  "set_clip_color",
+  "match_clip_color",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -132,6 +135,8 @@ export const NOT_REVIEWED = new Set([
   "replace_clip",
   // Phase 19b: reads only.
   "find_shot_changes",
+  // Phase 19c: measures frames; the playhead is put back.
+  "get_clip_color",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);
@@ -147,6 +152,8 @@ const VERB: Record<string, string> = {
   set_clips_enabled: "Turn on/off",
   label_timeline_clips: "Name or colour",
   set_clip_transform: "Scale or move",
+  set_clip_color: "Change the colour of",
+  match_clip_color: "Match the colour of",
   set_clip_levels: "Change the level of",
   set_clip_fade: "Fade",
   split_clip: "Split",
@@ -217,7 +224,7 @@ export function describeChange(name: string, args: unknown): string {
     const names = clipNames(ids);
     return `${verb} ${ids.length === 1 ? "" : `${ids.length} clips: `}${listed(names)}`;
   }
-  for (const key of ["clips", "shots", "thirds", "markers", "paths", "markerIds", "renames"]) {
+  for (const key of ["clips", "shots", "thirds", "looks", "markers", "paths", "markerIds", "renames"]) {
     if (count(key)) return `${verb} (${count(key)})`;
   }
   const named = [a.name, a.newName, a.timeline, a.aspect].find((v): v is string => typeof v === "string" && v.length > 0);

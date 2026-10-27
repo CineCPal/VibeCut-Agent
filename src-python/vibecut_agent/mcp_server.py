@@ -70,6 +70,8 @@ LONG_TOOLS = frozenset(
         "add_lower_thirds",
         # Phase 19b: decodes the picture of a whole clip or file.
         "find_shot_changes",
+        # Phase 19c: up to 3 rendered and measured frames per clip, for up to 50 clips.
+        "match_clip_color",
         "create_captions",
         "export_video",
         "export_audio",

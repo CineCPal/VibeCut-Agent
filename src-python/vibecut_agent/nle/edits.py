@@ -18,6 +18,7 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
     """`imports` is the bridge folder's imports/, where create_captions writes its SRT (Phase 15a)."""
     from vibecut_agent.nle import (
         links,
+        premiere_colour,
         premiere_edit,
         premiere_effects,
         premiere_structure,
@@ -37,6 +38,10 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         # Phase 16f.
         "set_clip_transform": premiere_transform.set_clip_transform,
         "read_clip_transforms": premiere_transform.read_clip_transforms,
+        # Phase 19c.
+        "set_clip_color": premiere_colour.set_clip_color,
+        "match_clip_color": premiere_colour.match_clip_color,
+        "read_clip_color": premiere_colour.read_clip_color,
         "reshape_clip": premiere_edit.reshape_clip,
         "set_clip_fades": premiere_effects.set_clip_fades,
         "duck_clip": premiere_effects.duck_clip,
@@ -57,6 +62,7 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
 def resolve_edits() -> dict[str, Edit]:
     from vibecut_agent.nle import (
         links,
+        resolve_colour,
         resolve_edit,
         resolve_effects,
         resolve_reshape,
@@ -77,6 +83,10 @@ def resolve_edits() -> dict[str, Edit]:
         # Phase 16f.
         "set_clip_transform": resolve_transform.set_clip_transform,
         "read_clip_transforms": resolve_transform.read_clip_transforms,
+        # Phase 19c.
+        "set_clip_color": resolve_colour.set_clip_color,
+        "match_clip_color": resolve_colour.match_clip_color,
+        "read_clip_color": resolve_colour.read_clip_color,
         "reshape_clip": resolve_reshape.reshape_clip,
         "set_clip_fades": resolve_effects.set_clip_fades,
         # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts); also a tool (12c).

@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.13.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.14.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -118,6 +118,10 @@ describe("Premiere panel bridge.js", () => {
       ["p7", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1" }] } }, "items[0] must set scale or position"],
       ["p8", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1", position: { keys: [], value: [0.5] } }] } }, "items[0].position.value must be [x, y]"],
       ["p9", { command: "set_motion", args: { timeline: "Main", items: [{ id: "n1", scale: { keys: [{ ticks: "x", value: 100 }], value: 100 } }] } }, "items[0].scale.keys[0].ticks must be ticks"],
+      // Phase 19c.
+      ["p10", { command: "set_lumetri", args: { timeline: "Main", items: [{ id: "n1", values: { exposure: 9 } }] } }, "items[0].values.exposure must be from -4 to 4"],
+      ["p11", { command: "set_lumetri", args: { timeline: "Main", items: [{ id: "n1", values: { highlights: 10 } }] } }, "items[0].values.highlights isn't a Lumetri control VibeCut sets"],
+      ["p12", { command: "export_frame", args: { timeline: "Main", ticks: "0", name: "../x" } }, "name must be a short word"],
     ];
     for (const [id, request] of cases) writeJob(dir, { id, ...request });
     await panel.context.poll();

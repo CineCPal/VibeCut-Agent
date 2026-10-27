@@ -692,6 +692,8 @@ REVERTIBLE = (
     "label",
     # Phase 16f.
     "transform",
+    # Phase 19c.
+    "color",
 )  # fmt: skip
 
 
@@ -902,6 +904,21 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                     item.SetFades(source.GetFades())
                     if source.CopyGrades([item]):
                         graded.append(label)
+        elif kind == "color":
+            from vibecut_agent.nle.resolve_colour import revert_color
+
+            if current(change.get("itemId")) not in found:
+                changed_since.append({"name": label, "reason": "it isn't on the timeline any more"})
+                continue
+            source = backup.get(
+                (tuple(change["track"]), _to_frame(change["start"], fps), change.get("mediaId"))
+            )
+            if revert_color(found[current(change["itemId"])][2], change, source) == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            else:
+                failed.append(
+                    {"name": label, "reason": "its grade couldn't be copied back from the backup timeline"}
+                )
         elif kind == "transform":
             from vibecut_agent.nle.resolve_transform import revert_transform
 

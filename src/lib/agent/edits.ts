@@ -232,6 +232,19 @@ export function describeLook(look: unknown): string {
   return still(look as Still);
 }
 
+export const COLOUR_FIELDS = ["exposure", "contrast", "temperature", "tint", "saturation"] as const;
+const COLOUR_NEUTRAL: Record<string, number> = { exposure: 0, contrast: 0, temperature: 0, tint: 0, saturation: 100 };
+
+/** A colour look (Phase 19c) as "exposure +0.5, temperature -12", or "neutral". */
+export function describeColour(look: unknown): string {
+  if (!look || typeof look !== "object") return "unknown";
+  const values = look as Record<string, number>;
+  const parts = COLOUR_FIELDS.filter((k) => typeof values[k] === "number" && Math.abs(values[k] - COLOUR_NEUTRAL[k]) >= 1e-3).map((k) =>
+    k === "saturation" ? `saturation ${Math.round(values[k])}` : `${k} ${values[k] > 0 ? "+" : ""}${k === "exposure" ? values[k].toFixed(2) : Math.round(values[k])}`,
+  );
+  return parts.join(", ") || "neutral";
+}
+
 /** One change as the chat lists it (VibeCut's describeTimelineChange, for the kinds made here). */
 export function describeTimelineChange(change: TimelineChange, fps = 25): string {
   const name = change.name ? `"${change.name}"` : "a clip";
@@ -254,6 +267,9 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
     }
     case "level":
       return `${name} level ${String(change.before ?? 0)} → ${String(change.after)} dB`;
+    case "color":
+      // Phase 19c: a look before (null: none VibeCut could read) and after; a match also has its passes.
+      return `${name} colour ${change.before ? `${describeColour(change.before)} → ` : ""}${describeColour(change.after)}${typeof change.passes === "number" ? ` (matched in ${change.passes} pass(es), ${Number(change.distance) <= 0.03 ? "close" : "as near as it got"})` : ""}`;
     case "transform":
       // Phase 16f: {scale, x, y} still, or {keys: [{at, scale, x, y}]}.
       return `${name} ${describeLook(change.before)} → ${describeLook(change.after)}`;

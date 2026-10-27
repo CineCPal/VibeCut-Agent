@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.13.0";
+const PANEL_VERSION = "0.14.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 // At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).
@@ -31,6 +31,10 @@ const IMPORTS = path.join(BRIDGE_DIR, "imports");
 const RENDER_STATES = path.join(BRIDGE_DIR, "renders");
 // The only folder a render may be written to, and the only presets one may use: Media Encoder's own.
 const RENDERS = path.join(os.homedir(), "Movies", "VibeCut Renders");
+// Frames export_frame writes for the colour tools to measure (Phase 19c): the only folder it may write to.
+const FRAMES = path.join(BRIDGE_DIR, "frames");
+// A colour value's range (nle/colour.py's LIMITS).
+const LUMETRI_LIMITS = { exposure: [-4, 4], contrast: [-100, 100], temperature: [-100, 100], tint: [-100, 100], saturation: [0, 200] };
 const AME_PRESET = /^\/Applications\/Adobe Media Encoder [^/]+\/Adobe Media Encoder [^/]+\.app\/Contents\/MediaIO\/systempresets\/[\w]+\/[^/]+\.epr$/;
 const RENDER_EXTENSIONS = [".mp4", ".mov", ".wav", ".aac"];
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
@@ -62,6 +66,10 @@ const COMMANDS = {
   // Phase 16f: a picture clip's Motion Scale and Position (premiere_transform.py).
   read_motion: "vcReadMotion",
   set_motion: "vcSetMotion",
+  // Phase 19c.
+  read_lumetri: "vcReadLumetri",
+  set_lumetri: "vcSetLumetri",
+  export_frame: "vcExportFrame",
   razor: "vcRazor",
   import_media: "vcImportMedia",
   source_preview: "vcSourcePreview",
@@ -355,6 +363,36 @@ const CHECKS = {
   read_motion(args) {
     checkSequenceName(args.timeline);
     checkIds(args.ids, "ids");
+  },
+  read_lumetri(args) {
+    checkSequenceName(args.timeline);
+    checkIds(args.ids, "ids");
+  },
+  set_lumetri(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.items) || !args.items.length || args.items.length > 50) throw new Error("items must list 1 to 50 clips");
+    args.items.forEach((item, i) => {
+      if (!isPlainObject(item) || !isPlainObject(item.values)) throw new Error(`items[${i}] must be {id, values}`);
+      checkId(item.id, `items[${i}].id`);
+      const keys = Object.keys(item.values);
+      if (!keys.length) throw new Error(`items[${i}].values must set a Lumetri control`);
+      for (const key of keys) {
+        const range = LUMETRI_LIMITS[key];
+        const value = item.values[key];
+        if (!range) throw new Error(`items[${i}].values.${key} isn't a Lumetri control VibeCut sets`);
+        if (typeof value !== "number" || !Number.isFinite(value) || value < range[0] || value > range[1]) {
+          throw new Error(`items[${i}].values.${key} must be from ${range[0]} to ${range[1]}`);
+        }
+      }
+    });
+  },
+  // The frame goes in FRAMES under a short name; the path host.jsx gets is built here.
+  export_frame(args) {
+    checkSequenceName(args.timeline);
+    checkTicks(args.ticks, "ticks");
+    if (typeof args.name !== "string" || !/^[\w-]{1,64}$/.test(args.name)) throw new Error("name must be a short word");
+    fs.mkdirSync(FRAMES, { recursive: true });
+    args.path = path.join(FRAMES, args.name);
   },
   set_motion(args) {
     checkSequenceName(args.timeline);

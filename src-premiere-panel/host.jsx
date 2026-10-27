@@ -1249,6 +1249,136 @@ function vcSetMotion(args) {
   }, args);
 }
 
+// Phase 19c: a clip's Lumetri Color Basic Correction controls, by their names in Premiere 26.5.2. The
+// first control of each name is Basic Correction's (later sections repeat Temperature, Tint, Contrast
+// and Saturation, and those refuse setValue).
+var VC_LUMETRI = { exposure: "Exposure", contrast: "Contrast", temperature: "Temperature", tint: "Tint", saturation: "Saturation" };
+
+function vcLumetriOf(clip) {
+  for (var c = 0; c < clip.components.numItems; c++) {
+    if (clip.components[c].matchName === "AE.ADBE Lumetri") {
+      return clip.components[c];
+    }
+  }
+  return null;
+}
+
+function vcLumetriControls(component) {
+  var out = {};
+  for (var p = 0; p < component.properties.numItems; p++) {
+    var prop = component.properties[p];
+    for (var key in VC_LUMETRI) {
+      if (VC_LUMETRI.hasOwnProperty(key) && VC_LUMETRI[key] === prop.displayName && !out[key]) {
+        out[key] = prop;
+      }
+    }
+  }
+  return out;
+}
+
+// {id, present, values: {exposure, ...}, keyed: [names]} for one picture clip.
+function vcReadLumetriOf(entry, id) {
+  var component = vcLumetriOf(entry.item);
+  var read = { id: id, present: !!component, values: {}, keyed: [] };
+  if (component) {
+    var controls = vcLumetriControls(component);
+    for (var key in controls) {
+      if (controls.hasOwnProperty(key)) {
+        read.values[key] = Number(controls[key].getValue());
+        if (controls[key].isTimeVarying()) {
+          read.keyed.push(key);
+        }
+      }
+    }
+  }
+  return read;
+}
+
+// args: {timeline, ids}. Each picture clip's Lumetri Basic Correction values (none when it has no Lumetri).
+function vcReadLumetri(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.ids.length; i++) {
+      var entry = vcItemWithId(sequence, a.ids[i]);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      out.push(vcReadLumetriOf(entry, a.ids[i]));
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {timeline, items: [{id, values: {exposure?, contrast?, temperature?, tint?, saturation?}}]}. Sets
+// each clip's Lumetri Basic Correction controls (still: any keys on them are cleared), first adding
+// Lumetri Color through QE to a clip without one (19c probe).
+function vcSetLumetri(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.items.length; i++) {
+      var want = a.items[i];
+      var entry = vcItemWithId(sequence, want.id);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      if (!vcLumetriOf(entry.item)) {
+        var q = vcQeSequence(sequence);
+        try {
+          var track = q.qe.getVideoTrackAt(entry.track);
+          var start = entry.item.start.seconds;
+          for (var t = 0; t < track.numItems; t++) {
+            var qItem = track.getItemAt(t);
+            if (qItem.type !== "Empty" && Math.abs(qItem.start.secs - start) < 0.001) {
+              qItem.addVideoEffect(qe.project.getVideoEffectByName("Lumetri Color"));
+              break;
+            }
+          }
+        } finally {
+          q.reopen();
+        }
+        entry = vcItemWithId(sequence, want.id);
+        if (!vcLumetriOf(entry.item)) {
+          vcRefuse("Premiere didn't add Lumetri Color to \"" + entry.item.name + "\"");
+        }
+      }
+      var controls = vcLumetriControls(vcLumetriOf(entry.item));
+      for (var key in want.values) {
+        if (!want.values.hasOwnProperty(key)) {
+          continue;
+        }
+        if (!controls[key]) {
+          vcRefuse("\"" + entry.item.name + "\"'s Lumetri Color has no " + VC_LUMETRI[key]);
+        }
+        controls[key].setTimeVarying(false);
+        controls[key].setValue(want.values[key], 1);
+      }
+      out.push(vcReadLumetriOf(vcItemWithId(sequence, want.id), want.id));
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {timeline, ticks, path}. Writes the sequence's frame at `ticks` (effects and Lumetri included) as
+// `path` + ".png" (QE's exportFramePNG adds the extension), the playhead put back after.
+function vcExportFrame(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var q = vcQeSequence(sequence);
+    var active = app.project.activeSequence;
+    var before = active.getPlayerPosition().ticks;
+    try {
+      active.setPlayerPosition(a.ticks);
+      q.qe.exportFramePNG(q.qe.CTI.timecode, a.path);
+    } finally {
+      active.setPlayerPosition(before);
+      q.reopen();
+    }
+    return { path: a.path + ".png" };
+  }, args);
+}
+
 // args: {timeline, ids, timecode}. Razors the track of each clip at the timecode (the sequence's own
 // frames, "HH:MM:SS:FF"); premiere_timing.py reads the sequence before and after to find the new pieces.
 function vcRazor(args) {

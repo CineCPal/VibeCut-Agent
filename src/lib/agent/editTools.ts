@@ -9,6 +9,7 @@ import { lastEditStep } from "../../store/useEditLogStore";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 import { bool, clock, num, optNum, optStr, strArray, type Args, type Executor } from "./args";
+import { colorExecutors, colorToolDeclarations } from "./colorTools";
 import { duckMusic } from "./duck";
 import { PREMIERE_LABEL_COLORS, RESOLVE_CLIP_COLORS } from "./poolTools";
 import { count, describeLook, describeTimelineChange, edit, readTimeline, revertTimelineEdits, TIMELINE_NOUN, type EditContext } from "./edits";
@@ -230,6 +231,8 @@ export function editToolDeclarations(host: NleHost): ToolDeclaration[] {
         required: ["musicClipIds"],
       },
     },
+    // Phase 19c.
+    ...colorToolDeclarations(host),
     {
       name: "revert_timeline_edits",
       description: `Undoes your earlier direct edits, and your changes to the ${host === "premiere" ? "project's bins and clips" : "Media Pool"}: editIds (the editId each result gave, e.g. "e2"), or lastStep=true for everything you changed for the latest request. A clip changed since is left as it is; a bin you made is removed only once it's empty. ${host === "premiere" ? "A deleted clip comes back from its file without its effects; the backup still has them. Trims, slips and moves go back with the clip's effects." : "A deleted clip comes back from its source with its grade from the backup when it can; the backup timeline keeps everything."}`,
@@ -432,5 +435,7 @@ export function editExecutors(ctx: EditContext): Record<string, Executor> {
       if (list.length === 0) throw new Error("Give editIds (from the earlier results) or lastStep=true");
       return revertTimelineEdits(list);
     },
+
+    ...colorExecutors(ctx),
   };
 }
