@@ -56,6 +56,11 @@ CLIP_LOW, CLIP_HIGH = 0.03, 0.97
 # A row or column at the frame's edge with no channel above this is a border, not picture.
 BORDER_BLACK = 0.03
 MATCH_PASSES = 3
+# When the model's passes fall short, each control is nudged this far to measure the clip's own response,
+# then solved for in SOLVE_PASSES passes (`match`); STEP_SCALE is a comparable step of each control.
+PROBE_STEP = {"exposure": 0.25, "contrast": 15.0, "temperature": 15.0, "tint": 15.0, "saturation": 15.0}
+STEP_SCALE = {"exposure": 0.25, "contrast": 10.0, "temperature": 10.0, "tint": 10.0, "saturation": 10.0}
+SOLVE_PASSES = 3
 # A pass this close to the reference stops the loop (see `error`).
 GOOD_ENOUGH = 0.03
 
@@ -331,26 +336,132 @@ def uncovered_moment(start: float, end: float, covers: Sequence[tuple[float, flo
     return (best[0] + best[1]) / 2
 
 
+def residual(reference: dict[str, float], seen: dict[str, float]) -> list[float]:
+    """`error`'s five terms, signed (seen minus reference, on `error`'s scales), for solving."""
+    return [
+        math.log((seen["brightness"] + 1e-3) / (reference["brightness"] + 1e-3)) / 2,
+        math.log((seen["contrast"] + 1e-3) / (reference["contrast"] + 1e-3)) / 2,
+        seen["warmth"] - reference["warmth"],
+        seen["tint"] - reference["tint"],
+        math.log((seen["colour"] + 1e-3) / (reference["colour"] + 1e-3)) / 2,
+    ]
+
+
+def _solve(a: list[list[float]], b: list[float]) -> list[float] | None:
+    """`a x = b` by Gaussian elimination with partial pivoting (5 unknowns at most); None if singular."""
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(m[r][c]))
+        if abs(m[p][c]) < 1e-12:
+            return None
+        m[c], m[p] = m[p], m[c]
+        for r in range(n):
+            if r != c:
+                f = m[r][c] / m[c][c]
+                m[r] = [x - f * y for x, y in zip(m[r], m[c], strict=True)]
+    return [m[i][n] / m[i][i] for i in range(n)]
+
+
+def solve_step(
+    jacobian: list[list[float]],
+    off: list[float],
+    look: dict[str, float],
+    limits: dict[str, tuple[float, float]] = LIMITS,
+) -> dict[str, float] | None:
+    """The look that should cancel `off` (a `residual`) by `jacobian` (each measure's change per
+    STEP_SCALE of each control, rows in `residual`'s order, columns in FIELDS'): damped least squares
+    for all five controls together, a control that would pass a limit pinned to it and the rest solved
+    again. None when they can't be solved."""
+    free = list(FIELDS)
+    pinned: dict[str, float] = {}
+    rows = range(len(off))
+    new = dict(look)
+    for _ in FIELDS:
+        cols = [FIELDS.index(k) for k in free]
+        left = [off[i] + sum(jacobian[i][FIELDS.index(k)] * d for k, d in pinned.items()) for i in rows]
+        normal = [[sum(jacobian[i][a] * jacobian[i][b] for i in rows) for b in cols] for a in cols]
+        damping = 1e-3 * sum(normal[i][i] for i in range(len(cols))) / max(len(cols), 1) + 1e-9
+        for i in range(len(cols)):
+            normal[i][i] += damping
+        moves = _solve(normal, [-sum(jacobian[i][a] * left[i] for i in rows) for a in cols])
+        if moves is None:
+            return None
+        new = dict(look)
+        for k, d in [*zip(free, moves, strict=True), *pinned.items()]:
+            new[k] = look[k] + d * STEP_SCALE[k]
+        over = [k for k in free if not limits[k][0] <= new[k] <= limits[k][1]]
+        if not over:
+            break
+        for k in over:
+            pinned[k] = (min(max(new[k], limits[k][0]), limits[k][1]) - look[k]) / STEP_SCALE[k]
+            free.remove(k)
+    return clamp(new, limits)
+
+
 def match(
     reference: dict[str, float],
     start: dict[str, float],
     render: Any,
     limits: dict[str, tuple[float, float]] = LIMITS,
 ) -> tuple[dict[str, float], dict[str, float], int]:
-    """The closed loop: `render(look)` applies a look and returns the frame's measures. From `start`, takes
-    up to MATCH_PASSES steps toward `reference` (each control kept inside `limits`) and returns (best
-    look, its measures, passes), the best look left applied."""
+    """The closed loop: `render(look)` applies a look and returns the frame's measures. From `start`, steps
+    toward `reference` (each control kept inside `limits`) and returns (best look, its measures,
+    passes), the best look left applied.
+
+    First `step`'s model, up to MATCH_PASSES passes while each at least halves the distance: it fits
+    Resolve's CDL, calibrated to it. When that leaves the clip short of GOOD_ENOUGH, the clip's own
+    response is measured instead (Phase 20b, live: Lumetri's saturation works in linear light, so on
+    a colourful clip it moved brightness, contrast and tint as much as colour, and contrast barely
+    moved contrast): each control nudged by PROBE_STEP from the best look so far, one render each, gives
+    how every measure moves with every control. Then up to SOLVE_PASSES solves for all five together
+    (`solve_step`), each pass's result folding into that estimate (Broyden's update)."""
     look = clamp(start, limits)
     seen = render(look)
     best = (error(reference, seen), look, seen)
     passes = 0
     while passes < MATCH_PASSES and best[0] > GOOD_ENOUGH:
+        before = best[0]
         look = step(reference, seen, look, limits)
         seen = render(look)
         passes += 1
         score = error(reference, seen)
         if score < best[0]:
             best = (score, look, seen)
+        if score > before / 2:
+            break
+    if best[0] > GOOD_ENOUGH:
+        here, off = best[1], residual(reference, best[2])
+        jacobian = [[0.0] * len(FIELDS) for _ in off]
+        for j, k in enumerate(FIELDS):
+            nudge = PROBE_STEP[k] if here[k] + PROBE_STEP[k] <= limits[k][1] else -PROBE_STEP[k]
+            look = {**here, k: here[k] + nudge}
+            seen = render(look)
+            moved = residual(reference, seen)
+            for i in range(len(off)):
+                jacobian[i][j] = (moved[i] - off[i]) / (nudge / STEP_SCALE[k])
+        for _ in range(SOLVE_PASSES):
+            nxt = solve_step(jacobian, off, here, limits)
+            if nxt is None or nxt == here:
+                break
+            look, seen = nxt, render(nxt)
+            passes += 1
+            now = residual(reference, seen)
+            moves = [(nxt[k] - here[k]) / STEP_SCALE[k] for k in FIELDS]
+            size = sum(m * m for m in moves)
+            if size > 1e-12:
+                guessed = [
+                    sum(jacobian[i][j] * moves[j] for j in range(len(FIELDS))) for i in range(len(off))
+                ]
+                for i in range(len(off)):
+                    for j in range(len(FIELDS)):
+                        jacobian[i][j] += (now[i] - off[i] - guessed[i]) * moves[j] / size
+            score = error(reference, seen)
+            if score < best[0]:
+                best = (score, nxt, seen)
+                here, off = nxt, now
+            if best[0] <= GOOD_ENOUGH:
+                break
     if best[1] != look:
         render(best[1])
     return best[1], best[2], passes

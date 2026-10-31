@@ -105,6 +105,61 @@ def test_matching_closes_in_on_the_reference():
     assert passes[-1] == look
 
 
+def lumetri_render(pixels, look):
+    """Something like Lumetri (19c probe; 20b live): exposure in display values, contrast an S-curve about
+    0.5, temperature and tint as channel gains, and saturation around linear-light luminance, so on
+    strong colours it moves brightness and tint too."""
+    gain = 0.749 ** (-look["exposure"])
+    c, t, ti, s = (look[k] / 100 for k in ("contrast", "temperature", "tint", "saturation"))
+    out = []
+    for p in pixels:
+        rgb = [min(v * gain, 1.0) for v in p]
+        rgb = [min(max(v + c * 1.2 * (v - 0.5) * (1 - abs(2 * v - 1)), 0.0), 1.0) for v in rgb]
+        rgb = [
+            rgb[0] * (1 + 0.5 * t) * (1 + 0.15 * ti),
+            rgb[1] * (1 - 0.4 * ti),
+            rgb[2] * (1 - 0.5 * t) * (1 + 0.15 * ti),
+        ]
+        lin = [max(v, 0.0) ** 2.4 for v in rgb]
+        y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+        out.append(tuple(min(max(y + s * (v - y), 0.0), 1.0) ** (1 / 2.4) for v in lin))
+    return out
+
+
+def test_a_clip_the_model_misjudges_is_matched_from_its_own_response():
+    # A chart to a warm style on the Lumetri-like renderer: `step`'s model alone stalls near 0.09
+    # (Phase 20b's prototype); measuring the clip's response gets it close (Phase 20b, tuned live).
+    warm = {"brightness": 0.42, "contrast": 0.55, "warmth": 0.25, "tint": -0.03, "colour": 0.2}
+    renders = []
+
+    def render(look):
+        renders.append(look)
+        return colour.measure(lumetri_render(chart(), look))
+
+    look, seen, passes = colour.match(warm, dict(colour.NEUTRAL), render, colour.STYLE_LIMITS)
+    assert colour.error(warm, seen) < colour.GOOD_ENOUGH
+    assert all(lo <= look[k] <= hi for k, (lo, hi) in colour.STYLE_LIMITS.items())
+    # The start, model passes, a nudge of each control, then the solved passes; the best look last.
+    assert len(renders) >= 1 + 1 + len(colour.FIELDS) + 1
+    assert renders[-1] == look and passes <= colour.MATCH_PASSES + colour.SOLVE_PASSES
+
+
+def test_solving_keeps_controls_inside_their_limits():
+    # Each control moves one measure only, and the measures want far more than the limits allow.
+    jacobian = [[0.1 if i == j else 0.0 for j in range(5)] for i in range(5)]
+    off = [-1.0, 1.0, -1.0, 1.0, -0.05]
+    look = colour.solve_step(jacobian, off, dict(colour.NEUTRAL), colour.STYLE_LIMITS)
+    assert look is not None
+    assert (look["exposure"], look["contrast"], look["temperature"], look["tint"]) == (
+        1.0,
+        -40.0,
+        50.0,
+        -30.0,
+    )
+    # The one that fits is solved for: colour 0.05 low, at 0.1 per 10 of saturation, is +5.
+    assert look["saturation"] == pytest.approx(105, abs=0.1)
+
+
 def test_a_match_to_a_style_stays_inside_its_limits():
     # A style far from the chart (flat and very warm): every pass stays a nudge (Phase 20b).
     reference = {"brightness": 0.5, "contrast": 0.1, "warmth": 0.8, "tint": -0.1, "colour": 0.4}
