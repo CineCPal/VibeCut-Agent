@@ -91,6 +91,10 @@ def test_requests_are_checked():
         roomtone.run({"sources": [{"path": "/a.wav", "seconds": 0.2}]}, Emitter(io.StringIO()))
     with pytest.raises(RequestError, match="channel"):
         roomtone.run({"sources": [{"path": "/a.wav", "seconds": 3, "channel": 0}]}, Emitter(io.StringIO()))
+    with pytest.raises(RequestError, match="streams"):
+        roomtone.run(
+            {"sources": [{"path": "/a.wav", "seconds": 3, "streams": "both"}]}, Emitter(io.StringIO())
+        )
     with pytest.raises(RequestError, match="after its start"):
         roomtone.run(
             {"sources": [{"path": "/a.wav", "seconds": 3, "start": 5, "end": 2}]}, Emitter(io.StringIO())
@@ -131,6 +135,32 @@ def test_one_channel_is_taken_alone_and_reused_until_the_source_changes(tmp_path
     os.utime(source, (later, later))
     _, after = run(request)
     assert after[0]["reused"] is False and after[0]["output"] != first[0]["output"]
+
+
+@needs_ffmpeg
+def test_a_file_of_mono_streams_gives_the_first_or_all_of_them(tmp_path: Path):
+    # A camera's two mono mics as two sound streams; the second one's noise 6 dB under the first's.
+    stereo = make_interview(tmp_path / "int.wav")
+    camera = tmp_path / "camera.mov"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(stereo), "-filter_complex", "channelsplit=channel_layout=stereo[l][r]",
+         "-map", "[l]", "-map", "[r]", "-c:a", "pcm_s24le", str(camera)],
+        check=True,
+    )  # fmt: skip
+    level = lambda samples, c: 20 * np.log10(np.sqrt(np.mean(np.square(samples[:, c]))))
+    _, first = run({"sources": [{"path": str(camera), "seconds": 3}]})
+    _, every = run({"sources": [{"path": str(camera), "seconds": 3, "streams": "all"}]})
+    _, second = run({"sources": [{"path": str(camera), "seconds": 3, "streams": "all", "channel": 2}]})
+    assert first[0]["output"] != every[0]["output"]
+    one, _ = read(Path(first[0]["output"]))
+    both, info = read(Path(every[0]["output"]))
+    alone, _ = read(Path(second[0]["output"]))
+    assert one.shape[1] == 1 and info["channels"] == 2 and alone.shape[1] == 1
+    # The streams in order: the left mic, then the right one 6 dB lower, alone as channel 2.
+    assert abs(level(both, 0) - level(both, 1) - 6.0) < 1.0
+    assert abs(level(one, 0) - level(both, 0)) < 1.0 and abs(level(alone, 0) - level(both, 1)) < 1.0
+    _, too_far = run({"sources": [{"path": str(camera), "seconds": 3, "channel": 2}]})
+    assert too_far[0]["error"] == "it has 1 channel(s), not 2"
 
 
 @needs_ffmpeg

@@ -193,6 +193,11 @@ describe("fill_room_tone", () => {
     expect(out.summary).toBe("Filled 2 hole(s) in the dialogue with room tone (1.6 s on A1)");
   });
 
+  it("asks for every sound stream in Premiere, which plays them all", async () => {
+    await runTool(executorsFor({ ...context, host: "premiere" }), "fill_room_tone", {});
+    expect(jobs.runJob.mock.calls[0][2]).toEqual({ sources: [{ path: "/m/int.mov", start: 0, end: 76, streams: "all", seconds: 4 }], project: "Doc" });
+  });
+
   it("uses a given room tone recording for every hole, and says when a recording had no clear pause", async () => {
     jobs.runJob.mockResolvedValue({ status: "done", result: { files: [{ path: "/m/tone.wav", output: "/r/tone room tone 1.wav", duration: 5, quiet: false, contrastDb: 4 }] } });
     const out = await runTool(executorsFor(context), "fill_room_tone", { path: "/m/tone.wav", tracks: [1] });

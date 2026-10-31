@@ -328,7 +328,14 @@ export function dialogueExecutors(context: ToolContext): Record<string, Executor
       const job = await runJob("media-roomtone", `Make room tone from ${keys.length} recording(s)`, {
         sources: keys.map((k) => {
           const { longest, start, end, ...rest } = sources.get(k)!;
-          return { ...rest, ...(start !== undefined ? { start: round3(start), end: round3(end!) } : {}), seconds: Math.ceil(longest + TONE_HEADROOM) };
+          // Premiere plays every sound stream of a file (a camera's two mono mics as left and right), Resolve the
+          // first, so the room tone is made from what the editor plays.
+          return {
+            ...rest,
+            ...(start !== undefined ? { start: round3(start), end: round3(end!) } : {}),
+            ...(host === "premiere" ? { streams: "all" } : {}),
+            seconds: Math.ceil(longest + TONE_HEADROOM),
+          };
         }),
         project: view.project,
       });

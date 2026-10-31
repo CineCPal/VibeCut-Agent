@@ -351,11 +351,23 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
     }
 
 
+def _clean_range(request: dict[str, Any]) -> dict[str, Any]:
+    """The source range to the nanosecond. Seen live (Premiere 26.5.2, 2026-10-31, 25 fps): an out point
+    of 0.6 + 4.8 s, sent as 5.3999999999999995, was set a frame early (5.36 s), so the clip came out a
+    frame short; 13.399999999999999 and a plain 5.4 weren't. Rounding sends 5.4 and keeps every frame."""
+    return {
+        **request,
+        "inSeconds": round(request["inSeconds"], 9),
+        "outSeconds": round(request["outSeconds"], 9),
+    }
+
+
 def place_clip_exact(host: Any, timeline: str, request: dict[str, Any]) -> list[dict[str, Any]]:
     """place_clip, and for a file with no picture a check of its source range. Seen live (Premiere
     26.5.2, 2026-10-26, a 48 kHz WAV at 25 fps): such a file lands a frame earlier in it than asked, and
     from 0 a frame short, so every send or cleaned copy put a mic a frame off its picture. A placement
     that's off by up to two frames is lifted and placed again that much later."""
+    request = _clean_range(request)
     placed: list[dict[str, Any]] = host._send("place_clip", request)["placed"]
     if not placed or any(p["type"] == "video" for p in placed):
         return placed
@@ -373,11 +385,13 @@ def place_clip_exact(host: Any, timeline: str, request: dict[str, Any]) -> list[
         return placed
     host._send("remove_items", {"timeline": timeline, "ids": [p["id"] for p in placed]})
     shift = off / TICKS_PER_SECOND
-    again = {
-        **request,
-        "inSeconds": request["inSeconds"] - shift,
-        "outSeconds": request["outSeconds"] - shift,
-    }
+    again = _clean_range(
+        {
+            **request,
+            "inSeconds": request["inSeconds"] - shift,
+            "outSeconds": request["outSeconds"] - shift,
+        }
+    )
     replaced: list[dict[str, Any]] = host._send("place_clip", again)["placed"]
     return replaced
 

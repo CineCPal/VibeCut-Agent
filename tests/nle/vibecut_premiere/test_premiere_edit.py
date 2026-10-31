@@ -542,6 +542,18 @@ def test_a_sound_only_file_premiere_lands_a_frame_early_is_placed_again_where_as
     assert premiere.calls.count("place_clip") == 2
 
 
+def test_the_panel_is_sent_the_source_range_without_float_noise(setup, monkeypatch):
+    # 0.6 + 120 frames is 5.3999999999999995 in floating point, which Premiere set a frame early (2026-10-31).
+    host, premiere, media = setup
+    sent = []
+    place = premiere.place_clip
+    monkeypatch.setattr(
+        premiere, "place_clip", lambda a: sent.append((a["inSeconds"], a["outSeconds"])) or place(a)
+    )
+    call(host, "add_clips", clips=[{"path": media["A"], "sourceIn": 0.6, "sourceOut": 5.4, "at": 10}])
+    assert [(repr(i), repr(o)) for i, o in sent] == [("0.6", "5.4")]
+
+
 def test_a_picture_only_clip_leaves_its_sound_tracks_for_the_next_clip(setup):
     # Seen live: a camera laid picture-only, then its mic on A1 at the same place, was refused, as if
     # the camera's sound (removed straight after it's placed) still held A1.

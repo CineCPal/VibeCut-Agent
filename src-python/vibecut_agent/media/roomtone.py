@@ -1,6 +1,6 @@
 """The `media-roomtone` command (PLAN.md, "Phase 18e"): room tone taken from a recording, made as long as needed.
 
-request: {"sources": [{"path", "channel"?, "start"?, "end"?, "seconds"}] (1 to MAX_SOURCES), "project"?}
+request: {"sources": [{"path", "channel"?, "streams"?, "start"?, "end"?, "seconds"}] (1 to MAX_SOURCES), "project"?}
 result: {"files": [{"path", "channel"?, "output", "duration", "sample": {"start", "seconds"}, "levelDb",
                     "contrastDb", "quiet", "reused"} | {"path", "channel"?, "error"}], "folder"}
 
@@ -11,6 +11,10 @@ That stretch is then looped to `seconds`, alternating forward and reversed copie
 crossfades, so the seams don't click or pulse. `channel` (1-based) takes that channel alone, as a mono file
 (for a clip that plays one channel of a recording); otherwise the file keeps the source's channels. The rate
 is the source's, 24-bit WAV.
+
+The source's sound is its first stream, as Resolve plays a file with several. `streams: "all"` joins every
+sound stream's channels in order first (a camera's two mono mics, which Premiere plays as left and right), and
+`channel` then counts across them.
 
 `contrastDb` is how far the stretch sits under the source's speech (its 90th-percentile level); under
 QUIET_CONTRAST_DB it's reported as `quiet: false`, since then the source may have no real pause.
@@ -103,10 +107,11 @@ def loop_to(sample: np.ndarray, frames: int, rate: int) -> np.ndarray:
     return out[:frames].astype(np.float32)
 
 
-def probe(path: str) -> tuple[int, int, float | None]:
-    """The first sound stream's (sample rate, channels) and the file's duration."""
+def probe(path: str, every: bool) -> tuple[int, int, int, float | None]:
+    """(sample rate, channels, sound streams used, the file's duration): the first sound stream's rate, and its
+    channels, or with `every` the channels of all its sound streams together."""
     done = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
          "stream=sample_rate,channels:format=duration", "-of", "json", path],
         capture_output=True,
         timeout=60,
@@ -120,10 +125,13 @@ def probe(path: str) -> tuple[int, int, float | None]:
         duration: float | None = float(info.get("format", {}).get("duration"))
     except (TypeError, ValueError):
         duration = None
-    return int(streams[0]["sample_rate"]), int(streams[0]["channels"]), duration
+    used = streams if every else streams[:1]
+    return int(streams[0]["sample_rate"]), sum(int(s["channels"]) for s in used), len(used), duration
 
 
-def _decode(path: str, start: float, seconds: float, rate: int, mix: str) -> subprocess.Popen[bytes]:
+def _decode(
+    path: str, start: float, seconds: float, rate: int, mix: str, streams: int
+) -> subprocess.Popen[bytes]:
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -135,11 +143,22 @@ def _decode(path: str, start: float, seconds: float, rate: int, mix: str) -> sub
         "-t",
         f"{seconds:.3f}",
     ]
-    command += ["-i", path, "-map", "0:a:0", "-vn", "-af", mix, "-ar", str(rate), "-f", "f32le", "pipe:1"]
+    command += ["-i", path]
+    if streams > 1:
+        # Every stream at one rate, their channels joined in order, then `mix`. (aresample on each input leaves
+        # amerge unable to choose its formats; aformat lets ffmpeg place the resamplers.)
+        inputs = "".join(f"[0:a:{i}]aformat=sample_rates={rate}[s{i}];" for i in range(streams))
+        joined = "".join(f"[s{i}]" for i in range(streams))
+        command += ["-filter_complex", f"{inputs}{joined}amerge=inputs={streams},{mix}[out]", "-map", "[out]"]
+    else:
+        command += ["-map", "0:a:0", "-af", mix]
+    command += ["-vn", "-ar", str(rate), "-f", "f32le", "pipe:1"]
     return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def analyse(path: str, start: float, end: float, channel: int | None, channels: int) -> np.ndarray:
+def analyse(
+    path: str, start: float, end: float, channel: int | None, channels: int, streams: int
+) -> np.ndarray:
     """Block levels of the mono mix (or `channel`) from `start` to `end`, read a piece at a time."""
     mix = (
         f"pan=mono|c0=c{channel - 1}"
@@ -147,7 +166,7 @@ def analyse(path: str, start: float, end: float, channel: int | None, channels: 
         else f"pan=mono|c0={'+'.join(f'{1 / channels:.6f}*c{i}' for i in range(channels))}"
     )
     block = round(BLOCK_SECONDS * ANALYSIS_RATE)
-    process = _decode(path, start, end - start, ANALYSIS_RATE, mix)
+    process = _decode(path, start, end - start, ANALYSIS_RATE, mix, streams)
     assert process.stdout is not None
     levels: list[np.ndarray] = []
     carry = np.zeros(0, dtype=np.float32)
@@ -168,12 +187,12 @@ def analyse(path: str, start: float, end: float, channel: int | None, channels: 
 
 
 def extract(
-    path: str, start: float, seconds: float, rate: int, channel: int | None, channels: int
+    path: str, start: float, seconds: float, rate: int, channel: int | None, channels: int, streams: int
 ) -> np.ndarray:
     """The stretch at the source's own rate, frames x channels (one channel when `channel` is given)."""
     mix = f"pan=mono|c0=c{channel - 1}" if channel else "anull"
     width = 1 if channel else channels
-    process = _decode(path, start, seconds, rate, mix)
+    process = _decode(path, start, seconds, rate, mix, streams)
     out, err = process.communicate(timeout=FFMPEG_TIMEOUT_S)
     if process.returncode != 0:
         raise RuntimeError(err.decode(errors="ignore").strip()[-300:] or "ffmpeg couldn't read its sound")
@@ -198,11 +217,13 @@ def write_wav(samples: np.ndarray, rate: int, output: Path) -> None:
     partial.replace(output)
 
 
-def search(path: str, start: float, end: float, channel: int | None, channels: int) -> dict[str, Any] | None:
+def search(
+    path: str, start: float, end: float, channel: int | None, channels: int, streams: int
+) -> dict[str, Any] | None:
     """The quietest stretch from `start` to `end`: where it is, its level, and how far under the speech."""
     if end - start <= 0:
         return None
-    levels = analyse(path, start, end, channel, channels)
+    levels = analyse(path, start, end, channel, channels, streams)
     found = quietest(levels)
     if found is None:
         return None
@@ -224,6 +245,9 @@ def output_for(source: dict[str, Any], folder: Path) -> Path:
     stat = os.stat(source["path"])
     key = [VERSION, source["path"], stat.st_size, int(stat.st_mtime)]
     key += [source.get("channel"), source.get("start"), source.get("end"), source["seconds"]]
+    if source.get("streams"):
+        # Only when asked, so files made before it existed are still reused.
+        key.append(source["streams"])
     digest = hashlib.sha1(json.dumps(key).encode()).hexdigest()[:8]
     stem = safe_name(Path(source["path"]).stem, "Recording")[:60].rstrip()
     channel = f" ch{source['channel']}" if source.get("channel") else ""
@@ -234,7 +258,7 @@ def make(source: dict[str, Any], folder: Path) -> dict[str, Any]:
     path, channel = source["path"], source.get("channel")
     if not os.path.isfile(path):
         raise RuntimeError("the file isn't there (is its drive attached?)")
-    rate, channels, duration = probe(path)
+    rate, channels, streams, duration = probe(path, source.get("streams") == "all")
     if channel and channel > channels:
         raise RuntimeError(f"it has {channels} channel(s), not {channel}")
     output = output_for(source, folder)
@@ -245,16 +269,18 @@ def make(source: dict[str, Any], folder: Path) -> dict[str, Any]:
     whole_end = min(duration or MAX_ANALYSIS_SECONDS, MAX_ANALYSIS_SECONDS)
     start = max(0.0, float(source.get("start") or 0.0))
     end = min(float(source["end"]), whole_end) if source.get("end") is not None else whole_end
-    found = search(path, start, end, channel, channels)
+    found = search(path, start, end, channel, channels, streams)
     if (found is None or found["contrastDb"] < QUIET_CONTRAST_DB) and (start > 0 or end < whole_end):
         # No real pause near the clip: the rest of the recording may have one.
-        anywhere = search(path, 0.0, whole_end, channel, channels)
+        anywhere = search(path, 0.0, whole_end, channel, channels, streams)
         if anywhere is not None and (found is None or anywhere["contrastDb"] > found["contrastDb"]):
             found = anywhere
     if found is None:
         raise RuntimeError("no stretch of room tone in it: it's too short, or silent throughout")
 
-    sample = extract(path, found["sample"]["start"], found["sample"]["seconds"], rate, channel, channels)
+    sample = extract(
+        path, found["sample"]["start"], found["sample"]["seconds"], rate, channel, channels, streams
+    )
     if len(sample) < rate * 0.25:
         raise RuntimeError("ffmpeg gave back too little of its sound")
     write_wav(loop_to(sample, round(source["seconds"] * rate), rate), rate, output)
@@ -289,6 +315,12 @@ def parse_request(request: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(channel, int) or isinstance(channel, bool) or not 1 <= channel <= 32:
                 raise RequestError(f"sources[{i}].channel must be a channel number from 1")
             entry["channel"] = channel
+        streams = raw.get("streams")
+        if streams is not None:
+            if streams not in ("first", "all"):
+                raise RequestError(f'sources[{i}].streams must be "first" or "all"')
+            if streams == "all":
+                entry["streams"] = streams
         for key in ("start", "end"):
             if raw.get(key) is not None:
                 entry[key] = round(_seconds(raw[key], f"sources[{i}].{key}", 0.0, MAX_ANALYSIS_SECONDS), 3)
