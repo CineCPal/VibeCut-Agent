@@ -35,6 +35,15 @@ LIMITS = {
     "tint": (-100.0, 100.0),
     "saturation": (0.0, 200.0),
 }
+# Matching to a learned style (Phase 20b) stays a nudge: the style is an average over a reference's
+# shots, so going all the way could drive a clip to a control's end.
+STYLE_LIMITS = {
+    "exposure": (-1.0, 1.0),
+    "contrast": (-40.0, 40.0),
+    "temperature": (-50.0, 50.0),
+    "tint": (-30.0, 30.0),
+    "saturation": (60.0, 140.0),
+}
 GAMMA = 2.4
 K_TEMPERATURE = 0.0057
 K_TINT = 0.0044
@@ -59,8 +68,8 @@ def _number(value: Any, field: str) -> float:
     return float(value)
 
 
-def clamp(look: dict[str, float]) -> dict[str, float]:
-    return {k: round(min(max(look[k], LIMITS[k][0]), LIMITS[k][1]), 3) for k in FIELDS}
+def clamp(look: dict[str, float], limits: dict[str, tuple[float, float]] = LIMITS) -> dict[str, float]:
+    return {k: round(min(max(look[k], limits[k][0]), limits[k][1]), 3) for k in FIELDS}
 
 
 def look_of(entry: dict[str, Any], where: str) -> dict[str, float]:
@@ -220,7 +229,12 @@ def error(reference: dict[str, float], current: dict[str, float]) -> float:
     )
 
 
-def step(reference: dict[str, float], current: dict[str, float], look: dict[str, float]) -> dict[str, float]:
+def step(
+    reference: dict[str, float],
+    current: dict[str, float],
+    look: dict[str, float],
+    limits: dict[str, tuple[float, float]] = LIMITS,
+) -> dict[str, float]:
     """The look that should move `current` (the frame as `look` renders it) to `reference`.
 
     A cast is colour too, so saturation scales it: warmth is about s * (w0 + K_TEMPERATURE * temperature),
@@ -240,7 +254,7 @@ def step(reference: dict[str, float], current: dict[str, float], look: dict[str,
     nxt["temperature"] = (reference["warmth"] / s_next - own_warmth) / K_TEMPERATURE
     own_tint = current["tint"] / s + K_TINT * look["tint"]
     nxt["tint"] = (own_tint - reference["tint"] / s_next) / K_TINT
-    return clamp(nxt)
+    return clamp(nxt, limits)
 
 
 def describe(look: dict[str, float]) -> str:
@@ -280,16 +294,17 @@ def match(
     reference: dict[str, float],
     start: dict[str, float],
     render: Any,
+    limits: dict[str, tuple[float, float]] = LIMITS,
 ) -> tuple[dict[str, float], dict[str, float], int]:
     """The closed loop: `render(look)` applies a look and returns the frame's measures. From `start`, takes
-    up to MATCH_PASSES steps toward `reference` and returns (best look, its measures, passes), the best
-    look left applied."""
-    look = clamp(start)
+    up to MATCH_PASSES steps toward `reference` (each control kept inside `limits`) and returns (best
+    look, its measures, passes), the best look left applied."""
+    look = clamp(start, limits)
     seen = render(look)
     best = (error(reference, seen), look, seen)
     passes = 0
     while passes < MATCH_PASSES and best[0] > GOOD_ENOUGH:
-        look = step(reference, seen, look)
+        look = step(reference, seen, look, limits)
         seen = render(look)
         passes += 1
         score = error(reference, seen)

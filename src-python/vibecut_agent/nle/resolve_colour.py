@@ -169,7 +169,8 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                 return viewer.frame(at)
 
             try:
-                look, seen, passes = colour.match(reference, dict(colour.NEUTRAL), render)
+                limits = colour.STYLE_LIMITS if wanted is not None else colour.LIMITS
+                look, seen, passes = colour.match(reference, dict(colour.NEUTRAL), render, limits)
             except HostError as exc:
                 refused.append({"itemId": item_id, "reason": str(exc)})
                 continue

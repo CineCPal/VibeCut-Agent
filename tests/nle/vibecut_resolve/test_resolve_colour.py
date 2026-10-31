@@ -133,10 +133,13 @@ def test_match_to_a_learned_look_measures_only_the_clips(edit):
     host, _timeline, _project, c = edit
     reference = call(host, "read_clip_color", itemIds=[c["v"].uid])["clips"][0]
     look = {k: reference[k] for k in colour.MEASURES}
+    start = call(host, "read_clip_color", itemIds=[c["b"].uid])["clips"][0]
     c["exports"].clear()
     result = call(host, "match_clip_color", referenceLook=look, itemIds=[c["b"].uid])
     (change,) = result["changes"]
-    assert change["distance"] < colour.GOOD_ENOUGH and result["reference"] == look
+    assert result["reference"] == look and change["distance"] < colour.error(look, start)
+    # Kept a nudge: inside the style limits.
+    assert all(lo <= change["after"][k] <= hi for k, (lo, hi) in colour.STYLE_LIMITS.items())
     assert set(c["exports"]) == {400}
 
 

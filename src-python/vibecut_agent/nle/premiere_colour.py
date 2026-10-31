@@ -186,7 +186,8 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             return _frame(host, timeline, at)
 
         try:
-            _best, seen, passes = colour.match(reference, _look(before), render)
+            limits = colour.STYLE_LIMITS if look is not None else colour.LIMITS
+            _best, seen, passes = colour.match(reference, _look(before), render, limits)
         except HostError as exc:
             if "after" in last:
                 _set(host, timeline, item_id, _look(before))

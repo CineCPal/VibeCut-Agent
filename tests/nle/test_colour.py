@@ -105,6 +105,24 @@ def test_matching_closes_in_on_the_reference():
     assert passes[-1] == look
 
 
+def test_a_match_to_a_style_stays_inside_its_limits():
+    # A style far from the chart (flat and very warm): every pass stays a nudge (Phase 20b).
+    reference = {"brightness": 0.5, "contrast": 0.1, "warmth": 0.8, "tint": -0.1, "colour": 0.4}
+    passes = []
+
+    def render(look):
+        passes.append(look)
+        return colour.measure(resolve_render(chart(), look))
+
+    look, seen, _count = colour.match(reference, dict(colour.NEUTRAL), render, colour.STYLE_LIMITS)
+    for each in passes:
+        assert all(lo <= each[k] <= hi for k, (lo, hi) in colour.STYLE_LIMITS.items())
+    assert look["contrast"] == -40 and look["temperature"] == 50
+    # Closer than it started, not all the way.
+    start = colour.measure(chart())
+    assert colour.GOOD_ENOUGH < colour.error(reference, seen) < colour.error(reference, start)
+
+
 def test_a_match_already_close_takes_no_step():
     reference = colour.measure(chart())
     looks = []

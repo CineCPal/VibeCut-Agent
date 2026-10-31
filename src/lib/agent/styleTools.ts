@@ -6,7 +6,9 @@
  *  - its look: a frame from the middle of each shot measured as `get_clip_color` measures the editor's
  *    (`media-style`), the median over the shots;
  *  - its cutting to the beat: the share of cuts within two frames of a beat of its own sound
- *    (`media-beats`), beside the share chance alone would give.
+ *    (`media-beats`), beside the share chance alone would give. A beat tracker can lock half a beat
+ *    out (on a hi-hat or snare between the kicks), so the halfway points count as the grid when
+ *    more cuts land there.
  *
  * It doesn't touch the editor. `check_pacing` takes the style as its target, `match_clip_color` as its
  * reference.
@@ -39,26 +41,34 @@ export interface BeatCutting {
   bpm: number;
   /** Cuts within `tolerance` seconds of a beat, as a share of the cuts. */
   onBeat: number;
+  /** "offbeat": more cuts landed halfway between the beats found than on them (the tracker was half
+   * a beat out, or the edit cuts on the off-beat), so those points were counted. */
+  grid: "beat" | "offbeat";
   /** The share of cuts that would land that near a beat by chance. */
   chance: number;
   tolerance: number;
 }
 
-/** How many of `cuts` land within `tolerance` of a beat, and how many would by chance at this tempo. */
+/** How many of `cuts` land within `tolerance` of a beat (or of the points halfway between the beats,
+ * when more land there), and how many would by chance at this tempo. */
 export function beatCutting(cuts: number[], beats: number[], bpm: number, tolerance: number): BeatCutting {
   const sorted = [...beats].sort((a, b) => a - b);
-  const near = (t: number) => {
-    let lo = 0;
-    let hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (sorted[mid] < t) lo = mid + 1;
-      else hi = mid;
-    }
-    return [sorted[lo - 1], sorted[lo]].some((b) => b !== undefined && Math.abs(b - t) <= tolerance + 1e-6);
+  const share = (grid: number[]) => {
+    const near = (t: number) => {
+      let lo = 0;
+      let hi = grid.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (grid[mid] < t) lo = mid + 1;
+        else hi = mid;
+      }
+      return [grid[lo - 1], grid[lo]].some((b) => b !== undefined && Math.abs(b - t) <= tolerance + 1e-6);
+    };
+    return cuts.length ? round2(cuts.filter(near).length / cuts.length) : 0;
   };
-  const on = cuts.filter(near).length;
-  return { bpm: round2(bpm), onBeat: cuts.length ? round2(on / cuts.length) : 0, chance: round2(Math.min(1, (2 * tolerance * bpm) / 60)), tolerance: round2(tolerance) };
+  const on = share(sorted);
+  const off = share(sorted.slice(1).map((b, i) => (sorted[i] + b) / 2));
+  return { bpm: round2(bpm), onBeat: Math.max(on, off), grid: off > on ? "offbeat" : "beat", chance: round2(Math.min(1, (2 * tolerance * bpm) / 60)), tolerance: round2(tolerance) };
 }
 
 /** The style as one sentence for the notes (before its tag). */
@@ -127,7 +137,10 @@ export function styleExecutors(context: ToolContext): Record<string, Executor> {
       if (!found) notes.push(`cutting to the beat wasn't measured: ${beatJob?.error ?? "no result"}`);
       else if (found.bpm === null || found.confidence < MIN_BEAT_CONFIDENCE) notes.push("its sound has no steady beat, so cutting to the beat wasn't measured");
       else if (cuts.length < 4) notes.push("too few cuts to say whether it cuts to the beat");
-      else beats = beatCutting(cuts, found.beats, found.bpm, 2 / (fps > 0 ? fps : 25));
+      else {
+        beats = beatCutting(cuts, found.beats, found.bpm, 2 / (fps > 0 ? fps : 25));
+        if (beats.grid === "offbeat") notes.push("more cuts landed halfway between the beats found than on them, so those points were counted (the beat finder likely locked onto an off-beat sound)");
+      }
 
       const style: LearnedStyle = {
         name,

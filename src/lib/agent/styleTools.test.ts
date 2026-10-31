@@ -57,7 +57,15 @@ describe("learning a style", () => {
   });
 
   it("counts cuts on the beat against chance", () => {
-    expect(beatCutting(CUTS, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 14.5, 15, 15.5, 16, 16.5, 17, 17.5, 18, 18.5, 19, 19.5, 20, 20.5, 21, 21.5, 22], 120, 0.08)).toEqual({ bpm: 120, onBeat: 0.91, chance: 0.32, tolerance: 0.08 });
+    expect(beatCutting(CUTS, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 14.5, 15, 15.5, 16, 16.5, 17, 17.5, 18, 18.5, 19, 19.5, 20, 20.5, 21, 21.5, 22], 120, 0.08)).toEqual({ bpm: 120, onBeat: 0.91, grid: "beat", chance: 0.32, tolerance: 0.08 });
+  });
+
+  it("counts the halfway points when the beats found are half a beat out", () => {
+    // The tracker locked on an off-beat hi-hat: beats at 0.25, 0.75, ... while the cuts are on the kicks.
+    const offbeats = Array.from({ length: 47 }, (_, i) => 0.25 + i * 0.5);
+    expect(beatCutting(CUTS, offbeats, 120, 0.08)).toMatchObject({ onBeat: 0.91, grid: "offbeat" });
+    // Two on the beats found and two halfway: a tie keeps the beats.
+    expect(beatCutting([0.25, 1.25, 2.5, 3.5], offbeats, 120, 0.08)).toMatchObject({ onBeat: 0.5, grid: "beat" });
   });
 
   it("measures a reference's pace, look and beat, and saves it to the notes", async () => {
