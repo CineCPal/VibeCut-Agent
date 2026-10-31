@@ -123,6 +123,43 @@ def test_a_match_to_a_style_stays_inside_its_limits():
     assert colour.GOOD_ENOUGH < colour.error(reference, seen) < colour.error(reference, start)
 
 
+def test_black_borders_are_left_out_but_a_dark_picture_is_not():
+    grey, black = (0.5, 0.5, 0.5), (0.0, 0.0, 0.0)
+    # 10 x 8: a black row or column at each edge, a blended one inside it, and 6 x 4 of picture.
+    frame = [
+        black
+        if x < 1 or x >= 9 or y < 1 or y >= 7
+        else (0.2, 0.2, 0.2)
+        if x in (1, 8) or y in (1, 6)
+        else grey
+        for y in range(8)
+        for x in range(10)
+    ]
+    assert colour.without_borders(frame, 10, 8) == [grey] * (6 * 4)
+    whole = [grey] * 80
+    assert colour.without_borders(whole, 10, 8) is whole
+    # A night shot: dark all over but for a small light, kept whole.
+    night = [black] * 80
+    night[44] = grey
+    assert colour.without_borders(night, 10, 8) is night
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_a_clip_smaller_than_the_frame_measures_as_itself(tmp_path: Path):
+    # As Premiere showed a 720p clip in a 1080p sequence, unscaled (Phase 20b, live).
+    alone, boxed = tmp_path / "alone.png", tmp_path / "boxed.png"
+    source = ["-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25", "-frames:v", "1"]
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *source, str(alone)], check=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", *source, "-vf", "pad=1920:1080:320:180:black", str(boxed)], check=True
+    )
+    a = colour.measure(colour.frame_pixels(str(alone)))
+    b = colour.measure(colour.frame_pixels(str(boxed)))
+    assert b["brightness"] == pytest.approx(a["brightness"], rel=0.05)
+    assert b["contrast"] == pytest.approx(a["contrast"], rel=0.1)
+    assert colour.error(a, b) < colour.GOOD_ENOUGH
+
+
 def test_a_match_already_close_takes_no_step():
     reference = colour.measure(chart())
     looks = []

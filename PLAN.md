@@ -2462,7 +2462,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 
 **Why (the user):** next on the Phase 18 roadmap. The user's order: pacing checks first (the measuring layer the others lean on), then learning a style from a reference edit, then client notes to edits, then YouTube packaging. Each is built, unit-tested and checked live before the next. Client notes come as pasted text with timecodes, or as markers in the timeline (not Frame.io exports).
 - **20a:** `check_pacing`. Built and checked live in both editors.
-- **20b:** `learn_style`, and `style` for `check_pacing` and `match_clip_color`. Built; not checked live yet.
+- **20b:** `learn_style`, and `style` for `check_pacing` and `match_clip_color`. Built and checked live in both editors.
 - **20c:** `parseClientNotes(text, {fps, startTimecode})` in `timecode.ts` ("0:42", "1:15-1:20", "01:00:42:10", "1m15s", the timeline's start timecode taken off), and a read-only `read_client_notes {text? | fromMarkers?}` that puts each note on the timeline with the clip, the line said there and the nearest cut. The edits are made with the existing tools under Review edits first; handled markers are marked done.
 - **20d:** `make_chapters` (from markers and transcripts, to YouTube's rules: 00:00 first, at least 3, each at least 10 s), title and description by the agent, `pick_thumbnails` (stills scored for sharpness and exposure, into the renders folder), Shorts with `make_social_version`.
 
@@ -2510,7 +2510,10 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - **`check_pacing {style}`** on the interview (`end` 30): target median 2 s, longest 8 s; the 22 s shot noted as medium against the style's 8 s.
   - **The look, found:** the first reference's flat colour cards gave a contrast of 0.10, and matching the interview to it drove contrast to -100 and temperature to +100 and still ended at distance 0.52. **Fixed** with `STYLE_LIMITS` (above). Reverted by edit id.
   - **`match_clip_color {style}`** to the graded reference (look: brightness 0.50, contrast 0.40, colourfulness 0.50): the interview (contrast 0.51, colourfulness 0.92) reached distance 0.022 in one pass, at saturation 60, contrast -40, temperature +10, inside the limits. Revert put every measure back exactly.
-- **Not checked live in Premiere yet.**
+- **Checked live in Premiere 26.5.2 (2026-10-31)** the same way, on "Live Checks", sequence "20a pacing" (styles are per project, so `p20_promo2.mp4` was learned there too: the same numbers as in Resolve).
+  - **`check_pacing {style}`:** the same target and findings as in Resolve.
+  - **Found, in 19c's measuring:** Premiere measured the interview at brightness 0.22 and contrast 1.35 where Resolve measured 0.50 and 0.51. The clip is 1280×720 in a 1920×1080 sequence; Premiere doesn't scale it to the frame, so the exported frame had black borders round it, and 0.505 × 44% of the frame is 0.224. The match then hit the exposure limit and stopped at distance 0.56 (reverted). **Fixed:** `colour.frame_pixels` trims black rows and columns at the frame's edges, and the blended one next to them (`without_borders`), unless that leaves under a quarter of the frame (a dark picture). Every measure goes through it: `get_clip_color`, `match_clip_color` in both editors, and `media-style`. Rechecked: 0.503 and 0.51 in Premiere.
+  - **`match_clip_color {style}`:** distance 0.30 to 0.075 in 3 passes (exposure -0.74, contrast +22, temperature +14, tint -30, saturation 94), inside the limits but less close than Resolve's 0.022 in one pass: Lumetri doesn't follow `step`'s model as closely as Resolve's calibrated CDL, and tint ended on its limit. Left as it is; worth a look if style matches in Premiere disappoint. Revert put every measure back exactly.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -2611,6 +2614,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - *(2026-10-31)* **Phase 20a is checked live in Premiere and Resolve** on made media (the 19b holiday film is gone): `path` on a reference with known cuts, shots with B-roll on top, dead air by level and by words, a target, and `splitLongClips` on a placed export. No fixes. Open: the long-shot limit is relative, so a slow edit throughout isn't noted without `maxShot`. Next: 20b, learning a style from a reference edit.
   - *(2026-10-31)* **Phase 20b is built:** `learn_style` (a reference edit's pace, look and cutting to the beat, kept as a tagged line in the notes' Style section; the new `media-style` command), and `style` for `check_pacing` (its target) and `match_clip_color` (its reference look, in both editors). The long-shot limit stays relative, as the user chose. Unit-tested; not checked live. Next: 20b's live check, then 20c.
   - *(2026-10-31)* **Phase 20b is checked live in Resolve**, with two fixes: cuts counted on the halfway points when the beat finder locks half a beat out, and style matches kept to moderate limits (`colour.STYLE_LIMITS`). Next: 20b in Premiere (the app switched to it), then 20c.
+  - *(2026-10-31)* **Phase 20b is checked live in Premiere**, with a fix to 19c's measuring: black borders round a clip smaller than the frame (or letterboxing) no longer count as picture. Open: a style match in Premiere gets less close than in Resolve (0.075 against 0.022). **Phase 20a and 20b are done.** Next: 20c, client notes to edits.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -3019,3 +3023,6 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - `styleTools.ts` (`beatCutting`): the halfway points between the beats found count when more cuts land there (`grid`), with a note. Test in `styleTools.test.ts` (+1).
   - `nle/colour.py`: `STYLE_LIMITS`; `clamp`, `step` and `match` take limits. `premiere_colour.py` and `resolve_colour.py` use them for a look. `match_clip_color`'s description says so. Tests: `test_colour.py` (+1), the Premiere and Resolve learned-look tests now check a nudge inside the limits.
   - Tests: vitest (837), tsc, eslint, pytest (1012, 2 skipped), mypy and ruff pass. The app was reinstalled. Left on "VCA 18 probe": the "p20 promo" style in its notes; "20a pacing" ungraded (both matches reverted), and its backups.
+- **2026-10-31 (Claude): Phase 20b live pass in Premiere; black borders left out of colour measures.** See "20b" (Checked live in Premiere).
+  - `nle/colour.py`: `without_borders` (and `BORDER_BLACK`), applied in `frame_pixels`. Tests: `test_colour.py` (+2: borders trimmed and a dark picture kept whole; a 720p frame padded to 1080p measures as itself).
+  - Tests: pytest (1014, 2 skipped), mypy and ruff pass; vitest unchanged (837). The app was reinstalled. Left on "Live Checks" (unsaved): the "p20 promo" style in its notes, "20a pacing" ungraded.

@@ -53,6 +53,8 @@ MAX_ITEMS = 50
 SAMPLE_WIDTH, SAMPLE_HEIGHT = 160, 90
 # Pixels this close to black or white are left out of the colour measures (clipped, they hold no cast).
 CLIP_LOW, CLIP_HIGH = 0.03, 0.97
+# A row or column at the frame's edge with no channel above this is a border, not picture.
+BORDER_BLACK = 0.03
 MATCH_PASSES = 3
 # A pass this close to the reference stops the loop (see `error`).
 GOOD_ENOUGH = 0.03
@@ -168,7 +170,7 @@ def frame_pixels(
     path: str, timeout: float = 30.0, at: float | None = None
 ) -> list[tuple[float, float, float]]:
     """The frame in an image file (or a video's frame at `at` seconds, Phase 20b), SAMPLE_WIDTH x
-    SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg)."""
+    SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg), without black borders (`without_borders`)."""
     seek = ["-ss", f"{at:.3f}"] if at is not None else []
     try:
         done = subprocess.run(
@@ -188,10 +190,49 @@ def frame_pixels(
         raise ColourError(
             done.stderr.decode(errors="ignore").strip()[-300:] or "ffmpeg couldn't read the frame"
         )
-    return [
+    pixels = [
         (data[i] / 255, data[i + 1] / 255, data[i + 2] / 255)
         for i in range(0, SAMPLE_WIDTH * SAMPLE_HEIGHT * 3, 3)
     ]
+    return without_borders(pixels, SAMPLE_WIDTH, SAMPLE_HEIGHT)
+
+
+def without_borders(
+    pixels: list[tuple[float, float, float]], width: int, height: int
+) -> list[tuple[float, float, float]]:
+    """The pixels inside the black rows and columns at the frame's edges (a clip smaller than the
+    frame, letterboxing), and the blended row or column next to them, so the borders don't count as
+    the picture's (seen live: a 720p clip in a 1080p Premiere sequence measured at 44% of its
+    brightness, Phase 20b). A frame left with under a quarter of its area is a dark picture, not
+    borders: it's kept whole."""
+
+    def black(line: list[tuple[float, float, float]]) -> bool:
+        return all(max(p) <= BORDER_BLACK for p in line)
+
+    def row(y: int) -> list[tuple[float, float, float]]:
+        return pixels[y * width : (y + 1) * width]
+
+    def col(x: int, top: int, bottom: int) -> list[tuple[float, float, float]]:
+        return [pixels[y * width + x] for y in range(top, bottom)]
+
+    top, bottom = 0, height
+    while top < bottom and black(row(top)):
+        top += 1
+    while bottom > top and black(row(bottom - 1)):
+        bottom -= 1
+    left, right = 0, width
+    while left < right and black(col(left, top, bottom)):
+        left += 1
+    while right > left and black(col(right - 1, top, bottom)):
+        right -= 1
+    # The row or column the scale blended with the border.
+    top, bottom = top + (top > 0), bottom - (bottom < height)
+    left, right = left + (left > 0), right - (right < width)
+    if (right - left) * (bottom - top) < width * height / 4:
+        return pixels
+    if (top, bottom, left, right) == (0, height, 0, width):
+        return pixels
+    return [pixels[y * width + x] for y in range(top, bottom) for x in range(left, right)]
 
 
 def measure(pixels: list[tuple[float, float, float]]) -> dict[str, float]:
