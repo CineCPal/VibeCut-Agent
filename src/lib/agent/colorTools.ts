@@ -13,6 +13,7 @@ import { nleCall } from "../ipc";
 import type { NleHost } from "../../types/nle";
 import { type Args, type Executor, optNum, optStr, strArray } from "./args";
 import { COLOUR_FIELDS, count, describeColour, describeTimelineChange, edit, TIMELINE_NOUN, type EditContext } from "./edits";
+import { learnedStyle, styleLook } from "./styles";
 import type { ToolDeclaration } from "./tools";
 
 const clipIdArg = { type: "STRING", description: "A timeline clip id from the snapshot (a picture clip)." };
@@ -30,7 +31,7 @@ export interface MeasuredClip {
 }
 
 /** A measured frame in words, for the chat: "brightness 0.42, warm, slightly green, colour 0.21". */
-export function describeMeasure(m: MeasuredClip): string {
+export function describeMeasure(m: Pick<MeasuredClip, "brightness" | "contrast" | "warmth" | "tint" | "colour">): string {
   const cast = (value: number, plus: string, minus: string) => (Math.abs(value) < 0.03 ? null : `${Math.abs(value) < 0.1 ? "slightly " : ""}${value > 0 ? plus : minus}`);
   return [`brightness ${m.brightness.toFixed(2)}`, `contrast ${m.contrast.toFixed(2)}`, cast(m.warmth, "warm", "cool"), cast(m.tint, "green", "magenta"), `colourfulness ${m.colour.toFixed(2)}`]
     .filter(Boolean)
@@ -69,14 +70,15 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "match_clip_color",
-      description: `Makes clips' colour match a reference clip as ${host === "premiere" ? "Premiere" : "Resolve"} shows it (grade included): it measures a frame of each, sets ${where}, renders it and measures again, up to 3 passes, keeping the closest. It matches overall brightness, contrast, warmth, tint and colourfulness, so it's for shots of the same scene (two cameras on one interview, takes in one light), not different places. The reference isn't changed. The result says how close each got. A backup copy is made first; ${revert}`,
+      description: `Makes clips' colour match a reference clip as ${host === "premiere" ? "Premiere" : "Resolve"} shows it (grade included): it measures a frame of each, sets ${where}, renders it and measures again, up to 3 passes, keeping the closest. It matches overall brightness, contrast, warmth, tint and colourfulness, so it's for shots of the same scene (two cameras on one interview, takes in one light), not different places. The reference isn't changed. Instead of referenceId, style (learned with learn_style) brings the clips toward that reference edit's average look: the overall feel, not a shot-for-shot grade. The result says how close each got. A backup copy is made first; ${revert}`,
       parameters: {
         type: "OBJECT",
         properties: {
           referenceId: clipIdArg,
+          style: { type: "STRING", description: "A style learned with learn_style, instead of referenceId." },
           clipIds: { type: "ARRAY", items: { type: "STRING" }, description: "The picture clips to change (up to 50)." },
         },
-        required: ["referenceId", "clipIds"],
+        required: ["clipIds"],
       },
     },
     {
@@ -109,9 +111,13 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
 
     match_clip_color: async (args) => {
       const referenceId = optStr(args, "referenceId");
-      if (!referenceId) throw new Error("referenceId must be the timeline clip to match");
+      const style = optStr(args, "style");
+      if (referenceId && style) throw new Error("Give referenceId (a clip) or style (a learned style), not both");
+      if (!referenceId && !style) throw new Error("referenceId must be the timeline clip to match (or style, a learned style)");
       const itemIds = strArray(args, "clipIds");
-      return edit(ctx, "match_clip_color", "match_clip_color", { referenceId, itemIds }, (r) => `Matched ${count(r.changes.length, "clip")} to the reference: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
+      const reference = style ? { referenceLook: styleLook(await learnedStyle(ctx.host, style)) } : { referenceId };
+      const to = style ? `the "${style}" style` : "the reference";
+      return edit(ctx, "match_clip_color", "match_clip_color", { ...reference, itemIds }, (r) => `Matched ${count(r.changes.length, "clip")} to ${to}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
     },
 
     get_clip_color: async (args) => {

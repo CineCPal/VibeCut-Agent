@@ -18,6 +18,7 @@ import { filePart } from "./audioTools";
 import { TIMELINE_NOUN } from "./edits";
 import { lintTimeline, type Severity } from "./reviewTools";
 import { onTimeline } from "./shotTools";
+import { learnedStyle, styleTarget } from "./styles";
 import { heardView, readTranscript, transcriptExecutors } from "./transcriptTools";
 import type { ToolContext, ToolDeclaration } from "./tools";
 
@@ -369,6 +370,23 @@ async function findCuts(path: string, start: number, end: number | undefined, ti
   return result;
 }
 
+/** A media file's shots (`media-shots`), profile and dead air (from its transcript, when it has one),
+ * between `from` and `to` seconds of it: `check_pacing` with a path, and `learn_style`. */
+export async function fileProfile(path: string, from?: number, to?: number): Promise<{ profile: PacingProfile; shots: Shot[]; deadAir: Span[] | null; fps: number; notes: string[] }> {
+  if (!path.startsWith("/")) throw new Error("path must be an absolute file path");
+  const found = await findCuts(path, from ?? 0, to, `Find the shots in ${fileName(path)}`);
+  const range = { start: found.start, end: found.end };
+  if (!(range.end > range.start)) throw new Error(`${fileName(path)} has no picture to measure there`);
+  const shots = fileShots(range.start, range.end, found.cuts.map((c) => c.time));
+  const transcript = await readTranscript(path).catch(() => null);
+  const notes: string[] = [];
+  let deadAir: Span[] | null = null;
+  if (transcript?.segments.length) deadAir = speechGaps(transcript.segments, range);
+  else notes.push(`${fileName(path)} has no transcript, so dead air wasn't measured (transcribe_clips with its path first, if it has speech)`);
+  notes.push("Hard cuts only: dissolves, fades and wipes count as one shot.");
+  return { profile: pacingProfile(shots, deadAir, range), shots, deadAir, fps: found.fps, notes };
+}
+
 function outcome(where: string, profile: PacingProfile, findings: PacingFinding[], target: PacingTarget, notes: string[], extra: Record<string, unknown> = {}): ToolOutcome {
   const counts = new Map<PacingCategory, number>();
   for (const f of findings) counts.set(f.category, (counts.get(f.category) ?? 0) + 1);
@@ -395,11 +413,12 @@ export function pacingToolDeclarations(host: NleHost): ToolDeclaration[] {
   return [
     {
       name: "check_pacing",
-      description: `Measures the pacing of the connected ${noun} (or the draft), or of a media file (path, e.g. a reference edit): its shots (the picture that plays, so B-roll over an interview counts as a cut), cuts per minute overall and over time, median and 90th-percentile shot length, the longest shots, and dead air (no words, from the transcripts; from the sound level when nothing is transcribed). Then it notes long shots, slow stretches, dead air and a slow opening. Without a target it judges the edit against itself; give target (from the user, the notes' style, or a reference edit measured with this tool) to judge against that. It only reads. splitLongClips looks inside shots over ${PACING_LIMITS.splitOver}s for cuts (a flattened export), which takes longer.`,
+      description: `Measures the pacing of the connected ${noun} (or the draft), or of a media file (path, e.g. a reference edit): its shots (the picture that plays, so B-roll over an interview counts as a cut), cuts per minute overall and over time, median and 90th-percentile shot length, the longest shots, and dead air (no words, from the transcripts; from the sound level when nothing is transcribed). Then it notes long shots, slow stretches, dead air and a slow opening. Without a target it judges the edit against itself; give style (learned with learn_style) or target (from the user) to judge against that. It only reads. splitLongClips looks inside shots over ${PACING_LIMITS.splitOver}s for cuts (a flattened export), which takes longer.`,
       parameters: {
         type: "OBJECT",
         properties: {
           path: { type: "STRING", description: `Absolute media file path, instead of the ${noun}; start/end are then file seconds.` },
+          style: { type: "STRING", description: "A style learned with learn_style: its median shot, and twice the length 90% of its shots stay under as the longest. target's fields override it." },
           start: { type: "NUMBER", description: "Optional." },
           end: { type: "NUMBER", description: "Optional." },
           splitLongClips: { type: "BOOLEAN", description: `Optional; default false. ${noun} only.` },
@@ -423,7 +442,8 @@ export function pacingExecutors(context: ToolContext): Record<string, Executor> 
   const { host } = context;
   return {
     check_pacing: async (args): Promise<ToolOutcome> => {
-      const target = targetOf(args);
+      const styleName = optStr(args, "style");
+      const target = { ...(styleName ? styleTarget(await learnedStyle(host, styleName)) : {}), ...targetOf(args) };
       const from = optNum(args, "start");
       const to = optNum(args, "end");
       if (from !== undefined && to !== undefined && !(to > from)) throw new Error("end must be after start");
@@ -431,18 +451,8 @@ export function pacingExecutors(context: ToolContext): Record<string, Executor> 
       const notes: string[] = [];
 
       if (path) {
-        if (!path.startsWith("/")) throw new Error("path must be an absolute file path");
-        const found = await findCuts(path, from ?? 0, to, `Find the shots in ${fileName(path)}`);
-        const range = { start: found.start, end: found.end };
-        if (!(range.end > range.start)) throw new Error(`${fileName(path)} has no picture to measure there`);
-        const shots = fileShots(range.start, range.end, found.cuts.map((c) => c.time));
-        const transcript = await readTranscript(path).catch(() => null);
-        let deadAir: Span[] | null = null;
-        if (transcript?.segments.length) deadAir = speechGaps(transcript.segments, range);
-        else notes.push(`${fileName(path)} has no transcript, so dead air wasn't measured (transcribe_clips with its path first, if it has speech)`);
-        notes.push("Hard cuts only: dissolves, fades and wipes count as one shot.");
-        const profile = pacingProfile(shots, deadAir, range);
-        return outcome(fileName(path), profile, pacingFindings(profile, shots, deadAir, target), target, notes, { path });
+        const measured = await fileProfile(path, from, to);
+        return outcome(fileName(path), measured.profile, pacingFindings(measured.profile, measured.shots, measured.deadAir, target), target, measured.notes, { path, ...(styleName ? { style: styleName } : {}) });
       }
 
       const heard = await heardView(context);
@@ -490,7 +500,7 @@ export function pacingExecutors(context: ToolContext): Record<string, Executor> 
       }
 
       const profile = pacingProfile(shots, deadAir, range);
-      return outcome(`"${view.timeline}"`, profile, pacingFindings(profile, shots, deadAir, target), target, notes);
+      return outcome(`"${view.timeline}"`, profile, pacingFindings(profile, shots, deadAir, target), target, notes, styleName ? { style: styleName } : {});
     },
   };
 }
@@ -498,5 +508,5 @@ export function pacingExecutors(context: ToolContext): Record<string, Executor> 
 /** The ground rule the system prompt gains (Phase 20a). */
 export const PACING_INSTRUCTION = `- check_pacing measures shots, cut rate and dead air. Use it when the user asks whether a cut drags, is
   too slow or fast, or how a reference edit is paced (with path). Without a target its notes compare the
-  edit with itself: present them as observations, not rules. A pace the user or the notes' style gives
-  goes in target. It only reads; tighten with the edit tools as the user asks.`;
+  edit with itself: present them as observations, not rules. A style learned with learn_style goes in
+  style, a pace the user gives in target. It only reads; tighten with the edit tools as the user asks.`;

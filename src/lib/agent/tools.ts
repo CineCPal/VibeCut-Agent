@@ -32,6 +32,7 @@ import { splitEditExecutors, splitEditToolDeclarations } from "./splitEditTools"
 import { draftEditExecutors, draftEditToolDeclarations } from "./draftEditTools";
 import { shotExecutors, shotToolDeclarations } from "./shotTools";
 import { pacingExecutors, pacingToolDeclarations } from "./pacingTools";
+import { styleExecutors, styleToolDeclarations } from "./styleTools";
 import { dialogueExecutors, dialogueToolDeclarations } from "./dialogueTools";
 import { titleExecutors, titleToolDeclarations } from "./titleTools";
 import { captionExecutors, captionToolDeclarations } from "./captionTools";
@@ -77,6 +78,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...draftEditToolDeclarations(host),
     ...shotToolDeclarations(host),
     ...pacingToolDeclarations(host),
+    ...styleToolDeclarations(host),
     ...dialogueToolDeclarations(host),
     ...titleToolDeclarations(host),
     ...captionToolDeclarations(host),
@@ -323,6 +325,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...draftEditExecutors(context),
     ...shotExecutors(context),
     ...pacingExecutors(context),
+    ...styleExecutors(context),
     ...dialogueExecutors(context),
     ...titleExecutors(context),
     ...captionExecutors(context),

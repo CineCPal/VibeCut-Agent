@@ -116,6 +116,13 @@ def media_shots(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-shots", shots.run, stdin, emitter)
 
 
+def media_style(emitter: Emitter, stdin: TextIO) -> int:
+    """How a reference edit looks, measured on a frame of each shot (Phase 20b)."""
+    from vibecut_agent.media import commands, style
+
+    return commands.main("media-style", style.run, stdin, emitter)
+
+
 def media_roomtone(emitter: Emitter, stdin: TextIO) -> int:
     """Room tone from a recording's quietest stretch, looped as long as needed (Phase 18e)."""
     from vibecut_agent.media import commands, roomtone
@@ -177,6 +184,7 @@ COMMANDS: dict[str, Command] = {
     "media-titles": media_titles,
     "media-shots": media_shots,
     "media-roomtone": media_roomtone,
+    "media-style": media_style,
     "assemble": assemble,
     "chat-title": chat_title,
     "critique": critique,

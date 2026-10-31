@@ -133,20 +133,28 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """{timeline, referenceId, itemIds} -> each clip's look made to match the reference as Resolve shows it
-    (colour.match: measure, step, apply, up to colour.MATCH_PASSES passes)."""
+    """{timeline, referenceId | referenceLook, itemIds} -> each clip's look made to match the reference (a
+    clip as Resolve shows it, or a look learned from a reference edit) (colour.match: measure, step,
+    apply, up to colour.MATCH_PASSES passes)."""
     try:
-        reference_id, targets = colour.match_wants(args)
+        reference_id, targets, wanted = colour.match_wants(args)
     except colour.ColourError as exc:
         raise HostError(str(exc)) from None
     project, timeline = host._timeline(args)
     fps = _frame_rate(timeline)
     found = _items(timeline)
-    _ref_item, ref_at = _moment(timeline, found, reference_id, fps)
+    ref_at: float | None = None
+    if wanted is None:
+        assert reference_id is not None  # match_wants gives a clip or a look
+        ref_at = _moment(timeline, found, reference_id, fps)[1]
     viewer = _Viewer(project, timeline)
     changes, refused = [], []
     try:
-        reference = viewer.frame(ref_at)
+        if wanted is not None:
+            reference = wanted
+        else:
+            assert ref_at is not None
+            reference = viewer.frame(ref_at)
         for item_id in targets:
             try:
                 item, at = _moment(timeline, found, item_id, fps)

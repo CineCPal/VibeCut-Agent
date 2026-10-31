@@ -95,11 +95,27 @@ def look_wants(args: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def match_wants(args: dict[str, Any]) -> tuple[str, list[str]]:
-    """{referenceId, itemIds} -> (reference, targets)."""
+MEASURES = ("brightness", "contrast", "warmth", "tint", "colour")
+
+
+def match_wants(args: dict[str, Any]) -> tuple[str | None, list[str], dict[str, float] | None]:
+    """{referenceId | referenceLook, itemIds} -> (reference clip, targets, reference look). A look is a
+    set of measures (as `measure` gives them) to match instead of a clip's frame: a style learned from a
+    reference edit (Phase 20b)."""
     reference = args.get("referenceId")
+    wanted = args.get("referenceLook")
     ids = args.get("itemIds")
-    if not isinstance(reference, str) or not reference:
+    look: dict[str, float] | None = None
+    if wanted is not None:
+        if not isinstance(wanted, dict):
+            raise ColourError(f"referenceLook must give {', '.join(MEASURES)}")
+        look = {k: _number(wanted.get(k), f"referenceLook.{k}") for k in MEASURES}
+        if not 0 < look["brightness"] <= 1 or look["contrast"] < 0 or look["colour"] < 0:
+            raise ColourError(
+                "referenceLook's brightness must be over 0 and at most 1, its contrast and colour 0 or more"
+            )
+        reference = None
+    elif not isinstance(reference, str) or not reference:
         raise ColourError("referenceId must be the timeline clip to match")
     if (
         not isinstance(ids, list)
@@ -111,7 +127,7 @@ def match_wants(args: dict[str, Any]) -> tuple[str, list[str]]:
     targets = [i for i in dict.fromkeys(ids) if i != reference]
     if not targets:
         raise ColourError("itemIds must name clips other than the reference")
-    return reference, targets
+    return reference, targets, look
 
 
 def is_neutral(look: dict[str, float]) -> bool:
@@ -139,12 +155,16 @@ def cdl(look: dict[str, float]) -> dict[str, str]:
     }
 
 
-def frame_pixels(path: str, timeout: float = 30.0) -> list[tuple[float, float, float]]:
-    """The frame in an image file, SAMPLE_WIDTH x SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg)."""
+def frame_pixels(
+    path: str, timeout: float = 30.0, at: float | None = None
+) -> list[tuple[float, float, float]]:
+    """The frame in an image file (or a video's frame at `at` seconds, Phase 20b), SAMPLE_WIDTH x
+    SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg)."""
+    seek = ["-ss", f"{at:.3f}"] if at is not None else []
     try:
         done = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-nostdin", "-i", path,
+                "ffmpeg", "-v", "error", "-nostdin", *seek, "-i", path,
                 "-vf", f"scale={SAMPLE_WIDTH}:{SAMPLE_HEIGHT}:flags=area",
                 "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
             ],

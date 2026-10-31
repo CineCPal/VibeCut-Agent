@@ -113,6 +113,17 @@ def test_match_closes_in_on_the_reference(setup):
     assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
 
 
+def test_match_to_a_learned_look_measures_only_the_clips(setup):
+    host, _premiere, c = setup
+    reference = call(host, "read_clip_color", itemIds=[c["A"]])["clips"][0]
+    look = {k: reference[k] for k in colour.MEASURES}
+    c["frames"].clear()
+    result = call(host, "match_clip_color", referenceLook=look, itemIds=[c["B"]])
+    (change,) = result["changes"]
+    assert change["distance"] < colour.GOOD_ENOUGH and result["reference"] == look
+    assert {round(f, 1) for f in c["frames"]} == {6.5}
+
+
 def test_read_and_refusals(setup):
     host, premiere, c = setup
     read = call(host, "read_clip_color", itemIds=[c["A"], c["B"]])

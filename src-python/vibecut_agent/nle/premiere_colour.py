@@ -145,16 +145,21 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """{timeline, referenceId, itemIds} -> each clip's Lumetri set to match the reference as Premiere
-    renders it (colour.match: measure, step, apply, up to colour.MATCH_PASSES passes)."""
+    """{timeline, referenceId | referenceLook, itemIds} -> each clip's Lumetri set to match the reference
+    (a clip as Premiere renders it, or a look learned from a reference edit) (colour.match: measure,
+    step, apply, up to colour.MATCH_PASSES passes)."""
     try:
-        reference_id, targets = colour.match_wants(args)
+        reference_id, targets, look = colour.match_wants(args)
     except colour.ColourError as exc:
         raise HostError(str(exc)) from None
     timeline = host._name(args)
     seq = _read(host, timeline)
-    _ref, ref_at = _moment(seq, reference_id)
-    reference = _frame(host, timeline, ref_at)
+    if look is not None:
+        reference = look
+    else:
+        assert reference_id is not None  # match_wants gives a clip or a look
+        _ref, ref_at = _moment(seq, reference_id)
+        reference = _frame(host, timeline, ref_at)
     changes, refused = [], []
     for item_id in targets:
         try:

@@ -74,6 +74,8 @@ LONG_TOOLS = frozenset(
         "find_shot_changes",
         # Phase 20a: may decode long clips or a whole file for their shots.
         "check_pacing",
+        # Phase 20b: decodes a whole reference file (shots, frames, beats).
+        "learn_style",
         # Phase 19c: up to 3 rendered and measured frames per clip, for up to 50 clips.
         "match_clip_color",
         "create_captions",

@@ -80,7 +80,7 @@ describe("colour tools", () => {
   it("describes looks and measures", () => {
     expect(describeColour({ exposure: -0.3, contrast: 0, temperature: 12.4, tint: 0, saturation: 90 })).toBe("exposure -0.30, temperature +12, saturation 90");
     expect(describeColour(null)).toBe("unknown");
-    expect(describeMeasure({ itemId: "v", name: "v", at: 0, brightness: 0.5, contrast: 0.4, warmth: -0.05, tint: 0.2, colour: 0.1 })).toBe("brightness 0.50, contrast 0.40, slightly cool, green, colourfulness 0.10");
+    expect(describeMeasure({ brightness: 0.5, contrast: 0.4, warmth: -0.05, tint: 0.2, colour: 0.1 })).toBe("brightness 0.50, contrast 0.40, slightly cool, green, colourfulness 0.10");
     expect(describeTimelineChange({ kind: "color", name: "B.mov", before: null, after: AFTER, passes: 3, distance: 0.08 })).toContain("as near as it got");
   });
 });

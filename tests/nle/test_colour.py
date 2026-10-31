@@ -52,9 +52,16 @@ def test_requests_are_checked_and_fields_left_out_are_neutral():
     ]:
         with pytest.raises(colour.ColourError, match=message):
             colour.look_wants(bad)
-    assert colour.match_wants({"referenceId": "v1", "itemIds": ["v1", "v2", "v2"]}) == ("v1", ["v2"])
+    assert colour.match_wants({"referenceId": "v1", "itemIds": ["v1", "v2", "v2"]}) == ("v1", ["v2"], None)
     with pytest.raises(colour.ColourError, match="other than the reference"):
         colour.match_wants({"referenceId": "v1", "itemIds": ["v1"]})
+    # A look learned from a reference edit, instead of a clip (Phase 20b).
+    look = {"brightness": 0.4, "contrast": 0.6, "warmth": 0.1, "tint": 0.0, "colour": 0.2}
+    assert colour.match_wants({"referenceLook": look, "itemIds": ["v1"]}) == (None, ["v1"], look)
+    with pytest.raises(colour.ColourError, match="referenceLook.tint must be a number"):
+        colour.match_wants({"referenceLook": {**look, "tint": None}, "itemIds": ["v1"]})
+    with pytest.raises(colour.ColourError, match="brightness must be over 0"):
+        colour.match_wants({"referenceLook": {**look, "brightness": 0}, "itemIds": ["v1"]})
 
 
 def test_the_cdl_moves_the_picture_as_lumetri_does():

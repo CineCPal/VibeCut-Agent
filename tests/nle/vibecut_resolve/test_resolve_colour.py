@@ -129,6 +129,17 @@ def test_match_closes_in_on_the_reference_and_puts_the_playhead_back(edit):
     assert c["exports"][0] == 125 and set(c["exports"][1:]) == {400}
 
 
+def test_match_to_a_learned_look_measures_only_the_clips(edit):
+    host, _timeline, _project, c = edit
+    reference = call(host, "read_clip_color", itemIds=[c["v"].uid])["clips"][0]
+    look = {k: reference[k] for k in colour.MEASURES}
+    c["exports"].clear()
+    result = call(host, "match_clip_color", referenceLook=look, itemIds=[c["b"].uid])
+    (change,) = result["changes"]
+    assert change["distance"] < colour.GOOD_ENOUGH and result["reference"] == look
+    assert set(c["exports"]) == {400}
+
+
 def test_read_measures_and_looks_past_covers(edit):
     host, timeline, _project, c = edit
     timeline.AddTrack("video")
