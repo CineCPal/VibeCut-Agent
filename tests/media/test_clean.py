@@ -60,6 +60,8 @@ def test_requests_are_checked():
         clean.run({"paths": []}, Emitter(io.StringIO()))
     with pytest.raises(RequestError, match="strength"):
         clean.run({"paths": ["/a.wav"], "strength": "max"}, Emitter(io.StringIO()))
+    with pytest.raises(RequestError, match="streams"):
+        clean.run({"paths": ["/a.wav"], "streams": "both"}, Emitter(io.StringIO()))
     assert "media-clean" in COMMANDS
     assert clean.output_for("/m/Int A.mov", "light") == Path("/m/Int A.vca-clean-light.wav")
 
@@ -77,6 +79,27 @@ def test_a_file_is_cleaned_beside_its_source_with_the_same_timing(noisy: Path):
     # The same length to the millisecond or so, so a clip's source points carry over.
     assert abs(float(info["format"]["duration"]) - 4.0) < 0.01
     assert not out.with_name(out.name + ".part").exists()
+
+
+@needs_ffmpeg
+def test_a_file_of_mono_streams_is_cleaned_from_the_first_or_all_of_them(noisy: Path, tmp_path: Path):
+    # A camera's two mono mics as two sound streams.
+    camera = tmp_path / "camera.mov"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(noisy), "-filter_complex", "channelsplit=channel_layout=stereo[l][r]",
+         "-map", "[l]", "-map", "[r]", "-c:a", "pcm_s24le", str(camera)],
+        check=True,
+    )  # fmt: skip
+    _, first = run({"paths": [str(camera)], "strength": "light"})
+    _, every = run({"paths": [str(camera)], "strength": "light", "streams": "all"})
+    assert Path(first[0]["output"]) == camera.with_name("camera.vca-clean-light.wav")
+    assert Path(every[0]["output"]) == camera.with_name("camera.vca-clean-light-all.wav")
+    assert probe(Path(first[0]["output"]))["streams"][0]["channels"] == 1
+    joined = probe(Path(every[0]["output"]))
+    assert joined["streams"][0]["channels"] == 2 and abs(float(joined["format"]["duration"]) - 4.0) < 0.01
+    # A file with one stream keeps its usual name with "all".
+    _, single = run({"paths": [str(noisy)], "strength": "light", "streams": "all"})
+    assert Path(single[0]["output"]) == noisy.with_name("interview.vca-clean-light.wav")
 
 
 @needs_ffmpeg

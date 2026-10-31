@@ -84,6 +84,11 @@ describe("clean_dialogue", () => {
     expect(out.result).toMatchObject({ failed: ["b.mov: the file has no sound"], originalsSwitchedOff: ["a1", "a2"] });
   });
 
+  it("asks for every sound stream in Premiere, which plays them all", async () => {
+    await runTool(executorsFor({ ...context, host: "premiere" }), "clean_dialogue", { clipIds: ["v1"], strength: "light" });
+    expect(jobs.runJob.mock.calls[0][2]).toEqual({ paths: ["/m/int.mov"], strength: "light", streams: "all" });
+  });
+
   it("switches nothing off when the cleaned sound couldn't be placed", async () => {
     ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
       if (command === "read_timeline") return VIEW;

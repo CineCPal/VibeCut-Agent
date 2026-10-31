@@ -226,7 +226,8 @@ export function dialogueExecutors(context: ToolContext): Record<string, Executor
       const paths = [...new Set(clips.map((c) => c.filePath!))];
       if (paths.length > MAX_FILES) throw new Error(`That's ${paths.length} files; at most ${MAX_FILES} per call`);
 
-      const job = await runJob("media-clean", `Clean the dialogue of ${paths.length} file(s)`, { paths, strength });
+      // Premiere plays every sound stream of a file (a camera's two mono mics as left and right), Resolve the first.
+      const job = await runJob("media-clean", `Clean the dialogue of ${paths.length} file(s)`, { paths, strength, ...(host === "premiere" ? { streams: "all" } : {}) });
       const files = ((job?.result ?? {}) as { files?: CleanedFile[] }).files ?? [];
       const cleaned = new Map(files.flatMap((f) => (f.output ? [[f.path, f] as const] : [])));
       const failed = files.filter((f) => f.error).map((f) => `${fileName(f.path)}: ${f.error}`);

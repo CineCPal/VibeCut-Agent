@@ -1,6 +1,7 @@
 """The `media-clean` command (PLAN.md, "Phase 18c"): dialogue cleaned with ffmpeg, written next to each file.
 
-request: {"paths": [absolute media files] (1 to MAX_FILES), "strength": "light" | "medium" | "strong"}
+request: {"paths": [absolute media files] (1 to MAX_FILES), "strength": "light" | "medium" | "strong",
+          "streams"?: "first" | "all"}
 result: {"files": [{"path", "output", "duration", "reused"} | {"path", "error"}]}
 
 The first sound stream of each file is run through a high-pass (rumble, handling noise), ffmpeg's FFT
@@ -8,10 +9,16 @@ denoiser tracking the noise floor (`afftdn`, room tone, hiss, air conditioning) 
 de-esser. The whole file is cleaned, so a second in the output is the same second in the source and a
 clip's source in and out points carry over. The output is `<name>.vca-clean-<strength>.wav` (24-bit, the
 source's sample rate and channels) beside the source; one newer than its source is reused.
+
+The first stream is what Resolve plays of a file with several. `streams: "all"` (for Premiere, which plays a
+camera's two mono mics as left and right) joins every sound stream's channels in order first; for a file with
+more than one, the output is `<name>.vca-clean-<strength>-all.wav`, so a copy of the first stream alone is
+never taken for it.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -34,9 +41,24 @@ CHAINS = {
 }
 
 
-def output_for(path: str, strength: str) -> Path:
+STREAMS = ("first", "all")
+
+
+def output_for(path: str, strength: str, joined: bool = False) -> Path:
     source = Path(path)
-    return source.with_name(f"{source.stem}.vca-clean-{strength}.wav")
+    return source.with_name(f"{source.stem}.vca-clean-{strength}{'-all' if joined else ''}.wav")
+
+
+def sound_streams(path: str) -> list[int]:
+    """The sample rate of each sound stream, in order."""
+    done = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=sample_rate", "-of", "json", path],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )  # fmt: skip
+    streams = json.loads(done.stdout or b"{}").get("streams") or []
+    return [int(s.get("sample_rate") or 0) for s in streams]
 
 
 def duration_of(path: Path) -> float | None:
@@ -52,10 +74,12 @@ def duration_of(path: Path) -> float | None:
         return None
 
 
-def clean(path: str, strength: str) -> dict[str, Any]:
+def clean(path: str, strength: str, streams: str = "first") -> dict[str, Any]:
     if not os.path.isfile(path):
         raise RuntimeError("the file isn't there (is its drive attached?)")
-    output = output_for(path, strength)
+    rates = sound_streams(path) if streams == "all" else []
+    joined = len(rates) > 1
+    output = output_for(path, strength, joined)
     if output.is_file() and output.stat().st_mtime >= Path(path).stat().st_mtime:
         return {"output": str(output), "duration": duration_of(output), "reused": True}
     if not os.access(output.parent, os.W_OK):
@@ -63,8 +87,17 @@ def clean(path: str, strength: str) -> dict[str, Any]:
             f"can't write next to it ({output.parent} is read-only); copy the media to a writable drive"
         )
     partial = output.with_name(output.name + ".part")
-    command = ["ffmpeg", "-hide_banner", "-nostats", "-v", "error", "-y", "-i", path, "-map", "0:a:0", "-vn"]
-    command += ["-af", CHAINS[strength], "-c:a", "pcm_s24le", "-f", "wav", str(partial)]
+    command = ["ffmpeg", "-hide_banner", "-nostats", "-v", "error", "-y", "-i", path]
+    if joined:
+        # Every stream at the first one's rate, their channels joined in order, then cleaned.
+        rate = rates[0] or 48000
+        inputs = "".join(f"[0:a:{i}]aformat=sample_rates={rate}[s{i}];" for i in range(len(rates)))
+        joins = "".join(f"[s{i}]" for i in range(len(rates)))
+        graph = f"{inputs}{joins}amerge=inputs={len(rates)},{CHAINS[strength]}[out]"
+        command += ["-filter_complex", graph, "-map", "[out]", "-vn"]
+    else:
+        command += ["-map", "0:a:0", "-vn", "-af", CHAINS[strength]]
+    command += ["-c:a", "pcm_s24le", "-f", "wav", str(partial)]
     try:
         done = subprocess.run(command, capture_output=True, timeout=FFMPEG_TIMEOUT_S, check=False)
     except subprocess.TimeoutExpired:
@@ -80,7 +113,7 @@ def clean(path: str, strength: str) -> dict[str, Any]:
     return {"output": str(output), "duration": duration_of(output), "reused": False}
 
 
-def parse_request(request: dict[str, Any]) -> tuple[list[str], str]:
+def parse_request(request: dict[str, Any]) -> tuple[list[str], str, str]:
     paths = request.get("paths")
     if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_FILES:
         raise RequestError(f"paths must list 1 to {MAX_FILES} media files")
@@ -88,17 +121,20 @@ def parse_request(request: dict[str, Any]) -> tuple[list[str], str]:
     strength = request.get("strength", "medium")
     if strength not in CHAINS:
         raise RequestError(f"strength must be one of {', '.join(CHAINS)}")
-    return [str(p) for p in dict.fromkeys(paths)], str(strength)
+    streams = request.get("streams", "first")
+    if streams not in STREAMS:
+        raise RequestError('streams must be "first" or "all"')
+    return [str(p) for p in dict.fromkeys(paths)], str(strength), str(streams)
 
 
 def run(request: dict[str, Any], emitter: Emitter) -> int:
-    paths, strength = parse_request(request)
+    paths, strength, streams = parse_request(request)
     emitter.progress(0, len(paths), phase="cleaning", detail="")
 
     def one(path: str) -> dict[str, Any]:
         entry: dict[str, Any] = {"path": path}
         try:
-            entry.update(clean(path, strength))
+            entry.update(clean(path, strength, streams))
         except Exception as exc:  # noqa: BLE001 - one file that fails is reported, the rest still cleaned
             entry["error"] = str(exc)
         return entry
