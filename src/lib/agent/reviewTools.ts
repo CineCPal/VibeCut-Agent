@@ -618,4 +618,5 @@ export const REVIEW_INSTRUCTION = `- review_edit checks the timeline (or the dra
   notes or a QC, and after a substantial edit (a rough cut sent as a draft, a restructure, B-roll placed)
   before you summarise. Before a delivery, pass targetLufs (the notes' target, else -14 for web). Fix what is
   worth fixing with the edit tools, using the clip ids it names, and say what you left. Call it at most once
-  per batch of edits: with nothing changed since, it only repeats its last findings.`;
+  per batch of edits: with nothing changed since, it only repeats its last findings. It doesn't judge pacing;
+  for a cut over a minute, or when the user asks whether it drags, check_pacing does.`;

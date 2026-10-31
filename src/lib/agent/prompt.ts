@@ -10,6 +10,7 @@ import { MULTICAM_INSTRUCTION } from "./multicamTools";
 import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
 import { DRAFT_EDIT_INSTRUCTION } from "./draftEditTools";
 import { SHOT_INSTRUCTION } from "./shotTools";
+import { PACING_INSTRUCTION } from "./pacingTools";
 import { COLOR_INSTRUCTION } from "./colorTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
 import { TITLE_INSTRUCTION } from "./titleTools";
@@ -112,6 +113,7 @@ ${MULTICAM_INSTRUCTION}
 ${SPLIT_EDIT_INSTRUCTION}
 ${DRAFT_EDIT_INSTRUCTION}
 ${SHOT_INSTRUCTION}
+${PACING_INSTRUCTION}
 ${COLOR_INSTRUCTION}
 ${DIALOGUE_INSTRUCTION}
 ${TITLE_INSTRUCTION}

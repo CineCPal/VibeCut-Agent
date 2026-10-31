@@ -2458,6 +2458,31 @@ Later phases on that roadmap:
 
 Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 
+## Phase 20: Pacing, style, client notes, YouTube packaging (2026-10-31)
+
+**Why (the user):** next on the Phase 18 roadmap. The user's order: pacing checks first (the measuring layer the others lean on), then learning a style from a reference edit, then client notes to edits, then YouTube packaging. Each is built, unit-tested and checked live before the next. Client notes come as pasted text with timecodes, or as markers in the timeline (not Frame.io exports).
+- **20a:** `check_pacing`. Built; not checked live yet.
+- **20b:** `learn_style {path, name}`: `check_pacing`'s profile of a reference file, the colour of sampled frames (`media-frames` + `colour.measure`), and the share of cuts on a beat (`find_beats`). Saved to the project notes' style, so `check_pacing` can judge against it; colour applied with `match_clip_color`.
+- **20c:** `parseClientNotes(text, {fps, startTimecode})` in `timecode.ts` ("0:42", "1:15-1:20", "01:00:42:10", "1m15s", the timeline's start timecode taken off), and a read-only `read_client_notes {text? | fromMarkers?}` that puts each note on the timeline with the clip, the line said there and the nearest cut. The edits are made with the existing tools under Review edits first; handled markers are marked done.
+- **20d:** `make_chapters` (from markers and transcripts, to YouTube's rules: 00:00 first, at least 3, each at least 10 s), title and description by the agent, `pick_thumbnails` (stills scored for sharpness and exposure, into the renders folder), Shorts with `make_social_version`.
+
+### 20a: `check_pacing` (2026-10-31)
+- **What it does:** measures how a cut moves, and notes what's worth a look. It only reads (`NOT_REVIEWED`; in the MCP shim's `LONG_TOOLS`, as it may run `media-shots`). `src/lib/agent/pacingTools.ts`, `PACING_INSTRUCTION`; `REVIEW_INSTRUCTION` now says `review_edit` doesn't judge pacing and points to it.
+- **The shots (`timelineShots`):** the picture that plays, from the review lint's own `visibleVideo(lintTimeline(view))`: the topmost switched-on video at each moment, so B-roll over an interview is a shot and the interview resumes as another. Pieces of one clip that play on from each other (a split with nothing changed, same file, source continuous, no speed change or dissolve) are one shot; black is no shot. Each shot names the clip under it.
+  - `splitLongClips`: shots over 20 s (`PACING_LIMITS.splitOver`, the 12 longest at most) are looked inside with `media-shots` at normal, through 19b's `onTimeline`, for a flattened export.
+  - `path`: a media file's shots from `media-shots` (hard cuts only, said in the notes), in file seconds; its dead air from its own transcript when it has one. This is what 20b builds on.
+- **Dead air:** the stretches with no words between the first heard line and the last (`speechGaps`, over `laneLines` of `heardView`), so the gaps around speech at the ends don't count. With nothing transcribed, `find_silences`' own executor (−40 dB, at least `maxDeadAir`, no handle), said in the notes; with partial transcripts, the untranscribed files are named.
+- **The profile (`pacingProfile`, pure, for 20b too):** shots, cuts per minute, median, mean and 90th-percentile shot, the 5 longest shots, cuts per minute in 15 s windows (wider for a long edit, at most 40 windows; a last window under 5 s folds into the one before), and the dead air's total, share and longest stretches.
+- **The findings (`pacingFindings`, pure; on the card as "check" findings):**
+  - long shot: over `maxShot`, else 3× the edit's median shot (at least 8 s); medium at twice that.
+  - slow opening: the first `openingSeconds` (15) cutting under 1/1.5 of the rest's rate, when the edit is at least 3 openings long.
+  - slow stretch: a run of windows under half the reference rate (the target's median shot as cuts a minute, else the edit's own) and at least 2 cuts short of it, so a sparse interview's empty windows aren't all slow. One a long shot or the slow opening already explains (80% overlap) isn't repeated.
+  - dead air: over `maxDeadAir` (1.5 s); medium at twice that. The message says it's fine under music or a montage.
+  - pace: with a target median shot, the edit's median over 1.25× or under 0.75× of it.
+  - The result's `judgedAgainst` says when it's the edit against itself ("observations, not rules"), and the instruction tells the agent to present them that way.
+- **Tests:** `pacingTools.test.ts` (13: the picture that plays with B-roll on top; a split that plays on and a jump in the source; the stats and the curve; dead air between lines; a long shot that explains its slow stretch; a slow stretch against the edit's rate; a slow opening; a target; the tool on a timeline with transcripts, looking inside a long shot, the sound-level fallback, a file, and refusals and a failed job).
+- **Not checked live yet:** in both editors, an interview cut with a 20 s held shot, a 3 s pause and B-roll on V2; and `path` on the 19b holiday film.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2553,6 +2578,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - *(2026-10-26)* **Phase 18e is built:** `fill_room_tone` (the new `media-roomtone` command: the quietest stretch near each clip, looped to length; laid in the holes in the dialogue on the dialogue's own tracks, one Revert). Unit-tested and checked on real speech outside the editors; not checked live in Resolve or Premiere. Next: its live check in both editors (see "18e"), then Phase 20.
   - *(2026-10-31)* **Phase 18e is checked live in both editors**, with two fixes: room tone for a file of several sound streams in Premiere (the right mic went silent in the holes), and Premiere placements a frame short from float noise in the out point. **Phase 18 (a–e) is done.** Open: a split-stereo channel clip is still unchecked. Next: Phase 20.
   - *(2026-10-31)* **`clean_dialogue` keeps every mic in Premiere** (`streams: "all"`, as room tone), checked live. Next: Phase 20.
+  - *(2026-10-31)* **Phase 20a is built:** `check_pacing` (shots as the picture that plays, cut rate over time, dead air from the transcripts; notes long shots, slow stretches, dead air, a slow opening, against the edit itself or a target). Unit-tested; not checked live. `main` was fast-forwarded to 18e's last commit, and 20 is on `phase-20-pacing`. The Phase 20 roadmap is under "Phase 20". Next: 20a's live check in both editors, then 20b.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -2949,3 +2975,6 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - **2026-10-31 (Claude): `clean_dialogue` cleans every sound stream in Premiere.** See "18c" (Which sound).
   - `media/clean.py`: `streams: "all"` (`sound_streams` probes the rates; more than one stream is joined with `amerge` before the chain, into `<name>.vca-clean-<strength>-all.wav`). `clean_dialogue` (`dialogueTools.ts`) asks for it in Premiere only. Tests: `test_clean.py` (+1, and the request check), `dialogueTools.test.ts` (+1).
   - Tests: vitest (811), tsc, eslint, pytest (1006, 2 skipped), mypy and ruff pass. The app was reinstalled. Checked live in Premiere; left on "Live Checks" (unsaved): "18e clean dual mono" and its backup, and the cleaned WAV beside the test media in this session's scratchpad.
+- **2026-10-31 (Claude): Phase 20a: `check_pacing`.** See "20a".
+  - New: `src/lib/agent/pacingTools.ts` and its test. Registered in `tools.ts`, `toolKinds.ts` (`NOT_REVIEWED`), the system prompt (`PACING_INSTRUCTION`; a line in `REVIEW_INSTRUCTION`) and the MCP shim's long tools; `tools.test.ts` lists it.
+  - Tests: vitest (824), tsc, eslint and pytest (1006, 2 skipped) pass. `test_mcp_server.py::test_outside_callers_are_refused_while_outside_control_is_off` fails now and then, on the tree before this change too (a timing race with the fake app); not touched here.

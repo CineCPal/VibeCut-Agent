@@ -137,6 +137,8 @@ export const NOT_REVIEWED = new Set([
   "replace_clip",
   // Phase 19b: reads only.
   "find_shot_changes",
+  // Phase 20a: reads only.
+  "check_pacing",
   // Phase 19c: measures frames; the playhead is put back.
   "get_clip_color",
 ]);
