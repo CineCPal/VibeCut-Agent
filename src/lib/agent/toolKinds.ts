@@ -144,6 +144,8 @@ export const NOT_REVIEWED = new Set([
   "learn_style",
   // Phase 19c: measures frames; the playhead is put back.
   "get_clip_color",
+  // Phase 20b: saves VibeCut's own node template file; Resolve's page and playhead are put back.
+  "save_color_template",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);

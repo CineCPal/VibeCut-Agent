@@ -300,7 +300,10 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
       const describe = parade ? describeCurves : describeColour;
       const close = typeof change.close === "boolean" ? change.close : Number(change.distance) <= 0.03;
       const how = `${change.was ? "balanced" : "matched"}${parade ? " by the parade" : ""}`;
-      return `${name} colour ${parade ? "curves " : ""}${change.before ? `${describe(change.before)} → ` : ""}${describe(change.after)}${typeof change.passes === "number" ? ` (${how} in ${change.passes} pass(es), ${close ? "close" : "as near as it got"})` : ""}`;
+      // Resolve (Phase 20b): the labelled node it went in, and whether VibeCut's node template was put on.
+      const node = change.node as { label?: string | null; template?: boolean } | null | undefined;
+      const inNode = node?.label ? ` in its "${node.label}" node${node.template ? " (VibeCut's node template put on first)" : ""}` : "";
+      return `${name} colour ${parade ? "curves " : ""}${change.before ? `${describe(change.before)} → ` : ""}${describe(change.after)}${typeof change.passes === "number" ? ` (${how} in ${change.passes} pass(es), ${close ? "close" : "as near as it got"})` : ""}${inNode}`;
     }
     case "transform":
       // Phase 16f: {scale, x, y} still, or {keys: [{at, scale, x, y}]}.

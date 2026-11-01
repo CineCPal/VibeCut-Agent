@@ -913,12 +913,13 @@ def revert_timeline_changes(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             source = backup.get(
                 (tuple(change["track"]), _to_frame(change["start"], fps), change.get("mediaId"))
             )
-            if revert_color(found[current(change["itemId"])][2], change, source) == "reverted":
+            outcome, why = revert_color(found[current(change["itemId"])][2], change, source)
+            if outcome == "reverted":
                 reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": why})
             else:
-                failed.append(
-                    {"name": label, "reason": "its grade couldn't be copied back from the backup timeline"}
-                )
+                failed.append({"name": label, "reason": why})
         elif kind == "transform":
             from vibecut_agent.nle.resolve_transform import revert_transform
 

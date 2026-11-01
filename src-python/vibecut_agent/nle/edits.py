@@ -87,6 +87,8 @@ def resolve_edits() -> dict[str, Edit]:
         "set_clip_color": resolve_colour.set_clip_color,
         "match_clip_color": resolve_colour.match_clip_color,
         "read_clip_color": resolve_colour.read_clip_color,
+        # Phase 20b: VibeCut's node template.
+        "save_node_template": resolve_colour.save_node_template,
         "reshape_clip": resolve_reshape.reshape_clip,
         "set_clip_fades": resolve_effects.set_clip_fades,
         # Resolve's duck is made of splits, levels and dissolves (src/lib/agent/duck.ts); also a tool (12c).

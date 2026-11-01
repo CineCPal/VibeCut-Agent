@@ -2,6 +2,7 @@
 with a viewer that renders the clip under the playhead through its CDL (test_colour.resolve_render) and
 exports it as Resolve's ExportCurrentFrameAsStill does."""
 
+import json
 import shutil
 
 import pytest
@@ -9,7 +10,7 @@ from PIL import Image
 
 from tests.nle.test_colour import chart
 from tests.nle.vibecut_resolve.test_resolve_edit import START, EditTimeline, call, make_edit
-from vibecut_agent.nle import colour, parade
+from vibecut_agent.nle import colour, parade, resolve_colour
 from vibecut_agent.nle.resolve import HostError, frames_to_timecode, timecode_to_frames
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
@@ -32,8 +33,50 @@ def cdl_render(pixels, cdl):
     return out
 
 
+class Graph:
+    """A clip's nodes as Resolve's API shows them: labels, the tools a node uses (none on an untouched
+    node), a .drx (here a JSON list of labels) replacing them all, and a reset to one empty node."""
+
+    def __init__(self, item):
+        self.item = item
+
+    def GetNumNodes(self):
+        return len(self.item.nodes)
+
+    def GetNodeLabel(self, index):
+        return self.item.nodes[index - 1]["label"]
+
+    def GetToolsInNode(self, index):
+        return ["Primary Balance"] if self.item.nodes[index - 1]["cdl"] else None
+
+    def ApplyGradeFromDRX(self, path, mode):
+        with open(path) as f:
+            self.item.nodes = [{"label": label, "cdl": None} for label in json.load(f)]
+        return mode == 0
+
+    def ResetAllGrades(self):
+        self.item.nodes = [{"label": "", "cdl": None}]
+        return True
+
+
+def nodes(item, *labels):
+    """`item`'s grade as empty nodes with these labels."""
+    item.nodes = [{"label": label, "cdl": None} for label in labels]
+
+
+def set_cdl(item, value):
+    index = int(value["NodeIndex"])
+    if not 1 <= index <= len(item.nodes):
+        return False
+    item.nodes[index - 1]["cdl"] = value
+    item.cdl, item.look_set = value, value.get("_look")
+    return True
+
+
 @pytest.fixture
-def edit():
+def edit(tmp_path, monkeypatch):
+    # No node template saved unless a test saves one.
+    monkeypatch.setenv(resolve_colour.TEMPLATE_ENV, str(tmp_path / "template.drx"))
     host, timeline, project, c = make_edit()
     project.current = timeline  # the connected timeline is the one open in Resolve
     b = timeline.place("video", 1, c["broll"], 300, 500)
@@ -44,6 +87,8 @@ def edit():
     timeline.SetCurrentTimecode = lambda tc: setattr(timeline, "timecode", tc) or True
     for item in looks:
         item.cdl = None
+        nodes(item, "")
+        item.GetNodeGraph = lambda item=item: Graph(item)
     exports = []
 
     def export(path):
@@ -55,8 +100,9 @@ def edit():
             if i.start <= frame < i.end and i.enabled
         ]
         pixels = looks.get(shown[0], chart()) if shown else [(0.0, 0.0, 0.0)]
-        if shown and getattr(shown[0], "cdl", None):
-            pixels = cdl_render(pixels, shown[0].cdl)
+        for node in getattr(shown[0], "nodes", []) if shown else []:
+            if node["cdl"]:
+                pixels = cdl_render(pixels, node["cdl"])
         image = Image.new("RGB", (16, len(pixels) // 16))
         image.putdata([tuple(round(v * 255) for v in p) for p in pixels[: 16 * (len(pixels) // 16)]])
         image.save(path)
@@ -73,10 +119,13 @@ def edit():
         return out
 
     for item in looks:
-        item.SetCDL = lambda value, item=item: (
-            setattr(item, "cdl", value) or setattr(item, "look_set", value.get("_look")) or True
-        )
-    return host, timeline, project, {**c, "b": b, "exports": exports, "cdl": cdl}
+        item.SetCDL = lambda value, item=item: set_cdl(item, value)
+    return (
+        host,
+        timeline,
+        project,
+        {**c, "b": b, "exports": exports, "cdl": cdl, "template": tmp_path / "template.drx"},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +137,8 @@ def keep_looks(monkeypatch, edit):
 
 def test_set_clip_color_sets_node_1_and_reverts_from_the_backup(edit):
     host, timeline, project, c = edit
+    # A.mov has a grade of its own in its one node: VibeCut's goes there, as before nodes were chosen.
+    c["v"].nodes[0]["cdl"] = {"Slope": "1 1 1"}
     result = call(
         host,
         "set_clip_color",
@@ -104,6 +155,7 @@ def test_set_clip_color_sets_node_1_and_reverts_from_the_backup(edit):
         None,
     )
     assert change["after"] == {**colour.NEUTRAL, "exposure": 0.5, "temperature": -10.0}
+    assert change["node"] == {"index": 1, "label": None, "template": False, "ungraded": False}
     assert c["v"].cdl["NodeIndex"] == "1" and float(c["v"].cdl["Slope"].split()[1]) == pytest.approx(
         2 ** (0.5 / 2.4), abs=1e-4
     )
@@ -202,3 +254,147 @@ def test_the_connected_timeline_must_be_open(edit):
     project.current = project.timelines[1]
     with pytest.raises(HostError, match="must be the timeline open in Resolve"):
         call(host, "read_clip_color", itemIds=[c["v"].uid])
+
+
+def test_each_goes_in_its_labelled_node_and_reverts_to_neutral_there(edit):
+    host, _timeline, _project, c = edit
+    nodes(c["b"], "Input", "VC Balance", "vc match", "Look")
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    balanced = call(host, "match_clip_color", balance=True, items=[{"itemId": c["b"].uid, "areas": greys}])
+    matched = call(host, "match_clip_color", referenceId=c["v"].uid, itemIds=[c["b"].uid])
+    assert balanced["changes"][0]["node"] == {
+        "index": 2,
+        "label": "VC Balance",
+        "template": False,
+        "ungraded": False,
+    }
+    assert matched["changes"][0]["node"]["index"] == 3
+    assert [n["cdl"] is not None for n in c["b"].nodes] == [False, True, True, False]
+    assert c["b"].nodes[1]["cdl"]["NodeIndex"] == "2" and c["b"].nodes[2]["cdl"]["NodeIndex"] == "3"
+    # set_clip_color goes in VC Match too.
+    looked = call(host, "set_clip_color", looks=[{"itemId": c["b"].uid, "exposure": 0.2}])
+    assert looked["changes"][0]["node"]["index"] == 3
+    # Reverting the match sets VC Match back to neutral; the balance stays.
+    reverted = call(host, "revert_timeline_changes", changes=matched["changes"], backup="Nowhere")
+    assert reverted["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert (
+        c["b"].nodes[2]["cdl"]["Slope"] == "1.00000 1.00000 1.00000"
+        and c["b"].nodes[1]["cdl"]["Slope"] != "1.00000 1.00000 1.00000"
+    )
+    # Its node relabelled since: changed, not guessed at.
+    c["b"].nodes[1]["label"] = "Mine"
+    again = call(host, "revert_timeline_changes", changes=balanced["changes"], backup="Nowhere")
+    assert again["changedSince"] == [
+        {"name": "B.mov", "reason": "it has no node labelled 'VC Balance' any more"}
+    ]
+
+
+def test_a_grade_of_several_nodes_with_none_labelled_is_refused(edit):
+    host, _timeline, _project, c = edit
+    nodes(c["b"], "", "")
+    c["b"].nodes[0]["cdl"] = {"Slope": "1 1 1"}
+    result = call(host, "match_clip_color", referenceId=c["v"].uid, itemIds=[c["b"].uid])
+    assert result["changes"] == []
+    assert "has no node labelled 'VC Match'" in result["refused"][0]["reason"]
+    assert c["b"].nodes[1]["cdl"] is None
+    # One node labelled for something else isn't VibeCut's either.
+    nodes(c["b"], "VC Match")
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    refused = call(host, "match_clip_color", balance=True, items=[{"itemId": c["b"].uid, "areas": greys}])
+    assert "has no node labelled 'VC Balance'" in refused["refused"][0]["reason"]
+
+
+def test_an_ungraded_clip_gets_the_template_and_without_one_is_reset_on_revert(edit):
+    host, _timeline, _project, c = edit
+    # No template: B.mov's one empty node is used, and Revert resets it with no backup needed.
+    first = call(host, "set_clip_color", looks=[{"itemId": c["b"].uid, "exposure": 0.3}])
+    assert first["changes"][0]["node"] == {"index": 1, "label": None, "template": False, "ungraded": True}
+    reverted = call(host, "revert_timeline_changes", changes=first["changes"], backup="Nowhere")
+    assert reverted["reverted"] == [{"kind": "color", "name": "B.mov"}] and c["b"].nodes == [
+        {"label": "", "cdl": None}
+    ]
+    # With a template saved, the ungraded clip gets it, and the match goes in its VC Match node.
+    c["template"].write_text(json.dumps(["VC Balance", "VC Match", ""]))
+    matched = call(host, "match_clip_color", referenceId=c["v"].uid, itemIds=[c["b"].uid])
+    assert matched["changes"][0]["node"] == {
+        "index": 2,
+        "label": "VC Match",
+        "template": True,
+        "ungraded": True,
+    }
+    assert [n["label"] for n in c["b"].nodes] == ["VC Balance", "VC Match", ""] and c["b"].nodes[1]["cdl"]
+    # A clip with a grade of its own isn't given the template (it would replace the grade).
+    c["v"].nodes[0]["cdl"] = {"Slope": "1 1 1"}
+    own = call(host, "set_clip_color", looks=[{"itemId": c["v"].uid, "tint": 5}])
+    assert own["changes"][0]["node"]["index"] == 1 and len(c["v"].nodes) == 1
+    # A template without the node needed is taken off again and refused.
+    c["template"].write_text(json.dumps(["VC Match"]))
+    nodes(c["b"], "")
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    bad = call(host, "match_clip_color", balance=True, items=[{"itemId": c["b"].uid, "areas": greys}])
+    assert (
+        bad["refused"][0]["reason"]
+        == "VibeCut's node template has no node labelled 'VC Balance': save it again"
+    )
+    assert c["b"].nodes == [{"label": "", "cdl": None}]
+
+
+@pytest.fixture
+def gallery(edit):
+    """Resolve's page, the Color page's current clip, and a gallery whose stills export as JSON .drx files."""
+    host, timeline, project, c = edit
+    state = {"page": "edit", "pages": [], "stills": []}
+    resolve = host._resolve
+    resolve.GetCurrentPage = lambda: state["page"]
+    resolve.OpenPage = lambda page: state["pages"].append(page) or state.update(page=page) or True
+
+    def current_item():
+        frame = timecode_to_frames(timeline.timecode, 25)
+        shown = [i for i in timeline.tracks["video"][0] if i.start <= frame < i.end]
+        return shown[0] if shown else None
+
+    timeline.GetCurrentVideoItem = current_item
+
+    def grab():
+        if state["page"] != "color":
+            return None
+        state["stills"].append([n["label"] for n in current_item().nodes])
+        return len(state["stills"])
+
+    timeline.GrabStill = grab
+
+    class Album:
+        def ExportStills(self, stills, folder, prefix, kind):
+            with open(f"{folder}/{prefix}_1.1.1.{kind}", "w") as f:
+                json.dump(state["stills"][stills[0] - 1], f)
+            return True
+
+        def DeleteStills(self, stills):
+            state["stills"] = [s for i, s in enumerate(state["stills"]) if i + 1 not in stills]
+            return True
+
+    project.GetGallery = lambda: type("Gallery", (), {"GetCurrentStillAlbum": lambda self: Album()})()
+    return state
+
+
+def test_save_node_template_grabs_the_clips_nodes_and_puts_the_page_back(edit, gallery):
+    host, timeline, _project, c = edit
+    before = timeline.timecode
+    nodes(c["b"], "CST", "VC Balance", "VC Match", "")
+    c["b"].nodes[0]["cdl"] = {"Slope": "1 1 1"}
+    saved = call(host, "save_node_template", itemId=c["b"].uid)
+    assert saved["labels"] == {"VC Balance": 2, "VC Match": 3} and saved["nodes"] == 4
+    assert saved["otherNodes"] == [
+        {"node": 1, "label": "CST", "tools": ["Primary Balance"]},
+        {"node": 4, "label": "", "tools": []},
+    ]
+    assert json.loads(c["template"].read_text()) == ["CST", "VC Balance", "VC Match", ""]
+    assert gallery["pages"] == ["color", "edit"] and gallery["stills"] == [] and timeline.timecode == before
+    # A VC node with something in it, or a missing one, is refused before the page is touched.
+    c["b"].nodes[2]["cdl"] = {"Slope": "1 1 1"}
+    with pytest.raises(HostError, match="'VC Match' node isn't empty"):
+        call(host, "save_node_template", itemId=c["b"].uid)
+    nodes(c["b"], "VC Balance")
+    with pytest.raises(HostError, match="has no node labelled 'VC Match'"):
+        call(host, "save_node_template", itemId=c["b"].uid)
+    assert gallery["pages"] == ["color", "edit"]

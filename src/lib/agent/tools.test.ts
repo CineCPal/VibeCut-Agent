@@ -116,8 +116,8 @@ describe("agent tools", () => {
       "export_audio",
       "export_clips",
     ]);
-    // The same tools, sending the draft to each one's own editor.
-    expect(names("resolve")).toEqual(names("premiere").map((n) => (n === "send_to_premiere" ? "send_to_resolve" : n)));
+    // The same tools, sending the draft to each one's own editor; Resolve also saves VibeCut's node template.
+    expect(names("resolve")).toEqual(names("premiere").flatMap((n) => (n === "send_to_premiere" ? ["send_to_resolve"] : n === "get_clip_color" ? [n, "save_color_template"] : [n])));
     const colors = (host: "premiere" | "resolve") =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (toolDeclarations(host)[4].parameters as any).properties.color.enum as string[];

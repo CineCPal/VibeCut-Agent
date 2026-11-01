@@ -125,6 +125,25 @@ describe("colour tools", () => {
     expect(describeTimelineChange({ kind: "color", name: "B.mov", method: "parade", before: null, after: curves, passes: 5, distance: 0.018, close: false })).toContain("as near as it got");
   });
 
+  it("saves Resolve's node template and says which nodes new clips get", async () => {
+    ipc.nleCall.mockResolvedValueOnce({ saved: "/t.drx", name: "B.mov", nodes: 4, labels: { "VC Balance": 2, "VC Match": 3 }, otherNodes: [{ node: 1, label: "CST", tools: ["Color Space Transform"] }, { node: 4, label: "", tools: [] }] });
+    const out = await run.save_color_template({ clipId: "v2" });
+    expect(sent("save_node_template")).toEqual([{ timeline: "Main", itemId: "v2" }]);
+    expect(out.summary).toBe('Saved "B.mov"\'s 4 nodes as VibeCut\'s node template; with VibeCut\'s nodes, new clips get node 1 "CST" (Color Space Transform), node 4 (empty)');
+    await expect(run.save_color_template({})).rejects.toThrow("clipId must be");
+    const premiere = editExecutors({ host: "premiere", timeline: "Main", step: "c2", stepText: "" });
+    await expect(premiere.save_color_template({ clipId: "v2" })).rejects.toThrow("Node templates are Resolve's");
+  });
+
+  it("says which Resolve node a colour change went in", () => {
+    const curves = { r: { black: 0.02, white: 0.95, gamma: 1 }, saturation: 1 };
+    const node = { index: 2, label: "VC Balance", template: true, ungraded: true };
+    expect(describeTimelineChange({ kind: "color", name: "B.mov", method: "parade", before: null, after: curves, passes: 1, close: true, was: {}, node })).toBe(
+      '"B.mov" colour curves R black +0.02 white 0.95 (balanced by the parade in 1 pass(es), close) in its "VC Balance" node (VibeCut\'s node template put on first)',
+    );
+    expect(describeTimelineChange({ kind: "color", name: "B.mov", before: null, after: AFTER, node: { index: 1, label: null } })).not.toContain("node");
+  });
+
   it("describes looks and measures", () => {
     expect(describeColour({ exposure: -0.3, contrast: 0, temperature: 12.4, tint: 0, saturation: 90 })).toBe("exposure -0.30, temperature +12, saturation 90");
     expect(describeColour(null)).toBe("unknown");

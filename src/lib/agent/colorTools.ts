@@ -57,20 +57,29 @@ export function describeMeasure(m: Pick<MeasuredClip, "brightness" | "contrast" 
     .join(", ");
 }
 
+/** Which Resolve node VibeCut grades in (Phase 20b): the one labelled for the job, else the template, else node 1. */
+const resolveNode = (label: string) =>
+  `the clip's node labelled "${label}" (wherever it is in the grade; a clip with no grade at all gets VibeCut's node template first, when one is saved with save_color_template; otherwise a clip of one unlabelled node is graded in node 1, and one with more nodes and none labelled "${label}" is refused: tell the user to label a node "${label}" in the Color page)`;
+
 export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
   const noun = TIMELINE_NOUN[host];
   const where =
     host === "premiere"
       ? "the clip's Lumetri Color Basic Correction (added if the clip has none; its other Lumetri controls are left alone)"
-      : "a CDL on the clip's node 1 in Resolve, calibrated to Lumetri's units (it replaces node 1's primaries; the clip's other nodes stay)";
+      : `a CDL calibrated to Lumetri's units, in ${resolveNode("VC Match")}`;
   const curves =
     host === "premiere"
       ? "the Levels effect's R, G and B controls (added if the clip has none; its RGB controls are left neutral)"
-      : "a CDL on the clip's node 1 (slope, offset and power per channel; it replaces node 1's primaries; the clip's other nodes stay)";
+      : `a CDL (slope, offset and power per channel) in ${resolveNode("VC Match")}`;
+  const balanceCurves =
+    host === "premiere" ? curves : `a CDL (slope, offset and power per channel) in ${resolveNode("VC Balance")}`;
   const saturation =
     host === "premiere" ? "Lumetri's Saturation (the clip's own, scaled; its other Lumetri controls are left alone)" : "the CDL's saturation";
   const shows = host === "premiere" ? "Premiere" : "Resolve";
-  const revert = host === "premiere" ? "Revert puts the Lumetri and Levels values back." : "Revert copies the clip's grade back from the backup timeline (undoing any later grading of that clip too).";
+  const revert =
+    host === "premiere"
+      ? "Revert puts the Lumetri and Levels values back."
+      : "Revert sets VibeCut's labelled node back to neutral (the clip's other nodes stay); node 1 of a clip that had no grade is reset; otherwise the clip's grade is copied back from the backup timeline (undoing any later grading of that clip too).";
   return [
     {
       name: "set_clip_color",
@@ -109,7 +118,7 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "balance_clip_color",
-      description: `Balances picture clips each on its own, with no reference, by what should be neutral in the shot: for each clip, name 1 to 4 areas of its frame that are white, grey or black in life (a white card, a grey wall, a white shirt, pavement; not skin, sky or foliage), as fractions of the frame from its top left. First look at the frame (look_at_timeline at the clip's time; give that time as at) and read the areas off it; if nothing in the shot is neutral, or you can't tell, ask the user rather than guess (picking greys blind proved wrong). It measures that frame as ${shows} shows it and sets ${curves} so the areas' red, green and blue read alike, at every level when the areas span shadows to highlights (a cast in the shadows alone is taken out too), with the exposure in a normal range (brightness 0.3-0.5; a shot inside it keeps its brightness, so a night scene stays dark). Saturation isn't changed. A clip already balanced is left alone; an area that's strongly coloured, or clipped to black or white, is refused. It renders and measures again, keeping the closest pass. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
+      description: `Balances picture clips each on its own, with no reference, by what should be neutral in the shot: for each clip, name 1 to 4 areas of its frame that are white, grey or black in life (a white card, a grey wall, a white shirt, pavement; not skin, sky or foliage), as fractions of the frame from its top left. First look at the frame (look_at_timeline at the clip's time; give that time as at) and read the areas off it; if nothing in the shot is neutral, or you can't tell, ask the user rather than guess (picking greys blind proved wrong). It measures that frame as ${shows} shows it and sets ${balanceCurves} so the areas' red, green and blue read alike, at every level when the areas span shadows to highlights (a cast in the shadows alone is taken out too), with the exposure in a normal range (brightness 0.3-0.5; a shot inside it keeps its brightness, so a night scene stays dark). Saturation isn't changed. A clip already balanced is left alone; an area that's strongly coloured, or clipped to black or white, is refused. It renders and measures again, keeping the closest pass. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -143,6 +152,15 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
       description: `Measures picture clips as ${shows} shows them (a frame not under a clip on a higher track): brightness (mean luma 0-1; about 0.4 is a normal exposure), contrast (luma spread over its mean), warmth (ln R/B; above 0 warm), tint (ln G over R and B; above 0 green), colourfulness, and its histogram and RGB parade (parade: luma's and each channel's levels at the 2nd, 10th, 25th, 50th, 75th, 90th and 98th percentiles, blacks to whites; a channel above the others in the low ones is a cast in the shadows). ${host === "premiere" ? "Also each clip's current Lumetri look. " : ""}Use it before judging or changing colour. Only reads; the playhead is put back.`,
       parameters: { type: "OBJECT", properties: { clipIds: { type: "ARRAY", items: { type: "STRING" } } }, required: ["clipIds"] },
     },
+    ...(host === "resolve"
+      ? [
+          {
+            name: "save_color_template",
+            description: `Saves a clip's nodes as VibeCut's node template for Resolve: from then on, a clip with no grade of its own gets this node structure before VibeCut grades it, balancing in its "VC Balance" node and matching in its "VC Match" node. The user builds it once in the Color page on any clip: serial nodes, two of them labelled "VC Balance" and "VC Match" (right-click a node, Node Label) and left empty, plus any of their own (a colour space transform, a node for their grade), which every new clip will get too. Resolve grabs stills only on the Color page, so it switches there for a moment and back; the playhead is put back and the still taken out of the gallery. Saving again replaces the template. It doesn't change the ${noun}.`,
+            parameters: { type: "OBJECT", properties: { clipId: clipIdArg }, required: ["clipId"] },
+          },
+        ]
+      : []),
   ];
 }
 
@@ -200,6 +218,15 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
       return edit(ctx, "balance_clip_color", "match_clip_color", { balance: true, items }, (r) => `Balanced ${count(r.changes.length, "clip")}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
     },
 
+    save_color_template: async (args) => {
+      if (ctx.host !== "resolve") throw new Error("Node templates are Resolve's: in Premiere, VibeCut's colour is its own Levels and Lumetri effects");
+      const clipId = optStr(args, "clipId");
+      if (!clipId) throw new Error("clipId must be the timeline clip whose nodes to save");
+      const saved = await nleCall<{ name: string; nodes: number; otherNodes: { node: number; label: string; tools: string[] }[] }>(ctx.host, "save_node_template", { timeline: ctx.timeline, itemId: clipId });
+      const others = saved.otherNodes.map((n) => `node ${n.node}${n.label ? ` "${n.label}"` : ""}${n.tools.length ? ` (${n.tools.join(", ")})` : " (empty)"}`);
+      return { summary: `Saved "${saved.name}"'s ${count(saved.nodes, "node")} as VibeCut's node template${others.length ? `; with VibeCut's nodes, new clips get ${others.join(", ")}` : ""}`, result: saved };
+    },
+
     get_clip_color: async (args) => {
       const read = await nleCall<{ clips: MeasuredClip[]; refused: { reason: string }[] }>(ctx.host, "read_clip_color", { timeline: ctx.timeline, itemIds: strArray(args, "clipIds") });
       const lines = read.clips.map((c) => `"${c.name}": ${describeMeasure(c)}${c.parade ? `; ${describeParade(c.parade)}` : ""}${c.look ? `; Lumetri ${describeColour(c.look)}` : ""}`);
@@ -216,5 +243,7 @@ export const COLOR_INSTRUCTION = `- Colour: get_clip_color measures what the vie
   whites and casts in the shadows or highlights match too); balance_clip_color makes what's neutral in
   a shot (areas you name after looking at the frame: a white card, a grey wall) read neutral and its
   exposure normal, with no reference ("fix the white balance", "balance these"); with nothing neutral
-  in the shot, ask the user. Measure before and after, change in small steps, and say what
-  changed in plain words. Creative looks, LUTs, secondaries and masks are beyond these tools: say so.`;
+  in the shot, ask the user. In Resolve, VibeCut grades in nodes labelled "VC Balance" and
+  "VC Match" (save_color_template saves a clip's labelled nodes as the template for ungraded clips);
+  when a clip is refused for having no such node, say how to label one. Measure before and after,
+  change in small steps, and say what changed in plain words. Creative looks, LUTs, secondaries and masks are beyond these tools: say so.`;
