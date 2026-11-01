@@ -71,8 +71,8 @@ def _moment(seq: Sequence, item_id: str) -> tuple[dict[str, Any], int]:
     return clip, int(at) // seq.timebase * seq.timebase
 
 
-def _frame(host: Any, timeline: str, ticks: int) -> dict[str, float]:
-    """The measures of the sequence's frame at `ticks`, as Premiere renders it."""
+def _frame(host: Any, timeline: str, ticks: int, measuring: Any = colour.measure) -> dict[str, float]:
+    """The measures (`measuring`'s) of the sequence's frame at `ticks`, as Premiere renders it."""
     name = f"colour-{uuid.uuid4().hex[:12]}"
     path = str(host._send("export_frame", {"timeline": timeline, "ticks": str(ticks), "name": name})["path"])
     if os.path.dirname(path) != str(default_dir() / "frames"):
@@ -89,7 +89,7 @@ def _frame(host: Any, timeline: str, ticks: int) -> dict[str, float]:
                 raise HostError("Premiere didn't write the frame")
             size = now
             time.sleep(0.15)
-        return colour.measure(colour.frame_pixels(path))
+        return dict(measuring(colour.frame_pixels(path)))
     except colour.ColourError as exc:
         raise HostError(str(exc)) from None
     finally:
@@ -147,7 +147,14 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline, referenceId | referenceLook, itemIds} -> each clip's Lumetri set to match the reference
     (a clip as Premiere renders it, or a look learned from a reference edit) (colour.match: measure,
-    step, apply, up to colour.MATCH_PASSES passes)."""
+    step, apply, up to colour.MATCH_PASSES passes). {timeline, balance: true, itemIds} balances each
+    clip to its own neutral instead (`_balance`)."""
+    try:
+        balancing = colour.balance_wants(args)
+    except colour.ColourError as exc:
+        raise HostError(str(exc)) from None
+    if balancing is not None:
+        return _balance(host, host._name(args), balancing)
     try:
         reference_id, targets, look = colour.match_wants(args)
     except colour.ColourError as exc:
@@ -198,6 +205,59 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                     distance=round(colour.error(reference, seen), 4))
         )  # fmt: skip
     return {"changes": changes, "refused": refused, "reference": reference}
+
+
+def _balance(host: Any, timeline: str, ids: list[str]) -> dict[str, Any]:
+    """Each clip measured as it is, then its Lumetri exposure, temperature and tint moved to its own
+    neutral (colour.balance_target), starting from its current Lumetri; a clip already there is left
+    alone (`balanced`)."""
+    seq = _read(host, timeline)
+    changes, refused, balanced = [], [], []
+    for item_id in ids:
+        try:
+            clip, at = _moment(seq, item_id)
+        except HostError as exc:
+            refused.append({"itemId": item_id, "reason": str(exc)})
+            continue
+        before = _lumetri_of(host, timeline, [item_id])[item_id]
+        if before.get("keyed"):
+            refused.append(
+                {
+                    "itemId": item_id,
+                    "reason": f"{clip['name']}: its Lumetri {', '.join(before['keyed'])} has keyframes",
+                }
+            )
+            continue
+        last: dict[str, Any] = {}
+
+        def render(
+            look: dict[str, float], item_id: str = item_id, at: int = at, last: dict[str, Any] = last
+        ) -> dict[str, float]:
+            last["after"] = _set(host, timeline, item_id, look)
+            return _frame(host, timeline, at, colour.measure_balance)
+
+        try:
+            was = _frame(host, timeline, at, colour.measure_balance)
+            try:
+                target = colour.balance_target(was)
+            except colour.ColourError as exc:
+                raise HostError(str(exc)) from None
+            if colour.error(target, was, colour.BALANCE_MEASURES) <= colour.GOOD_ENOUGH:
+                balanced.append({"itemId": item_id, "name": clip["name"], "seen": was})
+                continue
+            _best, seen, passes = colour.match(
+                target, _look(before), render, colour.BALANCE_LIMITS, balance=True
+            )
+        except HostError as exc:
+            if "after" in last:
+                _set(host, timeline, item_id, _look(before))
+            refused.append({"itemId": item_id, "reason": f"{clip['name']}: {exc}"})
+            continue
+        changes.append(
+            _change(clip, before, last["after"], reference=target, was=was, seen=seen, passes=passes,
+                    distance=round(colour.error(target, seen, colour.BALANCE_MEASURES), 4))
+        )  # fmt: skip
+    return {"changes": changes, "refused": refused, "balanced": balanced}
 
 
 def read_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:

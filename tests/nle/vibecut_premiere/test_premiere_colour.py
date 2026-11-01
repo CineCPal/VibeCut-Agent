@@ -11,6 +11,7 @@ from tests.nle.test_colour import chart, resolve_render
 from tests.nle.vibecut_premiere.test_premiere_edit import T, call, ids_of, revert
 from tests.nle.vibecut_premiere.test_premiere_edit import setup as edit_setup  # noqa: F401
 from vibecut_agent.nle import colour
+from vibecut_agent.nle.premiere import HostError
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 
@@ -125,6 +126,24 @@ def test_match_to_a_learned_look_measures_only_the_clips(setup):
     # Kept a nudge: inside the style limits.
     assert all(lo <= change["after"][k] <= hi for k, (lo, hi) in colour.STYLE_LIMITS.items())
     assert {round(f, 1) for f in c["frames"]} == {6.5}
+
+
+def test_balance_takes_each_clip_to_its_own_neutral(setup):
+    host, _premiere, c = setup
+    c["lumetri"][c["B"]] = {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
+    result = call(host, "match_clip_color", balance=True, itemIds=[c["A"], c["B"]])
+    # A.mov (the chart) is neutral and normally exposed already: left alone, its Lumetri untouched.
+    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["lumetri"]
+    (change,) = result["changes"]
+    assert change["name"] == "B.mov" and change["distance"] < colour.GOOD_ENOUGH
+    assert change["reference"]["greyWarmth"] == 0 and change["was"]["greyWarmth"] > 0.1
+    # Its own contrast and saturation kept; the cast taken out with temperature (and tint).
+    after = change["after"]
+    assert (after["contrast"], after["saturation"]) == (12.0, 110.0) and after["temperature"] < 0
+    assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert c["lumetri"][c["B"]] == {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
+    with pytest.raises(HostError, match="not both"):
+        call(host, "match_clip_color", balance=True, referenceId=c["A"], itemIds=[c["B"]])
 
 
 def test_read_and_refusals(setup):

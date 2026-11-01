@@ -44,8 +44,8 @@ class _Viewer:
         self.folder = tempfile.mkdtemp(prefix="vibecut-colour-")
         self.count = 0
 
-    def frame(self, at: float) -> dict[str, float]:
-        """The measures of the frame `at` seconds from the timeline's start."""
+    def frame(self, at: float, measuring: Any = colour.measure) -> dict[str, float]:
+        """The measures (`measuring`'s) of the frame `at` seconds from the timeline's start."""
         tc = frames_to_timecode(self.start_tc + _to_frame(at, self.fps), self.fps)
         if not self.timeline.SetCurrentTimecode(tc):
             raise HostError("Resolve didn't move the playhead (open the Edit or Cut page)")
@@ -54,7 +54,7 @@ class _Viewer:
         if not self.project.ExportCurrentFrameAsStill(path) or not os.path.isfile(path):
             raise HostError("Resolve didn't export the frame")
         try:
-            return colour.measure(colour.frame_pixels(path))
+            return dict(measuring(colour.frame_pixels(path)))
         except colour.ColourError as exc:
             raise HostError(str(exc)) from None
 
@@ -135,7 +135,14 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline, referenceId | referenceLook, itemIds} -> each clip's look made to match the reference (a
     clip as Resolve shows it, or a look learned from a reference edit) (colour.match: measure, step,
-    apply, up to colour.MATCH_PASSES passes)."""
+    apply, up to colour.MATCH_PASSES passes). {timeline, balance: true, itemIds} balances each clip to
+    its own neutral instead (`_balance`)."""
+    try:
+        balancing = colour.balance_wants(args)
+    except colour.ColourError as exc:
+        raise HostError(str(exc)) from None
+    if balancing is not None:
+        return _balance(host, args, balancing)
     try:
         reference_id, targets, wanted = colour.match_wants(args)
     except colour.ColourError as exc:
@@ -181,6 +188,53 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     finally:
         viewer.close()
     return {"changes": changes, "refused": refused, "reference": reference}
+
+
+def _balance(host: Any, args: dict[str, Any], ids: list[str]) -> dict[str, Any]:
+    """Each clip measured as Resolve shows it, then a CDL on node 1 that takes it to its own neutral
+    (colour.balance_target: exposure, temperature and tint; contrast and saturation neutral, as a match
+    leaves them). A clip already there is left alone (`balanced`), its grade untouched."""
+    project, timeline = host._timeline(args)
+    fps = _frame_rate(timeline)
+    found = _items(timeline)
+    viewer = _Viewer(project, timeline)
+    changes, refused, balanced = [], [], []
+    try:
+        for item_id in ids:
+            try:
+                item, at = _moment(timeline, found, item_id, fps)
+            except HostError as exc:
+                refused.append({"itemId": item_id, "reason": str(exc)})
+                continue
+            index = found[item_id][1]
+
+            def render(look: dict[str, float], item: Any = item, at: float = at) -> dict[str, float]:
+                if not item.SetCDL(colour.cdl(look)):
+                    raise HostError(f"{item.GetName()}: Resolve didn't take the colour")
+                return viewer.frame(at, colour.measure_balance)
+
+            try:
+                was = viewer.frame(at, colour.measure_balance)
+                try:
+                    target = colour.balance_target(was)
+                except colour.ColourError as exc:
+                    raise HostError(str(exc)) from None
+                if colour.error(target, was, colour.BALANCE_MEASURES) <= colour.GOOD_ENOUGH:
+                    balanced.append({"itemId": item_id, "name": item.GetName(), "seen": was})
+                    continue
+                look, seen, passes = colour.match(
+                    target, dict(colour.NEUTRAL), render, colour.BALANCE_LIMITS, balance=True
+                )
+            except HostError as exc:
+                refused.append({"itemId": item_id, "reason": str(exc)})
+                continue
+            changes.append(
+                _change(timeline, item_id, index, item, look, reference=target, was=was, seen=seen,
+                        passes=passes, distance=round(colour.error(target, seen, colour.BALANCE_MEASURES), 4))
+            )  # fmt: skip
+    finally:
+        viewer.close()
+    return {"changes": changes, "refused": refused, "balanced": balanced}
 
 
 def read_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:

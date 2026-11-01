@@ -39,6 +39,7 @@ describe("agent tools", () => {
       "duck_music",
       "set_clip_color",
       "match_clip_color",
+      "balance_clip_color",
       "get_clip_color",
       "revert_timeline_edits",
       "set_clip_speed",

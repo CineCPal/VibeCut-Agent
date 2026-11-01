@@ -78,6 +78,7 @@ LONG_TOOLS = frozenset(
         "learn_style",
         # Phase 19c: up to 3 rendered and measured frames per clip, for up to 50 clips.
         "match_clip_color",
+        "balance_clip_color",
         "create_captions",
         "export_video",
         "export_audio",

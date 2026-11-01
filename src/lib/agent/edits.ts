@@ -86,6 +86,7 @@ export async function edit(
   const result = await nleCall<EditResult>(ctx.host, command, { timeline: ctx.timeline, ...args });
   if (result.renamed) useEditLogStore.getState().addRestoredIds(ctx.host, result.renamed);
   const parts = [result.changes.length ? describe(result) : "Nothing needed changing"];
+  if (result.balanced?.length) parts.push(`already balanced, left alone: ${result.balanced.map((b) => `"${b.name}"`).join(", ")}`);
   if (result.refused.length) parts.push(`${HOST_SHORT[ctx.host]} refused ${result.refused.length}: ${result.refused.map((r) => r.reason).join("; ")}`);
   const summary = parts.join("; ");
   let editId: string | undefined;
@@ -108,6 +109,7 @@ export async function edit(
       changes: result.changes,
       backup,
       ...(result.refused.length ? { refused: result.refused } : {}),
+      ...(result.balanced?.length ? { balanced: result.balanced } : {}),
     },
   };
 }
@@ -268,8 +270,9 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
     case "level":
       return `${name} level ${String(change.before ?? 0)} → ${String(change.after)} dB`;
     case "color":
-      // Phase 19c: a look before (null: none VibeCut could read) and after; a match also has its passes.
-      return `${name} colour ${change.before ? `${describeColour(change.before)} → ` : ""}${describeColour(change.after)}${typeof change.passes === "number" ? ` (matched in ${change.passes} pass(es), ${Number(change.distance) <= 0.03 ? "close" : "as near as it got"})` : ""}`;
+      // Phase 19c: a look before (null: none VibeCut could read) and after; a match also has its passes
+      // (a balance, Phase 20b, its frame as it `was` too).
+      return `${name} colour ${change.before ? `${describeColour(change.before)} → ` : ""}${describeColour(change.after)}${typeof change.passes === "number" ? ` (${change.was ? "balanced" : "matched"} in ${change.passes} pass(es), ${Number(change.distance) <= 0.03 ? "close" : "as near as it got"})` : ""}`;
     case "transform":
       // Phase 16f: {scale, x, y} still, or {keys: [{at, scale, x, y}]}.
       return `${name} ${describeLook(change.before)} → ${describeLook(change.after)}`;

@@ -52,6 +52,8 @@ export interface EditResult {
   addedTracks?: string[];
   /** Clips the edit replaced (Resolve's reshape and split): old id -> new id. */
   renamed?: Record<string, string>;
+  /** Clips a colour balance found already balanced, left alone (Phase 20b). */
+  balanced?: { itemId: string; name: string }[];
 }
 
 /** One logged edit: an agent tool call (or a B-roll placement) that changed the timeline. */

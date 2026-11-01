@@ -143,6 +143,19 @@ def test_match_to_a_learned_look_measures_only_the_clips(edit):
     assert set(c["exports"]) == {400}
 
 
+def test_balance_takes_each_clip_to_its_own_neutral(edit):
+    host, timeline, _project, c = edit
+    before = timeline.timecode
+    result = call(host, "match_clip_color", balance=True, itemIds=[c["v"].uid, c["b"].uid])
+    # A.mov (the chart) is neutral and normally exposed already: its grade isn't touched.
+    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["v"].cdl is None
+    (change,) = result["changes"]
+    assert change["name"] == "B.mov" and change["distance"] < colour.GOOD_ENOUGH
+    after = change["after"]
+    assert after["temperature"] < 0 and (after["contrast"], after["saturation"]) == (0, 100)
+    assert c["b"].look_set == after and timeline.timecode == before
+
+
 def test_read_measures_and_looks_past_covers(edit):
     host, timeline, _project, c = edit
     timeline.AddTrack("video")

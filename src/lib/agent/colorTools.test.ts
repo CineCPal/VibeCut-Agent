@@ -71,6 +71,23 @@ describe("colour tools", () => {
     await expect(run.match_clip_color({ clipIds: ["v2"] })).rejects.toThrow("referenceId");
   });
 
+  it("balances clips with match_clip_color's command, and names those left alone", async () => {
+    ipc.nleCall.mockImplementation(async (_h: string, command: string) => {
+      if (command === "read_timeline") return VIEW;
+      if (command === "backup_timeline") return { backup: "Main (before VibeCut 1)" };
+      return {
+        changes: [{ kind: "color", name: "B.mov", itemId: "v2", before: null, after: { exposure: 0.3, contrast: 0, temperature: -14, tint: 4, saturation: 100 }, was: { brightness: 0.24 }, passes: 2, distance: 0.01 }],
+        refused: [],
+        balanced: [{ itemId: "v1", name: "A.mov" }],
+      };
+    });
+    const out = await run.balance_clip_color({ clipIds: ["v1", "v2"] });
+    expect(sent("match_clip_color")).toEqual([{ timeline: "Main", balance: true, itemIds: ["v1", "v2"] }]);
+    expect(out.summary).toBe('Balanced 1 clip: "B.mov" colour exposure +0.30, temperature -14, tint +4 (balanced in 2 pass(es), close); already balanced, left alone: "A.mov" (backup: "Main (before VibeCut 1)")');
+    expect(useEditLogStore.getState().entries[0].tool).toBe("balance_clip_color");
+    expect((out.result as { balanced: unknown }).balanced).toEqual([{ itemId: "v1", name: "A.mov" }]);
+  });
+
   it("measures clips in words", async () => {
     const out = await run.get_clip_color({ clipIds: ["v1", "v2"] });
     expect(sent("read_clip_color")).toEqual([{ timeline: "Main", itemIds: ["v1", "v2"] }]);

@@ -78,6 +78,7 @@ export const CHANGING_TOOLS = new Set([
   // Phase 19c.
   "set_clip_color",
   "match_clip_color",
+  "balance_clip_color",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -161,6 +162,7 @@ const VERB: Record<string, string> = {
   set_clip_transform: "Scale or move",
   set_clip_color: "Change the colour of",
   match_clip_color: "Match the colour of",
+  balance_clip_color: "Balance the colour of",
   set_clip_levels: "Change the level of",
   set_clip_fade: "Fade",
   split_clip: "Split",

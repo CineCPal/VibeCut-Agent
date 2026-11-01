@@ -1,6 +1,7 @@
 /**
  * Colour (PLAN.md, "Phase 19c"): `set_clip_color` sets a clip's look, `match_clip_color` makes clips match
- * a reference as the editor shows them, and `get_clip_color` measures clips. A look is Lumetri's Basic
+ * a reference as the editor shows them, `balance_clip_color` (Phase 20b) takes each clip to its own
+ * neutral (match_clip_color's command with balance), and `get_clip_color` measures clips. A look is Lumetri's Basic
  * Correction in its units (exposure, contrast, temperature, tint, saturation): Premiere's Lumetri Color
  * itself, and in Resolve a CDL on node 1 calibrated to move the picture about as far
  * (src-python/vibecut_agent/nle/colour.py).
@@ -82,6 +83,15 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
       },
     },
     {
+      name: "balance_clip_color",
+      description: `Balances picture clips each on its own, with no reference: it measures a frame of each as ${host === "premiere" ? "Premiere" : "Resolve"} shows it, then sets ${where} so what's grey in the shot (its least colourful third) has no colour cast, and the exposure is in a normal range (brightness 0.3-0.5; a shot already inside keeps its brightness, so a night scene stays dark). Only exposure, temperature and tint move: ${host === "premiere" ? "the clip's own contrast and saturation are kept" : "contrast and saturation are left neutral"}. A clip already balanced is left alone. It renders and measures again, keeping the closest pass. A shot with nothing near grey in it (a colour card, a stage in coloured light) is refused; a scene whose greys aren't really grey (a sunset) can be read wrong: check it after. Corrections stay within exposure ±2, temperature and tint ±60. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
+      parameters: {
+        type: "OBJECT",
+        properties: { clipIds: { type: "ARRAY", items: { type: "STRING" }, description: "The picture clips to balance (up to 50)." } },
+        required: ["clipIds"],
+      },
+    },
+    {
       name: "get_clip_color",
       description: `Measures picture clips as ${host === "premiere" ? "Premiere" : "Resolve"} shows them (a frame not under a clip on a higher track): brightness (mean luma 0-1; about 0.4 is a normal exposure), contrast (luma spread over its mean), warmth (ln R/B; above 0 warm), tint (ln G over R and B; above 0 green), colourfulness. ${host === "premiere" ? "Also each clip's current Lumetri look. " : ""}Use it before judging or changing colour. Only reads; the playhead is put back.`,
       parameters: { type: "OBJECT", properties: { clipIds: { type: "ARRAY", items: { type: "STRING" } } }, required: ["clipIds"] },
@@ -120,6 +130,9 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
       return edit(ctx, "match_clip_color", "match_clip_color", { ...reference, itemIds }, (r) => `Matched ${count(r.changes.length, "clip")} to ${to}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
     },
 
+    balance_clip_color: async (args) =>
+      edit(ctx, "balance_clip_color", "match_clip_color", { balance: true, itemIds: strArray(args, "clipIds") }, (r) => `Balanced ${count(r.changes.length, "clip")}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`),
+
     get_clip_color: async (args) => {
       const read = await nleCall<{ clips: MeasuredClip[]; refused: { reason: string }[] }>(ctx.host, "read_clip_color", { timeline: ctx.timeline, itemIds: strArray(args, "clipIds") });
       const lines = read.clips.map((c) => `"${c.name}": ${describeMeasure(c)}${c.look ? `; Lumetri ${describeColour(c.look)}` : ""}`);
@@ -132,5 +145,6 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
 /** The ground rule the system prompt gains (Phase 19c). */
 export const COLOR_INSTRUCTION = `- Colour: get_clip_color measures what the viewer shows; set_clip_color sets exposure, contrast,
   temperature, tint and saturation (Lumetri's units, the whole correction); match_clip_color matches
-  shots of one scene to a reference. Measure before and after, change in small steps, and say what
+  shots of one scene to a reference; balance_clip_color takes a shot's cast out and its exposure into a
+  normal range with no reference ("fix the white balance", "balance these"). Measure before and after, change in small steps, and say what
   changed in plain words. Creative looks, LUTs, secondaries and masks are beyond these tools: say so.`;
