@@ -53,9 +53,10 @@ function Findings({ findings }: { findings: ToolFinding[] }) {
       {findings.map((f, i) => (
         <li key={i} className="flex items-baseline gap-1">
           <TimecodeChip seconds={f.time}>{positionLabel(f.time)}</TimecodeChip>
-          <span className={`shrink-0 text-[10px] uppercase ${SEVERITY_STYLE[f.severity]}`}>{f.severity}</span>
+          {f.source === "client" ? null : <span className={`shrink-0 text-[10px] uppercase ${SEVERITY_STYLE[f.severity]}`}>{f.severity}</span>}
           <span className="min-w-0 break-words text-warm-grey">
             {f.source === "critic" ? <span className="mr-1 text-athletic-blue-light">Critic:</span> : null}
+            {f.source === "client" ? <span className="mr-1 text-athletic-blue-light">Client:</span> : null}
             {f.text}
           </span>
         </li>

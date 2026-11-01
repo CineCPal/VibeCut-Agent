@@ -11,8 +11,8 @@ export interface ToolFinding {
   end?: number;
   severity: "high" | "medium" | "low";
   text: string;
-  /** "check": the automatic check; "critic": the vision critic. */
-  source: "check" | "critic";
+  /** "check": the automatic check; "critic": the vision critic; "client": a client's note (Phase 20c). */
+  source: "check" | "critic" | "client";
 }
 
 /** One tool call, shown as a card (Phase 8f). Its message's `text` is the one-line summary. */

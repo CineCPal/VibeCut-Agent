@@ -106,7 +106,7 @@ function isFinding(value: unknown): boolean {
   const f = value as Record<string, unknown>;
   return (
     typeof f.time === "number" && (f.end === undefined || typeof f.end === "number") && typeof f.text === "string" &&
-    (f.severity === "high" || f.severity === "medium" || f.severity === "low") && (f.source === "check" || f.source === "critic")
+    (f.severity === "high" || f.severity === "medium" || f.severity === "low") && (f.source === "check" || f.source === "critic" || f.source === "client")
   );
 }
 

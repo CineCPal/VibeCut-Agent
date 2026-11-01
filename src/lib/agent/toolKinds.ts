@@ -140,6 +140,8 @@ export const NOT_REVIEWED = new Set([
   "find_shot_changes",
   // Phase 20a: reads only.
   "check_pacing",
+  // Phase 20c: reads only (the client's notes placed on the timeline).
+  "read_client_notes",
   // Phase 20b: measures a file and saves to the notes, as remember_note does.
   "learn_style",
   // Phase 19c: measures frames; the playhead is put back.

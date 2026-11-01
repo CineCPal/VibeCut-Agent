@@ -11,6 +11,7 @@ import { SPLIT_EDIT_INSTRUCTION } from "./splitEditTools";
 import { DRAFT_EDIT_INSTRUCTION } from "./draftEditTools";
 import { SHOT_INSTRUCTION } from "./shotTools";
 import { PACING_INSTRUCTION } from "./pacingTools";
+import { CLIENT_NOTES_INSTRUCTION } from "./clientNotesTools";
 import { STYLE_INSTRUCTION } from "./styleTools";
 import { COLOR_INSTRUCTION } from "./colorTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
@@ -115,6 +116,7 @@ ${SPLIT_EDIT_INSTRUCTION}
 ${DRAFT_EDIT_INSTRUCTION}
 ${SHOT_INSTRUCTION}
 ${PACING_INSTRUCTION}
+${CLIENT_NOTES_INSTRUCTION}
 ${STYLE_INSTRUCTION}
 ${COLOR_INSTRUCTION}
 ${DIALOGUE_INSTRUCTION}
