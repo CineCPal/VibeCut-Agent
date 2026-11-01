@@ -43,6 +43,14 @@ diarize = [
 mcp = [
     "mcp==2.3.0",
 ]
+# Phase 21 (ORCHESTRATOR_SPEC.md): `EXECUTION_MODE=orchestrated`'s local workers. OTIO deltas, schema
+# checks, the sqlite-vec index and faster-whisper. No sidecar run installs it yet.
+orchestrator = [
+    "opentimelineio>=0.17.0",
+    "jsonschema>=4.23.0",
+    "sqlite-vec>=0.1.6",
+    "faster-whisper>=1.1.0",
+]
 
 [dependency-groups]
 dev = [
@@ -109,6 +117,11 @@ check_untyped_defs = true
 # torch, open_clip and transformers come from the optional `energy` extra and ship no stubs.
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "open_clip", "transformers", "DaVinciResolveScript", "mlx_whisper", "mlx.*", "pyannote.*", "tqdm", "huggingface_hub.*"]
+ignore_missing_imports = true
+
+# Phase 21's `orchestrator` extra: OTIO, jsonschema, sqlite-vec and faster-whisper ship no stubs.
+[[tool.mypy.overrides]]
+module = ["opentimelineio.*", "jsonschema", "sqlite_vec", "faster_whisper"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

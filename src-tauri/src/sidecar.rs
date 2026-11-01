@@ -494,6 +494,16 @@ pub fn bytecode_env(environment: Option<&Path>) -> (String, String) {
     }
 }
 
+/// Phase 21 (ORCHESTRATOR_SPEC.md §4.2): the host's `EXECUTION_MODE` reaches the sidecar as
+/// `VIBECUT_EXECUTION_MODE` (`config.py`), since only `VIBECUT_*` names pass `passes_to_child`. A
+/// `VIBECUT_EXECUTION_MODE` already set passes as it is and wins, as it does in `OrchestratorConfig`.
+pub fn execution_mode_env(vibecut: Option<String>, plain: Option<String>) -> Option<(String, String)> {
+    match (vibecut, plain) {
+        (None, Some(mode)) if !mode.trim().is_empty() => Some(("VIBECUT_EXECUTION_MODE".into(), mode)),
+        _ => None,
+    }
+}
+
 /// The program, arguments and environment for one run, kept separate from spawning for tests.
 pub struct Launch {
     pub program: PathBuf,
@@ -513,6 +523,10 @@ impl Launch {
         envs.push(("PYTHONUNBUFFERED".into(), "1".into()));
         envs.push(("PYTHONIOENCODING".into(), "utf-8".into()));
         envs.push(bytecode_env(environment));
+        envs.extend(execution_mode_env(
+            std::env::var("VIBECUT_EXECUTION_MODE").ok(),
+            std::env::var("EXECUTION_MODE").ok(),
+        ));
         envs
     }
 
@@ -1010,6 +1024,18 @@ mod tests {
         assert_eq!(env("PYTHONDONTWRITEBYTECODE"), None);
         assert_eq!(env("GEMINI_API_KEY"), None);
         assert_eq!(launch.cwd, PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn execution_mode_reaches_the_sidecar_under_its_vibecut_name() {
+        let mapped = execution_mode_env(None, Some("orchestrated".into()));
+        assert_eq!(mapped, Some(("VIBECUT_EXECUTION_MODE".into(), "orchestrated".into())));
+        // An explicit VIBECUT_EXECUTION_MODE already passes through the allow-list, and wins.
+        assert_eq!(execution_mode_env(Some("direct".into()), Some("orchestrated".into())), None);
+        assert_eq!(execution_mode_env(None, None), None);
+        assert_eq!(execution_mode_env(None, Some("  ".into())), None);
+        assert!(passes_to_child("VIBECUT_EXECUTION_MODE"));
+        assert!(!passes_to_child("EXECUTION_MODE"));
     }
 
     #[test]

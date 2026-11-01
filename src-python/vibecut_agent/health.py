@@ -7,6 +7,7 @@ import sys
 from typing import Any, TextIO
 
 from vibecut_agent import __version__
+from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.protocol import Emitter, read_request
 
 
@@ -16,6 +17,7 @@ def describe() -> dict[str, Any]:
         "python": platform.python_version(),
         "executable": sys.executable,
         "platform": platform.platform(),
+        "executionMode": OrchestratorConfig.from_env().execution_mode.value,
     }
 
 
