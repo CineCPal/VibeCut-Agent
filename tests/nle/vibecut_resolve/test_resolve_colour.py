@@ -304,7 +304,7 @@ def test_a_grade_of_several_nodes_with_none_labelled_is_refused(edit):
     assert "has no node labelled 'VC Balance'" in refused["refused"][0]["reason"]
 
 
-def test_an_ungraded_clip_gets_the_template_and_without_one_is_reset_on_revert(edit):
+def test_an_ungraded_clip_gets_the_template_and_without_one_is_reset_on_revert(edit, monkeypatch):
     host, _timeline, _project, c = edit
     # No template: B.mov's one empty node is used, and Revert resets it with no backup needed.
     first = call(host, "set_clip_color", looks=[{"itemId": c["b"].uid, "exposure": 0.3}])
@@ -313,9 +313,20 @@ def test_an_ungraded_clip_gets_the_template_and_without_one_is_reset_on_revert(e
     assert reverted["reverted"] == [{"kind": "color", "name": "B.mov"}] and c["b"].nodes == [
         {"label": "", "cdl": None}
     ]
-    # With a template saved, the ungraded clip gets it, and the match goes in its VC Match node.
+    # With a template saved, the ungraded clip gets it, and the match goes in its VC Match node. Applying
+    # a .drx switches Resolve to the Color page; the page is put back.
     c["template"].write_text(json.dumps(["VC Balance", "VC Match", ""]))
+    pages = {"now": "edit", "opened": []}
+    host._resolve.GetCurrentPage = lambda: pages["now"]
+    host._resolve.OpenPage = lambda page: pages["opened"].append(page) or pages.update(now=page) or True
+    drx = Graph.ApplyGradeFromDRX
+    monkeypatch.setattr(
+        Graph,
+        "ApplyGradeFromDRX",
+        lambda self, path, mode: pages.update(now="color") or drx(self, path, mode),
+    )
     matched = call(host, "match_clip_color", referenceId=c["v"].uid, itemIds=[c["b"].uid])
+    assert pages == {"now": "edit", "opened": ["edit"]}
     assert matched["changes"][0]["node"] == {
         "index": 2,
         "label": "VC Match",

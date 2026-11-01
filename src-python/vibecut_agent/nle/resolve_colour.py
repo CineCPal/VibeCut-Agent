@@ -66,8 +66,9 @@ def _graded(graph: Any) -> bool:
     return any(graph.GetToolsInNode(i) for i in range(1, int(graph.GetNumNodes() or 0) + 1))
 
 
-def _node(item: Any, role: str) -> dict[str, Any]:
-    """Where VibeCut's CDL for `role` goes in `item`'s grade: {index, label, template, ungraded}."""
+def _node(item: Any, role: str, resolve: Any) -> dict[str, Any]:
+    """Where VibeCut's CDL for `role` goes in `item`'s grade: {index, label, template, ungraded}.
+    Applying a .drx switches Resolve to the Color page (seen live, 21.1), so `resolve`'s page is put back."""
     name, want = item.GetName(), NODE_LABELS[role]
     graph = item.GetNodeGraph()
     if graph is None:
@@ -78,7 +79,11 @@ def _node(item: Any, role: str) -> dict[str, Any]:
     graded = _graded(graph)
     template = template_path()
     if not graded and template.is_file():
-        if not graph.ApplyGradeFromDRX(str(template), 0):
+        page = resolve.GetCurrentPage()
+        applied = graph.ApplyGradeFromDRX(str(template), 0)
+        if page and resolve.GetCurrentPage() != page:
+            resolve.OpenPage(page)
+        if not applied:
             raise HostError(f"{name}: Resolve didn't put VibeCut's node template on")
         graph = item.GetNodeGraph()
         index = _labelled(graph, want)
@@ -98,13 +103,13 @@ def _node(item: Any, role: str) -> dict[str, Any]:
 class _Grade:
     """VibeCut's CDL on one clip: the node is found (the template put on if need be) when it's first set."""
 
-    def __init__(self, item: Any, role: str) -> None:
-        self.item, self.role = item, role
+    def __init__(self, item: Any, role: str, resolve: Any) -> None:
+        self.item, self.role, self.resolve = item, role, resolve
         self.node: dict[str, Any] | None = None
 
     def set(self, cdl: dict[str, Any]) -> None:
         if self.node is None:
-            self.node = _node(self.item, self.role)
+            self.node = _node(self.item, self.role, self.resolve)
         if not self.item.SetCDL({**cdl, "NodeIndex": str(self.node["index"])}):
             raise HostError(f"{self.item.GetName()}: Resolve didn't take the colour")
 
@@ -234,7 +239,7 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         if kind != "video" or item.GetLeftOffset() is None:
             refused.append({"itemId": item_id, "reason": f"{item.GetName()} has no picture to colour"})
             continue
-        grade = _Grade(item, "match")
+        grade = _Grade(item, "match", host._resolve)
         try:
             grade.set(colour.cdl(want["look"]))
         except HostError as exc:
@@ -265,7 +270,7 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     found = _items(timeline)
     if wanted is None:
         assert reference_id is not None  # match_wants gives a clip or a look
-        return _match_parade(project, timeline, found, reference_id, targets)
+        return _match_parade(host, project, timeline, found, reference_id, targets)
     # A learned style is five overall measures, matched with the calibrated five-control CDL.
     viewer = _Viewer(project, timeline)
     changes, refused = [], []
@@ -278,7 +283,7 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
                 refused.append({"itemId": item_id, "reason": str(exc)})
                 continue
             index = found[item_id][1]
-            grade = _Grade(item, "match")
+            grade = _Grade(item, "match", host._resolve)
 
             def render(look: dict[str, float], grade: _Grade = grade, at: float = at) -> dict[str, float]:
                 grade.set(colour.cdl(look))
@@ -314,7 +319,12 @@ def _parade_show(grade: _Grade, viewer: _Viewer, moments: list[float]) -> Any:
 
 
 def _match_parade(
-    project: Any, timeline: Any, found: dict[str, tuple[str, int, Any]], reference_id: str, targets: list[str]
+    host: Any,
+    project: Any,
+    timeline: Any,
+    found: dict[str, tuple[str, int, Any]],
+    reference_id: str,
+    targets: list[str],
 ) -> dict[str, Any]:
     """Each clip's "VC Match" CDL set so its parade and histogram match the reference clip's
     (parade.match), measured on parade.FRAMES frames of each."""
@@ -328,7 +338,7 @@ def _match_parade(
             grade = None
             try:
                 item, moments = _moments(timeline, found, item_id, fps, parade.FRAMES)
-                grade = _Grade(item, "match")
+                grade = _Grade(item, "match", host._resolve)
                 look, seen, passes = parade.match(
                     reference, _parade_show(grade, viewer, moments), parade.resolve_curve
                 )
@@ -382,7 +392,7 @@ def _balance(host: Any, args: dict[str, Any], wants: list[dict[str, Any]]) -> di
             grade = None
             try:
                 item, at = _balance_moment(timeline, found, item_id, fps, want["at"])
-                grade = _Grade(item, "balance")
+                grade = _Grade(item, "balance", host._resolve)
 
                 def show(look: parade.Look | None, grade: _Grade = grade, at: float = at) -> parade.Pixels:
                     if look is not None:
