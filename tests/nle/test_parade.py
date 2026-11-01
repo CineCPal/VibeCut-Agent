@@ -243,3 +243,22 @@ def test_a_duller_clip_gets_its_colour_back():
     )
     # Dulled toward each pixel's mean, not its luma, so the hues don't all come back: closer, not exact.
     assert parade.error(reference, seen) < 0.6 * parade.error(reference, curves_only)
+
+
+def test_premiere_asc_cdl_controls_are_the_curve():
+    look = {
+        "r": {"black": 0.05, "white": 0.92, "gamma": 1.2},
+        "g": {"black": -0.04, "white": 1.0, "gamma": 0.9},
+        "b": {"black": 0.0, "white": 1.1, "gamma": 1.0},
+    }
+    controls = parade.cdl_controls(look, 1.2)
+    assert set(controls) == {f"{c}_{p}" for c in "rgb" for p in parade.CDL_PARTS} | {"saturation"}
+    for c in "rgb":
+        for x in (0.1, 0.5, 0.9):
+            slope, offset, power = (controls[f"{c}_{p}"] for p in parade.CDL_PARTS)
+            assert min(max(x * slope + offset, 0), 1) ** power == pytest.approx(
+                parade.resolve_curve(look[c], x), abs=1e-4
+            )
+    back = parade.cdl_look(controls)
+    assert back["saturation"] == 1.2
+    assert all(back[c][k] == pytest.approx(look[c][k], abs=1e-3) for c in "rgb" for k in parade.CURVE_FIELDS)

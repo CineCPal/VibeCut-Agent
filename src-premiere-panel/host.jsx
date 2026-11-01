@@ -1469,6 +1469,154 @@ function vcSetLevels(args) {
   }, args);
 }
 
+// Phase 20b: balancing sets the ASC CDL effect's controls (its own effect, so a match in Levels doesn't
+// overwrite it), by their names in Premiere 26.5.2 ("Red Slope"; the CDL formula on display values,
+// 20b probe), keyed r_ / g_ / b_ + slope, offset, power, and saturation.
+var VC_CDL_CHANNELS = { r: "Red ", g: "Green ", b: "Blue " };
+var VC_CDL_PARTS = { slope: "Slope", offset: "Offset", power: "Power" };
+
+function vcComponentOf(clip, matchName) {
+  for (var c = 0; c < clip.components.numItems; c++) {
+    if (clip.components[c].matchName === matchName) {
+      return clip.components[c];
+    }
+  }
+  return null;
+}
+
+function vcCdlOf(clip) {
+  return vcComponentOf(clip, "AE.ADBE AEASCCDL");
+}
+
+function vcCdlControls(component) {
+  var byName = {};
+  for (var p = 0; p < component.properties.numItems; p++) {
+    byName[component.properties[p].displayName] = component.properties[p];
+  }
+  var out = {};
+  for (var ch in VC_CDL_CHANNELS) {
+    for (var part in VC_CDL_PARTS) {
+      if (VC_CDL_CHANNELS.hasOwnProperty(ch) && VC_CDL_PARTS.hasOwnProperty(part)) {
+        var prop = byName[VC_CDL_CHANNELS[ch] + VC_CDL_PARTS[part]];
+        if (prop) {
+          out[ch + "_" + part] = prop;
+        }
+      }
+    }
+  }
+  if (byName.Saturation) {
+    out.saturation = byName.Saturation;
+  }
+  return out;
+}
+
+// {id, present, values: {r_slope, ..., saturation}, keyed: [keys]} for one picture clip.
+function vcReadCdlOf(entry, id) {
+  var component = vcCdlOf(entry.item);
+  var read = { id: id, present: !!component, values: {}, keyed: [] };
+  if (component) {
+    var controls = vcCdlControls(component);
+    for (var key in controls) {
+      if (controls.hasOwnProperty(key)) {
+        read.values[key] = Number(controls[key].getValue());
+        if (controls[key].isTimeVarying()) {
+          read.keyed.push(key);
+        }
+      }
+    }
+  }
+  return read;
+}
+
+// args: {timeline, ids}. Each picture clip's ASC CDL controls (none when it has no ASC CDL).
+function vcReadCdl(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.ids.length; i++) {
+      var entry = vcItemWithId(sequence, a.ids[i]);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      out.push(vcReadCdlOf(entry, a.ids[i]));
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {timeline, items: [{id, values: {r_slope?, ..., saturation?}}]}. Sets each clip's ASC CDL
+// controls (still: any keys on them are cleared), first adding ASC CDL through QE to a clip without it.
+function vcSetCdl(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.items.length; i++) {
+      var want = a.items[i];
+      var entry = vcItemWithId(sequence, want.id);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      if (!vcCdlOf(entry.item)) {
+        vcAddVideoEffect(sequence, entry, "ASC CDL");
+        entry = vcItemWithId(sequence, want.id);
+        if (!vcCdlOf(entry.item)) {
+          vcRefuse("Premiere didn't add ASC CDL to \"" + entry.item.name + "\"");
+        }
+      }
+      var controls = vcCdlControls(vcCdlOf(entry.item));
+      for (var key in want.values) {
+        if (!want.values.hasOwnProperty(key)) {
+          continue;
+        }
+        if (!controls[key]) {
+          vcRefuse("\"" + entry.item.name + "\"'s ASC CDL has no " + key);
+        }
+        controls[key].setTimeVarying(false);
+        controls[key].setValue(want.values[key], 1);
+      }
+      out.push(vcReadCdlOf(vcItemWithId(sequence, want.id), want.id));
+    }
+    return { items: out };
+  }, args);
+}
+
+// The effects VibeCut adds, which Revert may take off again (by the first of that kind, the one VibeCut
+// reads and sets).
+var VC_REMOVABLE = { lumetri: "AE.ADBE Lumetri", levels: "PR.ADBE Levels", cdl: "AE.ADBE AEASCCDL" };
+
+// args: {timeline, id, effect: "lumetri" | "levels" | "cdl"}. Takes that effect off the clip through
+// QE (the DOM can't); {removed: true} once it's gone.
+function vcRemoveEffect(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var entry = vcItemWithId(sequence, a.id);
+    var matchName = VC_REMOVABLE[a.effect];
+    if (entry.type !== "video" || !vcComponentOf(entry.item, matchName)) {
+      return { removed: false };
+    }
+    var q = vcQeSequence(sequence);
+    try {
+      var track = q.qe.getVideoTrackAt(entry.track);
+      var start = entry.item.start.seconds;
+      for (var t = 0; t < track.numItems; t++) {
+        var qItem = track.getItemAt(t);
+        if (qItem.type !== "Empty" && Math.abs(qItem.start.secs - start) < 0.001) {
+          for (var c = 0; c < qItem.numComponents; c++) {
+            if (qItem.getComponentAt(c).matchName === matchName) {
+              qItem.getComponentAt(c).remove();
+              break;
+            }
+          }
+          break;
+        }
+      }
+    } finally {
+      q.reopen();
+    }
+    return { removed: !vcComponentOf(vcItemWithId(sequence, a.id).item, matchName) };
+  }, args);
+}
+
 // args: {timeline, ticks, path}. Writes the sequence's frame at `ticks` (effects and Lumetri included) as
 // `path` + ".png" (QE's exportFramePNG adds the extension), the playhead put back after.
 function vcExportFrame(args) {

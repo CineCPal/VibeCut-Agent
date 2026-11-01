@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.15.0";
+const PANEL_VERSION = "0.16.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 // At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).
@@ -36,6 +36,10 @@ const FRAMES = path.join(BRIDGE_DIR, "frames");
 // A colour value's range (nle/colour.py's LIMITS).
 // Levels controls VibeCut sets (parade.py): {rgb,r,g,b}_{black_in,white_in,black_out,white_out} 0-255, _gamma.
 const LEVELS_LIMITS = { black_in: [0, 255], white_in: [0, 255], black_out: [0, 255], white_out: [0, 255], gamma: [10, 1000] };
+// ASC CDL controls VibeCut sets for balancing (parade.py `cdl_controls`): {r,g,b}_{slope,offset,power}, saturation.
+const CDL_LIMITS = { slope: [0, 20], offset: [-10, 10], power: [0.05, 20], saturation: [0, 4] };
+// Effects Revert may take off a clip again: the ones VibeCut adds.
+const REMOVABLE_EFFECTS = ["lumetri", "levels", "cdl"];
 const LUMETRI_LIMITS = { exposure: [-4, 4], contrast: [-100, 100], temperature: [-100, 100], tint: [-100, 100], saturation: [0, 200] };
 const AME_PRESET = /^\/Applications\/Adobe Media Encoder [^/]+\/Adobe Media Encoder [^/]+\.app\/Contents\/MediaIO\/systempresets\/[\w]+\/[^/]+\.epr$/;
 const RENDER_EXTENSIONS = [".mp4", ".mov", ".wav", ".aac"];
@@ -75,6 +79,10 @@ const COMMANDS = {
   // Phase 20b: the Levels effect, for matching and balancing by the parade.
   read_levels: "vcReadLevels",
   set_levels: "vcSetLevels",
+  // Balancing in the ASC CDL effect, and taking an effect VibeCut added off again.
+  read_cdl: "vcReadCdl",
+  set_cdl: "vcSetCdl",
+  remove_effect: "vcRemoveEffect",
   razor: "vcRazor",
   import_media: "vcImportMedia",
   source_preview: "vcSourcePreview",
@@ -413,6 +421,34 @@ const CHECKS = {
         }
       }
     });
+  },
+  read_cdl(args) {
+    checkSequenceName(args.timeline);
+    checkIds(args.ids, "ids");
+  },
+  set_cdl(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.items) || !args.items.length || args.items.length > 50) throw new Error("items must list 1 to 50 clips");
+    args.items.forEach((item, i) => {
+      if (!isPlainObject(item) || !isPlainObject(item.values)) throw new Error(`items[${i}] must be {id, values}`);
+      checkId(item.id, `items[${i}].id`);
+      const keys = Object.keys(item.values);
+      if (!keys.length) throw new Error(`items[${i}].values must set an ASC CDL control`);
+      for (const key of keys) {
+        const match = /^(?:(?:r|g|b)_(slope|offset|power)|(saturation))$/.exec(key);
+        const value = item.values[key];
+        if (!match) throw new Error(`items[${i}].values.${key} isn't an ASC CDL control VibeCut sets`);
+        const range = CDL_LIMITS[match[1] || match[2]];
+        if (typeof value !== "number" || !Number.isFinite(value) || value < range[0] || value > range[1]) {
+          throw new Error(`items[${i}].values.${key} must be from ${range[0]} to ${range[1]}`);
+        }
+      }
+    });
+  },
+  remove_effect(args) {
+    checkSequenceName(args.timeline);
+    checkId(args.id, "id");
+    if (!REMOVABLE_EFFECTS.includes(args.effect)) throw new Error(`effect must be one of ${REMOVABLE_EFFECTS.join(", ")}`);
   },
   // The frame goes in FRAMES under a short name; the path host.jsx gets is built here.
   export_frame(args) {

@@ -123,7 +123,8 @@ def _clamped(curve: dict[str, float]) -> dict[str, float]:
 
 
 def resolve_curve(curve: dict[str, float], x: float) -> float:
-    """What Resolve's CDL from `cdl` does to a display value."""
+    """What a CDL from `cdl` (or `cdl_controls`) does to a display value: Resolve's, and Premiere's ASC CDL
+    effect, which follows the same formula on display values (20b probe: within 0.003 on average)."""
     t = (x - curve["black"]) / (curve["white"] - curve["black"])
     return float(min(max(t, 0.0), 1.0) ** (1 / curve["gamma"]))
 
@@ -154,6 +155,38 @@ def cdl(look: Look) -> dict[str, str]:
         "Power": " ".join(f"{1 / look[c]['gamma']:.5f}" for c in CHANNELS),
         "Saturation": f"{look.get('saturation', 1.0):.5f}",
     }
+
+
+# Premiere's ASC CDL effect (balancing, 20b), by the keys the panel takes (host.jsx `VC_CDL`).
+CDL_PARTS = ("slope", "offset", "power")
+
+
+def cdl_controls(look: Look, saturation: float = 1.0) -> dict[str, float]:
+    """Premiere's ASC CDL controls for `look`'s curves (as `cdl`), its Saturation `saturation`."""
+    out: dict[str, float] = {}
+    for c in CHANNELS:
+        curve = look[c]
+        span = curve["white"] - curve["black"]
+        out[f"{c}_slope"] = round(1 / span, 5)
+        out[f"{c}_offset"] = round(-curve["black"] / span, 5)
+        out[f"{c}_power"] = round(1 / curve["gamma"], 5)
+    out["saturation"] = round(saturation, 5)
+    return out
+
+
+def cdl_look(controls: dict[str, Any]) -> Look:
+    """The curves Premiere's ASC CDL controls give (the inverse of `cdl_controls`); its Saturation as the
+    look's saturation."""
+    look: Look = {}
+    for c in CHANNELS:
+        slope, offset = max(float(controls[f"{c}_slope"]), 1e-6), float(controls[f"{c}_offset"])
+        look[c] = {
+            "black": round(-offset / slope, 4),
+            "white": round((1 - offset) / slope, 4),
+            "gamma": round(1 / max(float(controls[f"{c}_power"]), 1e-6), 4),
+        }
+    look["saturation"] = round(float(controls.get("saturation", 1.0)), 4)
+    return look
 
 
 # Premiere's Levels controls, by the keys the panel takes (host.jsx `VC_LEVELS`), 0-255 and gamma x 100.

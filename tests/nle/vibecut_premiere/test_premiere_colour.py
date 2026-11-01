@@ -29,6 +29,7 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
     shots = {a: chart(), b: OFF}
     lumetri: dict[str, dict] = {}
     levels: dict[str, dict] = {}
+    cdl: dict[str, dict] = {}
     frames: list[float] = []
 
     def read_lumetri(args):
@@ -59,6 +60,24 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
             )
         return read_levels({"ids": [w["id"] for w in args["items"]]})
 
+    def read_cdl(args):
+        return {
+            "items": [
+                {"id": i, "present": i in cdl, "values": dict(cdl.get(i, {})), "keyed": []}
+                for i in args["ids"]
+            ]
+        }
+
+    def set_cdl(args):
+        for want in args["items"]:
+            cdl.setdefault(want["id"], parade.cdl_controls(parade.neutral_look())).update(want["values"])
+        return read_cdl({"ids": [w["id"] for w in args["items"]]})
+
+    def remove_effect(args):
+        held = {"lumetri": lumetri, "levels": levels, "cdl": cdl}[args["effect"]]
+        held.pop(args["id"], None)
+        return {"removed": True}
+
     def export_frame(args):
         ticks = int(args["ticks"])
         frames.append(ticks / T)
@@ -69,6 +88,17 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
             if int(c["startTicks"]) <= ticks < int(c["endTicks"]) and not c["disabled"]
         ]
         pixels = shots.get(shown[0]["id"], chart()) if shown else [(0.0, 0.0, 0.0)] * 16
+        if shown and shown[0]["id"] in cdl:
+            # The CDL's curves, then its saturation about Rec.709 luma (as Resolve's, test_parade.curved).
+            values = cdl[shown[0]["id"]]
+            look = parade.cdl_look(values)
+            sat = float(values["saturation"])
+            out = []
+            for p in pixels:
+                rgb = [parade.resolve_curve(look[c], p[i]) for i, c in enumerate("rgb")]
+                luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+                out.append(tuple(min(max(luma + sat * (v - luma), 0.0), 1.0) for v in rgb))
+            pixels = out
         if shown and shown[0]["id"] in levels:
             look = parade.levels_look(levels[shown[0]["id"]])
             pixels = [
@@ -89,6 +119,7 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
         export_frame,
     )
     premiere.read_levels, premiere.set_levels = read_levels, set_levels
+    premiere.read_cdl, premiere.set_cdl, premiere.remove_effect = read_cdl, set_cdl, remove_effect
     return (
         host,
         premiere,
@@ -97,6 +128,7 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
             "B": b,
             "lumetri": lumetri,
             "levels": levels,
+            "cdl": cdl,
             "frames": frames,
             "folder": tmp_path / "bridge" / "frames",
         },
@@ -123,7 +155,8 @@ def test_set_clip_color_sets_lumetri_and_reverts(setup):
     assert result["refused"] == [{"itemId": sound, "reason": "A.mov is sound, with no picture to colour"}]
     reverted = revert(host, result)
     assert reverted["reverted"] == [{"kind": "color", "name": "A.mov"}]
-    assert c["lumetri"][c["A"]] == colour.NEUTRAL
+    # The Lumetri VibeCut added is taken off again.
+    assert c["A"] not in c["lumetri"]
     # Changed since, it's left alone.
     again = call(host, "set_clip_color", looks=[{"itemId": c["A"], "contrast": 20}])
     c["lumetri"][c["A"]]["contrast"] = 35
@@ -155,9 +188,10 @@ def test_match_closes_in_on_the_reference_by_the_parade(setup):
     assert [round(f, 2) for f in c["frames"][:3]] == [0.72, 1.48, 2.24]
     assert {round(f, 1) for f in c["frames"][3:]} == {5.7, 6.5, 7.2}
     assert list(c["folder"].iterdir()) == []
+    assert change["effect"] == "levels" and c["B"] not in c["cdl"]
+    # Revert takes off the Levels and Lumetri the match added.
     assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
-    assert parade.is_neutral(parade.levels_look(c["levels"][c["B"]]))
-    assert c["lumetri"][c["B"]] == colour.NEUTRAL
+    assert c["B"] not in c["levels"] and c["B"] not in c["lumetri"]
     # Changed since, it's left alone.
     again = call(host, "match_clip_color", referenceId=c["A"], itemIds=[c["B"]])
     c["levels"][c["B"]]["g_gamma"] = 140
@@ -190,15 +224,19 @@ def test_balance_takes_each_clip_to_its_own_neutral(setup):
         items=[{"itemId": c["A"], "areas": greys}, {"itemId": c["B"], "at": 6, "areas": greys}],
     )
     # A.mov (the chart) is neutral and normally exposed already: left alone, nothing added.
-    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["levels"]
+    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["cdl"]
     (change,) = result["changes"]
     assert change["name"] == "B.mov" and change["method"] == "parade" and change["close"]
+    # In an ASC CDL of its own, not Levels.
+    assert change["effect"] == "cdl" and c["B"] not in c["levels"]
+    assert parade.cdl_look(c["cdl"][c["B"]]) == change["after"]
     # OFF's greys are warm: red's curve pulled down against blue's.
     after = change["after"]
     assert after["r"]["white"] > after["b"]["white"]
     # Its Lumetri (contrast and saturation) is left as it was.
     assert c["lumetri"][c["B"]] == {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
     assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert c["B"] not in c["cdl"]
     assert change["at"] == pytest.approx(6, abs=0.05)
     with pytest.raises(HostError, match="not both"):
         call(
@@ -225,3 +263,22 @@ def test_read_and_refusals(setup):
     assert (
         off["refused"][0]["reason"] == "B.mov is switched off (or its track's output is), so it can't be seen"
     )
+
+
+def test_a_match_after_a_balance_keeps_the_balance(setup):
+    host, _premiere, c = setup
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    # An ASC CDL already on B.mov with a saturation of the user's: balancing uses it and keeps that.
+    c["cdl"][c["B"]] = {**parade.cdl_controls(parade.neutral_look()), "saturation": 1.1}
+    balanced = call(host, "match_clip_color", balance=True, items=[{"itemId": c["B"], "areas": greys}])
+    (balance,) = balanced["changes"]
+    assert c["cdl"][c["B"]]["saturation"] == 1.1 and balance["before"] is not None
+    kept = dict(c["cdl"][c["B"]])
+    matched = call(host, "match_clip_color", referenceId=c["A"], itemIds=[c["B"]])
+    assert matched["changes"][0]["effect"] == "levels" and c["cdl"][c["B"]] == kept
+    # Reverting the match takes off its Levels; the balance stays. Reverting the balance puts the
+    # user's ASC CDL back as it was (not taken off: it was there before).
+    assert revert(host, matched)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert c["B"] not in c["levels"] and c["cdl"][c["B"]] == kept
+    assert revert(host, balanced)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert c["cdl"][c["B"]] == {**parade.cdl_controls(parade.neutral_look()), "saturation": 1.1}

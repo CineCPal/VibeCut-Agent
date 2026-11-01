@@ -1,6 +1,7 @@
 /**
  * Colour (PLAN.md, "Phase 19c"): `set_clip_color` sets a clip's look, `match_clip_color` makes clips match
- * a reference as the editor shows them, `balance_clip_color` (Phase 20b) takes each clip to its own
+ * a reference as the editor shows them (Premiere's Levels), `balance_clip_color` (Phase 20b; Premiere's ASC CDL,
+ * Resolve's "VC Balance" node) takes each clip to its own
  * neutral (match_clip_color's command with balance), and `get_clip_color` measures clips. Matching to a
  * clip and balancing go by the histogram and RGB parade (Phase 20b, parade.py): a curve per channel
  * (Premiere's Levels effect, Resolve's per-channel CDL) and saturation. A look is Lumetri's Basic
@@ -72,13 +73,15 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
       ? "the Levels effect's R, G and B controls (added if the clip has none; its RGB controls are left neutral)"
       : `a CDL (slope, offset and power per channel) in ${resolveNode("VC Match")}`;
   const balanceCurves =
-    host === "premiere" ? curves : `a CDL (slope, offset and power per channel) in ${resolveNode("VC Balance")}`;
+    host === "premiere"
+      ? "an ASC CDL effect's slope, offset and power per channel (added if the clip has none; an effect of its own, so a later match in Levels doesn't undo the balance)"
+      : `a CDL (slope, offset and power per channel) in ${resolveNode("VC Balance")}`;
   const saturation =
     host === "premiere" ? "Lumetri's Saturation (the clip's own, scaled; its other Lumetri controls are left alone)" : "the CDL's saturation";
   const shows = host === "premiere" ? "Premiere" : "Resolve";
   const revert =
     host === "premiere"
-      ? "Revert puts the Lumetri and Levels values back."
+      ? "Revert puts the Lumetri, Levels and ASC CDL values back, and takes off an effect the change added."
       : "Revert sets VibeCut's labelled node back to neutral (the clip's other nodes stay); node 1 of a clip that had no grade is reset; otherwise the clip's grade is copied back from the backup timeline (undoing any later grading of that clip too).";
   return [
     {

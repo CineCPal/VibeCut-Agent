@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.15.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.16.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -126,6 +126,9 @@ describe("Premiere panel bridge.js", () => {
       ["p13", { command: "set_levels", args: { timeline: "Main", items: [{ id: "n1", values: { r_gamma: 5 } }] } }, "items[0].values.r_gamma must be from 10 to 1000"],
       ["p14", { command: "set_levels", args: { timeline: "Main", items: [{ id: "n1", values: { r_lift: 5 } }] } }, "items[0].values.r_lift isn't a Levels control VibeCut sets"],
       ["p15", { command: "read_levels", args: { timeline: "Main", ids: [] } }, "ids must list 1 to 500 project item ids"],
+      ["p16", { command: "set_cdl", args: { timeline: "Main", items: [{ id: "n1", values: { r_power: 0 } }] } }, "items[0].values.r_power must be from 0.05 to 20"],
+      ["p17", { command: "set_cdl", args: { timeline: "Main", items: [{ id: "n1", values: { r_gamma: 1 } }] } }, "items[0].values.r_gamma isn't an ASC CDL control VibeCut sets"],
+      ["p18", { command: "remove_effect", args: { timeline: "Main", id: "n1", effect: "opacity" } }, "effect must be one of lumetri, levels, cdl"],
     ];
     for (const [id, request] of cases) writeJob(dir, { id, ...request });
     await panel.context.poll();
