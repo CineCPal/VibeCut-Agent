@@ -54,6 +54,8 @@ orchestrator = [
 
 [dependency-groups]
 dev = [
+    # Phase 21: the orchestrator's schema checks (orchestrator/schemas.py) run in the default test gate.
+    "jsonschema>=4.23.0",
     "mypy>=2.4.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
@@ -121,7 +123,7 @@ ignore_missing_imports = true
 
 # Phase 21's `orchestrator` extra: OTIO, jsonschema, sqlite-vec and faster-whisper ship no stubs.
 [[tool.mypy.overrides]]
-module = ["opentimelineio.*", "jsonschema", "sqlite_vec", "faster_whisper"]
+module = ["opentimelineio.*", "jsonschema.*", "sqlite_vec", "faster_whisper.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

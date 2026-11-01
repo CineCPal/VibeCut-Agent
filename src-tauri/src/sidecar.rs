@@ -86,6 +86,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "chat-title", interactive: false, managed: false },
     // The vision critic's notes on a cut, with the chat's model (Phase 14b).
     CommandSpec { name: "critique", interactive: false, managed: false },
+    // Phase 21: media transcribed, looked at and indexed for the orchestrated chat (vibecut_agent/workers).
+    CommandSpec { name: "ingest-index", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -187,7 +189,8 @@ pub fn passes_to_child(name: &str) -> bool {
 /// `broll-match` always embeds text and frames with SigLIP 2; `broll-analyze` only when the request
 /// turns content-aware scoring on (and never for a `catalog` read, which decodes nothing);
 /// `broll-spyglass` embeds the query with SigLIP 2 / CLIP, except for a `catalog` listing; `transcribe`
-/// needs mlx-whisper, and pyannote only when it labels speakers (`diarize`).
+/// needs mlx-whisper, and pyannote only when it labels speakers (`diarize`); `ingest-index` (Phase 21) needs
+/// the `orchestrator` extra and mlx-whisper, and pyannote the same way.
 pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
     let flag = |key: &str| request.get(key).and_then(Value::as_bool) == Some(true);
     match command {
@@ -196,6 +199,8 @@ pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
         "transcribe" if flag("diarize") => vec!["transcribe", "diarize"],
         "transcribe" => vec!["transcribe"],
         "broll-analyze" if flag("enableEnergy") && !flag("catalog") => vec!["energy"],
+        "ingest-index" if flag("diarize") => vec!["orchestrator", "transcribe", "diarize"],
+        "ingest-index" => vec!["orchestrator", "transcribe"],
         _ => Vec::new(),
     }
 }
@@ -856,7 +861,7 @@ pub async fn sidecar_start(
         // The Story Editor's first pass over long footage may be set to Gemini (Phase 7e).
         set_extraction_key(&mut request, gemini_key.as_deref());
     }
-    if spec.name == "transcribe" {
+    if matches!(spec.name, "transcribe" | "ingest-index") {
         // The Hugging Face token goes only to a run that labels speakers, and only from here.
         let wants = request.get("diarize").and_then(Value::as_bool) == Some(true);
         let token = if wants {
@@ -1024,6 +1029,14 @@ mod tests {
         assert_eq!(env("PYTHONDONTWRITEBYTECODE"), None);
         assert_eq!(env("GEMINI_API_KEY"), None);
         assert_eq!(launch.cwd, PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn ingest_index_runs_with_the_orchestrator_extra() {
+        assert!(find_command("ingest-index").is_ok());
+        assert_eq!(extras_for("ingest-index", &json!({"paths": ["/a.mov"]})), ["orchestrator", "transcribe"]);
+        assert_eq!(extras_for("ingest-index", &json!({"diarize": true})), ["orchestrator", "transcribe", "diarize"]);
+        assert!(!needs_llm_key("ingest-index"));
     }
 
     #[test]

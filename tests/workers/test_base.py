@@ -1,12 +1,25 @@
 """The workers' shared interface and GPU lock (workers/base.py)."""
 
+import base64
+import json
 import os
 import threading
 
 import pytest
+import requests
 
+from tests.workers.fakes import Response, Session
 from vibecut_agent.config import OrchestratorConfig
-from vibecut_agent.workers.base import GpuLock, GpuLockTimeout, LocalWorker, WorkerHealth
+from vibecut_agent.workers.base import (
+    CircuitBreaker,
+    CircuitOpen,
+    GpuLock,
+    GpuLockTimeout,
+    LocalLlmClient,
+    LocalLlmError,
+    LocalWorker,
+    WorkerHealth,
+)
 
 
 def test_lock_creates_the_index_dir_and_records_its_holder(tmp_path):
@@ -83,3 +96,111 @@ def test_local_worker_protocol():
 
     assert isinstance(StubWorker(), LocalWorker)
     assert not isinstance(object(), LocalWorker)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_circuit_breaker_opens_and_half_opens():
+    clock = FakeClock()
+    breaker = CircuitBreaker("the model", failure_threshold=2, reset_seconds=10, clock=clock)
+    for _ in range(2):
+        with pytest.raises(OSError), breaker.guard():
+            raise OSError("down")
+    assert breaker.state == "open"
+    with pytest.raises(CircuitOpen, match="the model failed 2 times"), breaker.guard():
+        pass
+    clock.now = 10
+    assert breaker.state == "half-open"
+    with breaker.guard():
+        pass
+    assert breaker.state == "closed"
+
+
+def test_circuit_breaker_resets_on_success():
+    breaker = CircuitBreaker("m", failure_threshold=2)
+    breaker.record_failure()
+    breaker.record_success()
+    breaker.record_failure()
+    assert breaker.state == "closed"
+
+
+def ollama_chat(answer: dict) -> Response:
+    return Response(200, {"message": {"content": json.dumps(answer)}})
+
+
+def test_client_speaks_ollama(tmp_path):
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"\xff\xd8jpeg")
+    session = Session(
+        {
+            "/api/chat": lambda body: ollama_chat({"echo": body["format"]["title"]}),
+            "/api/embed": Response(200, {"embeddings": [[1, 0], [0, 1]]}),
+            "/api/tags": Response(200, {"models": [{"name": "gemma3:4b-it"}, {"name": "bge-m3:latest"}]}),
+        }
+    )
+    client = LocalLlmClient("http://local:11434/", session=session)
+    assert client.chat_json("m", "hi", {"title": "T"}, images=[image]) == {"echo": "T"}
+    route, body = session.calls[0]
+    assert (
+        route == "/api/chat"
+        and body["messages"][0]["images"] == [base64.b64encode(b"\xff\xd8jpeg").decode()]
+        and body["stream"] is False
+    )
+    assert client.embed("bge-m3", ["a", "b"]) == [[1.0, 0.0], [0.0, 1.0]]
+    assert client.has_model("gemma3:4b-it")[0]
+    assert client.has_model("bge-m3")[0]
+    assert not client.has_model("qwen2.5-vl:7b-instruct")[0]
+
+
+def test_client_falls_back_to_openai_routes():
+    session = Session(
+        {
+            "/v1/chat/completions": Response(200, {"choices": [{"message": {"content": '{"ok": true}'}}]}),
+            "/v1/embeddings": Response(
+                200, {"data": [{"index": 1, "embedding": [2]}, {"index": 0, "embedding": [1]}]}
+            ),
+            "/v1/models": Response(200, {"data": [{"id": "gemma"}]}),
+        }
+    )
+    client = LocalLlmClient("http://local:8080", session=session)
+    assert client.chat_json("m", "hi", {}) == {"ok": True}
+    assert client.embed("e", ["a", "b"]) == [[1.0], [2.0]]
+    # Once it knows, it goes straight to the OpenAI routes.
+    assert [route for route, _ in session.calls] == ["/api/chat", "/v1/chat/completions", "/v1/embeddings"]
+    assert client.has_model("gemma")[0]
+
+
+def test_client_errors():
+    client = LocalLlmClient("http://local", session=Session({"/api/chat": Response(500, text="boom")}))
+    with pytest.raises(LocalLlmError, match="refused the request \\(500\\): boom"):
+        client.chat_json("m", "hi", {})
+    client = LocalLlmClient("http://local", session=Session({"/api/chat": ollama_chat([1, 2])}))  # type: ignore[arg-type]
+    with pytest.raises(LocalLlmError, match="isn't an object"):
+        client.chat_json("m", "hi", {})
+    client = LocalLlmClient(
+        "http://local", session=Session({"/api/embed": Response(200, {"embeddings": [[1]]})})
+    )
+    with pytest.raises(LocalLlmError, match="1 embeddings for 2 texts"):
+        client.embed("e", ["a", "b"])
+    assert client.embed("e", []) == []
+
+
+def test_client_unreachable():
+    class Down:
+        def post(self, *args, **kwargs):
+            raise requests.ConnectionError("refused")
+
+        def get(self, *args, **kwargs):
+            raise requests.ConnectionError("refused")
+
+    client = LocalLlmClient("http://local", session=Down())  # type: ignore[arg-type]
+    with pytest.raises(LocalLlmError, match="didn't answer"):
+        client.embed("e", ["a"])
+    available, detail = client.has_model("m")
+    assert not available and "isn't answering" in detail
