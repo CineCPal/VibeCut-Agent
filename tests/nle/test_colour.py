@@ -269,19 +269,7 @@ def test_a_frame_is_read_small_with_ffmpeg(tmp_path: Path):
         colour.frame_pixels(str(tmp_path / "missing.png"))
 
 
-def test_the_cast_is_read_from_what_is_grey():
-    # A red wall with a grey ramp in front: the whole frame reads warm, its greys neutral.
-    wall = [(0.7, 0.2, 0.15)] * 60 + [(v / 10, v / 10, v / 10) for v in range(1, 10)] * 4
-    assert colour.measure(wall)["warmth"] > 0.5
-    assert colour.neutral_cast(wall) == {"greyWarmth": 0.0, "greyTint": 0.0, "greyChroma": 0.0}
-    # The same under warm light: the greys show the cast.
-    warm = [(min(r * 1.15, 1), g, b * 0.85) for r, g, b in wall]
-    cast = colour.neutral_cast(warm)
-    assert cast["greyWarmth"] == pytest.approx(math.log(1.15 / 0.85), abs=0.02)
-    assert abs(cast["greyTint"]) < 0.02
-
-
-def test_balance_requests_and_targets():
+def test_balance_requests():
     assert colour.balance_wants({"itemIds": ["v1"]}) is None
     assert colour.balance_wants({"balance": True, "itemIds": ["v1", "v2", "v1"]}) == ["v1", "v2"]
     for bad, message in [
@@ -291,41 +279,11 @@ def test_balance_requests_and_targets():
     ]:
         with pytest.raises(colour.ColourError, match=message):
             colour.balance_wants(bad)
-    seen = {"brightness": 0.42, "greyWarmth": 0.2, "greyTint": -0.1, "greyChroma": 0.2}
-    assert colour.balance_target(seen) == {"greyWarmth": 0.0, "greyTint": 0.0, "brightness": 0.42}
-    # Too dark or too bright is brought to the nearer end of the normal range.
-    assert colour.balance_target({**seen, "brightness": 0.12})["brightness"] == colour.BALANCE_BRIGHTNESS[0]
-    assert colour.balance_target({**seen, "brightness": 0.7})["brightness"] == colour.BALANCE_BRIGHTNESS[1]
-    # A colour card or bars: nothing is near grey, so there's nothing to balance by (seen live, 20b).
-    card = [(0.9, 0.8, 0.1)] * 50 + [(0.1, 0.3, 0.9)] * 50
-    assert colour.neutral_cast(card)["greyChroma"] > colour.GREY_MAX_CHROMA
-    with pytest.raises(colour.ColourError, match="nothing in the frame is near grey"):
-        colour.balance_target(colour.measure_balance(card))
 
 
-def off_balance() -> list[tuple[float, float, float]]:
-    """The chart under warm, slightly green light, underexposed."""
-    return [(min(r * 0.45 * 1.12, 1), g * 0.45 * 1.03, b * 0.45 * 0.8) for r, g, b in chart()]
-
-
-@pytest.mark.parametrize("renderer", [resolve_render, lumetri_render])
-def test_balancing_takes_out_the_cast_and_keeps_contrast_and_saturation(renderer):
-    pixels = off_balance()
-    renders = []
-
-    def render(look):
-        renders.append(look)
-        return colour.measure_balance(renderer(pixels, look))
-
-    start = colour.measure_balance(pixels)
-    target = colour.balance_target(start)
-    assert target["brightness"] == colour.BALANCE_BRIGHTNESS[0]
-    look, seen, _passes = colour.match(
-        target, dict(colour.NEUTRAL), render, colour.BALANCE_LIMITS, balance=True
-    )
-    assert colour.error(target, start, colour.BALANCE_MEASURES) > 0.1
-    assert colour.error(target, seen, colour.BALANCE_MEASURES) < colour.GOOD_ENOUGH
-    assert look["exposure"] > 0 and look["temperature"] < 0 and look["tint"] > 0
-    # Only exposure, temperature and tint move, on every pass.
-    assert all(each["contrast"] == 0 and each["saturation"] == 100 for each in renders)
-    assert renders[-1] == look
+def test_several_moments_are_spread_through_the_clear_part():
+    # A clip 0-100 with a title over 40-60: the middle moves to the middle of the nearest clear stretch
+    # (as one moment does), the quarters stay.
+    assert colour.uncovered_moments(0, 100, [(40, 60)], (0.25, 0.5, 0.75)) == [20, 25, 75]
+    assert colour.uncovered_moments(0, 100, [], (0.25, 0.5, 0.75)) == [25, 50, 75]
+    assert colour.uncovered_moments(0, 100, [(0, 100)], (0.25, 0.5)) == []

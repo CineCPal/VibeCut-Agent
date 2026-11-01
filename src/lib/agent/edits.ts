@@ -247,6 +247,26 @@ export function describeColour(look: unknown): string {
   return parts.join(", ") || "neutral";
 }
 
+/** A curve look (Phase 20b, parade.py): "R black +0.02 white 0.95, B gamma 1.10, saturation x1.20"
+ * (neutral parts left out), as parade.describe. */
+export function describeCurves(look: unknown): string {
+  if (!look || typeof look !== "object") return "unknown";
+  const values = look as Record<string, { black?: number; white?: number; gamma?: number } | number | undefined>;
+  const neutral = { black: 0, white: 1, gamma: 1 } as const;
+  const parts: string[] = [];
+  for (const channel of ["r", "g", "b"]) {
+    const curve = values[channel];
+    if (!curve || typeof curve !== "object") continue;
+    const bits = (["black", "white", "gamma"] as const)
+      .filter((k) => typeof curve[k] === "number" && Math.abs((curve[k] as number) - neutral[k]) >= 5e-3)
+      .map((k) => `${k} ${k === "black" && (curve[k] as number) >= 0 ? "+" : ""}${(curve[k] as number).toFixed(2)}`);
+    if (bits.length) parts.push(`${channel.toUpperCase()} ${bits.join(" ")}`);
+  }
+  const saturation = values.saturation;
+  if (typeof saturation === "number" && Math.abs(saturation - 1) >= 5e-3) parts.push(`saturation x${saturation.toFixed(2)}`);
+  return parts.join(", ") || "neutral";
+}
+
 /** One change as the chat lists it (VibeCut's describeTimelineChange, for the kinds made here). */
 export function describeTimelineChange(change: TimelineChange, fps = 25): string {
   const name = change.name ? `"${change.name}"` : "a clip";
@@ -269,10 +289,16 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
     }
     case "level":
       return `${name} level ${String(change.before ?? 0)} → ${String(change.after)} dB`;
-    case "color":
+    case "color": {
       // Phase 19c: a look before (null: none VibeCut could read) and after; a match also has its passes
-      // (a balance, Phase 20b, its frame as it `was` too).
-      return `${name} colour ${change.before ? `${describeColour(change.before)} → ` : ""}${describeColour(change.after)}${typeof change.passes === "number" ? ` (${change.was ? "balanced" : "matched"} in ${change.passes} pass(es), ${Number(change.distance) <= 0.03 ? "close" : "as near as it got"})` : ""}`;
+      // (a balance, Phase 20b, its frame as it `was` too). By the parade (Phase 20b), the looks are
+      // curves per channel and `close` says whether it got there.
+      const parade = change.method === "parade";
+      const describe = parade ? describeCurves : describeColour;
+      const close = typeof change.close === "boolean" ? change.close : Number(change.distance) <= 0.03;
+      const how = `${change.was ? "balanced" : "matched"}${parade ? " by the parade" : ""}`;
+      return `${name} colour ${parade ? "curves " : ""}${change.before ? `${describe(change.before)} → ` : ""}${describe(change.after)}${typeof change.passes === "number" ? ` (${how} in ${change.passes} pass(es), ${close ? "close" : "as near as it got"})` : ""}`;
+    }
     case "transform":
       // Phase 16f: {scale, x, y} still, or {keys: [{at, scale, x, y}]}.
       return `${name} ${describeLook(change.before)} → ${describeLook(change.after)}`;

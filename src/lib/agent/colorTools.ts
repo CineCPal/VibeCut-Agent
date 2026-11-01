@@ -1,7 +1,9 @@
 /**
  * Colour (PLAN.md, "Phase 19c"): `set_clip_color` sets a clip's look, `match_clip_color` makes clips match
  * a reference as the editor shows them, `balance_clip_color` (Phase 20b) takes each clip to its own
- * neutral (match_clip_color's command with balance), and `get_clip_color` measures clips. A look is Lumetri's Basic
+ * neutral (match_clip_color's command with balance), and `get_clip_color` measures clips. Matching to a
+ * clip and balancing go by the histogram and RGB parade (Phase 20b, parade.py): a curve per channel
+ * (Premiere's Levels effect, Resolve's per-channel CDL) and saturation. A look is Lumetri's Basic
  * Correction in its units (exposure, contrast, temperature, tint, saturation): Premiere's Lumetri Color
  * itself, and in Resolve a CDL on node 1 calibrated to move the picture about as far
  * (src-python/vibecut_agent/nle/colour.py).
@@ -28,7 +30,23 @@ export interface MeasuredClip {
   warmth: number;
   tint: number;
   colour: number;
+  /** Phase 20b: each channel's and luma's levels at the 2nd, 10th, 25th, 50th, 75th, 90th and 98th
+   * percentiles (parade.py `parade`). */
+  parade?: { r: number[]; g: number[]; b: number[]; luma: number[] };
   look?: Record<string, number>;
+}
+
+/** The histogram and parade in words: "blacks 0.03, mids 0.41, whites 0.92, shadows cool, highlights
+ * green" (a channel 0.03 or more off the others at the 10th or 90th percentile). */
+export function describeParade(p: NonNullable<MeasuredClip["parade"]>): string {
+  const parts = [`blacks ${p.luma[0].toFixed(2)}`, `mids ${p.luma[3].toFixed(2)}`, `whites ${p.luma[6].toFixed(2)}`];
+  for (const [label, i] of [["shadows", 1], ["highlights", 5]] as const) {
+    const warm = p.r[i] - p.b[i];
+    const green = p.g[i] - (p.r[i] + p.b[i]) / 2;
+    const casts = [Math.abs(warm) >= 0.03 ? (warm > 0 ? "warm" : "cool") : null, Math.abs(green) >= 0.03 ? (green > 0 ? "green" : "magenta") : null].filter(Boolean);
+    if (casts.length) parts.push(`${label} ${casts.join(" and ")}`);
+  }
+  return parts.join(", ");
 }
 
 /** A measured frame in words, for the chat: "brightness 0.42, warm, slightly green, colour 0.21". */
@@ -45,7 +63,14 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     host === "premiere"
       ? "the clip's Lumetri Color Basic Correction (added if the clip has none; its other Lumetri controls are left alone)"
       : "a CDL on the clip's node 1 in Resolve, calibrated to Lumetri's units (it replaces node 1's primaries; the clip's other nodes stay)";
-  const revert = host === "premiere" ? "Revert puts the Lumetri values back." : "Revert copies the clip's grade back from the backup timeline (undoing any later grading of that clip too).";
+  const curves =
+    host === "premiere"
+      ? "the Levels effect's R, G and B controls (added if the clip has none; its RGB controls are left neutral)"
+      : "a CDL on the clip's node 1 (slope, offset and power per channel; it replaces node 1's primaries; the clip's other nodes stay)";
+  const saturation =
+    host === "premiere" ? "Lumetri's Saturation (the clip's own, scaled; its other Lumetri controls are left alone)" : "the CDL's saturation";
+  const shows = host === "premiere" ? "Premiere" : "Resolve";
+  const revert = host === "premiere" ? "Revert puts the Lumetri and Levels values back." : "Revert copies the clip's grade back from the backup timeline (undoing any later grading of that clip too).";
   return [
     {
       name: "set_clip_color",
@@ -71,7 +96,7 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "match_clip_color",
-      description: `Makes clips' colour match a reference clip as ${host === "premiere" ? "Premiere" : "Resolve"} shows it (grade included): it measures a frame of each, sets ${where}, renders it and measures again, up to 3 passes, keeping the closest. It matches overall brightness, contrast, warmth, tint and colourfulness, so it's for shots of the same scene (two cameras on one interview, takes in one light), not different places. The reference isn't changed. Instead of referenceId, style (learned with learn_style) brings the clips toward that reference edit's average look: the overall feel, not a shot-for-shot grade, and kept moderate (exposure ±1, contrast ±40, temperature ±50, tint ±30, saturation 60-140), so a clip far from it gets closer, not all the way; say so when the distance stays high. The result says how close each got. A backup copy is made first; ${revert}`,
+      description: `Makes clips' colour match a reference clip as ${shows} shows it (grade included), by the histogram and the RGB parade: it measures three frames of each clip (a quarter, half and three quarters through), and fits a curve per channel (black, white and gamma) that takes each clip's red, green, blue and luma levels, from the 2nd to the 98th percentile, to the reference's, plus saturation for colourfulness. It sets ${curves} and ${saturation}, renders and measures again, up to 5 passes, keeping the closest. So black and white levels, contrast, and casts in the shadows or highlights alone are matched, not just averages. It's for shots of the same scene (two cameras on one interview, takes in one light), not different places, whose content would move the levels. The reference isn't changed. Instead of referenceId, style (learned with learn_style) brings the clips toward that reference edit's average look (five overall measures, set as ${where}): the overall feel, not a shot-for-shot grade, and kept moderate (exposure ±1, contrast ±40, temperature ±50, tint ±30, saturation 60-140), so a clip far from it gets closer, not all the way; say so when the distance stays high. The result says how close each got. A backup copy is made first; ${revert}`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -84,7 +109,7 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "balance_clip_color",
-      description: `Balances picture clips each on its own, with no reference: it measures a frame of each as ${host === "premiere" ? "Premiere" : "Resolve"} shows it, then sets ${where} so what's grey in the shot (its least colourful third) has no colour cast, and the exposure is in a normal range (brightness 0.3-0.5; a shot already inside keeps its brightness, so a night scene stays dark). Only exposure, temperature and tint move: ${host === "premiere" ? "the clip's own contrast and saturation are kept" : "contrast and saturation are left neutral"}. A clip already balanced is left alone. It renders and measures again, keeping the closest pass. A shot with nothing near grey in it (a colour card, a stage in coloured light) is refused; a scene whose greys aren't really grey (a sunset) can be read wrong: check it after. Corrections stay within exposure ±2, temperature and tint ±60. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
+      description: `Balances picture clips each on its own, with no reference, by the RGB parade of what's grey in the shot: it measures three frames of each as ${shows} shows it, takes its least colourful third of pixels, and sets ${curves} so their red, green and blue read alike at every level from shadows to highlights (a cast in the shadows or highlights alone is taken out too), with the exposure in a normal range (brightness 0.3-0.5; a shot inside it keeps its brightness, so a night scene stays dark). Saturation isn't changed. A clip already balanced is left alone. It renders and measures again, keeping the closest pass. A shot with nothing near grey in it (a colour card, a stage in coloured light) is refused; a scene whose greys aren't really grey (a sunset) can be read wrong: check it after. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
       parameters: {
         type: "OBJECT",
         properties: { clipIds: { type: "ARRAY", items: { type: "STRING" }, description: "The picture clips to balance (up to 50)." } },
@@ -93,7 +118,7 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "get_clip_color",
-      description: `Measures picture clips as ${host === "premiere" ? "Premiere" : "Resolve"} shows them (a frame not under a clip on a higher track): brightness (mean luma 0-1; about 0.4 is a normal exposure), contrast (luma spread over its mean), warmth (ln R/B; above 0 warm), tint (ln G over R and B; above 0 green), colourfulness. ${host === "premiere" ? "Also each clip's current Lumetri look. " : ""}Use it before judging or changing colour. Only reads; the playhead is put back.`,
+      description: `Measures picture clips as ${shows} shows them (a frame not under a clip on a higher track): brightness (mean luma 0-1; about 0.4 is a normal exposure), contrast (luma spread over its mean), warmth (ln R/B; above 0 warm), tint (ln G over R and B; above 0 green), colourfulness, and its histogram and RGB parade (parade: luma's and each channel's levels at the 2nd, 10th, 25th, 50th, 75th, 90th and 98th percentiles, blacks to whites; a channel above the others in the low ones is a cast in the shadows). ${host === "premiere" ? "Also each clip's current Lumetri look. " : ""}Use it before judging or changing colour. Only reads; the playhead is put back.`,
       parameters: { type: "OBJECT", properties: { clipIds: { type: "ARRAY", items: { type: "STRING" } } }, required: ["clipIds"] },
     },
   ];
@@ -135,7 +160,7 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
 
     get_clip_color: async (args) => {
       const read = await nleCall<{ clips: MeasuredClip[]; refused: { reason: string }[] }>(ctx.host, "read_clip_color", { timeline: ctx.timeline, itemIds: strArray(args, "clipIds") });
-      const lines = read.clips.map((c) => `"${c.name}": ${describeMeasure(c)}${c.look ? `; Lumetri ${describeColour(c.look)}` : ""}`);
+      const lines = read.clips.map((c) => `"${c.name}": ${describeMeasure(c)}${c.parade ? `; ${describeParade(c.parade)}` : ""}${c.look ? `; Lumetri ${describeColour(c.look)}` : ""}`);
       if (read.refused.length) lines.push(...read.refused.map((r) => r.reason));
       return { summary: lines.join("; "), result: read };
     },
@@ -145,6 +170,8 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
 /** The ground rule the system prompt gains (Phase 19c). */
 export const COLOR_INSTRUCTION = `- Colour: get_clip_color measures what the viewer shows; set_clip_color sets exposure, contrast,
   temperature, tint and saturation (Lumetri's units, the whole correction); match_clip_color matches
-  shots of one scene to a reference; balance_clip_color takes a shot's cast out and its exposure into a
-  normal range with no reference ("fix the white balance", "balance these"). Measure before and after, change in small steps, and say what
+  shots of one scene to a reference by the histogram and RGB parade (curves per channel, so blacks,
+  whites and casts in the shadows or highlights match too); balance_clip_color makes what's grey in a
+  shot neutral at every level and its exposure normal, with no reference ("fix the white balance",
+  "balance these"). Measure before and after, change in small steps, and say what
   changed in plain words. Creative looks, LUTs, secondaries and masks are beyond these tools: say so.`;

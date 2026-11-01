@@ -7,9 +7,9 @@ import shutil
 import pytest
 from PIL import Image
 
-from tests.nle.test_colour import chart, resolve_render
+from tests.nle.test_colour import chart
 from tests.nle.vibecut_resolve.test_resolve_edit import START, EditTimeline, call, make_edit
-from vibecut_agent.nle import colour
+from vibecut_agent.nle import colour, parade
 from vibecut_agent.nle.resolve import HostError, frames_to_timecode, timecode_to_frames
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
@@ -18,6 +18,18 @@ pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ff
 OFF = [
     tuple(0.6 * v + 0.4 * sum(p) / 3 for v in (min(p[0] * 0.85, 1), p[1] * 0.8, p[2] * 0.68)) for p in chart()
 ]
+
+
+def cdl_render(pixels, cdl):
+    """What Resolve shows with a CDL on node 1 (as test_colour.resolve_render, from the CDL itself)."""
+    slope, offset, power = ([float(v) for v in cdl[k].split()] for k in ("Slope", "Offset", "Power"))
+    sat = float(cdl["Saturation"])
+    out = []
+    for p in pixels:
+        rgb = [min(max(p[i] * slope[i] + offset[i], 0.0), 1.0) ** power[i] for i in range(3)]
+        luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        out.append(tuple(min(max(luma + sat * (v - luma), 0.0), 1.0) for v in rgb))
+    return out
 
 
 @pytest.fixture
@@ -44,7 +56,7 @@ def edit():
         ]
         pixels = looks.get(shown[0], chart()) if shown else [(0.0, 0.0, 0.0)]
         if shown and getattr(shown[0], "cdl", None):
-            pixels = resolve_render(pixels, shown[0].look_set)
+            pixels = cdl_render(pixels, shown[0].cdl)
         image = Image.new("RGB", (16, len(pixels) // 16))
         image.putdata([tuple(round(v * 255) for v in p) for p in pixels[: 16 * (len(pixels) // 16)]])
         image.save(path)
@@ -62,7 +74,7 @@ def edit():
 
     for item in looks:
         item.SetCDL = lambda value, item=item: (
-            setattr(item, "cdl", value) or setattr(item, "look_set", value["_look"]) or True
+            setattr(item, "cdl", value) or setattr(item, "look_set", value.get("_look")) or True
         )
     return host, timeline, project, {**c, "b": b, "exports": exports, "cdl": cdl}
 
@@ -111,22 +123,20 @@ def test_set_clip_color_sets_node_1_and_reverts_from_the_backup(edit):
     assert gone["failed"][0]["name"] == "A.mov"
 
 
-def test_match_closes_in_on_the_reference_and_puts_the_playhead_back(edit):
+def test_match_closes_in_on_the_reference_by_the_parade_and_puts_the_playhead_back(edit):
     host, timeline, _project, c = edit
     before = timeline.timecode
     result = call(host, "match_clip_color", referenceId=c["v"].uid, itemIds=[c["b"].uid])
     (change,) = result["changes"]
-    assert change["kind"] == "color" and change["name"] == "B.mov"
-    assert change["distance"] < colour.GOOD_ENOUGH
-    assert (
-        change["after"]["exposure"] > 0
-        and change["after"]["temperature"] < 0
-        and change["after"]["saturation"] > 100
-    )
-    assert c["b"].look_set == change["after"]
+    assert change["kind"] == "color" and change["name"] == "B.mov" and change["method"] == "parade"
+    # OFF was dulled toward each pixel's mean (saturation about luma can't wholly undo it): much closer.
+    assert change["distance"] < 0.25 * parade.error(result["reference"], parade.parade(OFF))
+    after = change["after"]
+    assert after["b"]["white"] < after["r"]["white"] < 1 and after["saturation"] > 1.2
+    assert c["b"].cdl == parade.cdl(after)
     assert timeline.timecode == before
-    # The reference at A.mov's middle (125), B.mov's at its own (400).
-    assert c["exports"][0] == 125 and set(c["exports"][1:]) == {400}
+    # Three frames of each: A.mov (0-250) at 62, 125, 187; B.mov (300-500) at 350, 400, 450.
+    assert c["exports"][:3] == [62, 125, 187] and set(c["exports"][3:]) == {350, 400, 450}
 
 
 def test_match_to_a_learned_look_measures_only_the_clips(edit):
@@ -150,10 +160,11 @@ def test_balance_takes_each_clip_to_its_own_neutral(edit):
     # A.mov (the chart) is neutral and normally exposed already: its grade isn't touched.
     assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["v"].cdl is None
     (change,) = result["changes"]
-    assert change["name"] == "B.mov" and change["distance"] < colour.GOOD_ENOUGH
+    assert change["name"] == "B.mov" and change["method"] == "parade" and change["close"]
+    # OFF's greys are warm: red's curve pulled down against blue's; saturation as shot.
     after = change["after"]
-    assert after["temperature"] < 0 and (after["contrast"], after["saturation"]) == (0, 100)
-    assert c["b"].look_set == after and timeline.timecode == before
+    assert after["r"]["white"] > after["b"]["white"] and after["saturation"] == 1
+    assert c["b"].cdl == parade.cdl(after) and timeline.timecode == before
 
 
 def test_read_measures_and_looks_past_covers(edit):

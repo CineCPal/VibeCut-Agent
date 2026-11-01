@@ -18,10 +18,8 @@ a step is taken toward the reference (`step`), applied, and measured again, keep
 The measures compare overall brightness, contrast, warmth, tint and colourfulness, so it suits shots of
 the same scene (two cameras on an interview), not shots of different places.
 
-Balancing (`balance_target`, `match(..., balance=True)`) is the same loop with a clip's own neutral as
-its reference: the cast of its least colourful pixels (`neutral_cast`) taken out with temperature and
-tint, and exposure brought into BALANCE_BRIGHTNESS when it's outside; contrast and saturation are left
-as they are.
+Matching to a clip and balancing go by the parade instead (Phase 20b, parade.py, using the grey and
+brightness constants here); a learned style is matched here.
 """
 
 from __future__ import annotations
@@ -68,10 +66,7 @@ STEP_SCALE = {"exposure": 0.25, "contrast": 10.0, "temperature": 10.0, "tint": 1
 SOLVE_PASSES = 3
 # A pass this close to the reference stops the loop (see `error`).
 GOOD_ENOUGH = 0.03
-# Balancing: the measures it aims at and the controls it moves (the others are kept as they are).
-BALANCE_MEASURES = ("greyWarmth", "greyTint", "brightness")
-BALANCE_CONTROLS = ("exposure", "temperature", "tint")
-# A shot darker or brighter than this is brought to its nearer end; one inside keeps its brightness
+# Balancing (parade.balance): a shot darker or brighter than this is brought to its nearer end; one inside keeps its brightness
 # (a night scene stays dark, only less so). About 0.4 is a normal exposure (`measure`).
 BALANCE_BRIGHTNESS = (0.3, 0.5)
 # The share of a frame's mid pixels, the least colourful, that the cast is read from: what's grey in
@@ -81,14 +76,6 @@ GREY_SHARE = 0.3
 # all: a strong cast on a grey reads about 0.3. Over this (a colour card, a test chart of bars, a stage
 # in coloured light; seen live, Phase 20b), there's nothing to balance by and the clip is refused.
 GREY_MAX_CHROMA = 0.4
-# A balance only corrects: a cast or exposure needing more than this is past what it can judge.
-BALANCE_LIMITS = {
-    "exposure": (-2.0, 2.0),
-    "contrast": LIMITS["contrast"],
-    "temperature": (-60.0, 60.0),
-    "tint": (-60.0, 60.0),
-    "saturation": LIMITS["saturation"],
-}
 
 
 class ColourError(ValueError):
@@ -308,48 +295,6 @@ def measure(pixels: list[tuple[float, float, float]]) -> dict[str, float]:
     }
 
 
-def neutral_cast(pixels: list[tuple[float, float, float]]) -> dict[str, float]:
-    """The cast of what's grey in the frame: `greyWarmth` ln(R / B) and `greyTint` ln(G / mean(R, B)) over
-    the GREY_SHARE least colourful pixels (by (max - min) / max) that aren't near black or white, and
-    `greyChroma`, how colourful those are on average. 0 and 0 is a neutral balance."""
-    if not pixels:
-        raise ColourError("The frame has no pixels")
-    mids = [p for p in pixels if CLIP_LOW < 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2] < CLIP_HIGH]
-    if len(mids) < len(pixels) // 20:
-        mids = pixels
-    chroma = sorted(((max(p) - min(p)) / max(max(p), 1e-3), p) for p in mids)
-    greys = [p for _c, p in chroma[: max(1, int(len(mids) * GREY_SHARE))]]
-    grey_chroma = sum(c for c, _p in chroma[: len(greys)]) / len(greys)
-    r = sum(p[0] for p in greys) / len(greys) + 1e-4
-    g = sum(p[1] for p in greys) / len(greys) + 1e-4
-    b = sum(p[2] for p in greys) / len(greys) + 1e-4
-    return {
-        "greyWarmth": round(math.log(r / b), 4),
-        "greyTint": round(math.log(g / ((r + b) / 2)), 4),
-        "greyChroma": round(grey_chroma, 4),
-    }
-
-
-def measure_balance(pixels: list[tuple[float, float, float]]) -> dict[str, float]:
-    """`measure` and `neutral_cast` together, for balancing."""
-    return {**measure(pixels), **neutral_cast(pixels)}
-
-
-def balance_target(seen: dict[str, float]) -> dict[str, float]:
-    """A clip's own neutral, from its frame as it is (`measure_balance`): no cast in its greys, its
-    brightness brought into BALANCE_BRIGHTNESS. A frame with nothing near grey is refused."""
-    if seen["greyChroma"] > GREY_MAX_CHROMA:
-        raise ColourError(
-            "nothing in the frame is near grey (it's all strong colour), so there's no neutral to balance by"
-        )
-    low, high = BALANCE_BRIGHTNESS
-    return {
-        "greyWarmth": 0.0,
-        "greyTint": 0.0,
-        "brightness": round(min(max(seen["brightness"], low), high), 4),
-    }
-
-
 def residual(
     reference: dict[str, float], seen: dict[str, float], measures: Sequence[str] = MEASURES
 ) -> list[float]:
@@ -398,22 +343,6 @@ def step(
     return clamp(nxt, limits)
 
 
-def balance_step(
-    reference: dict[str, float],
-    current: dict[str, float],
-    look: dict[str, float],
-    limits: dict[str, tuple[float, float]] = LIMITS,
-) -> dict[str, float]:
-    """`step` for balancing: exposure toward the reference brightness, and temperature and tint to take
-    the greys' cast out (a cast scales with saturation, as in `step`); contrast and saturation kept."""
-    nxt = dict(look)
-    nxt["exposure"] += GAMMA * math.log2((reference["brightness"] + 1e-3) / (current["brightness"] + 1e-3))
-    s = max(look["saturation"] / 100, 0.05)
-    nxt["temperature"] -= (current["greyWarmth"] - reference["greyWarmth"]) / (s * K_TEMPERATURE)
-    nxt["tint"] += (current["greyTint"] - reference["greyTint"]) / (s * K_TINT)
-    return clamp(nxt, limits)
-
-
 def describe(look: dict[str, float]) -> str:
     """'exposure +0.5, temperature -12' (neutral fields left out), or 'neutral'."""
     parts = []
@@ -425,10 +354,25 @@ def describe(look: dict[str, float]) -> str:
     return ", ".join(parts) or "neutral"
 
 
-def uncovered_moment(start: float, end: float, covers: Sequence[tuple[float, float]]) -> float | None:
-    """The time in [start, end) nearest its middle that no cover (a clip on a higher video track) is over,
-    or None when it's all covered."""
-    middle = (start + end) / 2
+def uncovered_moments(
+    start: float, end: float, covers: Sequence[tuple[float, float]], shares: Sequence[float]
+) -> list[float]:
+    """For each share of [start, end) (0.5 its middle), the time nearest it that no cover is over, each
+    once, in order; [] when it's all covered (Phase 20b: a clip measured on several frames)."""
+    out: list[float] = []
+    for share in shares:
+        at = uncovered_moment(start, end, covers, start + (end - start) * share)
+        if at is not None and at not in out:
+            out.append(at)
+    return sorted(out)
+
+
+def uncovered_moment(
+    start: float, end: float, covers: Sequence[tuple[float, float]], near: float | None = None
+) -> float | None:
+    """The time in [start, end) nearest `near` (its middle when not given) that no cover (a clip on a
+    higher video track) is over, or None when it's all covered."""
+    middle = (start + end) / 2 if near is None else near
     free: list[tuple[float, float]] = []
     cursor = start
     for a, b in sorted((max(a, start), min(b, end)) for a, b in covers if b > start and a < end):
@@ -505,7 +449,6 @@ def match(
     start: dict[str, float],
     render: Any,
     limits: dict[str, tuple[float, float]] = LIMITS,
-    balance: bool = False,
 ) -> tuple[dict[str, float], dict[str, float], int]:
     """The closed loop: `render(look)` applies a look and returns the frame's measures. From `start`, steps
     toward `reference` (each control kept inside `limits`) and returns (best look, its measures,
@@ -517,20 +460,15 @@ def match(
     a colourful clip it moved brightness, contrast and tint as much as colour, and contrast barely
     moved contrast): each control nudged by PROBE_STEP from the best look so far, one render each, gives
     how every measure moves with every control. Then up to SOLVE_PASSES solves for all five together
-    (`solve_step`), each pass's result folding into that estimate (Broyden's update).
-
-    With `balance`, `reference` is a `balance_target` and `render` gives `measure_balance`'s measures:
-    only BALANCE_MEASURES count and only BALANCE_CONTROLS move (`balance_step` is the model)."""
-    measures = BALANCE_MEASURES if balance else MEASURES
-    controls = BALANCE_CONTROLS if balance else FIELDS
-    model = balance_step if balance else step
+    (`solve_step`), each pass's result folding into that estimate (Broyden's update)."""
+    measures, controls = MEASURES, FIELDS
     look = clamp(start, limits)
     seen = render(look)
     best = (error(reference, seen, measures), look, seen)
     passes = 0
     while passes < MATCH_PASSES and best[0] > GOOD_ENOUGH:
         before = best[0]
-        look = model(reference, seen, look, limits)
+        look = step(reference, seen, look, limits)
         seen = render(look)
         passes += 1
         score = error(reference, seen, measures)

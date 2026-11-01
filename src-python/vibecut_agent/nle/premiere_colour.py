@@ -7,6 +7,11 @@ through QE to a clip without one. The other Lumetri controls are left as they ar
 read, so Revert puts them back (a Lumetri VibeCut added stays, set neutral), and leaves a clip whose
 values were changed since.
 
+Matching to a clip and balancing (Phase 20b) go by the parade instead (parade.py): a curve per channel
+in the Levels effect (host.jsx `vcSetLevels`, panel 0.15.0, added through QE like Lumetri), its RGB
+controls left neutral, each clip measured on parade.FRAMES frames. Lumetri isn't touched by them. Revert
+puts the Levels values back the same way.
+
 To measure a clip, the panel's `export_frame` writes the sequence's frame (Lumetri and effects included)
 with QE's exportFramePNG into the bridge folder's frames/, the playhead put back after. A moment where a
 clip on a higher track covers the clip is avoided; a clip covered all through or switched off, or on a
@@ -20,7 +25,7 @@ import time
 import uuid
 from typing import Any
 
-from vibecut_agent.nle import colour
+from vibecut_agent.nle import colour, parade
 from vibecut_agent.nle.premiere import TICKS_PER_SECOND, HostError
 from vibecut_agent.nle.premiere_bridge import default_dir
 from vibecut_agent.nle.premiere_edit import Sequence, _read
@@ -51,6 +56,12 @@ def _same(a: dict[str, float], b: dict[str, float]) -> bool:
 
 def _moment(seq: Sequence, item_id: str) -> tuple[dict[str, Any], int]:
     """The picture clip and the ticks to look at it (not under a clip on a higher track)."""
+    clip, moments = _moments(seq, item_id, (0.5,))
+    return clip, moments[0]
+
+
+def _moments(seq: Sequence, item_id: str, shares: tuple[float, ...]) -> tuple[dict[str, Any], list[int]]:
+    """The picture clip and the ticks to look at it at each of `shares` of it (as near as it's clear)."""
     clip = seq.clip(item_id)
     if clip["kind"] != "video":
         raise HostError(f"{clip['name']} is sound, with no picture to colour")
@@ -64,15 +75,20 @@ def _moment(seq: Sequence, item_id: str) -> tuple[dict[str, Any], int]:
         for c in above.get("clips", [])
         if not c.get("disabled")
     ]
-    at = colour.uncovered_moment(int(clip["startTicks"]), int(clip["endTicks"]), covers)
-    if at is None:
+    moments = colour.uncovered_moments(int(clip["startTicks"]), int(clip["endTicks"]), covers, shares)
+    if not moments:
         raise HostError(f"{clip['name']} is covered all through by clips on tracks above it")
     # On a frame, so the export shows this clip's frame and not a neighbour's.
-    return clip, int(at) // seq.timebase * seq.timebase
+    return clip, list(dict.fromkeys(int(at) // seq.timebase * seq.timebase for at in moments))
 
 
 def _frame(host: Any, timeline: str, ticks: int, measuring: Any = colour.measure) -> dict[str, float]:
     """The measures (`measuring`'s) of the sequence's frame at `ticks`, as Premiere renders it."""
+    return dict(measuring(_pixels(host, timeline, ticks)))
+
+
+def _pixels(host: Any, timeline: str, ticks: int) -> parade.Pixels:
+    """The sequence's frame at `ticks` as Premiere renders it (colour.frame_pixels)."""
     name = f"colour-{uuid.uuid4().hex[:12]}"
     path = str(host._send("export_frame", {"timeline": timeline, "ticks": str(ticks), "name": name})["path"])
     if os.path.dirname(path) != str(default_dir() / "frames"):
@@ -89,7 +105,7 @@ def _frame(host: Any, timeline: str, ticks: int, measuring: Any = colour.measure
                 raise HostError("Premiere didn't write the frame")
             size = now
             time.sleep(0.15)
-        return dict(measuring(colour.frame_pixels(path)))
+        return colour.frame_pixels(path)
     except colour.ColourError as exc:
         raise HostError(str(exc)) from None
     finally:
@@ -145,10 +161,10 @@ def set_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """{timeline, referenceId | referenceLook, itemIds} -> each clip's Lumetri set to match the reference
-    (a clip as Premiere renders it, or a look learned from a reference edit) (colour.match: measure,
-    step, apply, up to colour.MATCH_PASSES passes). {timeline, balance: true, itemIds} balances each
-    clip to its own neutral instead (`_balance`)."""
+    """{timeline, referenceId | referenceLook, itemIds} -> each clip made to match the reference: a clip
+    as Premiere renders it by its parade, with Levels curves (`_match_parade`), or a look learned from a
+    reference edit with Lumetri's Basic Correction (colour.match). {timeline, balance: true, itemIds}
+    balances each clip to its own neutral instead (`_balance`)."""
     try:
         balancing = colour.balance_wants(args)
     except colour.ColourError as exc:
@@ -161,12 +177,11 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         raise HostError(str(exc)) from None
     timeline = host._name(args)
     seq = _read(host, timeline)
-    if look is not None:
-        reference = look
-    else:
+    if look is None:
         assert reference_id is not None  # match_wants gives a clip or a look
-        _ref, ref_at = _moment(seq, reference_id)
-        reference = _frame(host, timeline, ref_at)
+        return _match_parade(host, timeline, seq, reference_id, targets)
+    # A learned style is five overall measures, matched with Lumetri's Basic Correction.
+    reference = look
     changes, refused = [], []
     for item_id in targets:
         try:
@@ -193,8 +208,7 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
             return _frame(host, timeline, at)
 
         try:
-            limits = colour.STYLE_LIMITS if look is not None else colour.LIMITS
-            _best, seen, passes = colour.match(reference, _look(before), render, limits)
+            _best, seen, passes = colour.match(reference, _look(before), render, colour.STYLE_LIMITS)
         except HostError as exc:
             if "after" in last:
                 _set(host, timeline, item_id, _look(before))
@@ -207,62 +221,169 @@ def match_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     return {"changes": changes, "refused": refused, "reference": reference}
 
 
+def _levels_of(host: Any, timeline: str, item_id: str) -> dict[str, Any]:
+    return dict(host._send("read_levels", {"timeline": timeline, "ids": [item_id]})["items"][0])
+
+
+def _set_levels(host: Any, timeline: str, item_id: str, look: parade.Look) -> dict[str, Any]:
+    items = host._send(
+        "set_levels",
+        {"timeline": timeline, "items": [{"id": item_id, "values": parade.levels_controls(look)}]},
+    )["items"]
+    return dict(items[0])
+
+
+def _levels_look(read: dict[str, Any]) -> parade.Look | None:
+    """The look a clip's Levels give (neutral without Levels; None when set some other way)."""
+    return parade.levels_look(read["values"]) if read.get("present") else parade.neutral_look()
+
+
+def _pooled(host: Any, timeline: str, moments: list[int]) -> parade.Pixels:
+    return [p for at in moments for p in _pixels(host, timeline, at)]
+
+
+def _parade_target(
+    host: Any, timeline: str, seq: Sequence, item_id: str
+) -> tuple[dict[str, Any], list[int], dict[str, Any]]:
+    """A clip to change by the parade: (clip, moments, its Levels before). Refused (HostError) when it
+    can't be seen, or its Levels are keyframed or set in a way VibeCut doesn't."""
+    clip, moments = _moments(seq, item_id, parade.FRAMES)
+    before = _levels_of(host, timeline, item_id)
+    if before.get("keyed"):
+        raise HostError(f"{clip['name']}: its Levels {', '.join(before['keyed'])} has keyframes")
+    if _levels_look(before) is None:
+        raise HostError(
+            f"{clip['name']}: its Levels are set by hand (an RGB control, or a black input and output)"
+        )
+    return clip, moments, before
+
+
+def _parade_change(
+    clip: dict[str, Any], before: dict[str, Any], after: dict[str, Any], **extra: Any
+) -> dict[str, Any]:
+    return {
+        "kind": "color", "itemId": clip["id"], "name": clip["name"], "track": [clip["kind"], clip["index"]],
+        "method": "parade", "before": _levels_look(before) if before.get("present") else None,
+        "after": _levels_look(after), "levels": {"before": before, "after": after}, **extra,
+    }  # fmt: skip
+
+
+def _put_back(host: Any, timeline: str, item_id: str, before: dict[str, Any], last: dict[str, Any]) -> None:
+    if "after" in last:
+        _set_levels(host, timeline, item_id, _levels_look(before) or parade.neutral_look())
+    if "lumetri" in last:
+        _set(host, timeline, item_id, _look(last["lumetri_before"]))
+
+
+def _saturate(host: Any, timeline: str, item_id: str, multiple: float, last: dict[str, Any]) -> None:
+    """Lumetri's Saturation set to the clip's own (before the match) times `multiple`, when that's
+    not what it is now; what it was is kept in `last` for the change and for putting back."""
+    if "lumetri_before" not in last:
+        read = _lumetri_of(host, timeline, [item_id])[item_id]
+        if "saturation" in read.get("keyed", []):
+            raise HostError("its Lumetri Saturation has keyframes")
+        last["lumetri_before"] = read
+        last["saturation"] = _look(read)["saturation"]
+    own = _look(last["lumetri_before"])["saturation"]
+    want = round(min(max(own * multiple, colour.LIMITS["saturation"][0]), colour.LIMITS["saturation"][1]), 1)
+    if abs(want - last["saturation"]) < 0.05:
+        return
+    items = host._send(
+        "set_lumetri", {"timeline": timeline, "items": [{"id": item_id, "values": {"saturation": want}}]}
+    )["items"]
+    last["lumetri"] = dict(items[0])
+    last["saturation"] = want
+
+
+def _match_parade(
+    host: Any, timeline: str, seq: Sequence, reference_id: str, targets: list[str]
+) -> dict[str, Any]:
+    """Each clip's Levels curves set so its parade and histogram match the reference clip's
+    (parade.match), measured on parade.FRAMES frames of each."""
+    _ref, ref_moments = _moments(seq, reference_id, parade.FRAMES)
+    reference = parade.parade(_pooled(host, timeline, ref_moments))
+    changes, refused = [], []
+    for item_id in targets:
+        try:
+            clip, moments, before = _parade_target(host, timeline, seq, item_id)
+        except HostError as exc:
+            refused.append({"itemId": item_id, "reason": str(exc)})
+            continue
+        last: dict[str, Any] = {}
+
+        def show(
+            look: parade.Look | None,
+            item_id: str = item_id,
+            moments: list[int] = moments,
+            last: dict[str, Any] = last,
+        ) -> parade.Pixels:
+            if look is not None:
+                last["after"] = _set_levels(host, timeline, item_id, look)
+                _saturate(host, timeline, item_id, look.get("saturation", 1.0), last)
+            return _pooled(host, timeline, moments)
+
+        try:
+            look_set, seen, passes = parade.match(reference, show, parade.premiere_curve)
+        except (HostError, colour.ColourError) as exc:
+            _put_back(host, timeline, item_id, before, last)
+            refused.append({"itemId": item_id, "reason": f"{clip['name']}: {exc}"})
+            continue
+        distance = round(parade.error(reference, seen), 4)
+        change = _parade_change(clip, before, last["after"], reference=reference, seen=seen, passes=passes,
+                                distance=distance, close=distance <= parade.GOOD_ENOUGH)  # fmt: skip
+        if change["after"] is not None:
+            change["after"]["saturation"] = look_set.get("saturation", 1.0)
+        if "lumetri" in last:
+            change["lumetri"] = {"before": last["lumetri_before"], "after": last["lumetri"]}
+        changes.append(change)
+    return {"changes": changes, "refused": refused, "reference": reference}
+
+
 def _balance(host: Any, timeline: str, ids: list[str]) -> dict[str, Any]:
-    """Each clip measured as it is, then its Lumetri exposure, temperature and tint moved to its own
-    neutral (colour.balance_target), starting from its current Lumetri; a clip already there is left
-    alone (`balanced`)."""
+    """Each clip balanced to its own neutral by the parade (parade.balance): Levels curves that make
+    its greys read alike at every level, its exposure brought into range. A clip already there is left
+    alone (`balanced`), nothing set."""
     seq = _read(host, timeline)
     changes, refused, balanced = [], [], []
     for item_id in ids:
         try:
-            clip, at = _moment(seq, item_id)
+            clip, moments, before = _parade_target(host, timeline, seq, item_id)
         except HostError as exc:
             refused.append({"itemId": item_id, "reason": str(exc)})
             continue
-        before = _lumetri_of(host, timeline, [item_id])[item_id]
-        if before.get("keyed"):
-            refused.append(
-                {
-                    "itemId": item_id,
-                    "reason": f"{clip['name']}: its Lumetri {', '.join(before['keyed'])} has keyframes",
-                }
-            )
-            continue
         last: dict[str, Any] = {}
 
-        def render(
-            look: dict[str, float], item_id: str = item_id, at: int = at, last: dict[str, Any] = last
-        ) -> dict[str, float]:
-            last["after"] = _set(host, timeline, item_id, look)
-            return _frame(host, timeline, at, colour.measure_balance)
+        def show(
+            look: parade.Look | None,
+            item_id: str = item_id,
+            moments: list[int] = moments,
+            last: dict[str, Any] = last,
+        ) -> parade.Pixels:
+            if look is not None:
+                last["after"] = _set_levels(host, timeline, item_id, look)
+            return _pooled(host, timeline, moments)
 
         try:
-            was = _frame(host, timeline, at, colour.measure_balance)
-            try:
-                target = colour.balance_target(was)
-            except colour.ColourError as exc:
-                raise HostError(str(exc)) from None
-            if colour.error(target, was, colour.BALANCE_MEASURES) <= colour.GOOD_ENOUGH:
-                balanced.append({"itemId": item_id, "name": clip["name"], "seen": was})
-                continue
-            _best, seen, passes = colour.match(
-                target, _look(before), render, colour.BALANCE_LIMITS, balance=True
-            )
-        except HostError as exc:
-            if "after" in last:
-                _set(host, timeline, item_id, _look(before))
+            result = parade.balance(show, parade.premiere_curve)
+        except (HostError, colour.ColourError) as exc:
+            _put_back(host, timeline, item_id, before, last)
             refused.append({"itemId": item_id, "reason": f"{clip['name']}: {exc}"})
             continue
+        if result.get("balanced"):
+            balanced.append({"itemId": item_id, "name": clip["name"], "was": result["was"]})
+            continue
         changes.append(
-            _change(clip, before, last["after"], reference=target, was=was, seen=seen, passes=passes,
-                    distance=round(colour.error(target, seen, colour.BALANCE_MEASURES), 4))
+            _parade_change(clip, before, last["after"], reference=result["target"], was=result["was"],
+                           seen=result["seen"], passes=result["passes"], distance=result["distance"],
+                           close=result["distance"] <= parade.GOOD_ENOUGH)
         )  # fmt: skip
     return {"changes": changes, "refused": refused, "balanced": balanced}
 
 
 def read_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     """{timeline, itemIds} -> {clips: [{itemId, name, at, brightness, contrast, warmth, tint, colour,
-    look}], refused}: each clip's frame as Premiere renders it, measured, and its Lumetri look."""
+    parade, look}], refused}: each clip's frame as Premiere renders it, measured (its parade and histogram
+    too, parade.parade), and its Lumetri look."""
     ids = args.get("itemIds")
     if (
         not isinstance(ids, list)
@@ -278,19 +399,21 @@ def read_clip_color(host: Any, args: dict[str, Any]) -> dict[str, Any]:
         try:
             clip, at = _moment(seq, item_id)
             read = _lumetri_of(host, timeline, [item_id])[item_id]
-            measured = _frame(host, timeline, at)
+            pixels = _pixels(host, timeline, at)
         except HostError as exc:
             refused.append({"itemId": item_id, "reason": str(exc)})
             continue
         out.append({
             "itemId": item_id, "name": clip["name"], "at": round(at / TICKS_PER_SECOND, 3),
-            **measured, "look": _look(read),
+            **colour.measure(pixels), "parade": parade.parade(pixels), "look": _look(read),
         })  # fmt: skip
     return {"clips": out, "refused": refused}
 
 
 def revert_color(host: Any, timeline: str, seq: Sequence, item_id: str, change: dict[str, Any]) -> str:
-    """ "reverted" or "changed" (its Lumetri isn't what the change left)."""
+    """ "reverted" or "changed" (its Lumetri, or Levels, isn't what the change left)."""
+    if change.get("method") == "parade":
+        return _revert_levels(host, timeline, item_id, change)
     saved = change.get("lumetri") or {}
     if not all(isinstance(saved.get(k), dict) for k in ("before", "after")):
         return "changed"
@@ -299,3 +422,35 @@ def revert_color(host: Any, timeline: str, seq: Sequence, item_id: str, change: 
         return "changed"
     after = _set(host, timeline, item_id, _look(saved["before"]))
     return "reverted" if _same(_look(after), _look(saved["before"])) else "failed"
+
+
+def _same_levels(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return all(abs(float(a.get(k, 0)) - float(b.get(k, 0))) < 0.02 for k in set(a) | set(b))
+
+
+def _revert_levels(host: Any, timeline: str, item_id: str, change: dict[str, Any]) -> str:
+    """Levels put back, and Lumetri's Saturation when the match set it; "changed" if either isn't what
+    the change left."""
+    saved = change.get("levels") or {}
+    if not all(isinstance(saved.get(k), dict) for k in ("before", "after")):
+        return "changed"
+    now = _levels_of(host, timeline, item_id)
+    if not now.get("present") or not _same_levels(now["values"], saved["after"].get("values") or {}):
+        return "changed"
+    lumetri = change.get("lumetri")
+    if lumetri is not None:
+        if not all(isinstance(lumetri.get(k), dict) for k in ("before", "after")):
+            return "changed"
+        read = _lumetri_of(host, timeline, [item_id]).get(item_id)
+        if read is None or not read.get("present") or not _same(_look(read), _look(lumetri["after"])):
+            return "changed"
+    # Levels VibeCut added stays, set neutral (as Lumetri does).
+    want = _levels_look(saved["before"]) or parade.neutral_look()
+    after = _set_levels(host, timeline, item_id, want)
+    ok = _same_levels(after["values"], parade.levels_controls(want))
+    if lumetri is not None:
+        ok = (
+            _same(_look(_set(host, timeline, item_id, _look(lumetri["before"]))), _look(lumetri["before"]))
+            and ok
+        )
+    return "reverted" if ok else "failed"

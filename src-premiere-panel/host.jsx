@@ -1324,20 +1324,7 @@ function vcSetLumetri(args) {
         vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
       }
       if (!vcLumetriOf(entry.item)) {
-        var q = vcQeSequence(sequence);
-        try {
-          var track = q.qe.getVideoTrackAt(entry.track);
-          var start = entry.item.start.seconds;
-          for (var t = 0; t < track.numItems; t++) {
-            var qItem = track.getItemAt(t);
-            if (qItem.type !== "Empty" && Math.abs(qItem.start.secs - start) < 0.001) {
-              qItem.addVideoEffect(qe.project.getVideoEffectByName("Lumetri Color"));
-              break;
-            }
-          }
-        } finally {
-          q.reopen();
-        }
+        vcAddVideoEffect(sequence, entry, "Lumetri Color");
         entry = vcItemWithId(sequence, want.id);
         if (!vcLumetriOf(entry.item)) {
           vcRefuse("Premiere didn't add Lumetri Color to \"" + entry.item.name + "\"");
@@ -1355,6 +1342,128 @@ function vcSetLumetri(args) {
         controls[key].setValue(want.values[key], 1);
       }
       out.push(vcReadLumetriOf(vcItemWithId(sequence, want.id), want.id));
+    }
+    return { items: out };
+  }, args);
+}
+
+// Adds a video effect to a picture clip through QE (the DOM can't), by the effect's name.
+function vcAddVideoEffect(sequence, entry, name) {
+  var q = vcQeSequence(sequence);
+  try {
+    var track = q.qe.getVideoTrackAt(entry.track);
+    var start = entry.item.start.seconds;
+    for (var t = 0; t < track.numItems; t++) {
+      var qItem = track.getItemAt(t);
+      if (qItem.type !== "Empty" && Math.abs(qItem.start.secs - start) < 0.001) {
+        qItem.addVideoEffect(qe.project.getVideoEffectByName(name));
+        break;
+      }
+    }
+  } finally {
+    q.reopen();
+  }
+}
+
+// Phase 20b: matching and balancing by the parade (parade.py) set the Levels effect's controls, by
+// their names in Premiere 26.5.2 ("(R) Black Input Level"; 0-255, gamma x 100), keyed rgb_ / r_ / g_ /
+// b_ + black_in, white_in, black_out, white_out, gamma (20b probe).
+var VC_LEVELS_CHANNELS = { rgb: "(RGB) ", r: "(R) ", g: "(G) ", b: "(B) " };
+var VC_LEVELS_PARTS = { black_in: "Black Input Level", white_in: "White Input Level", black_out: "Black Output Level", white_out: "White Output Level", gamma: "Gamma" };
+
+function vcLevelsOf(clip) {
+  for (var c = 0; c < clip.components.numItems; c++) {
+    if (clip.components[c].matchName === "PR.ADBE Levels") {
+      return clip.components[c];
+    }
+  }
+  return null;
+}
+
+function vcLevelsControls(component) {
+  var byName = {};
+  for (var p = 0; p < component.properties.numItems; p++) {
+    byName[component.properties[p].displayName] = component.properties[p];
+  }
+  var out = {};
+  for (var ch in VC_LEVELS_CHANNELS) {
+    for (var part in VC_LEVELS_PARTS) {
+      if (VC_LEVELS_CHANNELS.hasOwnProperty(ch) && VC_LEVELS_PARTS.hasOwnProperty(part)) {
+        var prop = byName[VC_LEVELS_CHANNELS[ch] + VC_LEVELS_PARTS[part]];
+        if (prop) {
+          out[ch + "_" + part] = prop;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// {id, present, values: {rgb_black_in, ...}, keyed: [keys]} for one picture clip.
+function vcReadLevelsOf(entry, id) {
+  var component = vcLevelsOf(entry.item);
+  var read = { id: id, present: !!component, values: {}, keyed: [] };
+  if (component) {
+    var controls = vcLevelsControls(component);
+    for (var key in controls) {
+      if (controls.hasOwnProperty(key)) {
+        read.values[key] = Number(controls[key].getValue());
+        if (controls[key].isTimeVarying()) {
+          read.keyed.push(key);
+        }
+      }
+    }
+  }
+  return read;
+}
+
+// args: {timeline, ids}. Each picture clip's Levels controls (none when it has no Levels).
+function vcReadLevels(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.ids.length; i++) {
+      var entry = vcItemWithId(sequence, a.ids[i]);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      out.push(vcReadLevelsOf(entry, a.ids[i]));
+    }
+    return { items: out };
+  }, args);
+}
+
+// args: {timeline, items: [{id, values: {rgb_black_in?, ..., b_gamma?}}]}. Sets each clip's Levels
+// controls (still: any keys on them are cleared), first adding Levels through QE to a clip without it.
+function vcSetLevels(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var out = [];
+    for (var i = 0; i < a.items.length; i++) {
+      var want = a.items[i];
+      var entry = vcItemWithId(sequence, want.id);
+      if (entry.type !== "video") {
+        vcRefuse("\"" + entry.item.name + "\" is sound, with no picture to colour");
+      }
+      if (!vcLevelsOf(entry.item)) {
+        vcAddVideoEffect(sequence, entry, "Levels");
+        entry = vcItemWithId(sequence, want.id);
+        if (!vcLevelsOf(entry.item)) {
+          vcRefuse("Premiere didn't add Levels to \"" + entry.item.name + "\"");
+        }
+      }
+      var controls = vcLevelsControls(vcLevelsOf(entry.item));
+      for (var key in want.values) {
+        if (!want.values.hasOwnProperty(key)) {
+          continue;
+        }
+        if (!controls[key]) {
+          vcRefuse("\"" + entry.item.name + "\"'s Levels has no " + key);
+        }
+        controls[key].setTimeVarying(false);
+        controls[key].setValue(want.values[key], 1);
+      }
+      out.push(vcReadLevelsOf(vcItemWithId(sequence, want.id), want.id));
     }
     return { items: out };
   }, args);

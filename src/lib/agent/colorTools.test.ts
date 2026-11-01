@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ipc = vi.hoisted(() => ({ nleCall: vi.fn() }));
 vi.mock("../ipc", () => ipc);
 
-import { describeMeasure } from "./colorTools";
+import { describeMeasure, describeParade } from "./colorTools";
 import { editExecutors } from "./editTools";
-import { describeColour, describeTimelineChange, type EditContext } from "./edits";
+import { describeColour, describeCurves, describeTimelineChange, type EditContext } from "./edits";
 import { useEditLogStore } from "../../store/useEditLogStore";
 import type { HostTimeline } from "../../types/timeline";
 
@@ -92,6 +92,24 @@ describe("colour tools", () => {
     const out = await run.get_clip_color({ clipIds: ["v1", "v2"] });
     expect(sent("read_clip_color")).toEqual([{ timeline: "Main", itemIds: ["v1", "v2"] }]);
     expect(out.summary).toBe('"B.mov": brightness 0.38, contrast 0.55, warm, colourfulness 0.20; Lumetri neutral; A.mov is covered all through by clips on tracks above it');
+  });
+
+  it("describes curves, the parade and a match by the parade", () => {
+    const curves = { r: { black: 0.02, white: 0.95, gamma: 1 }, g: { black: 0, white: 1, gamma: 1 }, b: { black: -0.03, white: 1, gamma: 1.1 }, saturation: 1.2 };
+    expect(describeCurves(curves)).toBe("R black +0.02 white 0.95, B black -0.03 gamma 1.10, saturation x1.20");
+    expect(describeCurves({ r: { black: 0, white: 1, gamma: 1 }, saturation: 1 })).toBe("neutral");
+    const level = (v: number) => [0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98].map((p) => Math.round(p * v * 1000) / 1000);
+    expect(describeParade({ r: level(1), g: level(1), b: level(1), luma: level(1) })).toBe("blacks 0.02, mids 0.50, whites 0.98");
+    // Blue up in the shadows, red up in the highlights.
+    const b = level(1);
+    b[1] += 0.05;
+    const r = level(1);
+    r[5] += 0.04;
+    expect(describeParade({ r, g: level(1), b, luma: level(1) })).toBe("blacks 0.02, mids 0.50, whites 0.98, shadows cool, highlights warm");
+    expect(describeTimelineChange({ kind: "color", name: "B.mov", method: "parade", before: null, after: curves, passes: 3, distance: 0.006, close: true })).toBe(
+      '"B.mov" colour curves R black +0.02 white 0.95, B black -0.03 gamma 1.10, saturation x1.20 (matched by the parade in 3 pass(es), close)',
+    );
+    expect(describeTimelineChange({ kind: "color", name: "B.mov", method: "parade", before: null, after: curves, passes: 5, distance: 0.018, close: false })).toContain("as near as it got");
   });
 
   it("describes looks and measures", () => {

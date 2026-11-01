@@ -56,7 +56,7 @@ describe("Premiere panel bridge.js", () => {
   it("writes a heartbeat with its version and a per-load instance id", () => {
     loadPanel(dir, () => "");
     const first = readJson(path.join(dir, "alive.json"));
-    expect(first).toMatchObject({ busy: false, panelVersion: "0.14.0", premiereVersion: "26.5.2" });
+    expect(first).toMatchObject({ busy: false, panelVersion: "0.15.0", premiereVersion: "26.5.2" });
     expect(first.instance).toMatch(/^[0-9a-f]{16}$/);
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "vca-panel-"));
@@ -122,6 +122,10 @@ describe("Premiere panel bridge.js", () => {
       ["p10", { command: "set_lumetri", args: { timeline: "Main", items: [{ id: "n1", values: { exposure: 9 } }] } }, "items[0].values.exposure must be from -4 to 4"],
       ["p11", { command: "set_lumetri", args: { timeline: "Main", items: [{ id: "n1", values: { highlights: 10 } }] } }, "items[0].values.highlights isn't a Lumetri control VibeCut sets"],
       ["p12", { command: "export_frame", args: { timeline: "Main", ticks: "0", name: "../x" } }, "name must be a short word"],
+      // Phase 20b.
+      ["p13", { command: "set_levels", args: { timeline: "Main", items: [{ id: "n1", values: { r_gamma: 5 } }] } }, "items[0].values.r_gamma must be from 10 to 1000"],
+      ["p14", { command: "set_levels", args: { timeline: "Main", items: [{ id: "n1", values: { r_lift: 5 } }] } }, "items[0].values.r_lift isn't a Levels control VibeCut sets"],
+      ["p15", { command: "read_levels", args: { timeline: "Main", ids: [] } }, "ids must list 1 to 500 project item ids"],
     ];
     for (const [id, request] of cases) writeJob(dir, { id, ...request });
     await panel.context.poll();

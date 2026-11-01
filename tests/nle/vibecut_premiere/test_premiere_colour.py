@@ -10,7 +10,7 @@ from PIL import Image
 from tests.nle.test_colour import chart, resolve_render
 from tests.nle.vibecut_premiere.test_premiere_edit import T, call, ids_of, revert
 from tests.nle.vibecut_premiere.test_premiere_edit import setup as edit_setup  # noqa: F401
-from vibecut_agent.nle import colour
+from vibecut_agent.nle import colour, parade
 from vibecut_agent.nle.premiere import HostError
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
@@ -28,6 +28,7 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
     (b,) = ids_of(premiere, "B.mov")
     shots = {a: chart(), b: OFF}
     lumetri: dict[str, dict] = {}
+    levels: dict[str, dict] = {}
     frames: list[float] = []
 
     def read_lumetri(args):
@@ -43,6 +44,21 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
             lumetri.setdefault(want["id"], dict(colour.NEUTRAL)).update(want["values"])
         return read_lumetri({"ids": [w["id"] for w in args["items"]]})
 
+    def read_levels(args):
+        return {
+            "items": [
+                {"id": i, "present": i in levels, "values": dict(levels.get(i, {})), "keyed": []}
+                for i in args["ids"]
+            ]
+        }
+
+    def set_levels(args):
+        for want in args["items"]:
+            levels.setdefault(want["id"], parade.levels_controls(parade.neutral_look())).update(
+                want["values"]
+            )
+        return read_levels({"ids": [w["id"] for w in args["items"]]})
+
     def export_frame(args):
         ticks = int(args["ticks"])
         frames.append(ticks / T)
@@ -53,6 +69,11 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
             if int(c["startTicks"]) <= ticks < int(c["endTicks"]) and not c["disabled"]
         ]
         pixels = shots.get(shown[0]["id"], chart()) if shown else [(0.0, 0.0, 0.0)] * 16
+        if shown and shown[0]["id"] in levels:
+            look = parade.levels_look(levels[shown[0]["id"]])
+            pixels = [
+                tuple(parade.premiere_curve(look[c], p[i]) for i, c in enumerate("rgb")) for p in pixels
+            ]
         if shown and shown[0]["id"] in lumetri:
             pixels = resolve_render(pixels, lumetri[shown[0]["id"]])
         folder = tmp_path / "bridge" / "frames"
@@ -67,10 +88,18 @@ def setup(edit_setup, tmp_path, monkeypatch):  # noqa: F811
         set_lumetri,
         export_frame,
     )
+    premiere.read_levels, premiere.set_levels = read_levels, set_levels
     return (
         host,
         premiere,
-        {"A": a, "B": b, "lumetri": lumetri, "frames": frames, "folder": tmp_path / "bridge" / "frames"},
+        {
+            "A": a,
+            "B": b,
+            "lumetri": lumetri,
+            "levels": levels,
+            "frames": frames,
+            "folder": tmp_path / "bridge" / "frames",
+        },
     )
 
 
@@ -101,17 +130,38 @@ def test_set_clip_color_sets_lumetri_and_reverts(setup):
     assert revert(host, again)["changedSince"][0]["name"] == "A.mov"
 
 
-def test_match_closes_in_on_the_reference(setup):
+def test_match_closes_in_on_the_reference_by_the_parade(setup):
     host, _premiere, c = setup
     result = call(host, "match_clip_color", referenceId=c["A"], itemIds=[c["B"]])
     (change,) = result["changes"]
-    assert change["name"] == "B.mov" and change["distance"] < colour.GOOD_ENOUGH
-    assert change["after"]["exposure"] > 0 and change["after"]["temperature"] < 0
-    assert c["lumetri"][c["B"]] == pytest.approx(change["after"], abs=0.01)
-    # The reference at A.mov's middle (1.5 s), B.mov's at its own (6.5 s); every frame file removed.
-    assert c["frames"][0] == pytest.approx(1.5, abs=0.05) and {round(f, 1) for f in c["frames"][1:]} == {6.5}
+    assert change["name"] == "B.mov" and change["method"] == "parade"
+    assert set(result["reference"]) == {"r", "g", "b", "luma", "colour"}
+    # OFF was dulled toward each pixel's mean, which saturation (about luma) can't wholly undo: much
+    # closer, not exact.
+    assert change["distance"] < 0.25 * parade.error(result["reference"], parade.parade(OFF))
+    # Levels curves: OFF is darker and warmer, so blue is pulled up more than red; its colour back
+    # with Lumetri's Saturation, the rest of its Lumetri untouched.
+    after = change["after"]
+    assert after["b"]["white"] < after["r"]["white"] < 1 and change["before"] is None
+    assert after["saturation"] > 1.2
+    assert c["lumetri"][c["B"]] == {
+        **colour.NEUTRAL,
+        "saturation": pytest.approx(100 * after["saturation"], abs=0.1),
+    }
+    assert {c_: v for c_, v in parade.levels_look(c["levels"][c["B"]]).items() if c_ != "saturation"} == {
+        c_: v for c_, v in after.items() if c_ != "saturation"
+    }
+    # Each clip on three frames, at a quarter, half and three quarters (A.mov 0-3 s, B.mov 5-8 s).
+    assert [round(f, 2) for f in c["frames"][:3]] == [0.72, 1.48, 2.24]
+    assert {round(f, 1) for f in c["frames"][3:]} == {5.7, 6.5, 7.2}
     assert list(c["folder"].iterdir()) == []
     assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert parade.is_neutral(parade.levels_look(c["levels"][c["B"]]))
+    assert c["lumetri"][c["B"]] == colour.NEUTRAL
+    # Changed since, it's left alone.
+    again = call(host, "match_clip_color", referenceId=c["A"], itemIds=[c["B"]])
+    c["levels"][c["B"]]["g_gamma"] = 140
+    assert revert(host, again)["changedSince"][0]["name"] == "B.mov"
 
 
 def test_match_to_a_learned_look_measures_only_the_clips(setup):
@@ -132,16 +182,16 @@ def test_balance_takes_each_clip_to_its_own_neutral(setup):
     host, _premiere, c = setup
     c["lumetri"][c["B"]] = {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
     result = call(host, "match_clip_color", balance=True, itemIds=[c["A"], c["B"]])
-    # A.mov (the chart) is neutral and normally exposed already: left alone, its Lumetri untouched.
-    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["lumetri"]
+    # A.mov (the chart) is neutral and normally exposed already: left alone, nothing added.
+    assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["levels"]
     (change,) = result["changes"]
-    assert change["name"] == "B.mov" and change["distance"] < colour.GOOD_ENOUGH
-    assert change["reference"]["greyWarmth"] == 0 and change["was"]["greyWarmth"] > 0.1
-    # Its own contrast and saturation kept; the cast taken out with temperature (and tint).
+    assert change["name"] == "B.mov" and change["method"] == "parade" and change["close"]
+    # OFF's greys are warm: red's curve pulled down against blue's.
     after = change["after"]
-    assert (after["contrast"], after["saturation"]) == (12.0, 110.0) and after["temperature"] < 0
-    assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert after["r"]["white"] > after["b"]["white"]
+    # Its Lumetri (contrast and saturation) is left as it was.
     assert c["lumetri"][c["B"]] == {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
+    assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
     with pytest.raises(HostError, match="not both"):
         call(host, "match_clip_color", balance=True, referenceId=c["A"], itemIds=[c["B"]])
 
