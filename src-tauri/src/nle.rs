@@ -43,7 +43,8 @@ pub fn call_timeout(command: &str) -> Duration {
     if command == "create_captions" {
         // Phase 15a: Resolve transcribes the timeline itself, about 40 s for 30 s of speech.
         CAPTION_TIMEOUT
-    } else if command == "rebuild" {
+    } else if command == "rebuild" || command == "execute_otio_batch" {
+        // Phase 21: a validated OTIO delta's calls, one after another, like a send's placements.
         SEND_TIMEOUT
     } else if command == "make_social_version" || command == "render_video" || command == "render_audio" {
         // Phase 15b: a render answers once it has started, but starting Media Encoder can take two minutes.
@@ -492,6 +493,7 @@ mod tests {
         pending.forget(&c);
         assert!(rc.recv_timeout(Duration::from_millis(10)).is_err());
         assert_eq!(call_timeout("rebuild"), Duration::from_secs(900));
+        assert_eq!(call_timeout("execute_otio_batch"), Duration::from_secs(900));
         assert_eq!(call_timeout("make_social_version"), Duration::from_secs(300));
         assert_eq!(call_timeout("render_video"), Duration::from_secs(300));
         assert_eq!(call_timeout("create_captions"), Duration::from_secs(1800));

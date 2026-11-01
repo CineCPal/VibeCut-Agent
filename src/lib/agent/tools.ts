@@ -17,6 +17,7 @@ import { SPYGLASS_EXECUTORS, SPYGLASS_TOOLS } from "./spyglassTools";
 import { projectExecutors, projectToolDeclarations } from "./projectTools";
 import { transcriptExecutors, transcriptToolDeclarations } from "./transcriptTools";
 import { draftExecutors, draftToolDeclarations, refuseWhileDrafting } from "./draft";
+import { orchestratorExecutors } from "./orchestratorTools";
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
 import { analyzerExecutors, analyzerToolDeclarations } from "./analyzerTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
@@ -233,6 +234,11 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
 
   return {
     ...edits,
+    // Phase 21: an orchestrated chat's validated OTIO delta, committed as one edit (orchestratorTools.ts).
+    commit_otio_delta: (args: Args) => {
+      refuseWhileDrafting(host, "edit the timeline directly");
+      return orchestratorExecutors({ host, timeline: timelineName(), step: context.step, stepText: context.stepText }).commit_otio_delta(args);
+    },
     ...SPYGLASS_EXECUTORS,
     list_timelines: async () => {
       const status = await nleCall<EditorStatus>(host, "status");

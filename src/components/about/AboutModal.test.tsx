@@ -3,12 +3,19 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({ getAppVersion: vi.fn().mockResolvedValue("0.1.0"), restartSession: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../../lib/ipc", () => ipc);
+const jobs = vi.hoisted(() => ({ runJob: vi.fn() }));
+vi.mock("../../lib/jobs", () => jobs);
 
 import { AboutModal } from "./AboutModal";
 import { useSystemStore } from "../../store/useSystemStore";
 import { initialHosts, useNleStateStore } from "../../store/useNleStateStore";
 import { AGENT_OFFLINE_DETAIL, useAgentStore } from "../../store/useAgentStore";
 import { useSidecarStore } from "../../store/useSidecarStore";
+
+const health = (result: Record<string, unknown>) => ({
+  status: "done",
+  result: { localLlmBaseUrl: "http://127.0.0.1:11434", indexDir: "/data/vector-index", ...result },
+});
 
 describe("AboutModal", () => {
   beforeEach(() => {
@@ -29,6 +36,7 @@ describe("AboutModal", () => {
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
     useAgentStore.setState({ aiChoice: "gemini", status: "offline", statusDetail: AGENT_OFFLINE_DETAIL });
     useSidecarStore.setState({ session: { state: "ready", version: "0.1.0", python: "3.14.0", message: null } });
+    jobs.runJob.mockResolvedValue(health({ executionMode: "direct", workers: [] }));
   });
 
   it("is a labelled modal dialog", () => {
@@ -65,6 +73,42 @@ describe("AboutModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Version 0.1.0")).toBeInTheDocument();
+  });
+
+  it("says the chat runs in direct mode, with no local sub-agents", async () => {
+    render(<AboutModal onClose={() => undefined} />);
+    const row = (await screen.findByText("Direct")).closest("li")!;
+    expect(within(row).getByText("Execution mode")).toBeInTheDocument();
+    expect(within(row).getByText(/no local sub-agents run$/)).toBeInTheDocument();
+    expect(jobs.runJob).toHaveBeenCalledWith("orchestrator-health", "Check the local sub-agents", {});
+    expect(screen.queryByText("Speech (Whisper)")).not.toBeInTheDocument();
+  });
+
+  it("shows each local sub-agent's health in orchestrated mode", async () => {
+    jobs.runJob.mockResolvedValue(
+      health({
+        executionMode: "orchestrated",
+        workers: [
+          { worker: "whisper", backend: "mlx-whisper", model: "mlx-community/whisper-medium-mlx", available: true, detail: "ready" },
+          { worker: "gemma", backend: "ollama", model: "gemma3:4b-it", available: false, detail: "missing; deltas are still checked, without the model's notes" },
+        ],
+      }),
+    );
+    render(<AboutModal onClose={() => undefined} />);
+    expect(await screen.findByText("Orchestrated")).toBeInTheDocument();
+    // AGENTS.md §4: the local model server is disclosed as on this Mac.
+    expect(screen.getByText(/local models at http:\/\/127\.0\.0\.1:11434 \(Ollama or llama\.cpp, on this Mac\)/)).toBeInTheDocument();
+    expect(within(screen.getByText("Speech (Whisper)").closest("li")!).getByText("Ready")).toBeInTheDocument();
+    const gemma = screen.getByText("Edit validator (Gemma)").closest("li")!;
+    expect(within(gemma).getByText("Unavailable")).toBeInTheDocument();
+    expect(within(gemma).getByText("ollama · gemma3:4b-it · missing; deltas are still checked, without the model's notes")).toBeInTheDocument();
+  });
+
+  it("says when the mode couldn't be read", async () => {
+    jobs.runJob.mockResolvedValue({ status: "failed", result: null });
+    render(<AboutModal onClose={() => undefined} />);
+    const row = (await screen.findByText(/^Set by EXECUTION_MODE/)).closest("li")!;
+    expect(await within(row).findByText("Unknown")).toBeInTheDocument();
   });
 
   it("closes on Escape", () => {

@@ -195,6 +195,8 @@ def detect_silences(
     finally:
         if process.poll() is None:
             process.kill()
+        if process.stderr is not None:
+            process.stderr.close()
     if code != 0:
         raise FfmpegOpError(" ".join(tail)[-300:] or f"ffmpeg couldn't read {os.path.basename(path)}")
     found: list[SilenceSpan] = []
@@ -229,14 +231,19 @@ def _scan_cuts(
         raise FfmpegOpError(f"Cuts are found in at most {shots.MAX_SECONDS / 3600:g} hours at once")
     # media/shots.py's own frame pipe: ffmpeg scales to 96x54 RGB, read one frame at a time.
     process, frames = shots._frames(path, start, None if end is None else end - start)
+    message = ""
     try:
         cuts, count = shots.find_cuts(frames, fps, sensitivity)
         process.wait(timeout=FFMPEG_TIMEOUT_S)
+        if count == 0 and process.stderr:
+            message = process.stderr.read().decode(errors="ignore").strip()[-300:]
     finally:
         if process.poll() is None:
             process.kill()
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
     if count == 0:
-        message = process.stderr.read().decode(errors="ignore").strip()[-300:] if process.stderr else ""
         raise FfmpegOpError(message or f"ffmpeg read no picture from {os.path.basename(path)}")
     # ffmpeg's input seek starts at the first frame at or after `start`.
     first = math.ceil(Fraction(start) * exact_rate(rate) - Fraction(1, 1000))

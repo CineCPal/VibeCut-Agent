@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { getAppVersion } from "../../lib/ipc";
+import { runJob } from "../../lib/jobs";
 import { refreshIndex } from "../../lib/library";
 import { useAgentStore } from "../../store/useAgentStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
@@ -9,6 +10,7 @@ import { useNleStateStore } from "../../store/useNleStateStore";
 import { useSystemStore } from "../../store/useSystemStore";
 import { AI_CHOICES, KEY_ENV, antigravityUsable, claudeCodeUsable } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
+import type { OrchestratorHealth } from "../../types/orchestrator";
 import { DependencyList } from "../common/DependencyList";
 import { Modal } from "../common/Modal";
 import { SidecarStatusRow } from "../common/SidecarStatusRow";
@@ -18,6 +20,61 @@ import { CONNECTION_TEXT, CONNECTION_TONE, connectionDetail } from "../../lib/nl
 
 export const APP_DESCRIPTION =
   "A menu-bar AI editing assistant that works alongside Premiere Pro and DaVinci Resolve: an agent chat for multi-step timeline edits, a B-roll Library over Spyglass's index of your archive, and a B-roll analyzer for folders on disk.";
+
+/** The local workers' names (workers/health_report.py), as the About modal shows them. */
+export const WORKER_LABELS: Record<string, string> = {
+  whisper: "Speech (Whisper)",
+  vlm: "Vision (local VLM)",
+  vector: "Media index (sqlite-vec)",
+  gemma: "Edit validator (Gemma)",
+};
+
+/** Phase 21: EXECUTION_MODE, and in orchestrated mode the health of each local sub-agent (the
+ * `orchestrator-health` command, run when About opens). */
+function LocalAgentsSection() {
+  const [health, setHealth] = useState<OrchestratorHealth | null | undefined>(undefined);
+
+  useEffect(() => {
+    let active = true;
+    runJob("orchestrator-health", "Check the local sub-agents", {})
+      .then((job) => active && setHealth(job?.status === "done" && job.result ? (job.result as unknown as OrchestratorHealth) : null))
+      .catch(() => active && setHealth(null));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const orchestrated = health?.executionMode === "orchestrated";
+  return (
+    <Section title="Local sub-agents">
+      <ul className="divide-y divide-border">
+        <StatusRow
+          label="Execution mode"
+          tone={health === undefined || health === null ? "off" : "ok"}
+          value={health === undefined ? "Checking…" : health === null ? "Unknown" : orchestrated ? "Orchestrated" : "Direct"}
+          detail={
+            health === undefined || health === null
+              ? "Set by EXECUTION_MODE (direct or orchestrated) when the app starts"
+              : orchestrated
+                ? `Claude plans each change as an OTIO delta, checked on this Mac before it reaches the editor · local models at ${health.localLlmBaseUrl} (Ollama or llama.cpp, on this Mac) · index in ${health.indexDir}`
+                : "The chat's model calls the editor's tools itself (EXECUTION_MODE=direct); no local sub-agents run"
+          }
+        />
+        {orchestrated
+          ? health.workers.map((w) => (
+              <StatusRow
+                key={w.worker}
+                label={WORKER_LABELS[w.worker] ?? w.worker}
+                tone={w.available ? "ok" : "warn"}
+                value={w.available ? "Ready" : "Unavailable"}
+                detail={[w.backend, w.model, w.detail].filter(Boolean).join(" · ")}
+              />
+            ))
+          : null}
+      </ul>
+    </Section>
+  );
+}
 
 export function AboutModal({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
@@ -142,6 +199,8 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
           ))}
         </ul>
       </Section>
+
+      <LocalAgentsSection />
 
       <Section
         title="Binaries"

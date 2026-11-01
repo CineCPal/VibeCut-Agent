@@ -88,6 +88,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "critique", interactive: false, managed: false },
     // Phase 21: media transcribed, looked at and indexed for the orchestrated chat (vibecut_agent/workers).
     CommandSpec { name: "ingest-index", interactive: false, managed: false },
+    // Phase 21: the execution mode and the local workers' health, for the About modal.
+    CommandSpec { name: "orchestrator-health", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -509,6 +511,25 @@ pub fn execution_mode_env(vibecut: Option<String>, plain: Option<String>) -> Opt
     }
 }
 
+/// The execution mode a run will see: `VIBECUT_EXECUTION_MODE`, else `EXECUTION_MODE` (as `config.py` reads them).
+fn execution_mode() -> Option<String> {
+    std::env::var("VIBECUT_EXECUTION_MODE").ok().or_else(|| std::env::var("EXECUTION_MODE").ok())
+}
+
+/// Phase 21: what the orchestrated path adds to `extras_for`. A Claude chat in orchestrated mode runs the
+/// tool bus (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the chat's Whisper (mlx-whisper:
+/// `transcribe`); `orchestrator-health` asks the same workers. Nothing in direct mode, or for another
+/// provider.
+pub fn orchestrated_extras(command: &str, request: &Value, mode: Option<&str>) -> Vec<&'static str> {
+    let orchestrated = mode.map(|m| m.trim().eq_ignore_ascii_case("orchestrated")) == Some(true);
+    let claude = request.get("provider").and_then(Value::as_str) == Some("claude");
+    match command {
+        "chat" if orchestrated && claude => vec!["orchestrator", "transcribe"],
+        "orchestrator-health" if orchestrated => vec!["orchestrator", "transcribe"],
+        _ => Vec::new(),
+    }
+}
+
 /// The program, arguments and environment for one run, kept separate from spawning for tests.
 pub struct Launch {
     pub program: PathBuf,
@@ -877,7 +898,9 @@ pub async fn sidecar_start(
         set_index_path(&mut request, &index);
     }
     let root = python_root(&app);
-    let launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras_for(spec.name, &request));
+    let mut extras = extras_for(spec.name, &request);
+    extras.extend(orchestrated_extras(spec.name, &request, execution_mode().as_deref()));
+    let launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras);
 
     let job = Arc::new(SidecarJob::default());
     jobs.insert(&job_id, &job)?;
@@ -1037,6 +1060,21 @@ mod tests {
         assert_eq!(extras_for("ingest-index", &json!({"paths": ["/a.mov"]})), ["orchestrator", "transcribe"]);
         assert_eq!(extras_for("ingest-index", &json!({"diarize": true})), ["orchestrator", "transcribe", "diarize"]);
         assert!(!needs_llm_key("ingest-index"));
+    }
+
+    #[test]
+    fn an_orchestrated_claude_chat_runs_with_the_orchestrator_extra() {
+        let claude = json!({"provider": "claude"});
+        assert_eq!(orchestrated_extras("chat", &claude, Some("orchestrated")), ["orchestrator", "transcribe"]);
+        assert_eq!(orchestrated_extras("chat", &claude, Some(" Orchestrated ")), ["orchestrator", "transcribe"]);
+        assert!(orchestrated_extras("chat", &claude, Some("direct")).is_empty());
+        assert!(orchestrated_extras("chat", &claude, None).is_empty());
+        assert!(orchestrated_extras("chat", &json!({"provider": "gemini"}), Some("orchestrated")).is_empty());
+        assert!(orchestrated_extras("chat", &json!({"provider": "claude-code"}), Some("orchestrated")).is_empty());
+        assert!(find_command("orchestrator-health").is_ok());
+        assert_eq!(orchestrated_extras("orchestrator-health", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"]);
+        assert!(orchestrated_extras("orchestrator-health", &json!({}), None).is_empty());
+        assert!(!needs_llm_key("orchestrator-health"));
     }
 
     #[test]

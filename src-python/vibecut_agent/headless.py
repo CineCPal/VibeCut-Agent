@@ -166,6 +166,13 @@ def ingest_index(emitter: Emitter, stdin: TextIO) -> int:
     return ingest_pipeline.main(stdin, emitter)
 
 
+def orchestrator_health(emitter: Emitter, stdin: TextIO) -> int:
+    """Phase 21: the execution mode, and the local workers' health in orchestrated mode (the About modal)."""
+    from vibecut_agent.workers import health_report
+
+    return health_report.main(stdin, emitter)
+
+
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
     from vibecut_agent.nle.watch import PremiereAdapter, watch
 
@@ -205,6 +212,7 @@ COMMANDS: dict[str, Command] = {
     "chat-title": chat_title,
     "critique": critique,
     "ingest-index": ingest_index,
+    "orchestrator-health": orchestrator_health,
     "premiere-watch": premiere_watch,
     "resolve-watch": resolve_watch,
 }

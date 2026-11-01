@@ -27,7 +27,7 @@ export const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : 
 const trackLabel = (type: string, index: number) => `${type === "video" ? "V" : "A"}${index}`;
 
 /** The backup for this request: made before its first direct edit, then reused. */
-async function ensureBackup(ctx: EditContext): Promise<string> {
+export async function ensureBackup(ctx: EditContext): Promise<string> {
   const key = `${ctx.step}|${ctx.host}|${ctx.timeline}`;
   const known = useEditLogStore.getState().backups[key];
   if (known) return known;
@@ -54,7 +54,7 @@ function namedIds(args: Record<string, unknown>): string[] {
 
 /** Refuses an edit of a clip, or of a clip linked to it, on a locked track (VibeCut's 8a.0 probe:
  * Premiere's scripting edits a locked track anyway; Resolve refuses without saying why). */
-function refuseLocked(ctx: EditContext, timeline: HostTimeline, args: Record<string, unknown>): void {
+export function refuseLocked(ctx: EditContext, timeline: HostTimeline, args: Record<string, unknown>): void {
   const where = new Map<string, { type: string; index: number; locked: boolean }>();
   const linked = new Map<string, string[]>();
   for (const track of timeline.tracks) {

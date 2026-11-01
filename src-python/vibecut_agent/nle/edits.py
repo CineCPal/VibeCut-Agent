@@ -17,6 +17,7 @@ Edit = Callable[[Any, dict[str, Any]], Any]
 def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
     """`imports` is the bridge folder's imports/, where create_captions writes its SRT (Phase 15a)."""
     from vibecut_agent.nle import (
+        bridge_runner,
         links,
         premiere_colour,
         premiere_edit,
@@ -59,11 +60,16 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "create_captions": lambda host, args: premiere_edit.create_captions(host, args, imports),
         # Phase 20d: frames as stills, for thumbnails.
         "export_stills": stills.premiere_export_stills,
+        # Phase 21: a validated OTIO delta's calls, run as one transaction (bridge_runner.py).
+        "execute_otio_batch": lambda host, args: bridge_runner.execute_validated_batch(
+            host, args, premiere_edits(imports)
+        ),
     }
 
 
 def resolve_edits() -> dict[str, Edit]:
     from vibecut_agent.nle import (
+        bridge_runner,
         links,
         resolve_colour,
         resolve_edit,
@@ -109,6 +115,10 @@ def resolve_edits() -> dict[str, Edit]:
         "create_captions": resolve_edit.create_captions,
         # Phase 20d: frames as stills, for thumbnails.
         "export_stills": stills.resolve_export_stills,
+        # Phase 21: a validated OTIO delta's calls, run as one transaction (bridge_runner.py).
+        "execute_otio_batch": lambda host, args: bridge_runner.execute_validated_batch(
+            host, args, resolve_edits()
+        ),
     }
 
 
