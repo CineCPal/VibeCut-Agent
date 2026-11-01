@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping, Sequence
 
 import pytest
 
 from tests.orchestrator.timeline import delta, make_media, make_snapshot, op, ref, rt, tr
-from vibecut_agent.orchestrator.otio_delta import compile_to_nle_commands, media_path_of, timeline_hash
+from vibecut_agent.orchestrator.otio_delta import (
+    DeltaRejected,
+    apply_delta_to_otio,
+    compile_to_nle_commands,
+    media_path_of,
+    timeline_hash,
+    write_otio,
+)
 
 
 @pytest.fixture
@@ -406,3 +414,152 @@ def test_timeline_hash(snapshot):
 def test_media_path_of():
     assert media_path_of("file:///Volumes/Shoot/Day%201/a.mov") == "/Volumes/Shoot/Day 1/a.mov"
     assert media_path_of("file:///Volumes/Shoot/Day 1/a.mov") == "/Volumes/Shoot/Day 1/a.mov"
+
+
+def test_a_split_divides_the_source_so_a_later_trim_starts_from_the_cut(snapshot):
+    # c1 plays a.mov 10-14 s; cut at 2 s, its left piece is 10-12 s, so trimming it to 10-12 s changes nothing.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+            op("op_002", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 50)),
+        ),
+        snapshot,
+    )
+    assert calls(commands)[1:] == [("split_clips", {"itemIds": ["c1"], "time": 2.0})]
+    assert codes(diagnostics) == [("WARNING", "NEGATIVE_OR_ZERO_DURATION", "op_002")]
+    # Lengthening it would now run into the right piece.
+    _, diagnostics = run(
+        delta(
+            op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+            op("op_002", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 60)),
+        ),
+        snapshot,
+    )
+    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", "op_002")]
+
+
+# ------------------------------------------------------------------------------ apply_delta_to_otio
+
+
+def edit(media):
+    return delta(
+        op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+        op("op_002", "APPLY_TRANSITION", clip_id="c1", transition=transition("SMPTE_Dissolve", 5, 5)),
+        op(
+            "op_003",
+            "SET_AUDIO_GAIN",
+            "Audio",
+            1,
+            clip_id="a1",
+            audio_params={"gain_db": -6, "fade_in_seconds": 0.5},
+        ),
+        op(
+            "op_004",
+            "INSERT_CLIP",
+            index=2,
+            media_reference=ref(media["c d.mov"]),
+            source_range=tr(25, 50),
+            timeline_range=tr(200, 50),
+        ),
+    )
+
+
+def items(track):
+    return [(type(item).__name__, item.name) for item in track]
+
+
+def plain(value):
+    """OTIO metadata (AnyDictionary, AnyVector) as plain dicts and lists."""
+    if isinstance(value, Mapping):
+        return {k: plain(v) for k, v in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return [plain(v) for v in value]
+    return value
+
+
+def test_the_otio_is_the_timeline_as_the_delta_leaves_it(media, snapshot):
+    otio = pytest.importorskip("opentimelineio")
+    timeline = apply_delta_to_otio(edit(media), snapshot, lambda path: 60.0)
+
+    assert timeline.name == "Cut"
+    assert plain(timeline.metadata["vibecut"]) == {
+        "deltaId": "delta_0001",
+        "host": "premiere",
+        "basedOnTimelineHash": timeline_hash(snapshot),
+    }
+    assert [(t.name, t.kind) for t in timeline.tracks] == [
+        ("V1", "Video"),
+        ("V2", "Video"),
+        ("A1", "Audio"),
+        ("A2", "Audio"),
+    ]
+    v1, v2, a1, a2 = timeline.tracks
+    # The snapshot names no clips, so each is called by its id; the piece split off has none yet.
+    assert items(v1) == [
+        ("Clip", "c1"),
+        ("Transition", "SMPTE_Dissolve"),
+        ("Clip", "c1:right"),
+        ("Clip", "c2"),
+    ]
+    left, dissolve, right = v1[0], v1[1], v1[2]
+    # a.mov 10-12 s and 12-14 s at 25 fps.
+    assert (left.source_range.start_time.value, left.source_range.duration.value) == (250, 50)
+    assert (right.source_range.start_time.value, right.source_range.duration.value) == (300, 50)
+    assert plain(left.metadata["vibecut"]) == {"id": "c1", "madeBy": None, "linkedIds": ["a1"]}
+    assert plain(right.metadata["vibecut"]) == {"id": None, "madeBy": "op_001", "linkedIds": []}
+    assert dissolve.transition_type == otio.schema.TransitionTypes.SMPTE_Dissolve
+    assert (dissolve.in_offset.value, dissolve.out_offset.value) == (5, 5)
+    assert left.media_reference.target_url == f"file://{media['a.mov']}"
+    # The new clip on V2 starts at 8 s, after a gap.
+    assert items(v2) == [("Gap", ""), ("Clip", "c d.mov")]
+    assert v2[0].source_range.duration.value == 200
+    assert v2[1].metadata["vibecut"]["madeBy"] == "op_004"
+    assert v2[1].range_in_parent().start_time.value == 200
+    assert plain(a1[0].metadata["vibecut"]) == {
+        "id": "a1",
+        "madeBy": None,
+        "linkedIds": ["c1"],
+        "levelDb": -6,
+        "fadeIn": 0.5,
+    }
+    assert items(a2) == [("Clip", "m1")]
+
+
+def test_an_ntsc_delta_keeps_the_exact_rate(media, snapshot):
+    pytest.importorskip("opentimelineio")
+    ntsc = {**snapshot, "fps": 23.976}
+    for track in ntsc["tracks"]:
+        track["clips"] = []
+    d = delta(
+        op(
+            "op_001",
+            "INSERT_CLIP",
+            media_reference=ref(media["b.mov"]),
+            source_range=tr(0, 48, 23.976),
+            timeline_range=tr(24, 48, 23.976),
+        ),
+        fps=23.976,
+    )
+    timeline = apply_delta_to_otio(d, ntsc, lambda path: 60.0)
+    clip = timeline.tracks[0][1]
+    assert clip.source_range.duration.rate == pytest.approx(24000 / 1001)
+    assert clip.range_in_parent().start_time.value == 24
+
+
+def test_a_delta_with_errors_is_not_applied(snapshot):
+    pytest.importorskip("opentimelineio")
+    with pytest.raises(DeltaRejected) as raised:
+        apply_delta_to_otio(delta(op("op_001", "DELETE_CLIP", clip_id="nope")), snapshot, lambda path: 60.0)
+    assert "UNKNOWN_CLIP_ID" in str(raised.value)
+    assert raised.value.diagnostics[0]["op_id"] == "op_001"
+
+
+def test_write_otio_saves_it_whole(media, snapshot, tmp_path):
+    otio = pytest.importorskip("opentimelineio")
+    timeline = apply_delta_to_otio(edit(media), snapshot, lambda path: 60.0)
+    path = write_otio(timeline, tmp_path / "otio_deltas", "delta_0001")
+    assert path == tmp_path / "otio_deltas" / "delta_0001.otio"
+    assert [p.name for p in path.parent.iterdir()] == ["delta_0001.otio"]
+    again = otio.adapters.read_from_file(str(path))
+    assert again.name == "Cut"
+    assert items(again.tracks[0]) == items(timeline.tracks[0])

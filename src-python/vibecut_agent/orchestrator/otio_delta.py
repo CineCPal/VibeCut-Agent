@@ -5,7 +5,9 @@
 that make it: `backup_timeline` first, then `add_clips`, `delete_clips`, `reshape_clip`, `split_clips`,
 `set_clip_levels`, `set_clip_fades`, `set_transition` and `duck_clip`, with the arguments nle/edits.py takes.
 It replays the operations on a frame-exact model of each track (at the delta's `timeline_fps`), so an
-operation is checked against the timeline as the earlier operations leave it.
+operation is checked against the timeline as the earlier operations leave it. `apply_delta_to_otio` lays
+out that same replay's result as an OpenTimelineIO timeline (what the timeline will be once the delta has
+run), and `write_otio` saves one; those two need the `orchestrator` extra.
 
 What the bridges can do bounds what a delta can do. They never overwrite and never ripple, so `ripple`,
 `INSERT_GAP` and an `OVERWRITE_CLIP` that would cut a clip partway are refused, as is a speed change (a
@@ -34,6 +36,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import unquote, urlparse
 
@@ -100,6 +103,11 @@ class _Clip:
     source_out: float | None
     path: str | None
     linked: list[str] = field(default_factory=list)
+    name: str | None = None
+    # What SET_AUDIO_GAIN and DUCK_REGION leave on it (levelDb, fadeIn, fadeOut, ducks), for the OTIO.
+    effects: dict[str, Any] = field(default_factory=dict)
+    # The op that made it, for a clip this delta places or splits off (it has no editor id yet).
+    made_by: str | None = None
 
 
 class _Compiler:
@@ -117,20 +125,27 @@ class _Compiler:
         self.diagnostics: list[Diagnostic] = []
         self.clips: dict[str, _Clip] = {}
         self.link_groups: dict[str, tuple[NleCommand, dict[str, Any]]] = {}
+        # (clip id, transition spec as given, total seconds) for each APPLY_TRANSITION that compiles.
+        self.transitions: list[tuple[str, dict[str, Any], Fraction]] = []
+        self.track_names: dict[tuple[str, int], str] = {}
         for track in snapshot.get("tracks", []):
             kind = track.get("type")
             if kind not in ("video", "audio"):
                 continue
+            key = (kind, int(track["index"]))
+            if track.get("name"):
+                self.track_names[key] = str(track["name"])
             for clip in track.get("clips", []):
                 self.clips[str(clip["id"])] = _Clip(
                     id=str(clip["id"]),
-                    track=(kind, int(track["index"])),
+                    track=key,
                     first=self._frame(clip["start"]),
                     last=self._frame(clip["end"]),
                     source_in=clip.get("sourceIn"),
                     source_out=clip.get("sourceOut"),
                     path=clip.get("filePath"),
                     linked=[str(i) for i in clip.get("linkedIds") or []],
+                    name=clip.get("name"),
                 )
 
     # Helpers.
@@ -408,9 +423,20 @@ class _Compiler:
             command = self._emit(op_id, "add_clips", {"clips": [clip]})
             if group:
                 self.link_groups[group] = (command, clip)
-        self.clips[f"{op_id}:new"] = _Clip(
-            f"{op_id}:new", track, first, last, float(source[0]), float(source[1]), path
+        made = _Clip(
+            f"{op_id}:new",
+            track,
+            first,
+            last,
+            float(source[0]),
+            float(source[1]),
+            path,
+            name=os.path.basename(path),
+            made_by=op_id,
         )
+        if gain is not None and track[0] == "audio":
+            made.effects["levelDb"] = gain
+        self.clips[made.id] = made
 
     def trim(self, op: dict[str, Any], op_id: str) -> None:
         if not self._no_ripple(op, op_id):
@@ -498,8 +524,25 @@ class _Compiler:
             )
             return
         self._emit(op_id, "split_clips", {"itemIds": [clip.id], "time": self._seconds(cut)})
-        right = _Clip(f"{clip.id}:right", clip.track, cut, clip.last, None, None, clip.path)
+        # The cut divides the source too: the left piece now ends where the right one starts.
+        at = None
+        if clip.source_in is not None:
+            at = round(float(Fraction(clip.source_in) + Fraction(cut - clip.first) / self.frames), 6)
+        right = _Clip(
+            f"{clip.id}:right",
+            clip.track,
+            cut,
+            clip.last,
+            at,
+            clip.source_out,
+            clip.path,
+            name=clip.name,
+            effects=dict(clip.effects),
+            made_by=op_id,
+        )
         clip.last = cut
+        if at is not None:
+            clip.source_out = at
         self.clips[right.id] = right
 
     def delete(self, op: dict[str, Any], op_id: str) -> None:
@@ -623,6 +666,7 @@ class _Compiler:
             "set_transition",
             {"itemId": clip.id, "kind": kind, "seconds": round(float(before + after), 6)},
         )
+        self.transitions.append((clip.id, spec, before + after))
 
     def gain(self, op: dict[str, Any], op_id: str) -> None:
         clip = self._clip(op, op_id)
@@ -641,12 +685,14 @@ class _Compiler:
                 )
                 return
             self._emit(op_id, "set_clip_levels", {"levels": [{"itemId": clip.id, "volumeDb": level}]})
+            clip.effects["levelDb"] = level
             changes += 1
         for key, which in (("fade_in_seconds", "fadeIn"), ("fade_out_seconds", "fadeOut")):
             if key in params:
                 self._emit(
                     op_id, "set_clip_fades", {"itemIds": [clip.id], "which": which, "seconds": params[key]}
                 )
+                clip.effects[which] = params[key]
                 changes += 1
         if not changes:
             self._error(
@@ -701,6 +747,7 @@ class _Compiler:
         self._emit(
             op_id, "duck_clip", {"itemId": clip.id, "spans": spans, "duckDb": depth, "rampSeconds": ramp}
         )
+        clip.effects.setdefault("ducks", []).append({**spans[0], "duckDb": depth, "rampSeconds": ramp})
 
     def gap(self, op: dict[str, Any], op_id: str) -> None:
         self._error(
@@ -769,3 +816,119 @@ def compile_to_nle_commands(
     compiler = _Compiler(delta, snapshot, media_duration)
     compiler.run(snapshot)
     return compiler.commands, compiler.diagnostics
+
+
+class DeltaRejected(ValueError):
+    """A delta with ERROR diagnostics, which can't be applied; `.diagnostics` has them all."""
+
+    def __init__(self, diagnostics: list[Diagnostic]) -> None:
+        self.diagnostics = diagnostics
+        errors = [d for d in diagnostics if d["severity"] == "ERROR"]
+        super().__init__("; ".join(f"{d['code']}: {d['message']}" for d in errors))
+
+
+def apply_delta_to_otio(
+    delta: dict[str, Any],
+    snapshot: dict[str, Any],
+    media_duration: MediaDuration = ffprobe_util.probe_duration_seconds,
+) -> Any:
+    """The timeline as the delta leaves it, as an `opentimelineio.schema.Timeline`: the same replay as
+    `compile_to_nle_commands`, its result laid out as OTIO tracks (gaps between clips, transitions on the
+    cuts they were applied to). Each clip's `metadata["vibecut"]` keeps its editor id (None for a clip
+    this delta makes, with `madeBy` naming the op), its linked ids and the levels, fades and ducks the
+    delta set. Raises DeltaRejected for a delta with errors. Needs the `orchestrator` extra."""
+    import opentimelineio as otio
+
+    compiler = _Compiler(delta, snapshot, media_duration)
+    compiler.run(snapshot)
+    if any(d["severity"] == "ERROR" for d in compiler.diagnostics):
+        raise DeltaRejected(compiler.diagnostics)
+
+    rate = float(compiler.frames)
+
+    def frames(count: int | Fraction) -> Any:
+        return otio.opentime.RationalTime(float(count), rate)
+
+    timeline = otio.schema.Timeline(name=compiler.timeline, global_start_time=frames(0))
+    timeline.metadata["vibecut"] = {
+        "deltaId": delta["delta_id"],
+        "host": compiler.host,
+        "basedOnTimelineHash": timeline_hash(snapshot),
+    }
+    transitions = {clip_id: (spec, seconds) for clip_id, spec, seconds in compiler.transitions}
+    keys = set(compiler.track_names) | {clip.track for clip in compiler.clips.values()}
+    for kind, index in sorted(keys, key=lambda key: (key[0] != "video", key[1])):
+        track = otio.schema.Track(
+            name=compiler.track_names.get((kind, index), f"{kind[0].upper()}{index}"),
+            kind=otio.schema.TrackKind.Video if kind == "video" else otio.schema.TrackKind.Audio,
+        )
+        placed = sorted(
+            (c for c in compiler.clips.values() if c.track == (kind, index)), key=lambda c: c.first
+        )
+        cursor = 0
+        pending: Any = None
+        for clip in placed:
+            if clip.first > cursor:
+                track.append(
+                    otio.schema.Gap(
+                        source_range=otio.opentime.TimeRange(frames(0), frames(clip.first - cursor))
+                    )
+                )
+                pending = None
+            if pending is not None:
+                track.append(pending)
+            source_start = (
+                Fraction(clip.source_in) * compiler.frames if clip.source_in is not None else Fraction(0)
+            )
+            reference = (
+                otio.schema.ExternalReference(target_url=Path(clip.path).as_uri())
+                if clip.path
+                else otio.schema.MissingReference()
+            )
+            item = otio.schema.Clip(
+                name=clip.name or clip.id,
+                media_reference=reference,
+                source_range=otio.opentime.TimeRange(frames(source_start), frames(clip.last - clip.first)),
+            )
+            item.metadata["vibecut"] = {
+                "id": None if clip.made_by else clip.id,
+                "madeBy": clip.made_by,
+                "linkedIds": list(clip.linked),
+                **clip.effects,
+            }
+            track.append(item)
+            cursor = clip.last
+            pending = None
+            if clip.id in transitions:
+                spec, seconds = transitions[clip.id]
+                # The editors centre a transition on the cut, so the OTIO does too.
+                half = seconds / 2 * compiler.frames
+                pending = otio.schema.Transition(
+                    name=spec["transition_type"],
+                    transition_type=(
+                        otio.schema.TransitionTypes.SMPTE_Dissolve
+                        if spec["transition_type"] == "SMPTE_Dissolve"
+                        else spec["transition_type"]
+                    ),
+                    in_offset=frames(half),
+                    out_offset=frames(half),
+                )
+        timeline.tracks.append(track)
+    return timeline
+
+
+def write_otio(timeline: Any, directory: str | os.PathLike[str], name: str) -> Path:
+    """Writes the OTIO timeline to `<directory>/<name>.otio` atomically (a temporary file renamed into
+    place) and returns its path."""
+    import opentimelineio as otio
+
+    folder = Path(directory)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{name}.otio"
+    temporary = folder / f".{name}.otio.{os.getpid()}.tmp"
+    try:
+        temporary.write_text(otio.adapters.write_to_string(timeline, "otio_json"), encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target

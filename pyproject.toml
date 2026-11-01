@@ -44,9 +44,10 @@ mcp = [
     "mcp==2.3.0",
 ]
 # Phase 21 (ORCHESTRATOR_SPEC.md): `EXECUTION_MODE=orchestrated`'s local workers. OTIO deltas, schema
-# checks, the sqlite-vec index and faster-whisper. No sidecar run installs it yet.
+# checks, the sqlite-vec index and faster-whisper. No sidecar run installs it yet. OTIO 0.18.0 and 0.18.1
+# can't hold a dict or list in metadata on Python 3.14 ("bad any cast", their JSON adapter included).
 orchestrator = [
-    "opentimelineio>=0.17.0",
+    "opentimelineio>=0.17.0,<0.18",
     "jsonschema>=4.23.0",
     "sqlite-vec>=0.1.6",
     "faster-whisper>=1.1.0",

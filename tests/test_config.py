@@ -82,3 +82,6 @@ def test_direct_mode_returns_the_existing_turn_runners():
 def test_orchestrated_mode_only_changes_claude():
     config = OrchestratorConfig.from_env("orchestrated")
     assert resolve_chat_turn_runner("gemini", config) is gemini_chat.run_chat_turn
+    runner = resolve_chat_turn_runner("claude", config)
+    assert runner is not claude_chat.run_chat_turn
+    assert runner.__name__ == "run_orchestrated_turn"

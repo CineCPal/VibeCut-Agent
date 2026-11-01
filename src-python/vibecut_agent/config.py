@@ -70,13 +70,9 @@ def resolve_chat_turn_runner(
       orchestrator tool calls in-process via `ToolBus` and delegates NLE commits back through the host channel.
     """
     if config.execution_mode == ExecutionMode.ORCHESTRATED and provider == "claude":
-        # supervisor.py lands in Phase 4 (ORCHESTRATOR_SPEC.md §5); strict mypy's warn_unused_ignores
-        # flags this ignore once it exists, so it is removed then.
-        from vibecut_agent.orchestrator.supervisor import (  # type: ignore[import-not-found]
-            make_orchestrated_turn_runner,
-        )
+        from vibecut_agent.orchestrator.supervisor import make_orchestrated_turn_runner
 
-        return make_orchestrated_turn_runner(config)  # type: ignore[no-any-return]
+        return make_orchestrated_turn_runner(config)
 
     if provider == "claude":
         from vibecut_agent.agent import claude_chat
