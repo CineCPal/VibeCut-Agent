@@ -214,7 +214,7 @@ def _load_pipeline(model_id: str, hf_token: str):
     try:
         return Pipeline.from_pretrained(model_id, token=hf_token)
     except TypeError:
-        return Pipeline.from_pretrained(model_id, use_auth_token=hf_token)
+        return Pipeline.from_pretrained(model_id, use_auth_token=hf_token)  # type: ignore[call-arg, unused-ignore]
 
 
 class _DiarizationProgressHook:
