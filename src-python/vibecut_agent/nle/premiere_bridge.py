@@ -166,8 +166,8 @@ class PremiereBridge:
             running = (self.heartbeat() or {}).get("panelVersion") or "an older version"
             raise HostError(
                 f"Premiere is still running VibeCut Agent's panel {running}, loaded before the panel was "
-                f"updated, and it can't do {command} yet. Restart Premiere (or close and reopen the panel "
-                "in Window > Extensions), then try again. This step wasn't done."
+                f"updated, and it can't do {command} yet. Restart Premiere (the panel is hidden and "
+                "only loads when Premiere starts), then try again. This step wasn't done."
             )
         raise HostError(error)
 
