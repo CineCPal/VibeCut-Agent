@@ -2542,7 +2542,8 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
       - **Parade match** of `p20p_off.mov` (crushed blacks, blue shadows, highlights down, saturation 0.8) to `p20p_ref.mov`: 0.058 to 0.0099 in 5 passes, 15 s (e376). Levels: R/G/B black output 31/44/15, gammas 88/76/84, B white input 225, R white output 250; Lumetri saturation 113.6.
       - **Balance** with the grey ramp ([0.59, 0.82, 0.36, 0.1]) and white card ([0.735, 0.16, 0.16, 0.2]) named, 3.8 s (e377): the off clip's greys from a cast of 0.14 to a distance of 0.007 in 1 pass, its channels within about 0.02 at every level (the shadows' blue slightly under); the reference, its greys' cast 0.011, left alone as already balanced.
       - Both reverted: the clip measures as before (difference 0.0) and its Lumetri is neutral; a neutral Levels effect stays on it (the panel doesn't remove effects).
-    - **Resolve:** the area balance is not yet checked live there (the app is switched to Resolve by the user).
+    - **Live in Resolve (2026-11-01, "20a pacing" in "VCA 18 probe"):** the two test clips added at 56 s and 60 s (e378). The named areas were checked on a still of the frame first (on the ramp and the card). Balance, 3.0 s (e379): `p20p_off.mov`'s greys from a cast of 0.14 to a distance of 0.007 in 1 pass (R black -0.02, B black +0.063, B white 0.91), the same as Premiere; the reference (cast 0.011) left alone.
+      - Reverting e379 alone failed again ("its grade couldn't be copied back from the backup timeline"): a clip added after the session's backup has no grade there to copy back. Reverting e378 removed both clips, and the timeline is as before. **Still open:** a grade on a clip added during the session can't be reverted in Resolve.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -3070,3 +3071,4 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - **2026-10-31 (Claude): Parade matching checked live in Resolve; parade balancing found wrong on a colourful scene.** See "20b" (Live in Resolve). No code changes.
 - **2026-10-31 (Claude): `balance_clip_color` balances by neutral areas named in the frame.** See "20b" (Balancing by named neutral areas). Tests: pytest (1034, 2 skipped), mypy and ruff; vitest (839), tsc and eslint. The app was reinstalled.
 - **2026-11-01 (Claude): Premiere's restart advice corrected; parade matching and area balancing checked live in Premiere.** The command panel is hidden (no Window > Extensions entry): `premiere_bridge`'s outdated-panel message now says only to restart Premiere. See "20b" (Live in Premiere). Resolve's area balance still to check.
+- **2026-11-01 (Claude): Area balancing checked live in Resolve** (0.14 to 0.007, 1 pass). See "20b" (Live in Resolve, 2026-11-01). Open: reverting a grade on a clip added after the backup fails in Resolve.
