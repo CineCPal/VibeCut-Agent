@@ -26,9 +26,12 @@ so the curve that takes a clip's parade to the reference's can be fitted straigh
 curve (Lumetri after Levels, other nodes after node 1, 8-bit Levels) shows up as a difference, which
 the next pass aims past (`close_in`), keeping the closest.
 
-Balancing (`balance`) is the same with the clip's own greys: the pixels least colourful in its frame,
-whose channels should read alike at every level, so a cast in the shadows alone is taken out too, and
-the exposure brought into colour.BALANCE_BRIGHTNESS when it's outside.
+Balancing (`balance`) is the same with the clip's own greys: what's in the neutral areas named (a white
+card, a grey wall, a white shirt), whose channels should read alike at every level, so a cast in the
+shadows alone is taken out too when the areas span levels, and the exposure brought into
+colour.BALANCE_BRIGHTNESS when it's outside. Picking the greys blind, as the least colourful pixels,
+proved wrong on a colourful scene with a cast that varies with tone (Phase 20b, live in Resolve: it
+took pale sky for grey), so the areas are named, by the user or by the agent from a look at the frame.
 """
 
 from __future__ import annotations
@@ -321,15 +324,31 @@ def match(
     return close_in(reference, source, lambda look: parade(show(look)), curve, saturate=True)
 
 
-def grey_pixels(pixels: Pixels) -> tuple[list[int], float]:
-    """(indices, chroma): the GREY_SHARE least colourful pixels not near black or white, by (max - min)
-    / max, and how colourful they are on average (over colour.GREY_MAX_CHROMA: nothing is near grey)."""
-    mids = [i for i, p in enumerate(pixels) if colour.CLIP_LOW < _luma(p) < colour.CLIP_HIGH]
-    if len(mids) < len(pixels) // 20:
-        mids = list(range(len(pixels)))
-    ranked = sorted(mids, key=lambda i: (max(pixels[i]) - min(pixels[i])) / max(max(pixels[i]), 1e-3))
-    greys = ranked[: max(1, int(len(ranked) * colour.GREY_SHARE))]
+def area_pixels(
+    pixels: Pixels, areas: Sequence[tuple[float, float, float, float]]
+) -> tuple[list[int], float]:
+    """(indices, chroma): the pixels of a whole SAMPLE_WIDTH x SAMPLE_HEIGHT frame inside `areas` ((x, y,
+    width, height), fractions from its top left; a pixel only partly inside left out), not near black
+    or white, and how colourful they are on average ((max - min) / max). Refused (ColourError) when
+    they're too few (clipped, or an area under a pixel) or not near grey."""
+    width, height = colour.SAMPLE_WIDTH, colour.SAMPLE_HEIGHT
+    if len(pixels) != width * height:
+        raise colour.ColourError("The frame isn't the size areas are measured on")
+    inside: list[int] = []
+    for x, y, w, h in areas:
+        left, right = math.ceil(x * width - 1e-6), math.floor((x + w) * width + 1e-6)
+        top, bottom = math.ceil(y * height - 1e-6), math.floor((y + h) * height + 1e-6)
+        inside += [r * width + c for r in range(top, bottom) for c in range(left, right)]
+    greys = [i for i in dict.fromkeys(inside) if colour.CLIP_LOW < _luma(pixels[i]) < colour.CLIP_HIGH]
+    if len(greys) < 4:
+        raise colour.ColourError(
+            "the neutral area is too small, or clipped to black or white: name a bigger one, not blown out"
+        )
     chroma = sum((max(pixels[i]) - min(pixels[i])) / max(max(pixels[i]), 1e-3) for i in greys) / len(greys)
+    if chroma > colour.GREY_MAX_CHROMA:
+        raise colour.ColourError(
+            "the area named isn't near grey (it's strongly coloured): name something white, grey or black"
+        )
     return greys, round(chroma, 4)
 
 
@@ -358,18 +377,18 @@ def balance_target(greys: Parade, bright: float) -> Parade:
 
 
 def balance(
-    show: Callable[[Look | None], Pixels], curve: Callable[[dict[str, float], float], float]
+    show: Callable[[Look | None], Pixels],
+    curve: Callable[[dict[str, float], float], float],
+    areas: Sequence[tuple[float, float, float, float]],
 ) -> dict[str, Any]:
-    """Balances a clip to its own neutral. {"balanced": True, "was"} when it's there already (nothing
-    applied); else {"look", "seen", "target", "was", "passes", "distance"}, the look left applied.
-    A frame with nothing near grey raises ColourError, nothing applied."""
+    """Balances a clip to its own neutral, read from `areas` of its frame (`show` gives the whole frame,
+    untrimmed). {"balanced": True, "was"} when it's there already (nothing applied); else {"look",
+    "seen", "target", "was", "passes", "distance"}, the look left applied. Areas that can't be used
+    raise ColourError, nothing applied."""
     as_is = show(None)
-    greys, chroma = grey_pixels(as_is)
-    if chroma > colour.GREY_MAX_CHROMA:
-        raise colour.ColourError(
-            "nothing in the frame is near grey (it's all strong colour), so there's no neutral to balance by"
-        )
-    was = {**grey_parade(as_is, greys), "brightness": [brightness(as_is)], "greyChroma": [chroma]}
+    greys, chroma = area_pixels(as_is, areas)
+    trimmed = colour.without_borders(as_is, colour.SAMPLE_WIDTH, colour.SAMPLE_HEIGHT)
+    was = {**grey_parade(as_is, greys), "brightness": [brightness(trimmed)], "greyChroma": [chroma]}
     target = balance_target(was, was["brightness"][0])
     current = {c: was[c] for c in CHANNELS}
     if error(target, current) <= GOOD_ENOUGH:

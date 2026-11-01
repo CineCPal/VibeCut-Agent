@@ -156,7 +156,14 @@ def test_match_to_a_learned_look_measures_only_the_clips(edit):
 def test_balance_takes_each_clip_to_its_own_neutral(edit):
     host, timeline, _project, c = edit
     before = timeline.timecode
-    result = call(host, "match_clip_color", balance=True, itemIds=[c["v"].uid, c["b"].uid])
+    # The chart's grey steps are its left columns (as the agent would name them from a look at it).
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    result = call(
+        host,
+        "match_clip_color",
+        balance=True,
+        items=[{"itemId": c["v"].uid, "areas": greys}, {"itemId": c["b"].uid, "at": 15, "areas": greys}],
+    )
     # A.mov (the chart) is neutral and normally exposed already: its grade isn't touched.
     assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["v"].cdl is None
     (change,) = result["changes"]
@@ -165,6 +172,12 @@ def test_balance_takes_each_clip_to_its_own_neutral(edit):
     after = change["after"]
     assert after["r"]["white"] > after["b"]["white"] and after["saturation"] == 1
     assert c["b"].cdl == parade.cdl(after) and timeline.timecode == before
+    # B.mov (300-500) looked at 15 s in (frame 375); not there at 2 s: refused.
+    assert c["exports"][-1] == 375
+    away = call(
+        host, "match_clip_color", balance=True, items=[{"itemId": c["b"].uid, "at": 2, "areas": greys}]
+    )
+    assert away["changes"] == [] and away["refused"][0]["reason"] == "B.mov isn't at 2 s"
 
 
 def test_read_measures_and_looks_past_covers(edit):

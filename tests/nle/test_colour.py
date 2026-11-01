@@ -271,11 +271,35 @@ def test_a_frame_is_read_small_with_ffmpeg(tmp_path: Path):
 
 def test_balance_requests():
     assert colour.balance_wants({"itemIds": ["v1"]}) is None
-    assert colour.balance_wants({"balance": True, "itemIds": ["v1", "v2", "v1"]}) == ["v1", "v2"]
+    wants = colour.balance_wants(
+        {
+            "balance": True,
+            "items": [
+                {"itemId": "v1", "areas": [[0.1, 0.2, 0.3, 0.4]]},
+                {"itemId": "v2", "at": 3, "areas": [[0, 0, 1, 1]]},
+            ],
+        }
+    )
+    assert wants == [
+        {"itemId": "v1", "at": None, "areas": [(0.1, 0.2, 0.3, 0.4)]},
+        {"itemId": "v2", "at": 3.0, "areas": [(0.0, 0.0, 1.0, 1.0)]},
+    ]
+    area = [[0.1, 0.1, 0.2, 0.2]]
     for bad, message in [
-        ({"balance": "yes", "itemIds": ["v1"]}, "balance must be true"),
-        ({"balance": True, "referenceId": "v1", "itemIds": ["v2"]}, "not both"),
-        ({"balance": True, "itemIds": []}, "itemIds must list"),
+        ({"balance": "yes", "items": []}, "balance must be true"),
+        ({"balance": True, "referenceId": "v1", "items": []}, "not both"),
+        ({"balance": True, "items": []}, "items must list"),
+        ({"balance": True, "items": [{"itemId": "v1"}]}, "areas must list 1 to 4"),
+        (
+            {"balance": True, "items": [{"itemId": "v1", "areas": [[0.1, 0.1, 0.2]]}]},
+            r"must be \[x, y, width, height\]",
+        ),
+        ({"balance": True, "items": [{"itemId": "v1", "areas": [[0.9, 0.1, 0.2, 0.2]]}]}, "inside the frame"),
+        ({"balance": True, "items": [{"itemId": "v1", "at": -1, "areas": area}]}, "at must be 0 or more"),
+        (
+            {"balance": True, "items": [{"itemId": "v1", "areas": area}, {"itemId": "v1", "areas": area}]},
+            "twice",
+        ),
     ]:
         with pytest.raises(colour.ColourError, match=message):
             colour.balance_wants(bad)

@@ -109,11 +109,33 @@ export function colorToolDeclarations(host: NleHost): ToolDeclaration[] {
     },
     {
       name: "balance_clip_color",
-      description: `Balances picture clips each on its own, with no reference, by the RGB parade of what's grey in the shot: it measures three frames of each as ${shows} shows it, takes its least colourful third of pixels, and sets ${curves} so their red, green and blue read alike at every level from shadows to highlights (a cast in the shadows or highlights alone is taken out too), with the exposure in a normal range (brightness 0.3-0.5; a shot inside it keeps its brightness, so a night scene stays dark). Saturation isn't changed. A clip already balanced is left alone. It renders and measures again, keeping the closest pass. A shot with nothing near grey in it (a colour card, a stage in coloured light) is refused; a scene whose greys aren't really grey (a sunset) can be read wrong: check it after. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
+      description: `Balances picture clips each on its own, with no reference, by what should be neutral in the shot: for each clip, name 1 to 4 areas of its frame that are white, grey or black in life (a white card, a grey wall, a white shirt, pavement; not skin, sky or foliage), as fractions of the frame from its top left. First look at the frame (look_at_timeline at the clip's time; give that time as at) and read the areas off it; if nothing in the shot is neutral, or you can't tell, ask the user rather than guess (picking greys blind proved wrong). It measures that frame as ${shows} shows it and sets ${curves} so the areas' red, green and blue read alike, at every level when the areas span shadows to highlights (a cast in the shadows alone is taken out too), with the exposure in a normal range (brightness 0.3-0.5; a shot inside it keeps its brightness, so a night scene stays dark). Saturation isn't changed. A clip already balanced is left alone; an area that's strongly coloured, or clipped to black or white, is refused. It renders and measures again, keeping the closest pass. For a scene, balance one shot, check it, then match_clip_color the others to it. A backup copy is made first; ${revert}`,
       parameters: {
         type: "OBJECT",
-        properties: { clipIds: { type: "ARRAY", items: { type: "STRING" }, description: "The picture clips to balance (up to 50)." } },
-        required: ["clipIds"],
+        properties: {
+          clips: {
+            type: "ARRAY",
+            description: "One entry per clip (up to 50).",
+            items: {
+              type: "OBJECT",
+              properties: {
+                clipId: clipIdArg,
+                at: { type: "NUMBER", description: `Optional; seconds on the ${noun}, inside the clip: the frame the areas were read from. Default its middle.` },
+                neutral: {
+                  type: "ARRAY",
+                  description: "1 to 4 neutral areas, fractions of the frame (0-1) from its top left.",
+                  items: {
+                    type: "OBJECT",
+                    properties: { x: { type: "NUMBER" }, y: { type: "NUMBER" }, width: { type: "NUMBER" }, height: { type: "NUMBER" } },
+                    required: ["x", "y", "width", "height"],
+                  },
+                },
+              },
+              required: ["clipId", "neutral"],
+            },
+          },
+        },
+        required: ["clips"],
       },
     },
     {
@@ -155,8 +177,28 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
       return edit(ctx, "match_clip_color", "match_clip_color", { ...reference, itemIds }, (r) => `Matched ${count(r.changes.length, "clip")} to ${to}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
     },
 
-    balance_clip_color: async (args) =>
-      edit(ctx, "balance_clip_color", "match_clip_color", { balance: true, itemIds: strArray(args, "clipIds") }, (r) => `Balanced ${count(r.changes.length, "clip")}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`),
+    balance_clip_color: async (args) => {
+      const raw = args.clips;
+      if (!Array.isArray(raw) || raw.length === 0) throw new Error("clips must be a non-empty array of {clipId, at?, neutral: [{x, y, width, height}]}");
+      const items = raw.map((value, i) => {
+        const entry = (value ?? {}) as Args;
+        const itemId = optStr(entry, "clipId");
+        if (!itemId) throw new Error(`clips[${i}].clipId must be a timeline clip id`);
+        const neutral = entry.neutral;
+        if (!Array.isArray(neutral) || neutral.length === 0) throw new Error(`clips[${i}].neutral must name 1 to 4 areas that are white, grey or black in the shot`);
+        const areas = neutral.map((area, j) => {
+          const box = (area ?? {}) as Args;
+          return (["x", "y", "width", "height"] as const).map((k) => {
+            const n = optNum(box, k);
+            if (n === undefined) throw new Error(`clips[${i}].neutral[${j}].${k} must be a number (a fraction of the frame)`);
+            return n;
+          });
+        });
+        const at = optNum(entry, "at");
+        return { itemId, ...(at !== undefined ? { at } : {}), areas };
+      });
+      return edit(ctx, "balance_clip_color", "match_clip_color", { balance: true, items }, (r) => `Balanced ${count(r.changes.length, "clip")}: ${r.changes.map((c) => describeTimelineChange(c)).join("; ")}`);
+    },
 
     get_clip_color: async (args) => {
       const read = await nleCall<{ clips: MeasuredClip[]; refused: { reason: string }[] }>(ctx.host, "read_clip_color", { timeline: ctx.timeline, itemIds: strArray(args, "clipIds") });
@@ -171,7 +213,8 @@ export function colorExecutors(ctx: EditContext): Record<string, Executor> {
 export const COLOR_INSTRUCTION = `- Colour: get_clip_color measures what the viewer shows; set_clip_color sets exposure, contrast,
   temperature, tint and saturation (Lumetri's units, the whole correction); match_clip_color matches
   shots of one scene to a reference by the histogram and RGB parade (curves per channel, so blacks,
-  whites and casts in the shadows or highlights match too); balance_clip_color makes what's grey in a
-  shot neutral at every level and its exposure normal, with no reference ("fix the white balance",
-  "balance these"). Measure before and after, change in small steps, and say what
+  whites and casts in the shadows or highlights match too); balance_clip_color makes what's neutral in
+  a shot (areas you name after looking at the frame: a white card, a grey wall) read neutral and its
+  exposure normal, with no reference ("fix the white balance", "balance these"); with nothing neutral
+  in the shot, ask the user. Measure before and after, change in small steps, and say what
   changed in plain words. Creative looks, LUTs, secondaries and masks are beyond these tools: say so.`;

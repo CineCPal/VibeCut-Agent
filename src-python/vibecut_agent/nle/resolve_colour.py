@@ -55,8 +55,9 @@ class _Viewer:
     def pooled(self, moments: list[float]) -> parade.Pixels:
         return [p for at in moments for p in self.pixels(at)]
 
-    def pixels(self, at: float) -> parade.Pixels:
-        """The frame `at` seconds from the timeline's start, as Resolve shows it."""
+    def pixels(self, at: float, trim: bool = True) -> parade.Pixels:
+        """The frame `at` seconds from the timeline's start, as Resolve shows it (`trim`: its black
+        borders left out)."""
         tc = frames_to_timecode(self.start_tc + _to_frame(at, self.fps), self.fps)
         if not self.timeline.SetCurrentTimecode(tc):
             raise HostError("Resolve didn't move the playhead (open the Edit or Cut page)")
@@ -65,7 +66,7 @@ class _Viewer:
         if not self.project.ExportCurrentFrameAsStill(path) or not os.path.isfile(path):
             raise HostError("Resolve didn't export the frame")
         try:
-            return colour.frame_pixels(path)
+            return colour.frame_pixels(path, trim=trim)
         except colour.ColourError as exc:
             raise HostError(str(exc)) from None
 
@@ -251,20 +252,47 @@ def _match_parade(
     return {"changes": changes, "refused": refused, "reference": reference}
 
 
-def _balance(host: Any, args: dict[str, Any], ids: list[str]) -> dict[str, Any]:
-    """Each clip balanced to its own neutral by the parade (parade.balance): node 1's CDL as curves that
-    make its greys read alike at every level, its exposure brought into range. A clip already there is
-    left alone (`balanced`), its grade untouched."""
+def _balance_moment(
+    timeline: Any, found: dict[str, tuple[str, int, Any]], item_id: str, fps: float, at: float | None
+) -> tuple[Any, float]:
+    """The clip and the time to balance it at: `at` seconds (refused when the clip isn't there or a clip
+    on a higher track covers it), or its middle."""
+    item, middle = _moment(timeline, found, item_id, fps)
+    if at is None:
+        return item, middle
+    origin = int(timeline.GetStartFrame())
+    frame = origin + _to_frame(at, fps)
+    if not int(item.GetStart()) <= frame < int(item.GetEnd()):
+        raise HostError(f"{item.GetName()} isn't at {at:g} s")
+    clear = colour.uncovered_moment(
+        int(item.GetStart()), int(item.GetEnd()), _covers(timeline, found[item_id][1]), frame
+    )
+    if clear != frame:
+        raise HostError(f"{item.GetName()} is under a clip on a higher track at {at:g} s")
+    return item, _seconds(frame - origin, fps)
+
+
+def _balance(host: Any, args: dict[str, Any], wants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Each clip balanced to its own neutral, read from the areas named in its frame (parade.balance):
+    node 1's CDL as curves that make what's there read alike in each channel, its exposure brought into
+    range. A clip already there is left alone (`balanced`), its grade untouched."""
     project, timeline = host._timeline(args)
     fps = _frame_rate(timeline)
     found = _items(timeline)
     viewer = _Viewer(project, timeline)
     changes, refused, balanced = [], [], []
     try:
-        for item_id in ids:
+        for want in wants:
+            item_id = want["itemId"]
             try:
-                item, moments = _moments(timeline, found, item_id, fps, parade.FRAMES)
-                result = parade.balance(_parade_show(item, viewer, moments), parade.resolve_curve)
+                item, at = _balance_moment(timeline, found, item_id, fps, want["at"])
+
+                def show(look: parade.Look | None, item: Any = item, at: float = at) -> parade.Pixels:
+                    if look is not None and not item.SetCDL(parade.cdl(look)):
+                        raise HostError(f"{item.GetName()}: Resolve didn't take the colour")
+                    return viewer.pixels(at, trim=False)
+
+                result = parade.balance(show, parade.resolve_curve, want["areas"])
             except (HostError, colour.ColourError) as exc:
                 refused.append({"itemId": item_id, "reason": str(exc)})
                 continue
@@ -275,7 +303,7 @@ def _balance(host: Any, args: dict[str, Any], ids: list[str]) -> dict[str, Any]:
                 _change(timeline, item_id, found[item_id][1], item, result["look"], method="parade",
                         reference=result["target"], was=result["was"], seen=result["seen"],
                         passes=result["passes"], distance=result["distance"],
-                        close=result["distance"] <= parade.GOOD_ENOUGH)
+                        close=result["distance"] <= parade.GOOD_ENOUGH, at=round(at, 3))
             )  # fmt: skip
     finally:
         viewer.close()

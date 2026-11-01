@@ -81,11 +81,24 @@ describe("colour tools", () => {
         balanced: [{ itemId: "v1", name: "A.mov" }],
       };
     });
-    const out = await run.balance_clip_color({ clipIds: ["v1", "v2"] });
-    expect(sent("match_clip_color")).toEqual([{ timeline: "Main", balance: true, itemIds: ["v1", "v2"] }]);
+    const card = { x: 0.6, y: 0.1, width: 0.1, height: 0.2 };
+    const out = await run.balance_clip_color({ clips: [{ clipId: "v1", neutral: [card] }, { clipId: "v2", at: 6.5, neutral: [card, { x: 0, y: 0.8, width: 1, height: 0.2 }] }] });
+    expect(sent("match_clip_color")).toEqual([
+      {
+        timeline: "Main",
+        balance: true,
+        items: [
+          { itemId: "v1", areas: [[0.6, 0.1, 0.1, 0.2]] },
+          { itemId: "v2", at: 6.5, areas: [[0.6, 0.1, 0.1, 0.2], [0, 0.8, 1, 0.2]] },
+        ],
+      },
+    ]);
     expect(out.summary).toBe('Balanced 1 clip: "B.mov" colour exposure +0.30, temperature -14, tint +4 (balanced in 2 pass(es), close); already balanced, left alone: "A.mov" (backup: "Main (before VibeCut 1)")');
     expect(useEditLogStore.getState().entries[0].tool).toBe("balance_clip_color");
     expect((out.result as { balanced: unknown }).balanced).toEqual([{ itemId: "v1", name: "A.mov" }]);
+    await expect(run.balance_clip_color({ clips: [{ clipId: "v1" }] })).rejects.toThrow("neutral must name 1 to 4 areas");
+    await expect(run.balance_clip_color({ clips: [{ clipId: "v1", neutral: [{ x: 0.1, y: 0.1, width: 0.2 }] }] })).rejects.toThrow("neutral[0].height must be a number");
+    await expect(run.balance_clip_color({ clips: [] })).rejects.toThrow("clips must be");
   });
 
   it("measures clips in words", async () => {

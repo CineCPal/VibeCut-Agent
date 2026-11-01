@@ -87,8 +87,9 @@ def _frame(host: Any, timeline: str, ticks: int, measuring: Any = colour.measure
     return dict(measuring(_pixels(host, timeline, ticks)))
 
 
-def _pixels(host: Any, timeline: str, ticks: int) -> parade.Pixels:
-    """The sequence's frame at `ticks` as Premiere renders it (colour.frame_pixels)."""
+def _pixels(host: Any, timeline: str, ticks: int, trim: bool = True) -> parade.Pixels:
+    """The sequence's frame at `ticks` as Premiere renders it (colour.frame_pixels; `trim` its black
+    borders)."""
     name = f"colour-{uuid.uuid4().hex[:12]}"
     path = str(host._send("export_frame", {"timeline": timeline, "ticks": str(ticks), "name": name})["path"])
     if os.path.dirname(path) != str(default_dir() / "frames"):
@@ -105,7 +106,7 @@ def _pixels(host: Any, timeline: str, ticks: int) -> parade.Pixels:
                 raise HostError("Premiere didn't write the frame")
             size = now
             time.sleep(0.15)
-        return colour.frame_pixels(path)
+        return colour.frame_pixels(path, trim=trim)
     except colour.ColourError as exc:
         raise HostError(str(exc)) from None
     finally:
@@ -339,32 +340,47 @@ def _match_parade(
     return {"changes": changes, "refused": refused, "reference": reference}
 
 
-def _balance(host: Any, timeline: str, ids: list[str]) -> dict[str, Any]:
-    """Each clip balanced to its own neutral by the parade (parade.balance): Levels curves that make
-    its greys read alike at every level, its exposure brought into range. A clip already there is left
-    alone (`balanced`), nothing set."""
+def _balance_moment(seq: Sequence, item_id: str, at: float | None) -> int:
+    """The ticks to balance a clip at: `at` seconds (on a frame; refused when the clip isn't there or a
+    clip on a higher track covers it), or its middle."""
+    if at is None:
+        return _moment(seq, item_id)[1]
+    clip = seq.clip(item_id)
+    start, end = int(clip["startTicks"]), int(clip["endTicks"])
+    ticks = round(at * TICKS_PER_SECOND) // seq.timebase * seq.timebase
+    if not start <= ticks < end:
+        raise HostError(f"{clip['name']} isn't at {at:g} s")
+    nearest = _moments(seq, item_id, ((ticks - start) / (end - start),))[1][0]
+    if nearest != ticks:
+        raise HostError(f"{clip['name']} is under a clip on a higher track at {at:g} s")
+    return ticks
+
+
+def _balance(host: Any, timeline: str, wants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Each clip balanced to its own neutral, read from the areas named in its frame (parade.balance):
+    Levels curves that make what's there read alike in each channel, its exposure brought into range.
+    A clip already there is left alone (`balanced`), nothing set."""
     seq = _read(host, timeline)
     changes, refused, balanced = [], [], []
-    for item_id in ids:
+    for want in wants:
+        item_id = want["itemId"]
         try:
-            clip, moments, before = _parade_target(host, timeline, seq, item_id)
+            clip, _frames, before = _parade_target(host, timeline, seq, item_id)
+            at = _balance_moment(seq, item_id, want["at"])
         except HostError as exc:
             refused.append({"itemId": item_id, "reason": str(exc)})
             continue
         last: dict[str, Any] = {}
 
         def show(
-            look: parade.Look | None,
-            item_id: str = item_id,
-            moments: list[int] = moments,
-            last: dict[str, Any] = last,
+            look: parade.Look | None, item_id: str = item_id, at: int = at, last: dict[str, Any] = last
         ) -> parade.Pixels:
             if look is not None:
                 last["after"] = _set_levels(host, timeline, item_id, look)
-            return _pooled(host, timeline, moments)
+            return _pixels(host, timeline, at, trim=False)
 
         try:
-            result = parade.balance(show, parade.premiere_curve)
+            result = parade.balance(show, parade.premiere_curve, want["areas"])
         except (HostError, colour.ColourError) as exc:
             _put_back(host, timeline, item_id, before, last)
             refused.append({"itemId": item_id, "reason": f"{clip['name']}: {exc}"})
@@ -375,7 +391,7 @@ def _balance(host: Any, timeline: str, ids: list[str]) -> dict[str, Any]:
         changes.append(
             _parade_change(clip, before, last["after"], reference=result["target"], was=result["was"],
                            seen=result["seen"], passes=result["passes"], distance=result["distance"],
-                           close=result["distance"] <= parade.GOOD_ENOUGH)
+                           close=result["distance"] <= parade.GOOD_ENOUGH, at=round(at / TICKS_PER_SECOND, 3))
         )  # fmt: skip
     return {"changes": changes, "refused": refused, "balanced": balanced}
 

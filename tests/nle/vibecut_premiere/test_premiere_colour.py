@@ -181,7 +181,14 @@ def test_match_to_a_learned_look_measures_only_the_clips(setup):
 def test_balance_takes_each_clip_to_its_own_neutral(setup):
     host, _premiere, c = setup
     c["lumetri"][c["B"]] = {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
-    result = call(host, "match_clip_color", balance=True, itemIds=[c["A"], c["B"]])
+    # The chart's grey steps are its left columns (as the agent would name them from a look at it).
+    greys = [[0.02, 0.05, 0.6, 0.9]]
+    result = call(
+        host,
+        "match_clip_color",
+        balance=True,
+        items=[{"itemId": c["A"], "areas": greys}, {"itemId": c["B"], "at": 6, "areas": greys}],
+    )
     # A.mov (the chart) is neutral and normally exposed already: left alone, nothing added.
     assert [b["name"] for b in result["balanced"]] == ["A.mov"] and c["A"] not in c["levels"]
     (change,) = result["changes"]
@@ -192,8 +199,18 @@ def test_balance_takes_each_clip_to_its_own_neutral(setup):
     # Its Lumetri (contrast and saturation) is left as it was.
     assert c["lumetri"][c["B"]] == {**colour.NEUTRAL, "contrast": 12.0, "saturation": 110.0}
     assert revert(host, result)["reverted"] == [{"kind": "color", "name": "B.mov"}]
+    assert change["at"] == pytest.approx(6, abs=0.05)
     with pytest.raises(HostError, match="not both"):
-        call(host, "match_clip_color", balance=True, referenceId=c["A"], itemIds=[c["B"]])
+        call(
+            host,
+            "match_clip_color",
+            balance=True,
+            referenceId=c["A"],
+            items=[{"itemId": c["B"], "areas": greys}],
+        )
+    # Not there at that moment: refused, nothing set.
+    away = call(host, "match_clip_color", balance=True, items=[{"itemId": c["B"], "at": 1, "areas": greys}])
+    assert away["changes"] == [] and away["refused"][0]["reason"] == "B.mov isn't at 1 s"
 
 
 def test_read_and_refusals(setup):

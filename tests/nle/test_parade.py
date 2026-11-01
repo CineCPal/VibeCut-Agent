@@ -147,37 +147,73 @@ def test_what_the_editor_does_after_the_curves_is_aimed_past():
     assert parade.error(reference, seen) < 0.02 and passes >= 2
 
 
+def scene() -> list[tuple[float, float, float]]:
+    """A whole frame (colour.SAMPLE_WIDTH x SAMPLE_HEIGHT): a grey ramp down its left quarter (black at
+    the top, white at the bottom), pale blue sky and green foliage across the rest, so the least
+    colourful pixels aren't all grey (as live in Resolve, Phase 20b)."""
+    width, height = colour.SAMPLE_WIDTH, colour.SAMPLE_HEIGHT
+    out = []
+    for y in range(height):
+        for x in range(width):
+            if x < width // 4:
+                v = 0.05 + 0.9 * y / (height - 1)
+                out.append((v, v, v))
+            elif y < height // 2:
+                t = y / (height // 2)
+                out.append((0.35 + 0.2 * t, 0.5 + 0.15 * t, 0.85 + 0.1 * t))
+            else:
+                n = 0.5 + 0.3 * ((x * 7 + y * 3) % 11) / 11
+                out.append((0.15 + 0.2 * n, 0.3 + 0.3 * n, 0.1 + 0.1 * n))
+    return out
+
+
+RAMP = [(0.0, 0.0, 0.25, 1.0)]
+
+
+def ramp_cast(pixels) -> float:
+    """The worst channel difference on the ramp's mid steps."""
+    width = colour.SAMPLE_WIDTH
+    rows = range(10, colour.SAMPLE_HEIGHT - 10)
+    return max(max(abs(p[0] - p[1]), abs(p[2] - p[1])) for p in (pixels[y * width + 5] for y in rows))
+
+
 @pytest.mark.parametrize("editor", ["resolve", "premiere"])
-def test_balancing_makes_the_greys_neutral_at_every_level(editor):
-    # The chart with blue only in its shadows and its highlights warm: one temperature can't fix both.
+def test_balancing_makes_the_neutral_area_neutral_at_every_level(editor):
+    # Blue only in the shadows and warm highlights: one temperature can't fix both.
     cast = [
         (min(r + 0.04 * r * r, 1.0), g, min(b + 0.08 * (1 - b) ** 2 - 0.03 * b * b, 1.0))
-        for r, g, b in chart()
+        for r, g, b in scene()
     ]
     show, applied = shown(cast, editor)
-    result = parade.balance(show, parade.CURVES[editor])
+    result = parade.balance(show, parade.CURVES[editor], RAMP)
     assert applied[0] is None and parade.is_neutral(applied[1])
     assert result["distance"] < parade.GOOD_ENOUGH
-    greys = [p for p in curved(cast, result["look"], editor)[:11]]
-    for r, g, b in greys[2:10]:
-        assert abs(r - g) < 0.02 and abs(b - g) < 0.02
+    assert ramp_cast(cast) > 0.05 and ramp_cast(curved(cast, result["look"], editor)) < 0.02
 
 
-def test_a_balanced_clip_is_left_alone_and_a_frame_with_no_greys_is_refused():
-    show, applied = shown(chart(), "resolve")
-    assert parade.balance(show, parade.resolve_curve)["balanced"] is True
+def test_a_balanced_clip_is_left_alone_and_unusable_areas_are_refused():
+    show, applied = shown(scene(), "resolve")
+    assert parade.balance(show, parade.resolve_curve, RAMP)["balanced"] is True
     assert applied == [None]
-    card = [(0.9, 0.8, 0.1)] * 50 + [(0.1, 0.3, 0.9)] * 50
-    show, applied = shown(card, "resolve")
-    with pytest.raises(colour.ColourError, match="nothing in the frame is near grey"):
-        parade.balance(show, parade.resolve_curve)
-    assert applied == [None]
+    # The sky isn't neutral, a pixel-sized area holds nothing, and a frame of another size can't be placed.
+    for areas, message in [
+        ([(0.5, 0.0, 0.5, 0.2)], "isn't near grey"),
+        ([(0.5, 0.5, 0.001, 0.001)], "too small"),
+    ]:
+        sky = [(0.3, 0.5, 0.95)] * len(scene())
+        show, applied = shown(sky if "grey" in message else scene(), "resolve")
+        with pytest.raises(colour.ColourError, match=message):
+            parade.balance(show, parade.resolve_curve, areas)
+        assert applied == [None]
+    show, _applied = shown(chart(), "resolve")
+    with pytest.raises(colour.ColourError, match="isn't the size"):
+        parade.balance(show, parade.resolve_curve, RAMP)
 
 
 def test_balancing_brings_a_dark_clip_into_range():
-    dark = [(r * 0.45, g * 0.45, b * 0.45) for r, g, b in chart()]
+    dark = [(r * 0.45, g * 0.45, b * 0.45) for r, g, b in scene()]
     show, _applied = shown(dark, "resolve")
-    result = parade.balance(show, parade.resolve_curve)
+    result = parade.balance(show, parade.resolve_curve, RAMP)
     after = parade.brightness(curved(dark, result["look"], "resolve"))
     assert parade.brightness(dark) < colour.BALANCE_BRIGHTNESS[0] <= after + 0.02
 

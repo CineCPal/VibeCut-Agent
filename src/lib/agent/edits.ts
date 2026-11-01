@@ -46,6 +46,9 @@ function namedIds(args: Record<string, unknown>): string[] {
   if (Array.isArray(args.itemIds)) args.itemIds.forEach(add);
   if (Array.isArray(args.levels)) for (const entry of args.levels as Record<string, unknown>[]) add(entry?.itemId);
   if (Array.isArray(args.transforms)) for (const entry of args.transforms as Record<string, unknown>[]) add(entry?.itemId);
+  // set_clip_color's looks and a balance's items (Phase 19c, 20b).
+  if (Array.isArray(args.looks)) for (const entry of args.looks as Record<string, unknown>[]) add(entry?.itemId);
+  if (Array.isArray(args.items)) for (const entry of args.items as Record<string, unknown>[]) add(entry?.itemId);
   return out;
 }
 

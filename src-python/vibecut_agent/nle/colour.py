@@ -66,16 +66,15 @@ STEP_SCALE = {"exposure": 0.25, "contrast": 10.0, "temperature": 10.0, "tint": 1
 SOLVE_PASSES = 3
 # A pass this close to the reference stops the loop (see `error`).
 GOOD_ENOUGH = 0.03
-# Balancing (parade.balance): a shot darker or brighter than this is brought to its nearer end; one inside keeps its brightness
-# (a night scene stays dark, only less so). About 0.4 is a normal exposure (`measure`).
+# Balancing (parade.balance): a shot darker or brighter than this is brought to its nearer end; one
+# inside keeps its brightness (a night scene stays dark, only less so). About 0.4 is a normal exposure.
 BALANCE_BRIGHTNESS = (0.3, 0.5)
-# The share of a frame's mid pixels, the least colourful, that the cast is read from: what's grey in
-# the scene shows the cast alone, where averaging every pixel would call a red wall a warm cast.
-GREY_SHARE = 0.3
-# ... and how colourful those may be, on average ((max - min) / max), for the shot to have greys at
-# all: a strong cast on a grey reads about 0.3. Over this (a colour card, a test chart of bars, a stage
-# in coloured light; seen live, Phase 20b), there's nothing to balance by and the clip is refused.
+# How colourful a neutral area may be, on average ((max - min) / max): a strong cast on a grey reads
+# about 0.3. Over this, the area named isn't something neutral (a coloured wall, a stage in coloured
+# light) and the clip is refused.
 GREY_MAX_CHROMA = 0.4
+# Neutral areas a clip may be balanced by (a white card and a grey wall, say).
+MAX_AREAS = 4
 
 
 class ColourError(ValueError):
@@ -141,16 +140,46 @@ def _item_ids(args: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def balance_wants(args: dict[str, Any]) -> list[str] | None:
-    """{balance: true, itemIds} -> the clips to balance, each to its own neutral; None when the request
-    isn't a balance (it's a match)."""
+def balance_wants(args: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """{balance: true, items: [{itemId, at?, areas: [[x, y, width, height]]}]} -> [{itemId, at, areas}]:
+    each clip balanced by what's neutral in the areas named (fractions of the frame from its top left)
+    at `at` (seconds from the timeline's start; None: its middle); None when the request isn't a
+    balance (it's a match). Picking greys blind proved unreliable (Phase 20b, live)."""
     if args.get("balance") is None:
         return None
     if args["balance"] is not True:
         raise ColourError("balance must be true")
     if args.get("referenceId") is not None or args.get("referenceLook") is not None:
         raise ColourError("A balance has no reference: give balance or referenceId/referenceLook, not both")
-    return _item_ids(args)
+    raw = args.get("items")
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_ITEMS:
+        raise ColourError(f"items must list 1 to {MAX_ITEMS} clips to balance")
+    out, seen = [], set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict) or not isinstance(entry.get("itemId"), str) or not entry["itemId"]:
+            raise ColourError(f"items[{i}].itemId must be a timeline clip id")
+        if entry["itemId"] in seen:
+            raise ColourError(f"items[{i}]: {entry['itemId']} is listed twice")
+        seen.add(entry["itemId"])
+        at = None if entry.get("at") is None else _number(entry["at"], f"items[{i}].at")
+        if at is not None and at < 0:
+            raise ColourError(f"items[{i}].at must be 0 or more")
+        areas = entry.get("areas")
+        if not isinstance(areas, list) or not 1 <= len(areas) <= MAX_AREAS:
+            raise ColourError(f"items[{i}].areas must list 1 to {MAX_AREAS} neutral areas")
+        checked = []
+        for j, area in enumerate(areas):
+            where = f"items[{i}].areas[{j}]"
+            if not isinstance(area, list) or len(area) != 4:
+                raise ColourError(f"{where} must be [x, y, width, height], fractions of the frame")
+            x, y, w, h = (_number(v, where) for v in area)
+            if not (
+                0 <= x < 1 and 0 <= y < 1 and w > 0 and h > 0 and x + w <= 1 + 1e-6 and y + h <= 1 + 1e-6
+            ):
+                raise ColourError(f"{where} must lie inside the frame (fractions from its top left)")
+            checked.append((x, y, w, h))
+        out.append({"itemId": entry["itemId"], "at": at, "areas": checked})
+    return out
 
 
 def match_wants(args: dict[str, Any]) -> tuple[str | None, list[str], dict[str, float] | None]:
@@ -203,10 +232,11 @@ def cdl(look: dict[str, float]) -> dict[str, str]:
 
 
 def frame_pixels(
-    path: str, timeout: float = 30.0, at: float | None = None
+    path: str, timeout: float = 30.0, at: float | None = None, trim: bool = True
 ) -> list[tuple[float, float, float]]:
     """The frame in an image file (or a video's frame at `at` seconds, Phase 20b), SAMPLE_WIDTH x
-    SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg), without black borders (`without_borders`)."""
+    SAMPLE_HEIGHT, as display RGB from 0 to 1 (ffmpeg), without black borders (`without_borders`)
+    unless not `trim` (a balance's areas are places in the whole frame)."""
     seek = ["-ss", f"{at:.3f}"] if at is not None else []
     try:
         done = subprocess.run(
@@ -230,7 +260,7 @@ def frame_pixels(
         (data[i] / 255, data[i + 1] / 255, data[i + 2] / 255)
         for i in range(0, SAMPLE_WIDTH * SAMPLE_HEIGHT * 3, 3)
     ]
-    return without_borders(pixels, SAMPLE_WIDTH, SAMPLE_HEIGHT)
+    return without_borders(pixels, SAMPLE_WIDTH, SAMPLE_HEIGHT) if trim else pixels
 
 
 def without_borders(
