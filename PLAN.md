@@ -2582,6 +2582,31 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - "12-15s" was first read as a general note. Fixed: a unit after a range now applies to both ends (`BARE_RANGE`), and checked again live.
   - Two client markers added (one with a comment, one 2 s long), read as notes (the comment joined, the long one as a span); one renamed "✓ Wider shot here" with update_marker (Premiere kept the name and comment) and skipped on the next read; both removed afterwards.
 
+### 20d: YouTube packaging: chapters and thumbnails (2026-11-01)
+- **New `src/lib/agent/youtubeTools.ts`:**
+  - **`make_chapters {chapters: [{time, title}], end?}`** (reads only): `checkChapters` checks YouTube's rules. The first chapter must be at 0:00; one within 10 s is moved there and reported under `fixed`. There must be at least 3 chapters, each at least 10 s (the last up to the end of the timeline, or `end` when the export is shorter), with titles that aren't empty, at most 100 characters, and no two at the same time. It answers `ok`, `problems` (the agent fixes them and calls again) and `text`, the list to paste ("0:00 Title"; "h:mm:ss" once the video is an hour or more, `chapterTime`). The agent drafts the chapters itself from the markers and transcripts; add_markers puts them on the timeline if asked. The "chapters" saved prompt now asks for make_chapters.
+  - **`find_thumbnails {count?, start?, end?}`** (reads only):
+    - `thumbnailMoments` takes a quarter, half and three quarters into each shot (the middle of one under 3 s; `timelineShots`, 20a), wherever a clip with a file is seen (`pictureAt`, `sourceTime` from visionTools), thinned evenly to 60.
+    - `media-thumbs` scores them; `pickThumbnails` takes the best of different shots first, never two within 2 s, and leaves dark frames out.
+    - It shows the picks as one contact sheet (visionTools `look`, now exported with `checkBudget`, so it counts against the request's image budget). The agent then judges faces, expression and room for a title, which no score here measures. OpenCV's face cascades aren't bundled in the sidecar's cv2.
+  - **`export_thumbnails {times, name?, youtube?}`** (not reviewed, as export_video): the host command `export_stills` saves the frames as the editor shows them. Then `media-thumbs` makes a YouTube JPEG beside each. Refused while a draft is open.
+  - **`YOUTUBE_INSTRUCTION`** covers chapters and thumbnails, and how to write the title and description (the agent's own writing): a title under about 60 characters with no clickbait the video doesn't back up, and a first two description lines that stand alone. Shorts are make_social_version.
+- **New `media-thumbs` sidecar command** (`media/thumbs.py`; registered in `headless.py`, `sidecar.rs`, `types/sidecar.ts`):
+  - Frames are scored with the B-roll analyser's sharpness and exposure scores, plus Hasler-Süsstrunk colourfulness, at 640 px (weights 0.45 / 0.35 / 0.20). A frame darker than 0.06 scores 0.
+  - `youtube` mode crops a still to 16:9, scales it to 1280x720 (smaller stays its size) and saves it at the highest JPEG quality under 2 MB as "<still> YouTube.jpg", never reusing a name.
+- **New `nle/stills.py`** (`export_stills {timeline, times, name?}`, in both editors' edit tables; standard library only):
+  - The stills are PNGs in the project's renders folder, "<timeline> thumbnail 0m42s.png" or "<timeline> - <name> 0m42s.png", seconds padded so they sort, never overwritten.
+  - Premiere: the panel's `export_frame` (QE exportFramePNG, the sequence's size), moved out of the bridge's frames/ folder.
+  - Resolve: `ExportCurrentFrameAsStill` from the Edit page, with the timeline open in Resolve.
+  - The playhead is put back.
+- Registration: `tools.ts`, `prompt.ts`, `toolKinds.ts` (`NOT_REVIEWED`), `tools.test.ts`, and `mcp_server.py` `LONG_TOOLS` (find_thumbnails, export_thumbnails).
+- Tests: `youtubeTools.test.ts` (chapter times and rules, moments in file time, thinning, picks, the three tools with jobs mocked), `tests/media/test_thumbs.py` (a sharp pattern over a blurred one, black scores 0, a missing file reported, a 4K noise still under 2 MB at 1280x720, a square still cropped, no overwrite), `tests/nle/test_stills.py` (both editors through the colour tests' fakes). vitest 854, pytest 1046 (2 skipped), tsc, eslint, mypy, ruff.
+- **Live (Premiere, "parade probe" in "Live Checks", the app's tools over MCP):**
+  - make_chapters moved a 0:03 opening to 0:00 and flagged an 8 s last chapter; the fixed list came back ok.
+  - find_thumbnails scored 18 frames in 4.6 s and showed 6 from 5 different shots on one sheet. The sheet's labels were numbered twice ("1. 1. 19.0s") because the sheet numbers its tiles itself; fixed, so the label is the time.
+  - export_thumbnails saved two 1920x1080 PNGs as Premiere shows them and two 1280x720 JPEGs (44 KB and 70 KB) in 2.5 s, in "~/Movies/VibeCut Renders/Live Checks/"; the test files were deleted afterwards.
+  - Resolve's export_stills is not yet checked live (the app was on Premiere).
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2686,6 +2711,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - *(2026-10-31)* **`balance_clip_color` is built** (the user asked): each clip to its own neutral (the cast of its greys out, exposure into a normal range), refusing frames with nothing near grey. Checked live in Premiere; Resolve's live check is next. Then 20c (client notes).
   - *(2026-10-31)* **Matching to a clip and balancing go by the histogram and RGB parade** (the user asked; `parade.py`): curves per channel and saturation (Premiere: Levels, panel 0.15.0, and Lumetri Saturation; Resolve: per-channel CDL), three frames a clip. Built and unit-tested; not yet checked live (restart Premiere to load panel 0.15.0; switch the app to Resolve). The "parade probe" sequence in "Live Checks" has Levels on its b-roll (neutral).
   - *(2026-11-01)* **Phase 20c is built and checked live in Premiere:** `read_client_notes` places pasted notes or markers on the timeline (picture, clips, what's said, nearest cut); handled markers are marked done with "✓ ". Also today, colour in its own place in both editors: Resolve's VC Balance / VC Match nodes with a node template (`save_color_template`), Premiere's ASC CDL (balance) and Levels (match), with Revert taking off effects VibeCut added (panel 0.16.0). Next: 20d, YouTube packaging.
+  - *(2026-11-01)* **Phase 20d is built and checked live in Premiere:** make_chapters, find_thumbnails, export_thumbnails (the `media-thumbs` command and `export_stills` in both editors). **Phase 20 is done** apart from Resolve's live check of export_stills (and of read_client_notes' markers). Next: the user's call.
 - **Agent context:** each message reads the timeline fresh, so the agent re-syncs on every turn. `needsResync` can also invalidate any future cache.
 - **Phase 4 key injection.** `prepare_request` in `sidecar.rs` only strips `apiKey` for now. When the chat agent lands:
   - Inject `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` into the request that needs it, following VibeCut's `prepare_request`.
@@ -3116,3 +3142,4 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - **2026-11-01 (Claude): Premiere balances in an ASC CDL effect, matches in Levels; Revert takes off effects VibeCut added (panel 0.16.0).** See "20b" (Premiere: balance and match in effects of their own). Not yet checked live: restart Premiere.
 - **2026-11-01 (Claude): Premiere's balance in ASC CDL and match in Levels checked live** (0.0068 and 0.0097; a match keeps the balance; reverts one by one, the added ASC CDL taken off). See "20b" (Premiere: balance and match in effects of their own). No code changes.
 - **2026-11-01 (Claude): Phase 20c, `read_client_notes`.** New `clientNotesTools.ts` (+ tests); the "client" finding source (`types/agent.ts`, `chatHistory.ts`, `ToolCards.tsx`); registered in `tools.ts`, `prompt.ts`, `toolKinds.ts`. See "20c". vitest 847, tsc, eslint; checked live in Premiere.
+- **2026-11-01 (Claude): Phase 20d, YouTube packaging.** New `youtubeTools.ts`, `media/thumbs.py` (`media-thumbs`), `nle/stills.py` (`export_stills`), with tests; registered in `tools.ts`, `prompt.ts`, `toolKinds.ts`, `mcp_server.py`, `headless.py`, `sidecar.rs`, `types/sidecar.ts`; visionTools' `look` and `checkBudget` exported; the chapters saved prompt uses make_chapters. See "20d". Checked live in Premiere.

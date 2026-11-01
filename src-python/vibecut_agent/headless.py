@@ -116,6 +116,13 @@ def media_shots(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-shots", shots.run, stdin, emitter)
 
 
+def media_thumbs(emitter: Emitter, stdin: TextIO) -> int:
+    """Thumbnail candidates scored, and stills made into YouTube's JPEGs (Phase 20d)."""
+    from vibecut_agent.media import commands, thumbs
+
+    return commands.main("media-thumbs", thumbs.run, stdin, emitter)
+
+
 def media_style(emitter: Emitter, stdin: TextIO) -> int:
     """How a reference edit looks, measured on a frame of each shot (Phase 20b)."""
     from vibecut_agent.media import commands, style
@@ -185,6 +192,7 @@ COMMANDS: dict[str, Command] = {
     "media-shots": media_shots,
     "media-roomtone": media_roomtone,
     "media-style": media_style,
+    "media-thumbs": media_thumbs,
     "assemble": assemble,
     "chat-title": chat_title,
     "critique": critique,

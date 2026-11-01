@@ -54,7 +54,7 @@ export const PACK_14: readonly Omit<SavedPrompt, "id">[] = [
   },
   {
     name: "chapters",
-    body: "Write YouTube chapters for this timeline from its markers and what's said in the transcripts: 00:00 first, each chapter at least 10 seconds long, with short, specific titles. Give them as a list I can paste into the description.",
+    body: "Write YouTube chapters for this timeline from its markers and what's said in the transcripts: 00:00 first, each chapter at least 10 seconds long, with short, specific titles. Check them with make_chapters and give me its list to paste into the description.",
   },
   {
     name: "whats-changed",

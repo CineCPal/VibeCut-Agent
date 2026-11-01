@@ -76,6 +76,9 @@ LONG_TOOLS = frozenset(
         "check_pacing",
         # Phase 20b: decodes a whole reference file (shots, frames, beats).
         "learn_style",
+        # Phase 20d: up to 60 frames decoded and scored; stills exported from the editor.
+        "find_thumbnails",
+        "export_thumbnails",
         # Phase 19c: up to 3 rendered and measured frames per clip, for up to 50 clips.
         "match_clip_color",
         "balance_clip_color",

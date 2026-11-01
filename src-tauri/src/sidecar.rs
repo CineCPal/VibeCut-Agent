@@ -79,6 +79,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "media-roomtone", interactive: false, managed: false },
     // A reference edit's look, measured on a frame of each shot (Phase 20b).
     CommandSpec { name: "media-style", interactive: false, managed: false },
+    CommandSpec { name: "media-thumbs", interactive: false, managed: false },
     // The Story Editor's one model call (Phase 6d): a story cut from transcripts and a B-roll catalog.
     CommandSpec { name: "assemble", interactive: false, managed: false },
     // A short name for a chat from its first message and answer, with the chat's model (Phase 8d).

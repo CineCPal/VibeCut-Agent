@@ -33,6 +33,7 @@ import { draftEditExecutors, draftEditToolDeclarations } from "./draftEditTools"
 import { shotExecutors, shotToolDeclarations } from "./shotTools";
 import { pacingExecutors, pacingToolDeclarations } from "./pacingTools";
 import { clientNotesExecutors, clientNotesToolDeclarations } from "./clientNotesTools";
+import { youtubeExecutors, youtubeToolDeclarations } from "./youtubeTools";
 import { styleExecutors, styleToolDeclarations } from "./styleTools";
 import { dialogueExecutors, dialogueToolDeclarations } from "./dialogueTools";
 import { titleExecutors, titleToolDeclarations } from "./titleTools";
@@ -80,6 +81,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...shotToolDeclarations(host),
     ...pacingToolDeclarations(host),
     ...clientNotesToolDeclarations(host),
+    ...youtubeToolDeclarations(host),
     ...styleToolDeclarations(host),
     ...dialogueToolDeclarations(host),
     ...titleToolDeclarations(host),
@@ -328,6 +330,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...shotExecutors(context),
     ...pacingExecutors(context),
     ...clientNotesExecutors(context),
+    ...youtubeExecutors(context),
     ...styleExecutors(context),
     ...dialogueExecutors(context),
     ...titleExecutors(context),

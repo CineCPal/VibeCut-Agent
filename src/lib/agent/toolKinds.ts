@@ -142,6 +142,11 @@ export const NOT_REVIEWED = new Set([
   "check_pacing",
   // Phase 20c: reads only (the client's notes placed on the timeline).
   "read_client_notes",
+  // Phase 20d: chapters checked, thumbnail frames scored and shown (reads only); stills saved to the
+  // renders folder, as export_video saves a render.
+  "make_chapters",
+  "find_thumbnails",
+  "export_thumbnails",
   // Phase 20b: measures a file and saves to the notes, as remember_note does.
   "learn_style",
   // Phase 19c: measures frames; the playhead is put back.

@@ -75,14 +75,14 @@ function frameCount(args: Args, fallback: number): number {
   return count;
 }
 
-function checkBudget(step: string): void {
+export function checkBudget(step: string): void {
   if (imagesLeft(step) <= 0) {
     throw new Error(`This request has already shown you ${MAX_TURN_IMAGES} images, the most one request gets. Work from what you've seen, or ask the user to send a new message.`);
   }
 }
 
 /** Reads the frames and returns them as one contact sheet. */
-async function look(shots: Shot[], summary: string, extra: Record<string, unknown>): Promise<{ summary: string; result: unknown; images: ToolImage[] }> {
+export async function look(shots: Shot[], summary: string, extra: Record<string, unknown>): Promise<{ summary: string; result: unknown; images: ToolImage[] }> {
   const job = await runJob("media-frames", `Read ${shots.length} frame(s)`, { shots: shots.map(({ path, time, label }) => ({ path, time, label })), sheet: true });
   const result = (job?.result ?? {}) as { images?: ToolImage[]; frames?: { index: number; label: string; ok: boolean; message?: string }[] };
   const images = result.images ?? [];

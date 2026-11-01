@@ -24,6 +24,7 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         premiere_structure,
         premiere_timing,
         premiere_transform,
+        stills,
     )
 
     return {
@@ -56,6 +57,8 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "revert_timeline_changes": premiere_edit.revert_timeline_changes,
         # Phase 15a.
         "create_captions": lambda host, args: premiere_edit.create_captions(host, args, imports),
+        # Phase 20d: frames as stills, for thumbnails.
+        "export_stills": stills.premiere_export_stills,
     }
 
 
@@ -69,6 +72,7 @@ def resolve_edits() -> dict[str, Edit]:
         resolve_structure,
         resolve_timing,
         resolve_transform,
+        stills,
     )
 
     return {
@@ -103,6 +107,8 @@ def resolve_edits() -> dict[str, Edit]:
         "revert_timeline_changes": resolve_edit.revert_timeline_changes,
         # Phase 15a.
         "create_captions": resolve_edit.create_captions,
+        # Phase 20d: frames as stills, for thumbnails.
+        "export_stills": stills.resolve_export_stills,
     }
 
 
