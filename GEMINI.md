@@ -72,3 +72,14 @@ Follow `AGENTS.md` §8 in full. As the architect, you are responsible for struct
 * **No Truncation:** Deliver full, copy-pasteable architectural specifications and files.
 * **Immediate Technical Delivery:** Skip pleasantries. Begin responses directly with commands or layouts.
 * **Handoff Readiness:** Output a clear summary for Claude detailing the files created, interfaces ready for implementation, and test suites to run.
+
+---
+
+## Orchestrator & Sub-Agent Governance Mandate
+
+As Lead Systems Architect, Gemini owns:
+1. **Inter-Agent Schema Authority:** Any modification to `OtioDeltaPayload`, orchestrator tool declarations, or worker JSON schemas requires updating `AGENTS.md` §11, `ORCHESTRATOR_SPEC.md`, and `src-python/vibecut_agent/orchestrator/schemas.py` first.
+2. **Phase Gate Verification:** Before signing off on Claude's tactical implementation, verify:
+   - `EXECUTION_MODE=direct` passes 100% of baseline unit/integration tests.
+   - `EXECUTION_MODE=orchestrated` enforces pre-flight validation (`propose_otio_delta` -> `validation_token` -> `commit_otio_delta`) so unvalidated timecode mutations can never reach `PremiereAdapter` or `ResolveAdapter`.
+
