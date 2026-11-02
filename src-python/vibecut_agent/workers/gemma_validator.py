@@ -75,11 +75,29 @@ REVIEW_SCHEMA: dict[str, Any] = {
     },
 }
 
+# The operations each code can be about. Seen live (Phase 21, Gemma 3 4B): nearly all of its notes were about
+# things the delta doesn't do, under codes that don't fit the operation; those are dropped (`_review`).
+_PLACE = {"INSERT_CLIP", "OVERWRITE_CLIP"}
+CODE_OPS: dict[str, set[str]] = {
+    "SOURCE_OUT_OF_BOUNDS": _PLACE | {"TRIM_CLIP", "SPLIT_CLIP"},
+    "NEGATIVE_OR_ZERO_DURATION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP", "DUCK_REGION"},
+    "TRACK_OVERLAP_COLLISION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP"},
+    "MISSING_MEDIA_FILE": _PLACE,
+    "UNKNOWN_CLIP_ID": {"TRIM_CLIP", "SPLIT_CLIP", "DELETE_CLIP", "MOVE_CLIP", "APPLY_TRANSITION", "SET_AUDIO_GAIN", "DUCK_REGION"},
+    "RATE_MISMATCH": _PLACE | {"TRIM_CLIP", "MOVE_CLIP"},
+    "INVALID_TRANSITION_HANDLE": {"APPLY_TRANSITION"},
+    # The timeline hash is the structural checks' alone.
+    "STALE_TIMELINE_HASH": set(),
+}
+
 REVIEW_PROMPT = """You check a video editor's planned timeline change before it runs. The structural checks
 have already run; their findings are below. Add only problems a picture editor would see that those checks
-can't: a cut in the middle of a word or a breath, a jump in continuity, a transition on a hard sound edit,
-a clip placed over the wrong speaker. Each note names the operation (op_id) and uses the closest code from
-the allowed list. Don't repeat the findings below. Answer {"notes": []} when there is nothing to add.
+can't, in the operations listed in the change: a cut in the middle of a word or a breath, a jump in
+continuity, a transition on a hard sound edit, a clip placed over the wrong speaker. Don't note anything the
+change doesn't do. Each note names the operation (op_id) it is about and uses a code that fits that
+operation's op_type:
+%(codes)s
+Don't repeat the findings below. Answer {"notes": []} when there is nothing to add; most changes need none.
 
 The change (an OTIO delta):
 %(delta)s
@@ -201,6 +219,7 @@ class GemmaValidator:
     ) -> list[Diagnostic] | None:
         """Gemma's notes as WARNINGs, or None when it couldn't give any (not running, failing, or off-format)."""
         prompt = REVIEW_PROMPT % {
+            "codes": "\n".join(f"- {code}: {', '.join(sorted(ops))}" for code, ops in CODE_OPS.items() if ops),
             "delta": canonical(delta),
             "timeline": canonical(summarise_timeline(snapshot)),
             "findings": canonical(diagnostics) if diagnostics else "none",
@@ -212,10 +231,20 @@ class GemmaValidator:
             return None
         if errors_against(answer, REVIEW_SCHEMA):
             return None
-        op_ids = {op["op_id"] for op in delta["operations"]}
+        op_types = {op["op_id"]: op["op_type"] for op in delta["operations"]}
+        found = {(d["code"], d["op_id"]) for d in diagnostics}
         notes: list[Diagnostic] = []
         for note in answer["notes"][:MAX_NOTES]:
-            op_id = note["op_id"] if note["op_id"] in op_ids else None
+            fits = CODE_OPS.get(note["code"], set())
+            op_id = note["op_id"]
+            # About an operation the delta doesn't have, under a code that doesn't fit its operation, or
+            # repeating a structural finding: dropped. A note about no one operation must fit one of them.
+            if op_id is not None and op_types.get(op_id) not in fits:
+                continue
+            if op_id is None and not fits & set(op_types.values()):
+                continue
+            if (note["code"], op_id) in found:
+                continue
             notes.append(
                 {
                     "severity": "WARNING",

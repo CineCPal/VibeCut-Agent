@@ -68,13 +68,13 @@ def test_a_stale_timeline(config, snapshot):
 
 def test_gemma_can_only_warn(config, snapshot):
     note = {
-        "code": "TRACK_OVERLAP_COLLISION",
+        "code": "UNKNOWN_CLIP_ID",
         "op_id": "op_001",
-        "message": "Cuts mid-word",
-        "remediation_hint": "Cut 3 frames later",
+        "message": "That's the wrong speaker's answer",
+        "remediation_hint": "Delete c1 instead",
     }
-    stray = {**note, "op_id": "op_999"}
-    check = validator(config, [{"notes": [note, stray]}])
+    whole = {**note, "op_id": None}
+    check = validator(config, [{"notes": [note, whole]}])
     result = check.validate(delta(op("op_001", "DELETE_CLIP", clip_id="c2")), snapshot)
     assert result["valid"] is True
     assert [(d["severity"], d["op_id"]) for d in result["diagnostics"]] == [
@@ -83,6 +83,29 @@ def test_gemma_can_only_warn(config, snapshot):
     ]
     prompt = check.client.prompts[0][1]
     assert '"op_type":"DELETE_CLIP"' in prompt and "Findings of the structural checks:\nnone" in prompt
+    assert "- INVALID_TRANSITION_HANDLE: APPLY_TRANSITION" in prompt
+
+
+def test_notes_about_what_the_delta_doesnt_do_are_dropped(config, snapshot):
+    # Seen live (Phase 21, Gemma 3 4B): nearly every WARNING was about something the delta doesn't do,
+    # under a code that doesn't fit its operation.
+    def note(code, op_id):
+        return {"code": code, "op_id": op_id, "message": "m", "remediation_hint": "h"}
+
+    d = delta(op("op_001", "DELETE_CLIP", clip_id="c2"), op("op_002", "DELETE_CLIP", clip_id="nope"))
+    notes = [
+        note("UNKNOWN_CLIP_ID", "op_999"),  # no such operation
+        note("INVALID_TRANSITION_HANDLE", "op_001"),  # a deletion has no transition
+        note("INVALID_TRANSITION_HANDLE", None),  # nor does the delta
+        note("STALE_TIMELINE_HASH", None),  # the structural checks' alone
+        note("UNKNOWN_CLIP_ID", "op_002"),  # repeats a structural finding
+        note("UNKNOWN_CLIP_ID", "op_001"),  # kept
+    ]
+    result = validator(config, [{"notes": notes}]).validate(d, snapshot)
+    assert [(x["severity"], x["code"], x["op_id"]) for x in result["diagnostics"]] == [
+        ("ERROR", "UNKNOWN_CLIP_ID", "op_002"),
+        ("WARNING", "UNKNOWN_CLIP_ID", "op_001"),
+    ]
 
 
 @pytest.mark.parametrize(
