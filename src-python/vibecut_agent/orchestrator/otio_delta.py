@@ -128,6 +128,9 @@ class _Compiler:
         # (clip id, transition spec as given, total seconds) for each APPLY_TRANSITION that compiles.
         self.transitions: list[tuple[str, dict[str, Any], Fraction]] = []
         self.track_names: dict[tuple[str, int], str] = {}
+        # The latest delete_clips call, and the clips linked to what it removes (see `delete`).
+        self._last_delete: NleCommand | None = None
+        self._last_delete_links: set[str] = set()
         for track in snapshot.get("tracks", []):
             kind = track.get("type")
             if kind not in ("video", "audio"):
@@ -551,7 +554,17 @@ class _Compiler:
         clip = self._clip(op, op_id)
         if clip is None:
             return
-        self._emit(op_id, "delete_clips", {"itemIds": [clip.id], "withLinked": False})
+        # A clip linked to the ones the delete just before removed (its picture or sound) goes in the same
+        # call: the editor records clips deleted together, and Revert links exactly those again. Unlinked
+        # clips get their own call, or Revert would link them to each other.
+        last = self.commands[-1] if self.commands else None
+        if last is not None and last is self._last_delete and clip.id in self._last_delete_links:
+            last["args"]["itemIds"].append(clip.id)
+            last["source_op_id"] = f"{last['source_op_id']},{op_id}"
+        else:
+            self._last_delete = self._emit(op_id, "delete_clips", {"itemIds": [clip.id], "withLinked": False})
+            self._last_delete_links = set()
+        self._last_delete_links |= set(clip.linked)
         del self.clips[clip.id]
 
     def move(self, op: dict[str, Any], op_id: str) -> None:

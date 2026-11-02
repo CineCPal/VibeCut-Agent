@@ -563,3 +563,25 @@ def test_write_otio_saves_it_whole(media, snapshot, tmp_path):
     again = otio.adapters.read_from_file(str(path))
     assert again.name == "Cut"
     assert items(again.tracks[0]) == items(timeline.tracks[0])
+
+
+def test_linked_picture_and_sound_deleted_together_go_in_one_call(snapshot):
+    # c2 and a2 are linked: one call, so the editor records them as deleted together and Revert relinks them.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id="c2"),
+            op("op_002", "DELETE_CLIP", "Audio", 1, clip_id="a2"),
+            op("op_003", "DELETE_CLIP", "Audio", 2, clip_id="m1"),
+            op("op_004", "DELETE_CLIP", clip_id="c1"),
+        ),
+        snapshot,
+    )
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("delete_clips", {"itemIds": ["c2", "a2"], "withLinked": False}),
+        # The music isn't linked to them, and c1 isn't linked to the music: calls of their own.
+        ("delete_clips", {"itemIds": ["m1"], "withLinked": False}),
+        ("delete_clips", {"itemIds": ["c1"], "withLinked": False}),
+    ]
+    assert [c["source_op_id"] for c in commands[1:]] == ["op_001,op_002", "op_003", "op_004"]
+    assert [c["seq"] for c in commands] == [1, 2, 3, 4]
