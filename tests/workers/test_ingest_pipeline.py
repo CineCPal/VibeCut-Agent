@@ -205,3 +205,36 @@ def test_the_eta_is_paced_by_the_steps_that_did_work(recorder, tmp_path, monkeyp
     assert [e["etaSeconds"] for e in progress if e["detail"].startswith("Transcribing")][:2] == [None, None]
     half = next(e for e in progress if e["detail"] == "slow.mov: half way")
     assert half["etaSeconds"] == 15.0
+
+
+def test_each_stage_keeps_its_own_pace(recorder, tmp_path, monkeypatch):
+    # Seen live (the Phase 21 follow-up's checks): with one pace for every stage, a few seconds of indexing
+    # left read as 85 s, the pace of a 4K analysis.
+    clock = [0.0]
+    monkeypatch.setattr(ingest_pipeline.time, "monotonic", lambda: clock[0])
+    paths = []
+    for name in ("one.mov", "two.mov"):
+        (tmp_path / name).write_bytes(b"")
+        paths.append(str(tmp_path / name))
+
+    class Slow(Vlm):
+        def analyze(self, path, **options):
+            clock[0] += 50
+            options["on_progress"]("vision", 0.5, "half way")
+            clock[0] += 50
+            return {"media_path": path, "shots": [{}]}
+
+    class Quick(Store):
+        def index_shots(self, analysis):
+            clock[0] += 2
+            return super().index_shots(analysis)
+
+    workers = {"whisper": Whisper(), "vlm": Slow(), "vector": Quick()}
+    assert run({"paths": paths, "stages": ["vision", "index"]}, recorder, workers) == 0
+    halves = [e for e in recorder.events if e["type"] == "progress" and e["detail"].endswith("half way")]
+    # The first file: 50 s more of its analysis, then its indexing at the analysis's pace (nothing else known).
+    assert halves[0]["etaSeconds"] == 50 + 100 + 100 + 100
+    # The second: 50 s more, then 2 s of indexing.
+    assert halves[1]["etaSeconds"] == 52.0
+    index = next(e for e in recorder.events if e["type"] == "progress" and e["detail"] == "Indexing two.mov")
+    assert index["etaSeconds"] == 2.0

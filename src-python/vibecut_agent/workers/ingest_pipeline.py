@@ -79,20 +79,42 @@ class Ingest:
         self.workers = (make_workers or default_workers)(config)
         self.steps = len(options["paths"]) * len(options["stages"])
         self.done = 0
-        # The ETA is paced by the steps that did work. Seen live (Phase 21): a reused transcript finished
-        # its step at once, and an ETA by steps done said 3 s with minutes to go. A cached transcript or
-        # analysis never reports progress, a missing file's steps take no time, and indexing is work.
-        self.worked = 0
-        self.work_seconds = 0.0
+        # The ETA is paced by the steps that did work, stage by stage. Seen live (Phase 21): a reused
+        # transcript finished its step at once, and an ETA by steps done said 3 s with minutes to go. A
+        # cached transcript or analysis never reports progress, a missing file's steps take no time, and
+        # indexing is work. Seen live again (the follow-up's checks): with one pace for every stage, a few
+        # seconds of indexing left read as 85 s, the pace of a 4K analysis.
+        self.stage_seconds: dict[str, float] = {}
+        self.stage_worked: dict[str, int] = {}
         self.step_began = time.monotonic()
         self.step_working = False
+
+    def eta(self, within: float) -> float | None:
+        """Seconds left: the step under way, from its own progress once it reports some (else its stage's
+        pace), and each step after it at its stage's pace (a stage not yet timed takes the others' mean)."""
+        if self.done >= self.steps:
+            return 0.0
+        stages = self.options["stages"]
+        paces = {s: self.stage_seconds[s] / n for s, n in self.stage_worked.items() if n}
+        stage = stages[self.done % len(stages)]
+        elapsed = time.monotonic() - self.step_began
+        projected = elapsed / within if self.step_working and within > 0 else None
+        fallback = sum(paces.values()) / len(paces) if paces else projected
+        current = projected if projected is not None else paces.get(stage, fallback)
+        if current is None:
+            return None
+        left = max(0.0, current - (elapsed if self.step_working else 0.0))
+        for step in range(self.done + 1, self.steps):
+            pace = paces.get(stages[step % len(stages)], fallback)
+            if pace is None:
+                return None
+            left += pace
+        return left
 
     def report(self, phase: str, within: float, detail: str) -> None:
         within = min(1.0, max(0.0, within))
         done = self.done + within
-        spent = self.work_seconds + (time.monotonic() - self.step_began if self.step_working else 0.0)
-        worked = self.worked + (within if self.step_working else 0.0)
-        eta = spent * (self.steps - done) / worked if worked > 0 else None
+        eta = self.eta(within)
         self.emitter.progress(
             done,
             self.steps,
@@ -163,8 +185,10 @@ class Ingest:
             except Exception as e:  # noqa: BLE001 - one stage failing is recorded on its file; the run goes on
                 entry["errors"].append(f"{stage}: {e}")
             if self.step_working:
-                self.worked += 1
-                self.work_seconds += time.monotonic() - self.step_began
+                self.stage_worked[stage] = self.stage_worked.get(stage, 0) + 1
+                self.stage_seconds[stage] = (
+                    self.stage_seconds.get(stage, 0.0) + time.monotonic() - self.step_began
+                )
             self.step_working = False
             self.done += 1
         return entry

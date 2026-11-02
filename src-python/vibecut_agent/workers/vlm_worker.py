@@ -42,8 +42,9 @@ CACHE_SUFFIX = ".vlm-tags.json"
 CACHE_VERSION = 1
 KEYFRAME_FOLDER = "keyframes"
 ATTEMPTS = 2
-# The share of a whole-file analysis's progress the scene-cut scan fills (`analyze`).
-SCAN_SHARE = 0.3
+# The share of a whole-file analysis's progress the scene-cut scan fills (`analyze`). Seen live (the Phase
+# 21 follow-up's checks): on a 4K interview the scan was about 90% of the step (0.3 made the ETA 2-3x high).
+SCAN_SHARE = 0.8
 
 # What the model fills in for one frame: a shot's fields, less the ones this worker knows already.
 _KNOWN = ("shot_id", "source_range", "keyframe_timestamp_sec")
