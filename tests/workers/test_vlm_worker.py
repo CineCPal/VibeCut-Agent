@@ -12,6 +12,7 @@ from tests.core.test_ffmpeg_ops import make
 from tests.workers.fakes import Client
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.orchestrator.schemas import VLM_KEYFRAME_ID, validate
+from vibecut_agent.workers import vlm_worker
 from vibecut_agent.workers.base import CircuitBreaker, LocalLlmError
 from vibecut_agent.workers.vlm_worker import ANALYSIS_SCHEMA, VlmWorker, VlmWorkerError, cache_path
 
@@ -72,6 +73,40 @@ def test_analyses_each_shot_and_caches_the_file(config, film):
     # Another sampling isn't that cache.
     worker.analyze(str(film), sample_strategy="midpoint_only")
     assert len(client.prompts) == 4
+
+
+def test_each_shot_goes_as_a_contact_strip_with_the_model_kept_loaded(config, film):
+    """Model migration v2: [START | MID | END] in one image, read left to right, and Ollama keeps the
+    model between shots."""
+    client = Client([ANSWER])
+    VlmWorker(config, client=client).analyze(str(film))  # type: ignore[arg-type]
+    images = [images[0] for _, _, images in client.prompts]
+    assert all(image.endswith("_strip.jpg") for image in images)
+    assert all("three frames side by side, left to right" in prompt for _, prompt, _ in client.prompts)
+    assert all("PAN_LEFT" in prompt and "RACK_FOCUS" not in prompt for _, prompt, _ in client.prompts)
+    assert client.keep_alive == [vlm_worker.KEEP_ALIVE] * 3
+
+
+def test_an_older_qwen_stands_in_and_its_analysis_is_cached_as_its_own(config, film):
+    client = Client([ANSWER], models=("qwen2.5vl:7b",))
+    worker = VlmWorker(config, client=client)  # type: ignore[arg-type]
+    result = worker.analyze(str(film))
+    assert {model for model, _, _ in client.prompts} == {"qwen2.5vl:7b"}
+    assert result["vlm_model_id"] == "qwen2.5vl:7b"
+    assert worker.cached(str(film)) == result
+    # Once qwen3-vl:8b is pulled, the old model's analysis no longer fits.
+    client.models = ("qwen2.5vl:7b", "qwen3-vl:8b")
+    assert worker.cached(str(film)) is None
+
+
+def test_a_single_frame_analysis_from_before_the_strips_is_done_again(config, film):
+    client = Client([ANSWER])
+    worker = VlmWorker(config, client=client)  # type: ignore[arg-type]
+    result = worker.analyze(str(film))
+    stored = json.loads(Path(cache_path(str(film))).read_text())
+    Path(cache_path(str(film))).write_text(json.dumps({**stored, "cache_version": 1}))
+    assert worker.cached(str(film)) is None
+    assert worker.analyze(str(film)) == result and len(client.prompts) == 6
 
 
 def test_a_custom_question_is_asked_and_not_cached(config, film):

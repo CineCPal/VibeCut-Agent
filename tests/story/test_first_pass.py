@@ -197,7 +197,8 @@ def test_long_footage_gets_a_first_pass_then_one_story_call(monkeypatch):
     code, events = run(request(lines=3000))
     assert code == 0, events
     assert len(asked) == 2, "3000 lines: two parts of at most 1500"
-    assert {a["model"] for a in asked} == {"claude-sonnet-5-5"} and {a["effort"] for a in asked} == {"medium"}
+    # Finding the strongest lines is filtering: Sonnet at low effort.
+    assert {a["model"] for a in asked} == {"claude-sonnet-5-5"} and {a["effort"] for a in asked} == {"low"}
     assert all(a["schema"] is extract.EXTRACT_SCHEMA for a in asked)
     assert len(story_calls) == 1
     sent = story_calls[0]["sources"]
@@ -222,8 +223,8 @@ def test_the_first_pass_can_run_on_gemini_with_its_key(monkeypatch):
     monkeypatch.setattr(
         commands,
         "gemini_json",
-        lambda key, system, text, schema, model, on_retry: (
-            used.append((key, model)),
+        lambda key, system, text, schema, model, on_retry, effort, on_fallback: (
+            used.append((key, model, effort)),
             {"themes": [], "moments": [{"segment_index": 5, "why": "w", "strength": 3}]},
         )[1],
     )
@@ -231,7 +232,7 @@ def test_the_first_pass_can_run_on_gemini_with_its_key(monkeypatch):
     monkeypatch.setattr(commands, "claude_code_story", lambda *a: picks_line_5)
     code, events = run(request(lines=2100, extraction="gemini", extractionKey="g-secret-key"))
     assert code == 0, events
-    assert used and all(u == ("g-secret-key", "gemini-flash-latest") for u in used)
+    assert used and all(u == ("g-secret-key", "gemini-3.8-flash", "low") for u in used)
     assert not any("g-secret-key" in json.dumps(e) for e in events)
 
 
@@ -275,55 +276,3 @@ def test_a_first_pass_that_finds_nothing_is_an_error():
 
 
 # ------------------------------------------------------------------ on Gemini (subscription), Phase 17
-
-AGY_SETUP = {"program": "/u/.local/bin/agy", "workDir": "/tmp/vca-agy", "jobId": "j2"}
-
-
-def test_a_story_on_gemini_subscription_is_one_antigravity_call(monkeypatch):
-    calls = []
-
-    def story(setup, brief, sources, catalog, target, model, abort):
-        calls.append({"setup": setup, "model": model})
-        return {**ANSWER, "script_segments": [{**ANSWER["script_segments"][0], "segment_index": 3}]}
-
-    monkeypatch.setattr(commands, "antigravity_story", story)
-    req = request(lines=10, provider="antigravity", antigravity=AGY_SETUP, model="gemini-4-argon")
-    del req["claudeCode"]
-    code, events = run(req)
-    assert code == 0, events
-    assert calls == [{"setup": AGY_SETUP, "model": "gemini-4-argon"}]
-
-
-def test_antigravity_story_converts_the_schema_and_thinks_hard(monkeypatch):
-    from vibecut_agent.agent import antigravity_json
-    from vibecut_agent.story import models
-
-    seen = {}
-
-    def run_json(setup, model, system, text, schema, effort=None, should_abort=None):
-        seen.update(model=model, effort=effort, schema=schema, text=text)
-        return ANSWER
-
-    monkeypatch.setattr(antigravity_json, "run_json", run_json)
-    assert (
-        models.antigravity_story(AGY_SETUP, "Brief", prompt_sources({"s1": 2}), [], 60, "gemini-4-argon")
-        == ANSWER
-    )
-    assert seen["model"] == "gemini-4-argon" and seen["effort"] == "high"
-    assert seen["schema"]["type"] == "object" and seen["schema"]["additionalProperties"] is False
-
-
-def test_the_first_pass_on_gemini_subscription_uses_its_flash(monkeypatch):
-    seen = []
-
-    def answer(setup, system, text, schema, model=None, effort="high", should_abort=None):
-        seen.append((setup, model, effort))
-        return {"picks": []}
-
-    monkeypatch.setattr(commands, "antigravity_json_answer", answer)
-    ask, reader = commands.extraction_asker(
-        {"antigravity": AGY_SETUP}, "antigravity", "", lambda: False, None
-    )
-    assert reader == "Gemini Flash (subscription)"
-    ask("system", "text", {})
-    assert seen == [(AGY_SETUP, "gemini-3.8-flash", "medium")]

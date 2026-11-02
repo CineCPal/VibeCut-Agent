@@ -30,14 +30,14 @@ describe("UsageMeter (Phase 9b)", () => {
   it("opens the details: both windows, this chat and today", () => {
     const now = Date.now();
     useUsageStore.setState({ plan: { fiveHour: { used: 0.42, resetsAt: now / 1000 + 3600 }, weekly: { used: 0.03, resetsText: "Oct 13 at 12:59am (America/New_York)" } }, planAt: now });
-    useUsageStore.getState().addTurn("claude-sonnet-5-5", "chat-1", { promptTokens: 12_000, cachedTokens: 0, outputTokens: 800, thoughtsTokens: 0, steps: 1 });
+    useUsageStore.getState().addTurn("claude-code-sonnet-5-5", "chat-1", { promptTokens: 12_000, cachedTokens: 0, outputTokens: 800, thoughtsTokens: 0, steps: 1 });
     render(<UsageMeter />);
     fireEvent.click(screen.getByRole("button", { name: /Claude plan/ }));
     expect(screen.getByRole("meter", { name: "5-hour limit used" })).toHaveAttribute("aria-valuenow", "42");
     expect(screen.getByText("Resets in 1 h 0 m")).toBeInTheDocument();
     expect(screen.getByText("Resets Oct 13 at 12:59am")).toBeInTheDocument();
     expect(screen.getByText(/13k tokens · 1 turn · \$0.03/)).toBeInTheDocument();
-    expect(screen.getAllByText("Claude Sonnet 5.5")).toHaveLength(2);
+    expect(screen.getAllByText("Claude Sonnet 5.5 (subscription)")).toHaveLength(2);
   });
 
   it("refreshes from Claude Code's /usage", async () => {

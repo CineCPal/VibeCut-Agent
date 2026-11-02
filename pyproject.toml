@@ -8,7 +8,6 @@ requires-python = ">=3.13"
 dependencies = [
     # The chat agent: Gemini over plain HTTP, Claude through its SDK.
     "requests==2.34.2",
-    "anthropic==1.11.0",
     # The B-roll analyzer's base scoring (sharpness, exposure, stability).
     "opencv-python-headless==5.0.0.93",
     "numpy==2.4.6",

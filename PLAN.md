@@ -181,7 +181,7 @@ It is designed to run locally in the background, launching independently and int
 
 **Chat agent** (`src-python/vibecut_agent/agent/`, ported from VibeCut's rough-cut-studio):
 - **Modules:** `gemini_chat.py` (Gemini over plain HTTPS with `requests`), `claude_chat.py` and `claude_client.py` (the `anthropic` 1.11.0 SDK, with VibeCut's beta flags), `chat_steps.py`, `claude_schema.py`, `redact.py`. `gemini_client.py` keeps only the transport helpers, and the unused vision helper `generate_json` was removed.
-- **The conversation process:** `chat.py` is VibeCut's `run_chat`. One interactive `chat` process runs per conversation; the protocol is in its docstring. Rust's `prepare_request` injects `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` into the first request only. The UI never holds a key, and `redact.py` scrubs it from every error.
+- **The conversation process:** `chat.py` is VibeCut's `run_chat`. One interactive `chat` process runs per conversation; the protocol is in its docstring. Rust's `prepare_request` injects `GEMINI_API_KEY` into the first request only (`ANTHROPIC_API_KEY` too until model migration v2). The UI never holds a key, and `redact.py` scrubs it from every error.
 - **The app side** (`src/lib/agent/`):
   - `tools.ts`: eight tools — `list_timelines`, `list_timeline_clips`, `list_markers`, `add_markers`, `update_marker`, `remove_markers`, `get_playhead_time`, `set_playhead_time`. Descriptions and executors are ported from VibeCut; each runs on the timeline open in the editor, through `nle_call`.
   - `snapshot.ts`: VibeCut's `timelineLines`, put ahead of each message.
@@ -2609,6 +2609,74 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - export_thumbnails saved 1920x1080 PNGs at 5 s (the B-roll's bars) and 40 s (the reference clip), and their 1280x720 JPEGs, in 2.8 s. That was with Resolve on the Color page, which `ExportCurrentFrameAsStill` handles too. The page and playhead were unchanged after. The test files were deleted.
     - read_client_notes with fromMarkers read two added markers: the comment joined, the 2 s one as a span, each placed with its picture, line and nearest cut. One was renamed "✓ Wider shot here" (Resolve kept the name and comment) and skipped on the next read. Both were removed after.
 
+## Model migration v2 (2026-11-02)
+
+**Spec:** `docs/specs/model-migration-plan.md` (`vibecut.model.migration.v2`), executed by Claude in Phases 1-5. The user approved the plan, chose current Gemini models over the spec's 2.5 pins, approved updating the frozen-path rules in CLAUDE.md and AGENTS.md §11, and added two local options the spec didn't have (chat titles, the critic).
+
+**Providers:** two remain. `"gemini"` is the Gemini API on the user's key; `"claude-code"` is Claude through the user's signed-in Claude Code (subscription, no key). The Anthropic API (`provider: "claude"`, `ANTHROPIC_API_KEY`, `claude_chat.py`, `claude_client.py`, the `anthropic` package) and Antigravity (`provider: "antigravity"`, `agy`, `antigravity.rs`, `antigravity_chat.py`, `antigravity_json.py`, `AntigravitySection`) are gone. Any other provider is refused in Rust (`prepare_request`: "Unknown AI provider") and in Python (`provider_of`). `to_claude_content` moved to `agent/claude_schema.py`.
+
+**Who orchestrates:** whichever chat model the user picks. Claude (subscription) is unchanged: its MCP shim runs the tool bus (`mcp_server.py`). Gemini is new: `orchestrator/supervisor.py` now runs `gemini_chat.run_chat_turn` (it ran the API's Claude), and `sidecar.rs`'s `orchestrated_extras` gives an orchestrated Gemini chat the `orchestrator` and `transcribe` extras.
+
+**Models:**
+- Chat: `gemini` = Gemini 3.8 Flash (`gemini-3.8-flash`), `gemini-pro` = Gemini 3.1 Pro (`gemini-3.1-pro-preview`), and Claude Opus and Sonnet 5.5 (subscription). Settings → Agent model has one "Gemini thinking" level (low, medium, high), sent as `effort`.
+- Story Editor: the story on Gemini runs on the chat's tier (Flash by default, Pro when the chat is on Gemini Pro; the user's call, 2026-11-02, over the spec's Pro default), thinking high, 180 s timeout; the first pass is Flash at low, or Sonnet at low effort. The critic is Flash at medium unless "Same model as the agent" names another.
+- Chat titles: the local Gemma first (below), else Flash at low or Sonnet at low effort, never Opus or Pro.
+- Local: `qwen3-vl:8b`, `gemma3:4b`, `mlx-community/whisper-large-v3-turbo` (also the Transcribe tab's new default); the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`.
+
+**Local sub-agents:**
+- `workers/base.py`: `MODEL_ALIASES` and `LocalLlmClient.resolve_available_model` (the configured model, or the first alias `/api/tags` lists); `has_model` accepts an alias and says so; `chat_json` takes `keep_alive` and image bytes.
+- `whisper_worker.py`: a `large-v3-turbo` tier for each backend (mlx `mlx-community/whisper-large-v3-turbo`, faster-whisper `deepdml/faster-whisper-large-v3-turbo-ct2`, whisper.cpp `ggml-large-v3-turbo.bin`); `tier_of_model` reads turbo before large-v3; faster-whisper keeps one loaded model per process (`_FASTER_WHISPER_CACHE`).
+- `gemma_validator.py`: `validator_mode` from the config; deterministic mode never asks a model, and health says so.
+- `vlm_worker.py` + `core/ffmpeg_ops.py`: each shot of 0.6 s or more goes as a 3-frame contact strip (15%, 50%, 85%, 512 px each, side by side), with a prompt that reads it left to right; shorter shots go as the middle frame. `keep_alive="10m"` on every call. The cache is version 2 and keyed by the model that answered.
+- `ingest_pipeline.py`: stage by stage across files (every transcript, then every analysis, then the index); the ETA's step-to-stage mapping follows.
+- `broll/vision_energy.py`: SigLIP 2's load and each call's forward passes take the GPU lock, never nested.
+
+**Local options for cloud tasks (the user's addition):**
+- **Chat titles:** `agent/titles.py` asks the local Gemma first, taking the GPU lock with no wait; a busy GPU, a missing server or model, or an unusable answer goes to the cloud. The result names the model (`model`).
+- **Review critic:** Settings → Edit review critic → "Local (Qwen3-VL), on this Mac". The request keeps the cloud reviewer's provider and key and adds `local: true`; `review/critic.py` asks the VLM under the GPU lock (30 s wait) and falls back to the cloud reviewer, saying why (`localFallback`), which `review_edit` passes on.
+
+**Spec decisions (decided 2026-11-02; no Gemini review):**
+- **D1 Gemini models:** Gemini 3.8 Flash and Gemini 3.1 Pro, not the spec's 2.5 pair. Google serves 2.5 only to projects that used it before (a new project gets a 404) and points new work at 3.8 Flash. Gemini 3 takes `thinkingConfig.thinkingLevel`, not `thinkingBudget`: `gemini_client.thinking_level`. The Pro tier takes only low and high, so medium is high there.
+- **D2 Fallback:** a 404 for the model is tried once on the next one down (Pro → Flash → `gemini-flash-latest`), in the chat, the Story Editor, the titler and the critic, and announced in a `status` line, so Pro never quietly becomes Flash.
+- **D3 VLM:** `qwen3-vl:8b` (the user's prompt), not the spec's `qwen2.5vl:7b`; the alias list falls back to `qwen2.5vl:7b` and `qwen2.5-vl:7b-instruct`. Qwen3-VL needs Ollama 0.12.7 or later.
+- **D4 Tier name:** `large-v3-turbo` (the spec's), not "turbo" (the prompt's). The `transcribe_and_align` schema's default is now `large-v3-turbo` too, since an omitted tier means the configured model.
+- **D5 Gemini's orchestration tools:** sent as `parametersJsonSchema` (`tool_bus.gemini_tools`), not `parameters`. The bus's schemas use `additionalProperties`, `const`, `pattern` and `$defs`, which Gemini's OpenAPI-subset `parameters` refuses. The app's own tools keep `parameters`.
+- **D6:** the GPU lock is `GpuLock.for_config` (the spec's `vector_index_dir` doesn't exist).
+- **D7:** `gemini_json` is in `story/models.py` (no `gemini_json.py`).
+- **D8 Saved choices:** a persist migration (`useAgentStore`, version 1, `migrateAgentPrefs`) maps `claude-opus-5-5` → `claude-code-opus-5-5`, `claude-sonnet-5-5` → `claude-code-sonnet-5-5`, `antigravity-gemini-4-argon` → `gemini-pro`, `antigravity-gemini-3.8-flash` → `gemini`, anything else → `gemini`, and agy's effort → Gemini's thinking level. There was no `normalizeAiChoice`; rehydration skipped `setAiChoice`'s check.
+- **D9 Saved chats:** a chat saved on `"claude"` or `"antigravity"` opens with its transcript but not the model's memory (neither history can be resent); its choice comes back through `migrateAiChoice`.
+- **D10:** Gemini gets Settings' effort as its thinking level (the Antigravity effort setting became "Gemini thinking").
+- **D11:** an `ANTHROPIC_API_KEY` saved in the Keychain is left there, unread; delete it in Keychain Access if it's no longer wanted.
+- **D12 Frozen paths:** the user approved removing `claude_chat.py` and adding the enum value. CLAUDE.md's constraint 2 and AGENTS.md §11 now name `gemini_chat.py` and `claude_code_chat.py` as the frozen direct path; ORCHESTRATOR_SPEC.md has an amendment note. Schema ids are unchanged.
+- **D13 Temperature:** Gemini 3 is left at its own temperature (Google: lower ones can make it loop); older models keep 0.4 (chat), 0.3 (critic), 0.2 (titles).
+- **D14 Embedders:** no aliases. An index is bound to the model that built it (`vector_store.py`), so a missing embedder is pulled, never stood in for.
+- **D15 Local critic:** a `local: true` flag on the cloud reviewer's request, not a `"local"` provider, so Rust still injects the key the fallback needs and `prepare_request` didn't change.
+- **D16 Strip:** three fast-seeked inputs joined with `hstack`, not `select` + `tile=3x1`: the same 3x1 image, without decoding the whole shot to pick three frames.
+- **D17 Prices:** Gemini 3.1 Pro's (pricing page, prompts up to 200k tokens; thinking billed as output). Gemini 3.8 Flash's wasn't published, so its turns aren't priced. A subscription turn with no `costUsd` is priced from its tokens.
+- **D18:** RACK_FOCUS (in the spec's prompt) isn't in the `vibecut.vlm.v1` camera enum, so the strip prompt uses the enum's own values.
+
+**Not done here:**
+- The spec's "cut-point transcript word context" for `llm` validator mode: the validator's prompt is unchanged.
+- The chat's own `transcribe_media` tool still uses `whisper-small` (`TRANSCRIBE_MODEL` in `transcriptTools.ts`); the spec didn't name it.
+- Gemini 4 Argon is on the Gemini API's pricing page; it may suit the Pro tier better than 3.1 Pro preview. Not checked live.
+
+**Verification (2026-11-02):**
+- `ruff check` and `ruff format --check` (src-python, tests): clean.
+- `mypy` (the project's configuration, src-python, strict): clean. This includes `vlm_worker.py`'s `"None" not callable`, which was there before. The spec's `mypy src-python/ tests/` reports about 4,400 untyped-test errors in files this work didn't touch; the configuration has never covered `tests/`.
+- pytest: 1253 passed, 2 skipped. The spec's isolated `orchestrator` subset: 232 passed, 1 skipped. `test_mcp_server.py::test_no_reply_times_out_and_progress_is_reported` failed once under full-suite load (a 0.7 s timing test this work didn't touch) and passed alone 3 times out of 3.
+- ESLint and `tsc --noEmit`: clean. Vitest: 866 passed.
+- `cargo test`: 140 passed (the agy tests went with `antigravity.rs`). The one warning, `shim_launch` never used, was there before.
+- Tests added: Gemini's tiers, thinking levels and 404 fallback; the supervisor on Gemini (`tests/agent/gemini_fakes.py`) and its `parametersJsonSchema`; the persist migration; the local titler and critic, with their fallbacks; alias resolution; deterministic validation; stage-major ingest; the contact strip against frames grabbed one at a time (real ffmpeg); SigLIP's GPU lock never nested. `tests/conftest.py` now points `VIBECUT_INDEX_DIR` at a temporary folder for every test, so none touches the real GPU lock.
+
+**Still to check live:**
+1. A Gemini 3.8 Flash and a Gemini 3.1 Pro chat with a real key, and the Pro → Flash notice on a key without Pro.
+2. An orchestrated Gemini chat proposing and committing a delta: does Gemini accept `parametersJsonSchema` next to `parameters` in one request (D5)?
+3. `ollama pull qwen3-vl:8b`, then an ingest: the strips' camera movement, and Ollama keeping one model loaded per stage (`ollama ps`).
+4. A turbo transcription (mlx), and its word timings against medium's.
+5. A chat title while an ingest holds the GPU (should come from the cloud at once), and one with the GPU free (from Gemma).
+6. The Local critic, with and without Qwen3-VL pulled.
+7. Reinstall the app: `npm run install-app -- --orchestrated`, with any model variables set. It copies `VIBECUT_WHISPER_MODEL` and `VIBECUT_VALIDATOR_MODE` too now.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -2635,8 +2703,8 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 **Decision (the user):** release builds take their keys from the **macOS Keychain** (option 1). A release app opened from Finder has no shell environment and no repo `.env`.
 
 **`src-tauri/src/secrets.rs`:**
-- **Lookup order:** the environment first (dev builds load the repo's `.env` into it), then the login Keychain: service `com.cj.vibecutagent`, account `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`.
-- **Commands:** `llm_key_status` reports `{ gemini, anthropic, geminiSource, anthropicSource }`, with the source being `environment` or `keychain`; never a key. `llm_key_set(provider, key)` stores a key after `checked_key` (trimmed, one word, at most 512 characters). `llm_key_remove(provider)` deletes it.
+- **Lookup order:** the environment first (dev builds load the repo's `.env` into it), then the login Keychain: service `com.cj.vibecutagent`, account `GEMINI_API_KEY` (and `HF_TOKEN`). `ANTHROPIC_API_KEY` went with the Anthropic API (model migration v2).
+- **Commands:** `llm_key_status` reports `{ gemini, geminiSource, huggingface, huggingfaceSource }` (`anthropic` until model migration v2), with the source being `environment` or `keychain`; never a key. `llm_key_set(provider, key)` stores a key after `checked_key` (trimmed, one word, at most 512 characters). `llm_key_remove(provider)` deletes it.
 - **Testing:** a `KeyStore` trait with a `Keychain` implementation (`keyring` 3, `apple-native`); tests use an in-memory store. `cargo test -- --ignored real_keychain` round-trips a throwaway item in the real Keychain.
 - **Sidecar:** `sidecar_start` resolves keys through this lookup, and only for `chat`. The rest is unchanged: the key goes into the first stdin request, is stripped from anything the UI sends, and is redacted from errors.
 
@@ -3263,4 +3331,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - During Grady's scan it read high by a steady 40-50 s: 147 s with 101 s left at 50% (1.45x; it was 2-3x). That's the 20% kept for the shots, which took 8 s for Grady's one shot.
     - It starts high (430 s at 1%, ffmpeg starting) and settles within about 20 s.
     - Kept as is: the scan can't know how many shots will follow.
-
+- **2026-11-02 (Claude): model migration v2.**
+  - The Anthropic API and Antigravity are removed: Gemini (API key) and Claude (subscription, Claude Code) remain, and either can orchestrate. Gemini's two tiers are 3.8 Flash and 3.1 Pro, with a thinking level and a 404 fallback that says so.
+  - The local workers: Qwen3-VL on 3-frame contact strips, kept loaded; Gemma only with `VIBECUT_VALIDATOR_MODE=llm`; Whisper `large-v3-turbo` with a model cache; stage-major ingest; SigLIP under the GPU lock. Chat titles try the local Gemma first, and the critic can be set to Local.
+  - Decisions D1-D18, what wasn't done, the verification and the live checks still owed: "Model migration v2" above.

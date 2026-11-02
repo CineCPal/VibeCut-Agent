@@ -17,7 +17,7 @@ import { useAgentStore, type AgentState } from "../../store/useAgentStore";
 import { useChatHistoryStore } from "../../store/useChatHistoryStore";
 import { parseSavedEditLog, savedEditLog, useEditLogStore } from "../../store/useEditLogStore";
 import type { ChatAttachment, ChatMention, ChatMessage, ChatProvider, ChatToolCall } from "../../types/agent";
-import { AI_CHOICES } from "../../types/agent";
+import { AI_CHOICES, migrateAiChoice } from "../../types/agent";
 import type { SavedChat } from "../../types/history";
 
 export const SAVE_DELAY_MS = 400;
@@ -27,13 +27,11 @@ export const TITLE_CHARS = 60;
 export const HISTORY_DROPPED_NOTE =
   "This chat is too long to keep the model's memory of it after a restart; the transcript is saved.";
 
-const PROVIDERS: readonly ChatProvider[] = ["gemini", "claude", "claude-code", "antigravity"];
-const PROVIDER_NAME: Record<ChatProvider, string> = {
-  gemini: "Gemini",
-  claude: "Claude (API key)",
-  "claude-code": "Claude (subscription)",
-  antigravity: "Gemini (subscription)",
-};
+// A chat saved with the Anthropic API ("claude") or Antigravity ("antigravity"), both removed in model
+// migration v2, opens with its transcript but not the model's memory: neither history can be resent to
+// Gemini or Claude Code. Its model choice comes back through migrateAiChoice.
+const PROVIDERS: readonly ChatProvider[] = ["gemini", "claude-code"];
+const PROVIDER_NAME: Record<ChatProvider, string> = { gemini: "Gemini", "claude-code": "Claude (subscription)" };
 const ROLES: readonly ChatMessage["role"][] = ["user", "assistant", "system", "tool", "error"];
 
 type ChatFields = Pick<AgentState, "chatId" | "messages" | "history" | "historyProvider" | "aiChoice"> &
@@ -154,7 +152,7 @@ export function parseSavedChat(value: unknown): SavedChat | null {
     });
   if (messages.length === 0) return null;
   const provider = PROVIDERS.includes(v.provider as ChatProvider) ? (v.provider as ChatProvider) : null;
-  const aiChoice = AI_CHOICES.find((c) => c.id === v.aiChoice)?.id ?? AI_CHOICES[0].id;
+  const aiChoice = migrateAiChoice(v.aiChoice);
   const customTitle = typeof v.customTitle === "string" ? cleanName(v.customTitle) : "";
   const autoTitle = typeof v.autoTitle === "string" ? cleanName(v.autoTitle) : "";
   return {

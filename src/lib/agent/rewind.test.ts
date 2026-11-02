@@ -15,8 +15,8 @@ describe("rewind (Phase 8c)", () => {
   });
 
   it("comes back as the history the turn started from", () => {
-    const chat = { messages, history: ["a", "b", "c", "d"], provider: "claude" as const };
-    expect(lastTurnFrom({ userMessageId: "u2", historyLength: 2 }, chat)).toEqual({ userMessageId: "u2", history: ["a", "b"], historyProvider: "claude" });
+    const chat = { messages, history: ["a", "b", "c", "d"], provider: "gemini" as const };
+    expect(lastTurnFrom({ userMessageId: "u2", historyLength: 2 }, chat)).toEqual({ userMessageId: "u2", history: ["a", "b"], historyProvider: "gemini" });
     expect(lastTurnFrom({ userMessageId: "u2", historyLength: 0 }, chat)).toEqual({ userMessageId: "u2", history: [], historyProvider: null });
     expect(lastTurnFrom({ userMessageId: "u2", session: "s0" }, { ...chat, provider: "claude-code" })).toEqual({
       userMessageId: "u2",

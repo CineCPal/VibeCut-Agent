@@ -152,8 +152,8 @@ ORCHESTRATOR_TOOLS: list[dict[str, Any]] = [
                 "media_path": {"type": "string", "description": "Absolute path to the source media file."},
                 "model_tier": {
                     "type": "string",
-                    "enum": ["tiny", "small", "medium", "large-v3"],
-                    "default": "medium",
+                    "enum": ["tiny", "small", "medium", "large-v3-turbo", "large-v3"],
+                    "default": "large-v3-turbo",
                 },
                 "enable_diarization": {"type": "boolean", "default": False},
                 "source_range_seconds": {

@@ -49,10 +49,13 @@ degrades gracefully (technical scoring still works normally).
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    from vibecut_agent.workers.base import GpuLock
 
 MODEL_NAME = "ViT-B-16-SigLIP2-256"
 PRETRAINED = "webli"
@@ -194,6 +197,11 @@ def _ensure_loaded(model_id: str = EMBED_MODEL_ID) -> _Loaded:
 
         arch, pretrained = KNOWN_MODELS[model_id]
         try:
+            gpu = _gpu()
+            gpu.acquire()
+        except OSError as e:
+            raise VisionEnergyError(f"Couldn't take the GPU lock: {e}") from e
+        try:
             device = _pick_device(torch)
             # Kept in float32 even on MPS, matching Spyglass's sidecar:
             # the score temperatures above were calibrated on fp32
@@ -212,9 +220,22 @@ def _ensure_loaded(model_id: str = EMBED_MODEL_ID) -> _Loaded:
                 _neutral_targets = _encode_texts(loaded, NEUTRAL_PROMPTS)
         except Exception as e:
             raise VisionEnergyError(f"Failed to load local vision model: {e}") from e
+        finally:
+            gpu.release()
 
         _models[model_id] = loaded
         return loaded
+
+
+def _gpu() -> "GpuLock":
+    """The GPU lock the orchestrator's workers take (workers/base.py; model migration v2): SigLIP 2 on MPS
+    wants the same unified memory as Whisper and the local VLM, so a `broll-analyze` or `broll-match` run
+    waits for an ingest's model to finish its turn, and the other way round. Held around a load and each
+    call's forward passes, never nested (another acquire in this process would wait on it)."""
+    from vibecut_agent.config import OrchestratorConfig
+    from vibecut_agent.workers.base import GpuLock
+
+    return GpuLock.for_config(OrchestratorConfig.from_env())
 
 
 def _encode_texts(loaded: _Loaded, texts: Sequence[str]) -> np.ndarray:
@@ -242,7 +263,7 @@ def encode_images(pil_images: Sequence, model_id: str = EMBED_MODEL_ID) -> np.nd
     if not len(pil_images):
         return np.zeros((0, 0), dtype=np.float32)
     chunks: list[np.ndarray] = []
-    with torch.no_grad():
+    with _gpu(), torch.no_grad():
         # Chunked rather than one giant stack so callers can hand us an
         # arbitrarily long list without memory scaling with clip length.
         for start in range(0, len(pil_images), BATCH_SIZE):
@@ -260,7 +281,8 @@ def encode_texts(texts: Sequence[str], model_id: str = EMBED_MODEL_ID) -> np.nda
     loaded = _ensure_loaded(model_id)
     if not len(texts):
         return np.zeros((0, 0), dtype=np.float32)
-    return _encode_texts(loaded, texts)
+    with _gpu():
+        return _encode_texts(loaded, texts)
 
 
 def embed_frames(pil_images: Sequence) -> np.ndarray:

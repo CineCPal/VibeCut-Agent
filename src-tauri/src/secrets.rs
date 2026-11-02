@@ -1,17 +1,18 @@
-//! The API keys (AGENTS.md §4): the LLM keys, and the Hugging Face token that speaker labels need
-//! (Phase 6b). Where they come from, and storing them in the macOS Keychain.
+//! The API keys (AGENTS.md §4): the Gemini API key, and the Hugging Face token that speaker labels need
+//! (Phase 6b). Claude needs none: it is the user's Claude Code subscription (claude_code.rs). Where they come from, and storing them in the macOS Keychain.
 //!
 //! A key is looked up in this order:
 //! 1. The environment of the process. In dev builds that includes the repository's `.env`, which
 //!    `run()` loads with dotenvy.
 //! 2. The login Keychain: an item under service `com.cj.vibecutagent`, named after the variable
-//!    (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `HF_TOKEN`), which Settings saves.
+//!    (`GEMINI_API_KEY`, `HF_TOKEN`), which Settings saves. An `ANTHROPIC_API_KEY` item saved before
+//!    the Anthropic API was removed (model migration v2) is left where it is, unread.
 //!
 //! A release build opened from Finder has no shell environment and no `.env`, so the Keychain is
 //! how it gets keys. Values never leave Rust except inside a sidecar's stdin request (a chat's LLM key,
 //! a speaker-labelling transcription's HF token: `sidecar::sidecar_start`); nothing here logs or returns one.
 
-use crate::sidecar::{CLAUDE_KEY_ENV, GEMINI_KEY_ENV};
+use crate::sidecar::GEMINI_KEY_ENV;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -23,7 +24,6 @@ const MAX_KEY_LEN: usize = 512;
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Gemini,
-    Anthropic,
     /// Hugging Face: pyannote's speaker-diarization models (transcription with speaker labels).
     Huggingface,
 }
@@ -34,7 +34,6 @@ impl Provider {
     pub fn env(self) -> &'static str {
         match self {
             Provider::Gemini => GEMINI_KEY_ENV,
-            Provider::Anthropic => CLAUDE_KEY_ENV,
             Provider::Huggingface => HF_TOKEN_ENV,
         }
     }
@@ -122,22 +121,17 @@ pub fn checked_key(raw: &str) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct KeyStatus {
     pub gemini: bool,
-    pub anthropic: bool,
     pub gemini_source: Option<KeySource>,
-    pub anthropic_source: Option<KeySource>,
     pub huggingface: bool,
     pub huggingface_source: Option<KeySource>,
 }
 
 pub fn status(store: &dyn KeyStore) -> KeyStatus {
     let gemini = resolve(GEMINI_KEY_ENV, store).map(|(_, source)| source);
-    let anthropic = resolve(CLAUDE_KEY_ENV, store).map(|(_, source)| source);
     let huggingface = resolve(HF_TOKEN_ENV, store).map(|(_, source)| source);
     KeyStatus {
         gemini: gemini.is_some(),
-        anthropic: anthropic.is_some(),
         gemini_source: gemini,
-        anthropic_source: anthropic,
         huggingface: huggingface.is_some(),
         huggingface_source: huggingface,
     }
@@ -241,7 +235,8 @@ pub mod tests {
             assert!(after.gemini);
         }
         let wire = serde_json::to_value(&after).unwrap();
-        assert!(wire.get("geminiSource").is_some() && wire.get("anthropicSource").is_some());
+        assert!(wire.get("geminiSource").is_some() && wire.get("huggingfaceSource").is_some());
+        assert!(wire.get("anthropic").is_none() && wire.get("anthropicSource").is_none());
         assert!(!wire.to_string().contains("\"g\""), "a status never carries a key");
     }
 
@@ -260,8 +255,7 @@ pub mod tests {
     #[test]
     fn providers_name_their_variables() {
         assert_eq!(Provider::Gemini.env(), "GEMINI_API_KEY");
-        assert_eq!(Provider::Anthropic.env(), "ANTHROPIC_API_KEY");
-        assert_eq!(serde_json::from_str::<Provider>("\"anthropic\"").unwrap(), Provider::Anthropic);
+        assert!(serde_json::from_str::<Provider>("\"anthropic\"").is_err(), "the Anthropic API is gone");
         assert_eq!(Provider::Huggingface.env(), "HF_TOKEN");
         assert_eq!(serde_json::from_str::<Provider>("\"huggingface\"").unwrap(), Provider::Huggingface);
     }

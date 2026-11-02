@@ -1,9 +1,9 @@
 """Phase 21's execution-mode toggle (config.py): `direct` unless asked otherwise, and `direct`'s turn
-runners returned untouched."""
+runner returned untouched; with model migration v2's local defaults and validator mode."""
 
 import pytest
 
-from vibecut_agent.agent import claude_chat, gemini_chat
+from vibecut_agent.agent import gemini_chat
 from vibecut_agent.config import ExecutionMode, OrchestratorConfig, resolve_chat_turn_runner
 
 ENV_NAMES = [
@@ -18,6 +18,7 @@ ENV_NAMES = [
     "VIBECUT_VECTOR_BACKEND",
     "VIBECUT_EMBED_MODEL",
     "VIBECUT_INDEX_DIR",
+    "VIBECUT_VALIDATOR_MODE",
 ]
 
 
@@ -31,14 +32,24 @@ def test_direct_by_default_with_the_spec_defaults():
     config = OrchestratorConfig.from_env()
     assert config.execution_mode is ExecutionMode.DIRECT
     assert config.local_llm_base_url == "http://127.0.0.1:11434"
-    assert config.gemma_model == "gemma3:4b-it"
-    assert config.vlm_model == "qwen2.5-vl:7b-instruct"
+    assert config.gemma_model == "gemma3:4b"
+    assert config.vlm_model == "qwen3-vl:8b"
     assert config.whisper_backend == "mlx-whisper"
-    assert config.whisper_model == "mlx-community/whisper-medium-mlx"
+    assert config.whisper_model == "mlx-community/whisper-large-v3-turbo"
     assert config.whisper_cpp_bin == "/opt/homebrew/bin/whisper-cli"
     assert config.vector_backend == "sqlite-vec"
     assert config.embed_model == "BAAI/bge-m3"
     assert config.index_dir.endswith("Library/Application Support/VibeCut Agent/vector-index")
+    assert config.validator_mode == "deterministic"
+
+
+@pytest.mark.parametrize(
+    ("raw", "mode"),
+    [("llm", "llm"), (" LLM ", "llm"), ("deterministic", "deterministic"), ("gemma", "deterministic")],
+)
+def test_the_validator_is_deterministic_unless_llm_is_asked_for(monkeypatch, raw, mode):
+    monkeypatch.setenv("VIBECUT_VALIDATOR_MODE", raw)
+    assert OrchestratorConfig.from_env().validator_mode == mode
 
 
 def test_execution_mode_sources_in_order(monkeypatch):
@@ -73,15 +84,21 @@ def test_worker_settings_come_from_the_environment(monkeypatch, tmp_path):
     assert config.vector_backend == "lancedb"
 
 
-def test_direct_mode_returns_the_existing_turn_runners():
+def test_direct_mode_returns_geminis_own_turn_runner():
     config = OrchestratorConfig.from_env("direct")
-    assert resolve_chat_turn_runner("claude", config) is claude_chat.run_chat_turn
     assert resolve_chat_turn_runner("gemini", config) is gemini_chat.run_chat_turn
 
 
-def test_orchestrated_mode_only_changes_claude():
+def test_orchestrated_mode_puts_gemini_behind_the_supervisor():
     config = OrchestratorConfig.from_env("orchestrated")
-    assert resolve_chat_turn_runner("gemini", config) is gemini_chat.run_chat_turn
-    runner = resolve_chat_turn_runner("claude", config)
-    assert runner is not claude_chat.run_chat_turn
+    runner = resolve_chat_turn_runner("gemini", config)
+    assert runner is not gemini_chat.run_chat_turn
     assert runner.__name__ == "run_orchestrated_turn"
+
+
+@pytest.mark.parametrize("provider", ["claude", "antigravity", "claude-code"])
+@pytest.mark.parametrize("mode", ["direct", "orchestrated"])
+def test_only_gemini_is_resolved_here(provider, mode):
+    """The removed providers are unknown; Claude (subscription) is routed by agent/chat.py itself."""
+    with pytest.raises(ValueError, match="Unknown chat provider"):
+        resolve_chat_turn_runner(provider, OrchestratorConfig.from_env(mode))

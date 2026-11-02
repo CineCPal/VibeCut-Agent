@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { AGENT_OFFLINE_DETAIL, useAgentStore } from "./useAgentStore";
+import { AGENT_OFFLINE_DETAIL, AGENT_PREFS_VERSION, migrateAgentPrefs, useAgentStore } from "./useAgentStore";
 import type { AiChoiceId } from "../types/agent";
 
 describe("useAgentStore", () => {
@@ -36,20 +36,55 @@ describe("useAgentStore", () => {
   });
 
   it("only accepts known AI choices and persists the choice", () => {
-    useAgentStore.getState().setAiChoice("claude-opus-5-5");
+    useAgentStore.getState().setAiChoice("claude-code-opus-5-5");
     useAgentStore.getState().setAiChoice("gpt-9" as AiChoiceId);
-    expect(useAgentStore.getState().aiChoice).toBe("claude-opus-5-5");
+    useAgentStore.getState().setAiChoice("claude-opus-5-5" as AiChoiceId);
+    expect(useAgentStore.getState().aiChoice).toBe("claude-code-opus-5-5");
     const saved = JSON.parse(localStorage.getItem("vibecut-agent.agent") ?? "{}");
+    expect(saved.version).toBe(AGENT_PREFS_VERSION);
     expect(saved.state).toEqual({
-      aiChoice: "claude-opus-5-5",
+      aiChoice: "claude-code-opus-5-5",
       storyFirstPass: "same",
       criticModel: "gemini",
       effort: { opus: "medium", sonnet: "medium" },
-      antigravityEffort: "medium",
+      geminiEffort: "medium",
       chatId: useAgentStore.getState().chatId,
       autoTitles: true,
       reviewEdits: false,
     });
+  });
+
+  it("brings preferences saved before model migration v2 up to date", () => {
+    // The Anthropic API's Claude is the subscription's; Antigravity's Gemini is the API's tier of the same weight.
+    expect(migrateAgentPrefs({ aiChoice: "claude-opus-5-5", antigravityEffort: "high" })).toEqual({ aiChoice: "claude-code-opus-5-5", geminiEffort: "high" });
+    expect(migrateAgentPrefs({ aiChoice: "claude-sonnet-5-5" }).aiChoice).toBe("claude-code-sonnet-5-5");
+    expect(migrateAgentPrefs({ aiChoice: "antigravity-gemini-4-argon" }).aiChoice).toBe("gemini-pro");
+    expect(migrateAgentPrefs({ aiChoice: "antigravity-gemini-3.8-flash" }).aiChoice).toBe("gemini");
+    expect(migrateAgentPrefs({ aiChoice: "gpt-9", antigravityEffort: "nope" })).toEqual({ aiChoice: "gemini", geminiEffort: "medium" });
+    expect(migrateAgentPrefs({ aiChoice: "claude-code-sonnet-5-5", criticModel: "same", chatId: "c1" })).toEqual({
+      aiChoice: "claude-code-sonnet-5-5",
+      criticModel: "same",
+      chatId: "c1",
+      geminiEffort: "medium",
+    });
+    expect(migrateAgentPrefs(null)).toEqual({ aiChoice: "gemini", geminiEffort: "medium" });
+  });
+
+  it("migrates a saved Anthropic API choice when the store rehydrates", async () => {
+    localStorage.setItem(
+      "vibecut-agent.agent",
+      JSON.stringify({ state: { aiChoice: "claude-sonnet-5-5", antigravityEffort: "low", criticModel: "same" }, version: 0 }),
+    );
+    await useAgentStore.persist.rehydrate();
+    expect(useAgentStore.getState()).toMatchObject({ aiChoice: "claude-code-sonnet-5-5", geminiEffort: "low", criticModel: "same" });
+    expect("antigravityEffort" in useAgentStore.getState()).toBe(false);
+  });
+
+  it("keeps the local critic setting", () => {
+    useAgentStore.getState().setCriticModel("local");
+    expect(useAgentStore.getState().criticModel).toBe("local");
+    useAgentStore.getState().setCriticModel("nonsense" as never);
+    expect(useAgentStore.getState().criticModel).toBe("gemini");
   });
 
   it("queues at most five messages, in order, and a new chat drops them (Phase 11b)", () => {

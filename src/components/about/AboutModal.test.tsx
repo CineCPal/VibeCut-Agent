@@ -20,7 +20,7 @@ const health = (result: Record<string, unknown>) => ({
 describe("AboutModal", () => {
   beforeEach(() => {
     useSystemStore.setState({
-      keys: { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null },
+      keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null },
       dependencies: [
         { name: "ffmpeg", path: "/opt/homebrew/bin/ffmpeg", version: "7.1" },
         { name: "exiftool", path: null, version: null },
@@ -54,14 +54,18 @@ describe("AboutModal", () => {
     expect(screen.getByText("/data/history")).toBeInTheDocument();
     expect(screen.getByText("/repo/.venv")).toBeInTheDocument();
     expect(within(screen.getByText("DaVinci Resolve").closest("li")!).getByText("Connected")).toBeInTheDocument();
-    expect(within(screen.getByText("Active model: Gemini").closest("li")!).getByText("Key configured")).toBeInTheDocument();
+    expect(within(screen.getByText("Active model: Gemini 3.8 Flash").closest("li")!).getByText("Key configured")).toBeInTheDocument();
     expect(within(screen.getByText("Agent sidecar").closest("li")!).getByText("Running · Python 3.14.0")).toBeInTheDocument();
     // AGENTS.md §4: every network endpoint the app can reach is disclosed.
-    for (const host of ["generativelanguage.googleapis.com", "api.anthropic.com", "huggingface.co"]) {
+    for (const host of ["generativelanguage.googleapis.com", "huggingface.co"]) {
       expect(screen.getByText(new RegExp(`^${host.replace(/\./g, "\\.")}`))).toBeInTheDocument();
     }
-    // Phase 7b: the subscription path and its MCP bridge are disclosed too.
+    // Phase 7b: the subscription path (Claude's only one since model migration v2) and its MCP bridge.
     expect(screen.getByText(/^Your own Claude Code .* calls api\.anthropic\.com .* MCP bridge \(files, no network port\)$/)).toBeInTheDocument();
+    // Model migration v2: the local model server is disclosed, and the removed providers are gone.
+    expect(within(screen.getByText("Local models").closest("li")!).getByText("On this Mac")).toBeInTheDocument();
+    expect(screen.queryByText("Anthropic API")).toBeNull();
+    expect(screen.queryByText(/Antigravity/)).toBeNull();
   });
 
   it("restarts the sidecar and refreshes the binaries (moved here from Settings)", async () => {

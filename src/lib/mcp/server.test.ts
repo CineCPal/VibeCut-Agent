@@ -65,7 +65,7 @@ describe("MCP bridge requests", () => {
     hosts.premiere = nleState("premiere", { status: "disconnected" });
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
     useSidecarStore.setState({ session: { state: "ready", version: "0.1.0", python: "3.14.0", message: null } });
-    useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
+    useSystemStore.setState({ keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
     useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null });
     useMcpStore.setState({ outsideAllowed: true, lastOutsideAt: null, outsideRunning: 0, outsideStep: null });
     forgetMovedTimeline();

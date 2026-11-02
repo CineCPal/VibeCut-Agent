@@ -1,5 +1,5 @@
 """Images in tool results (Phase 13b): shown to the model for the rest of the turn, then left out of the
-history, for Claude, Gemini and the MCP shim Claude Code uses."""
+history, for Gemini (Claude Code gets them through its MCP shim, tests/test_mcp_server.py)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,10 @@ import base64
 import json
 
 from tests.agent import test_gemini_chat as gemini_tests
-from tests.agent.claude_fakes import install, message, text, tool_use
-from tests.agent.test_claude_chat import run_turn as claude_turn
 from vibecut_agent.agent import gemini_chat
 from vibecut_agent.agent.attachments import (
     TOOL_IMAGES_NOTE,
     tool_images,
-    without_tool_images_claude,
     without_tool_images_gemini,
 )
 
@@ -48,28 +45,6 @@ def test_bad_or_too_many_images_are_dropped_not_fatal():
     assert tool_images({"images": "nope"}) == [] and tool_images({}) == []
 
 
-def test_claude_sees_the_frames_in_the_tool_result_and_the_history_keeps_a_note(monkeypatch):
-    client = install(
-        monkeypatch,
-        [
-            message(tool_use("toolu_1", "split_at_playhead", {}), stop_reason="tool_use"),
-            message(text("A wide shot of a street.")),
-        ],
-    )
-    outcome = claude_turn(Recorder())
-    block = client.requests[1]["messages"][-1]["content"][0]
-    assert block["type"] == "tool_result"
-    assert block["content"] == [
-        {"type": "text", "text": json.dumps({"shown": "a sheet"})},
-        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": JPEG}},
-    ]
-    kept = outcome["history"][2]["content"][0]["content"]
-    assert kept == [
-        {"type": "text", "text": json.dumps({"shown": "a sheet"})},
-        {"type": "text", "text": TOOL_IMAGES_NOTE},
-    ]
-
-
 def test_gemini_sees_the_frames_after_the_function_responses(monkeypatch):
     bodies: list[dict] = []
     answers = [
@@ -94,10 +69,6 @@ def test_gemini_sees_the_frames_after_the_function_responses(monkeypatch):
 
 
 def test_the_users_own_images_stay_in_the_history():
-    claude = [
-        {"role": "user", "content": [{"type": "image", "source": {}}, {"type": "text", "text": "this"}]}
-    ]
-    assert without_tool_images_claude(claude) == claude
     gemini = [
         {
             "role": "user",

@@ -2,7 +2,6 @@ import { useRef, type KeyboardEvent, type ReactNode } from "react";
 import { useUiStore, type SettingsTab } from "../../store/useUiStore";
 import { Modal } from "../common/Modal";
 import { AgentModelSection } from "./AgentModelSection";
-import { AntigravitySection } from "./AntigravitySection";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ChatSection } from "./ChatSection";
 import { ClaudeCodeSection } from "./ClaudeCodeSection";
@@ -48,7 +47,6 @@ function tabContent(tab: SettingsTab): ReactNode {
         <>
           <ApiKeysSection />
           <ClaudeCodeSection />
-          <AntigravitySection />
         </>
       );
     case "editors":

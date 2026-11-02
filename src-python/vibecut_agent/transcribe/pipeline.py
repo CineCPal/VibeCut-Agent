@@ -15,9 +15,14 @@ CACHE_SUFFIX = ".ivt-cache.json"
 WHISPER_MODELS = {
     "Fast (tiny, lower accuracy)": "mlx-community/whisper-tiny-mlx",
     "Balanced (small)": "mlx-community/whisper-small-mlx",
-    "Recommended (medium)": "mlx-community/whisper-medium-mlx",
+    "Medium": "mlx-community/whisper-medium-mlx",
+    # Model migration v2: large-v3's word timings with a 4-layer decoder, 3-4x faster than large-v3 on
+    # Apple Silicon, and faster than medium too.
+    "Recommended (large-v3-turbo)": "mlx-community/whisper-large-v3-turbo",
     "Best quality (large-v3)": "mlx-community/whisper-large-v3-mlx",
 }
+# What a request that names no model gets.
+DEFAULT_MODEL = WHISPER_MODELS["Recommended (large-v3-turbo)"]
 
 
 @dataclass

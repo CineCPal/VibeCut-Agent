@@ -40,6 +40,8 @@ from vibecut_agent.agent.chat_steps import (
     is_last_step,
 )
 from vibecut_agent.agent.gemini_client import (
+    FALLBACK_MODELS,
+    FLASH_MODEL,
     GEMINI_STREAM_ENDPOINT,
     MAX_ATTEMPTS,
     RETRYABLE_STATUSES,
@@ -48,12 +50,14 @@ from vibecut_agent.agent.gemini_client import (
     _overload_message,
     _scrub_secret,
     _wait_before_retry,
+    fallback_notice,
+    generation_config,
 )
 from vibecut_agent.agent.redact import scrub
 from vibecut_agent.agent.streaming import ReplyStream
 
-# Same auto-updated alias gemini_client.py defaults to — see its own comment for why.
-DEFAULT_MODEL = "gemini-flash-latest"
+# The fast tier (gemini_client.py, model migration v2); "Gemini Pro" in Settings sends its own model.
+DEFAULT_MODEL = FLASH_MODEL
 
 # Chat also retries transient server errors (500/502/504): a chat turn is interactive and several
 # calls long, so one flaky response shouldn't end the whole session. gemini_client.py's own set is
@@ -61,6 +65,10 @@ DEFAULT_MODEL = "gemini-flash-latest"
 CHAT_RETRYABLE_STATUSES = RETRYABLE_STATUSES | {500, 502, 504}
 
 _session: requests.Session | None = None
+
+
+class ModelUnavailable(ChatError):
+    """HTTP 404 for the model itself: it is retired, or not offered to this key's project."""
 
 
 def _http_post(*args: Any, **kwargs: Any) -> requests.Response:
@@ -122,6 +130,10 @@ def _post(
                     continue
                 raise last_error
 
+            if resp.status_code == 404:
+                raise ModelUnavailable(
+                    f"Gemini API returned HTTP 404 for {model}: {scrub(resp.text, api_key)[:500]}"
+                )
             if resp.status_code != 200:
                 raise ChatError(
                     f"Gemini API returned HTTP {resp.status_code}: {scrub(resp.text, api_key)[:500]}"
@@ -239,8 +251,13 @@ def run_chat_turn(
     on_retry: OnRetry = None,
     should_abort: Callable[[], bool] = lambda: False,
     images: list[dict[str, str]] | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Runs Gemini's tools/function-calling loop for one user chat message, end to end.
+
+    `model`: the tier Settings chose (DEFAULT_MODEL, the fast one, when None). A model the key can't
+    reach (HTTP 404) is replaced once by the next one down (gemini_client.FALLBACK_MODELS), said in a
+    `status` line, for the rest of the turn. `effort` is Settings' level, Gemini 3's thinking level.
 
     `images`: `[{"mime", "data"}]` sent with the message (attachments.parse_images, Phase 8g), as
     `inline_data` parts ahead of its text; they stay in the history like any part.
@@ -248,6 +265,8 @@ def run_chat_turn(
     `tool_declarations`: JSON-Schema-shaped function declarations, e.g.
         [{"name": "trim_clip_end", "description": "...",
           "parameters": {"type": "OBJECT", "properties": {...}, "required": [...]}}, ...]
+    A declaration may carry `parametersJsonSchema` (full JSON Schema) instead of `parameters`, as the
+    orchestrator's tools do (tool_bus.gemini_tools).
 
     `history`: the `contents` list a previous call to this function returned (its own `["history"]`),
     resent verbatim — like `run_revise`, each sidecar process is its own fresh call with no memory
@@ -280,7 +299,7 @@ def run_chat_turn(
     only for a genuine failure: a network/API error exhausting its own retries, or an unexpected
     response shape.
     """
-    resolved_model = model or DEFAULT_MODEL
+    resolved_model = (model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     reply = ReplyStream(emit)
     emit = reply.emit
     if not api_key or not api_key.strip():
@@ -290,10 +309,7 @@ def run_chat_turn(
 
     contents: list[dict[str, Any]] = [*history, {"role": "user", "parts": gemini_parts(images, user_message)}]
 
-    body_base: dict[str, Any] = {
-        "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "generationConfig": {"temperature": 0.4},
-    }
+    body_base: dict[str, Any] = {"systemInstruction": {"parts": [{"text": system_instruction}]}}
     if tool_declarations:
         body_base["tools"] = [{"functionDeclarations": tool_declarations}]
 
@@ -323,13 +339,32 @@ def run_chat_turn(
         if note:
             # The latest user turn (the message, or the last batch of functionResponses) carries it.
             contents[-1]["parts"].append({"text": note})
-        body = {**body_base, "contents": contents}
-        if last and tool_declarations:
-            body["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
         emit("status", phase="calling_model", detail="Calling Gemini…")
-        data = _post(
-            api_key, resolved_model, body, timeout, on_retry=on_retry, reply=reply, should_abort=should_abort
-        )
+        while True:
+            body = {
+                **body_base,
+                "generationConfig": generation_config(resolved_model, effort),
+                "contents": contents,
+            }
+            if last and tool_declarations:
+                body["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
+            try:
+                data = _post(
+                    api_key,
+                    resolved_model,
+                    body,
+                    timeout,
+                    on_retry=on_retry,
+                    reply=reply,
+                    should_abort=should_abort,
+                )
+                break
+            except ModelUnavailable:
+                fallback = FALLBACK_MODELS.get(resolved_model)
+                if not fallback:
+                    raise
+                emit("status", phase="calling_model", detail=fallback_notice(resolved_model, fallback))
+                resolved_model = fallback
         reply.flush()
         if data is None:
             return stop()

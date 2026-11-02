@@ -7,10 +7,13 @@ request: {"paths": [absolute media files], "stages": ["transcribe", "vision", "i
 events:  progress {fraction, phase, detail, etaSeconds}; result {"files": [{path, segments, shots, indexed,
           errors}], "indexPath"}
 
-Files go one at a time, each through its stages in order: the Whisper transcript (whisper_worker), the
-shots (vlm_worker), then both into the vector store (vector_store). Each stage holds the GPU lock only while
-its model runs. A stage that fails is recorded on its file and the next stage or file goes on; a file with
-no picture just has no shots. Stopping (SIGTERM) ends after the stage that is running."""
+The run goes stage by stage (model migration v2): every file's Whisper transcript (whisper_worker), then
+every file's shots (vlm_worker), then every file into the vector store (vector_store). Whisper, the VLM and
+the embedding model each want most of unified memory; one file at a time through all three made Ollama
+evict and reload the VLM and the embedder for every file. Each stage still holds the GPU lock only while
+its model runs. A stage that fails is recorded on its file and the next file or stage goes on; a file with
+no picture just has no shots, and a missing file is reported once and skipped. Stopping (SIGTERM) ends
+after the step that is running."""
 
 from __future__ import annotations
 
@@ -89,14 +92,19 @@ class Ingest:
         self.step_began = time.monotonic()
         self.step_working = False
 
+    def stage_of(self, step: int) -> str:
+        """The stage step `step` is in: the run goes stage by stage, a step per file in each."""
+        return str(
+            self.options["stages"][min(step // len(self.options["paths"]), len(self.options["stages"]) - 1)]
+        )
+
     def eta(self, within: float) -> float | None:
         """Seconds left: the step under way, from its own progress once it reports some (else its stage's
         pace), and each step after it at its stage's pace (a stage not yet timed takes the others' mean)."""
         if self.done >= self.steps:
             return 0.0
-        stages = self.options["stages"]
         paces = {s: self.stage_seconds[s] / n for s, n in self.stage_worked.items() if n}
-        stage = stages[self.done % len(stages)]
+        stage = self.stage_of(self.done)
         elapsed = time.monotonic() - self.step_began
         projected = elapsed / within if self.step_working and within > 0 else None
         fallback = sum(paces.values()) / len(paces) if paces else projected
@@ -105,7 +113,7 @@ class Ingest:
             return None
         left = max(0.0, current - (elapsed if self.step_working else 0.0))
         for step in range(self.done + 1, self.steps):
-            pace = paces.get(stages[step % len(stages)], fallback)
+            pace = paces.get(self.stage_of(step), fallback)
             if pace is None:
                 return None
             left += pace
@@ -136,69 +144,75 @@ class Ingest:
         if self.cancel.is_set():
             raise Cancelled
 
-    def file(self, path: str) -> dict[str, Any]:
+    def step(self, stage: str, path: str, entry: dict[str, Any], found: dict[str, Any]) -> None:
+        """One file through one stage. `found` holds what its earlier stages made (`transcript`, `shots`)."""
         name = os.path.basename(path)
-        entry: dict[str, Any] = {"path": path, "segments": None, "shots": None, "indexed": 0, "errors": []}
-        transcript: dict[str, Any] | None = None
-        shots: dict[str, Any] | None = None
         use_cache = not self.options["force"]
-        if not os.path.isfile(path):
-            entry["errors"].append("The file isn't there (is its drive attached?)")
-            self.done += len(self.options["stages"])
-            return entry
-        for stage in self.options["stages"]:
-            self.check()
-            self.step_began = time.monotonic()
-            self.step_working = stage == "index"
-            try:
-                if stage == "transcribe":
-                    self.report("transcribe", 0.0, f"Transcribing {name}")
-                    transcript = self.workers["whisper"].transcribe(
-                        path,
-                        model_tier=self.options["tier"],
-                        enable_diarization=self.options["diarize"],
-                        hf_token=self.options["hf_token"],
-                        use_cache=use_cache,
-                        on_progress=self.worker_report(name),
-                    )
-                    entry["segments"] = len(transcript["segments"])
-                elif stage == "vision":
-                    self.report("vision", 0.0, f"Looking at {name}")
-                    shots = self.workers["vlm"].analyze(
-                        path,
-                        sample_strategy=self.options["strategy"],
-                        use_cache=use_cache,
-                        on_progress=self.worker_report(name),
-                    )
-                    entry["shots"] = len(shots["shots"])
-                else:
-                    self.report("index", 0.0, f"Indexing {name}")
-                    store = self.workers["vector"]
-                    if transcript is None and "transcribe" not in self.options["stages"]:
-                        transcript = self.workers["whisper"].cached(path)
-                    if shots is None and "vision" not in self.options["stages"]:
-                        shots = self.workers["vlm"].cached(path, self.options["strategy"])
-                    if transcript is not None:
-                        entry["indexed"] += store.index_transcript(transcript)
-                    if shots is not None:
-                        entry["indexed"] += store.index_shots(shots)
-            except Exception as e:  # noqa: BLE001 - one stage failing is recorded on its file; the run goes on
-                entry["errors"].append(f"{stage}: {e}")
-            if self.step_working:
-                self.stage_worked[stage] = self.stage_worked.get(stage, 0) + 1
-                self.stage_seconds[stage] = (
-                    self.stage_seconds.get(stage, 0.0) + time.monotonic() - self.step_began
+        self.step_began = time.monotonic()
+        self.step_working = stage == "index"
+        try:
+            if stage == "transcribe":
+                self.report("transcribe", 0.0, f"Transcribing {name}")
+                found["transcript"] = self.workers["whisper"].transcribe(
+                    path,
+                    model_tier=self.options["tier"],
+                    enable_diarization=self.options["diarize"],
+                    hf_token=self.options["hf_token"],
+                    use_cache=use_cache,
+                    on_progress=self.worker_report(name),
                 )
-            self.step_working = False
-            self.done += 1
-        return entry
+                entry["segments"] = len(found["transcript"]["segments"])
+            elif stage == "vision":
+                self.report("vision", 0.0, f"Looking at {name}")
+                found["shots"] = self.workers["vlm"].analyze(
+                    path,
+                    sample_strategy=self.options["strategy"],
+                    use_cache=use_cache,
+                    on_progress=self.worker_report(name),
+                )
+                entry["shots"] = len(found["shots"]["shots"])
+            else:
+                self.report("index", 0.0, f"Indexing {name}")
+                store = self.workers["vector"]
+                transcript, shots = found.get("transcript"), found.get("shots")
+                if transcript is None and "transcribe" not in self.options["stages"]:
+                    transcript = self.workers["whisper"].cached(path)
+                if shots is None and "vision" not in self.options["stages"]:
+                    shots = self.workers["vlm"].cached(path, self.options["strategy"])
+                if transcript is not None:
+                    entry["indexed"] += store.index_transcript(transcript)
+                if shots is not None:
+                    entry["indexed"] += store.index_shots(shots)
+        except Exception as e:  # noqa: BLE001 - one stage failing is recorded on its file; the run goes on
+            entry["errors"].append(f"{stage}: {e}")
+        if self.step_working:
+            self.stage_worked[stage] = self.stage_worked.get(stage, 0) + 1
+            self.stage_seconds[stage] = (
+                self.stage_seconds.get(stage, 0.0) + time.monotonic() - self.step_began
+            )
+        self.step_working = False
+        self.done += 1
 
     def run(self) -> list[dict[str, Any]]:
-        files = []
-        for path in self.options["paths"]:
-            files.append(self.file(path))
+        paths = self.options["paths"]
+        entries = {
+            path: {"path": path, "segments": None, "shots": None, "indexed": 0, "errors": []}
+            for path in paths
+        }
+        found: dict[str, dict[str, Any]] = {path: {} for path in paths}
+        present = {path: os.path.isfile(path) for path in paths}
+        for path in paths:
+            if not present[path]:
+                entries[path]["errors"].append("The file isn't there (is its drive attached?)")
+        for stage in self.options["stages"]:
+            for path in paths:
+                self.check()
+                if present[path]:
+                    self.step(stage, path, entries[path], found[path])
+                else:
+                    self.done += 1
         self.report("done", 0.0, "")
-        return files
+        return [entries[path] for path in paths]
 
 
 def default_workers(config: OrchestratorConfig) -> dict[str, Any]:

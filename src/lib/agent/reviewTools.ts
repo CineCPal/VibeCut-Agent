@@ -441,16 +441,30 @@ export interface CriticAnswer {
   framesSent: number;
   /** Which model reviewed ("Gemini Flash", or the chat's). */
   by?: string;
+  /** The model the sidecar says reviewed (e.g. "qwen3-vl:8b"), when it says. */
+  reviewer?: string;
+  /** Why the local VLM, asked for, didn't review (the cloud reviewer did). */
+  localFallback?: string;
 }
 
 /** The model the critic runs on: Gemini Flash when Settings says so (the default) and there's a Gemini key,
- * else the chat's own. `fellBack` says Gemini was wanted but had no key. */
-export function criticModel(): { provider: string; model?: string; label: string; fellBack: boolean } {
+ * else the chat's own. `fellBack` says Gemini was wanted but had no key. With "local" (model migration v2)
+ * the sidecar asks the local VLM first (`local`), and the provider here is who reviews when it can't. */
+export function criticModel(): { provider: string; model?: string; label: string; fellBack: boolean; local: boolean } {
   const state = useAgentStore.getState();
+  const local = state.criticModel === "local";
   const wantsGemini = state.criticModel !== "same";
-  if (wantsGemini && useSystemStore.getState().keys?.gemini) return { provider: "gemini", label: "Gemini Flash", fellBack: false };
+  if (wantsGemini && useSystemStore.getState().keys?.gemini) {
+    return { provider: "gemini", model: "gemini-3.8-flash", label: local ? "the local VLM" : "Gemini Flash", fellBack: false, local };
+  }
   const choice = AI_CHOICES.find((c) => c.id === state.aiChoice) ?? AI_CHOICES[0];
-  return { provider: choice.chatProvider, ...(choice.model ? { model: choice.model } : {}), label: choice.label, fellBack: wantsGemini && choice.chatProvider !== "gemini" };
+  return {
+    provider: choice.chatProvider,
+    ...(choice.model ? { model: choice.model } : {}),
+    label: local ? "the local VLM" : choice.label,
+    fellBack: !local && wantsGemini && choice.chatProvider !== "gemini",
+    local,
+  };
 }
 
 /** The most recent thing the user asked the agent, as the critic's brief. */
@@ -470,7 +484,13 @@ export function criticAnswer(result: unknown): CriticAnswer | null {
     const severity = x.severity === "high" || x.severity === "low" ? x.severity : "medium";
     return [{ time: x.time, severity, category: typeof x.category === "string" ? x.category : "other", issue: x.issue, suggestedFix: typeof x.suggestedFix === "string" ? x.suggestedFix : "" }];
   });
-  return { overall: typeof r.overall === "string" ? r.overall : "", findings, framesSent: typeof r.framesSent === "number" ? r.framesSent : 0 };
+  return {
+    overall: typeof r.overall === "string" ? r.overall : "",
+    findings,
+    framesSent: typeof r.framesSent === "number" ? r.framesSent : 0,
+    ...(typeof r.reviewer === "string" && r.reviewer ? { reviewer: r.reviewer } : {}),
+    ...(typeof r.localFallback === "string" && r.localFallback ? { localFallback: r.localFallback } : {}),
+  };
 }
 
 // ----------------------------------------------------------------------------- the tool
@@ -586,6 +606,7 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
           const job = await runJob("critique", `Review the cut (${frames.length} stills, ${reviewer.label})`, {
             provider: reviewer.provider,
             ...(reviewer.model ? { model: reviewer.model } : {}),
+            ...(reviewer.local ? { local: true } : {}),
             frames,
             brief: optStr(args, "brief") ?? lastUserRequest(),
             snapshot: timelineLines(view).join("\n"),
@@ -593,7 +614,8 @@ export function reviewExecutors(context: ToolContext): Record<string, Executor> 
             lint: automaticCheck.map(({ time, severity, category, message }) => ({ time, severity, category, message })),
           });
           critic = job?.status === "done" ? criticAnswer(job.result) : null;
-          if (critic) critic.by = reviewer.label;
+          if (critic) critic.by = critic.reviewer ?? reviewer.label;
+          if (critic?.localFallback) notes.push(critic.localFallback);
           if (!critic) criticError = job?.error ?? `the review ${job?.status ?? "didn't finish"}`;
         }
       }

@@ -231,22 +231,53 @@ describe("review_edit", () => {
   });
 
   it("runs the critic on Gemini Flash by default, whatever the chat's model, when there's a Gemini key", async () => {
-    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-opus-5-5" });
-    useSystemStore.setState({ keys: { gemini: true, anthropic: true } as never });
+    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-code-opus-5-5" });
+    useSystemStore.setState({ keys: { gemini: true } as never });
     const out = await runTool(executorsFor(context), "review_edit", {});
-    const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string };
+    const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string; local?: boolean };
     expect(request.provider).toBe("gemini");
-    expect(request.model).toBeUndefined();
+    expect(request.model).toBe("gemini-3.8-flash");
+    expect(request.local).toBeUndefined();
     expect(out.summary).toMatch(/from the critic \(Gemini Flash, 6 stills\)/);
   });
 
   it("falls back to the chat's model without a Gemini key, and says so", async () => {
-    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-opus-5-5" });
-    useSystemStore.setState({ keys: { gemini: false, anthropic: true } as never });
+    useAgentStore.setState({ criticModel: "gemini", aiChoice: "claude-code-opus-5-5" });
+    useSystemStore.setState({ keys: { gemini: false } as never });
     const out = await runTool(executorsFor(context), "review_edit", {});
     const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string };
-    expect(request).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+    expect(request).toMatchObject({ provider: "claude-code", model: "claude-opus-5-5" });
     expect(out.summary).toMatch(/there's no Gemini key, so the critic ran on Claude Opus 5\.5/);
+  });
+
+  it("asks the local VLM first when Settings says Local, and names who reviewed", async () => {
+    useAgentStore.setState({ criticModel: "local", aiChoice: "claude-code-opus-5-5" });
+    useSystemStore.setState({ keys: { gemini: true } as never });
+    const done = jobs.runJob.getMockImplementation();
+    jobs.runJob.mockImplementation(async (command: string, ...rest: unknown[]) => {
+      const answer = await (done as (...a: unknown[]) => Promise<{ status: string; result: Record<string, unknown> }>)(command, ...rest);
+      return command === "critique" ? { ...answer, result: { ...answer.result, reviewer: "qwen3-vl:8b" } } : answer;
+    });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string; local?: boolean };
+    // Gemini Flash stands by in case the local VLM can't review.
+    expect(request).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash", local: true });
+    expect(out.summary).toMatch(/from the critic \(qwen3-vl:8b, 6 stills\)/);
+    expect(out.summary).not.toMatch(/no Gemini key/);
+  });
+
+  it("says when the local VLM couldn't review and the cloud did", async () => {
+    useAgentStore.setState({ criticModel: "local", aiChoice: "gemini" });
+    useSystemStore.setState({ keys: { gemini: true } as never });
+    const done = jobs.runJob.getMockImplementation();
+    jobs.runJob.mockImplementation(async (command: string, ...rest: unknown[]) => {
+      const answer = await (done as (...a: unknown[]) => Promise<{ status: string; result: Record<string, unknown> }>)(command, ...rest);
+      if (command !== "critique") return answer;
+      return { ...answer, result: { ...answer.result, reviewer: "gemini-3.8-flash", localFallback: "The local VLM couldn't review: qwen3-vl:8b isn't on http://127.0.0.1:11434" } };
+    });
+    const out = await runTool(executorsFor(context), "review_edit", {});
+    expect(out.summary).toMatch(/from the critic \(gemini-3\.8-flash, 6 stills\)/);
+    expect(out.summary).toMatch(/The local VLM couldn't review: qwen3-vl:8b isn't on/);
   });
 
   it("keeps the automatic check when the critic fails, saying why", async () => {

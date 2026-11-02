@@ -5,23 +5,29 @@
 import { AI_CHOICES, type AiChoiceId, type ChatUsage } from "../../types/agent";
 import type { PlanLimits, PlanWindow, UsageTotals } from "../../types/usage";
 
-/** Claude API prices per million tokens (input, output, cache read), as of 2026-10. */
+/** Prices per million tokens (input, output, cache read). Claude's are the API's (as of 2026-10), for a
+ * subscription turn Claude Code gave no figure for. Gemini 3.1 Pro's are the pricing page's for prompts up
+ * to 200k tokens (as of 2026-11; thinking is billed as output). Gemini 3.8 Flash's weren't published when
+ * this was written, so its turns aren't priced rather than guessed. */
 export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
   "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.2 },
+  "gemini-3.1-pro-preview": { input: 2, output: 12, cacheRead: 0.2 },
 };
 
-/** A turn's estimated cost in dollars, or null when it isn't known. API-key Claude turns are priced
- * from their tokens (cache writes at the input rate, so a little under); subscription turns carry
- * Claude Code's own figure; Gemini's model is an alias whose price moves, so it isn't guessed. */
+/** A turn's estimated cost in dollars, or null when it isn't known. Subscription turns carry Claude Code's
+ * own figure, or are priced from their tokens when it gave none; Gemini turns are priced from their tokens
+ * (thinking as output) when the model's price is known. Cache writes are at the input rate, so a little
+ * under. */
 export function turnCost(choiceId: AiChoiceId, usage: ChatUsage): number | null {
   const choice = AI_CHOICES.find((c) => c.id === choiceId);
   if (!choice) return null;
-  if (choice.chatProvider === "claude-code") return typeof usage.costUsd === "number" ? usage.costUsd : null;
+  if (choice.chatProvider === "claude-code" && typeof usage.costUsd === "number") return usage.costUsd;
   const price = choice.model ? PRICES[choice.model] : undefined;
-  if (choice.chatProvider !== "claude" || !price) return null;
+  if (!price) return null;
   const fresh = Math.max(0, usage.promptTokens - usage.cachedTokens);
-  return (fresh * price.input + usage.cachedTokens * price.cacheRead + usage.outputTokens * price.output) / 1_000_000;
+  const output = usage.outputTokens + (choice.chatProvider === "gemini" ? usage.thoughtsTokens : 0);
+  return (fresh * price.input + usage.cachedTokens * price.cacheRead + output * price.output) / 1_000_000;
 }
 
 export const EMPTY_TOTALS: UsageTotals = { turns: 0, promptTokens: 0, cachedTokens: 0, outputTokens: 0, costUsd: null };

@@ -156,6 +156,44 @@ def test_keyframes_uniform_and_midpoint(film, tmp_path):
 
 
 @needs_ffmpeg
+def test_a_shot_becomes_a_contact_strip_of_its_start_middle_and_end(film, tmp_path):
+    """Model migration v2: the three moments side by side, left to right, each its own frame."""
+    import numpy as np
+
+    [shot] = extract_keyframes_for_vlm(
+        str(film), tmp_path / "strips", strategy="midpoint_only", width=160, strip=True
+    )
+    # The whole 6 s as one shot: 15%, 50% and 85% are in the first, second and third look.
+    assert shot["strip_timestamps_sec"] == [0.88, 3.0, 5.12]
+    assert shot["keyframe_timestamp_sec"] == 3.0
+    assert shot["image_path"].endswith("_strip.jpg")
+    with Image.open(shot["image_path"]) as image:
+        assert image.size == (480, 90)
+        panels = [
+            np.asarray(image.convert("L").crop((160 * i, 0, 160 * (i + 1), 90)), dtype=float)
+            for i in range(3)
+        ]
+    for i, seconds in enumerate(shot["strip_timestamps_sec"]):
+        single = tmp_path / f"single_{i}.jpg"
+        ffmpeg_ops._grab(str(film), ffmpeg_ops.Fraction(str(seconds)), 160, single)
+        with Image.open(single) as image:
+            alone = np.asarray(image.convert("L"), dtype=float)
+        assert np.abs(panels[i] - alone).mean() < 8, f"panel {i} is the frame at {seconds} s"
+    assert np.abs(panels[0] - panels[1]).mean() > 20 and np.abs(panels[1] - panels[2]).mean() > 20
+    assert not list((tmp_path / "strips").glob(".*partial*"))
+
+
+@needs_ffmpeg
+def test_a_shot_too_short_for_a_strip_is_its_middle_frame(film, tmp_path):
+    [shot] = extract_keyframes_for_vlm(
+        str(film), tmp_path, strategy="midpoint_only", start=1.0, end=1.4, width=64, strip=True
+    )
+    assert "strip_timestamps_sec" not in shot and not shot["image_path"].endswith("_strip.jpg")
+    with Image.open(shot["image_path"]) as image:
+        assert image.size == (64, 36)
+
+
+@needs_ffmpeg
 def test_keyframes_reuse_existing_images(film, tmp_path, monkeypatch):
     first = extract_keyframes_for_vlm(str(film), tmp_path, strategy="midpoint_only", width=64)
 

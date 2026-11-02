@@ -145,7 +145,7 @@ def validate(request: dict[str, Any]) -> dict[str, Any]:
     for video in videos:
         if not os.path.isfile(video):
             raise RequestError(f"Video not found: {video}")
-    model = request.get("model") or next(iter(pipeline.WHISPER_MODELS.values()))
+    model = request.get("model") or pipeline.DEFAULT_MODEL
     if model not in pipeline.WHISPER_MODELS.values():
         raise RequestError(f"Unknown model: {model}")
     fmt = request.get("format", "txt")

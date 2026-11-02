@@ -196,9 +196,10 @@ def test_the_same_failing_call_twice_is_marked_the_second_time(monkeypatch):
 
 
 def run_turn(rec, **kwargs):
+    model = kwargs.pop("model", None)
     return gemini_chat.run_chat_turn(
         api_key="secret-key",
-        model=None,
+        model=model,
         system_instruction="You are a video editing assistant.",
         tool_declarations=[
             {"name": "trim_clip_end", "description": "Trim a clip's end.", "parameters": {"type": "OBJECT"}}
@@ -554,3 +555,71 @@ def test_stop_while_streaming_drops_the_partial_answer_and_closes_the_stream(mon
     assert outcome["aborted"] is True
     assert outcome["history"][-1] == {"role": "model", "parts": [{"text": gemini_chat.STOPPED_NOTICE}]}
     assert response.closed is True
+
+
+# --- Model migration v2: the tiers, the thinking level and the 404 fallback ------------------------------
+
+
+def _bodies(monkeypatch, *answers):
+    urls, bodies, queue = [], [], list(answers)
+
+    def post(url, **kwargs):
+        urls.append(url)
+        bodies.append(json.loads(kwargs["data"]))
+        return queue.pop(0)
+
+    monkeypatch.setattr(gemini_chat, "_http_post", post)
+    return urls, bodies
+
+
+def test_flash_by_default_with_settings_thinking_level_and_its_own_temperature(monkeypatch):
+    urls, bodies = _bodies(monkeypatch, text_response("Hi."))
+    run_turn(Recorder(), effort="low")
+    assert "/models/gemini-3.8-flash:streamGenerateContent" in urls[0]
+    # Gemini 3 keeps its own temperature (lower ones can make it loop).
+    assert bodies[0]["generationConfig"] == {"thinkingConfig": {"thinkingLevel": "low"}}
+
+
+@pytest.mark.parametrize(("effort", "level"), [("low", "low"), ("medium", "high"), ("high", "high")])
+def test_the_pro_tier_thinks_low_or_high(monkeypatch, effort, level):
+    urls, bodies = _bodies(monkeypatch, text_response("Hi."))
+    run_turn(Recorder(), model="gemini-3.1-pro-preview", effort=effort)
+    assert "/models/gemini-3.1-pro-preview:" in urls[0]
+    assert bodies[0]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": level}
+
+
+def test_no_effort_or_an_older_model_sends_no_thinking_level(monkeypatch):
+    _, bodies = _bodies(monkeypatch, text_response("Hi."), text_response("Hi."), text_response("Hi."))
+    run_turn(Recorder())
+    run_turn(Recorder(), effort="max")
+    run_turn(Recorder(), model="gemini-flash-latest", effort="high")
+    assert bodies[0]["generationConfig"] == {} and bodies[1]["generationConfig"] == {}
+    assert bodies[2]["generationConfig"] == {"temperature": 0.4}
+
+
+def test_a_key_without_pro_falls_back_to_flash_and_says_so(monkeypatch):
+    urls, bodies = _bodies(
+        monkeypatch,
+        FakeResponse(404, text="models/gemini-3.1-pro-preview is not found"),
+        text_response("Hi."),
+    )
+    rec = Recorder()
+    outcome = run_turn(rec, model="gemini-3.1-pro-preview", effort="medium")
+    assert outcome["text"] == "Hi."
+    assert ["/models/gemini-3.1-pro-preview:" in urls[0], "/models/gemini-3.8-flash:" in urls[1]] == [
+        True,
+        True,
+    ]
+    # Flash takes medium as it is.
+    assert bodies[1]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    notices = [e["detail"] for e in rec.events if e["type"] == "status" and "isn't available" in e["detail"]]
+    assert notices == [
+        "gemini-3.1-pro-preview isn't available on this Gemini API key; using gemini-3.8-flash instead."
+    ]
+
+
+def test_a_retired_flash_falls_back_to_the_alias_and_then_the_error_stands(monkeypatch):
+    urls, _ = _bodies(monkeypatch, FakeResponse(404, text="gone"), FakeResponse(404, text="gone too"))
+    with pytest.raises(gemini_chat.ModelUnavailable, match="HTTP 404 for gemini-flash-latest"):
+        run_turn(Recorder())
+    assert [u.split("/models/")[1].split(":")[0] for u in urls] == ["gemini-3.8-flash", "gemini-flash-latest"]

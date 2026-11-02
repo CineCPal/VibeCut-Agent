@@ -4,7 +4,8 @@
 - `detect_silences`: ffmpeg's `silencedetect`, its log read a line at a time.
 - `detect_scene_cuts`: media/shots.py's calibrated hard-cut detector (Phase 19b), on its 96x54 stream.
 - `extract_keyframes_for_vlm`: one small JPEG per shot (at scene cuts, every 2 s, or the middle of the
-  range), written to a folder for the VLM worker to read.
+  range), written to a folder for the VLM worker to read: the shot's middle frame, or (`strip`, model
+  migration v2) its start, middle and end side by side.
 
 No media file is ever read into Python: ffmpeg decodes, and only its log lines or the 96x54 frames come
 through a pipe. Every time is a frame-exact `RationalTime` (core/timecode_math.py) at the file's rate,
@@ -21,7 +22,7 @@ import time
 from collections.abc import Callable, Iterable
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from vibecut_agent.broll import ffprobe_util
 from vibecut_agent.core.timecode_math import (
@@ -39,6 +40,12 @@ KEYFRAME_TIMEOUT_S = 30.0
 UNIFORM_SECONDS = 2
 MAX_KEYFRAMES = 500
 KEYFRAME_WIDTH = 768
+# The 3-frame contact strip (model migration v2): each shot as [START | MID | END], at these points of the
+# shot, side by side in one JPEG, so the VLM judges camera movement from three moments instead of one
+# frame's blur. A shot shorter than STRIP_MIN_SECONDS has no movement to see: its middle frame goes alone.
+STRIP_POINTS = (0.15, 0.5, 0.85)
+STRIP_MIN_SECONDS = 0.6
+STRIP_PANEL_WIDTH = 512
 
 SampleStrategy = Literal["scene_cuts", "uniform_2s", "midpoint_only"]
 SAMPLE_STRATEGIES: tuple[SampleStrategy, ...] = ("scene_cuts", "uniform_2s", "midpoint_only")
@@ -73,6 +80,8 @@ class Keyframe(TypedDict):
     keyframe_timestamp_sec: float
     keyframe_time: RationalTime
     image_path: str
+    # A contact strip's three moments, left to right, in source seconds (extract_keyframes_for_vlm's strip).
+    strip_timestamps_sec: NotRequired[list[float]]
 
 
 def _check_file(path: str) -> None:
@@ -325,14 +334,22 @@ def extract_keyframes_for_vlm(
     end: float | None = None,
     strategy: SampleStrategy = "scene_cuts",
     sensitivity: str = "normal",
-    width: int = KEYFRAME_WIDTH,
+    width: int | None = None,
     on_scan: Callable[[float], None] | None = None,
+    strip: bool = False,
 ) -> list[Keyframe]:
-    """One JPEG per shot, `width` pixels wide, from the shot's middle frame, written to `out_dir` as
-    `<file stem>_<frame>.jpg` (an existing one is reused). Shots come from `strategy`: the scene cuts,
-    every UNIFORM_SECONDS, or the whole range as one. `on_scan` hears how far the scene-cut scan is."""
+    """One JPEG per shot, written to `out_dir` (an existing one is reused). Shots come from `strategy`: the
+    scene cuts, every UNIFORM_SECONDS, or the whole range as one. `on_scan` hears how far the scene-cut
+    scan is.
+
+    Without `strip`, the JPEG is the shot's middle frame, `width` (KEYFRAME_WIDTH) px wide, named
+    `<file stem>_<frame>.jpg`. With `strip` (model migration v2), it is the shot's 3-frame contact strip:
+    the frames at STRIP_POINTS, each `width` (STRIP_PANEL_WIDTH) px wide, left to right, named
+    `<file stem>_<first frame>_strip.jpg`, with their times in `strip_timestamps_sec`; a shot under
+    STRIP_MIN_SECONDS gets its middle frame alone."""
     if strategy not in SAMPLE_STRATEGIES:
         raise FfmpegOpError(f"strategy must be one of {', '.join(SAMPLE_STRATEGIES)}")
+    width = width if width is not None else STRIP_PANEL_WIDTH if strip else KEYFRAME_WIDTH
     if width < 16:
         raise FfmpegOpError("width must be 16 pixels or more")
     rate, bounds = _shot_bounds(path, start, end, strategy, sensitivity, on_scan)
@@ -344,23 +361,49 @@ def extract_keyframes_for_vlm(
     keyframes: list[Keyframe] = []
     for index, (first, last) in enumerate(bounds):
         middle = first + (last - first) // 2
-        image = folder / f"{stem}_{middle:08d}.jpg"
-        if not image.is_file():
-            _grab(path, _seconds(middle, rate), width, image)
-        keyframes.append(
-            {
-                "shot_id": f"shot_{index:04d}",
-                "source_range": _range(first, last, rate),
-                "keyframe_timestamp_sec": round(float(_seconds(middle, rate)), 6),
-                "keyframe_time": rational_time(middle, rate),
-                "image_path": str(image),
-            }
-        )
+        keyframe: Keyframe = {
+            "shot_id": f"shot_{index:04d}",
+            "source_range": _range(first, last, rate),
+            "keyframe_timestamp_sec": round(float(_seconds(middle, rate)), 6),
+            "keyframe_time": rational_time(middle, rate),
+            "image_path": "",
+        }
+        if strip and float(_seconds(last - first, rate)) >= STRIP_MIN_SECONDS:
+            frames = [first + round((last - first) * point) for point in STRIP_POINTS]
+            image = folder / f"{stem}_{first:08d}_strip.jpg"
+            if not image.is_file():
+                _grab_frames(path, [_seconds(frame, rate) for frame in frames], width, image)
+            keyframe["strip_timestamps_sec"] = [round(float(_seconds(frame, rate)), 6) for frame in frames]
+        else:
+            image = folder / f"{stem}_{middle:08d}.jpg"
+            if not image.is_file():
+                _grab(path, _seconds(middle, rate), width, image)
+        keyframe["image_path"] = str(image)
+        keyframes.append(keyframe)
     return keyframes
 
 
 def _grab(path: str, seconds: Fraction, width: int, image: Path) -> None:
+    _grab_frames(path, [seconds], width, image)
+
+
+def _grab_frames(path: str, times: list[Fraction], width: int, image: Path) -> None:
+    """The frames at `times`, each `width` px wide, side by side in one JPEG at `image` (one time: that
+    frame alone). Each frame is its own input with its own fast seek, so ffmpeg decodes from the keyframe
+    before each one, never the whole shot; nothing is read into Python."""
     partial = image.with_name(f".{image.name}.partial.jpg")
+    inputs = [arg for seconds in times for arg in ("-ss", _seek(seconds), "-i", path)]
+    if len(times) == 1:
+        picture = ["-map", "0:v:0", "-vf", f"scale={width}:-2:flags=area"]
+    else:
+        panels = ";".join(f"[{i}:v:0]scale={width}:-2:flags=area,setsar=1[p{i}]" for i in range(len(times)))
+        joined = "".join(f"[p{i}]" for i in range(len(times)))
+        picture = [
+            "-filter_complex",
+            f"{panels};{joined}hstack=inputs={len(times)}[strip]",
+            "-map",
+            "[strip]",
+        ]
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -369,16 +412,10 @@ def _grab(path: str, seconds: Fraction, width: int, image: Path) -> None:
         "-v",
         "error",
         "-y",
-        "-ss",
-        _seek(seconds),
-        "-i",
-        path,
-        "-map",
-        "0:v:0",
+        *inputs,
+        *picture,
         "-frames:v",
         "1",
-        "-vf",
-        f"scale={width}:-2:flags=area",
         "-q:v",
         "3",
         str(partial),
@@ -391,5 +428,5 @@ def _grab(path: str, seconds: Fraction, width: int, image: Path) -> None:
     if done.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
         partial.unlink(missing_ok=True)
         message = done.stderr.decode(errors="ignore").strip()[-300:]
-        raise FfmpegOpError(message or f"ffmpeg wrote no frame at {float(seconds):.3f} s")
+        raise FfmpegOpError(message or f"ffmpeg wrote no frame at {float(times[0]):.3f} s")
     partial.replace(image)

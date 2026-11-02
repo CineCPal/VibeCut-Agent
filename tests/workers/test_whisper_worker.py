@@ -136,8 +136,18 @@ def test_requests_are_checked(config, tmp_path):
 def test_models_per_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("VIBECUT_WHISPER_BACKEND", "faster-whisper")
     worker = WhisperWorker(OrchestratorConfig.from_env())
-    assert worker.model_for(None) == "medium"
+    # The default (mlx's large-v3-turbo repo) means faster-whisper's own turbo build.
+    assert worker.model_for(None) == "deepdml/faster-whisper-large-v3-turbo-ct2"
     assert worker.model_for("large-v3") == "large-v3"
+    assert worker.model_for("large-v3-turbo") == "deepdml/faster-whisper-large-v3-turbo-ct2"
+    monkeypatch.setenv("VIBECUT_WHISPER_MODEL", "mlx-community/whisper-medium-mlx")
+    assert WhisperWorker(OrchestratorConfig.from_env()).model_for(None) == "medium"
+    monkeypatch.delenv("VIBECUT_WHISPER_MODEL")
+    monkeypatch.setenv("VIBECUT_WHISPER_BACKEND", "mlx-whisper")
+    worker = WhisperWorker(OrchestratorConfig.from_env())
+    assert worker.model_for(None) == "mlx-community/whisper-large-v3-turbo"
+    assert worker.model_for("large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
+    assert worker.model_for("large-v3") == "mlx-community/whisper-large-v3-mlx"
     ggml = tmp_path / "ggml-medium.bin"
     ggml.write_bytes(b"")
     (tmp_path / "ggml-tiny.bin").write_bytes(b"")
@@ -149,6 +159,44 @@ def test_models_per_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("VIBECUT_WHISPER_BACKEND", "vosk")
     with pytest.raises(WhisperWorkerError, match="VIBECUT_WHISPER_BACKEND"):
         WhisperWorker(OrchestratorConfig.from_env())
+
+
+@pytest.mark.parametrize(
+    ("model", "tier"),
+    [
+        ("mlx-community/whisper-large-v3-turbo", "large-v3-turbo"),
+        ("mlx-community/whisper-large-v3-mlx", "large-v3"),
+        ("deepdml/faster-whisper-large-v3-turbo-ct2", "large-v3-turbo"),
+        ("/models/ggml-small.bin", "small"),
+        ("medium", "medium"),
+        ("/models/custom.bin", None),
+    ],
+)
+def test_a_models_tier_is_read_from_its_name_turbo_before_large_v3(model, tier):
+    assert whisper_worker.tier_of_model(model) == tier
+
+
+def test_faster_whisper_loads_a_model_once_per_process(monkeypatch):
+    """Model migration v2: an ingest of many files loads its model once, and only one stays loaded."""
+    import sys
+    import types
+
+    loaded = []
+
+    class Model:
+        def __init__(self, name, **_):
+            loaded.append(name)
+
+        def transcribe(self, wav, **_):
+            return iter([]), None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+    monkeypatch.setattr(whisper_worker, "_FASTER_WHISPER_CACHE", {})
+    for _ in range(3):
+        whisper_worker.faster_whisper_backend("/tmp/a.wav", "large-v3-turbo")
+    whisper_worker.faster_whisper_backend("/tmp/a.wav", "small")
+    assert loaded == ["large-v3-turbo", "small"]
+    assert list(whisper_worker._FASTER_WHISPER_CACHE) == ["small"]
 
 
 def test_health_names_whats_missing(config, monkeypatch):
@@ -186,3 +234,13 @@ def test_in_window():
     result = {"segments": [{"start": 0, "end": 1}, {"start": 1, "end": 2}, {"start": 2, "end": 3}]}
     assert in_window(result, 1.0, 2.0)["segments"] == [{"start": 1, "end": 2}]
     assert in_window(result, None, None) is result
+
+
+def test_the_transcribe_tab_defaults_to_large_v3_turbo(tmp_path):
+    from vibecut_agent.transcribe import commands
+
+    video = tmp_path / "a.mov"
+    video.write_bytes(b"")
+    assert pipeline.DEFAULT_MODEL == "mlx-community/whisper-large-v3-turbo"
+    assert commands.validate({"videos": [str(video)]})["model"] == pipeline.DEFAULT_MODEL
+    assert "mlx-community/whisper-medium-mlx" in pipeline.WHISPER_MODELS.values()

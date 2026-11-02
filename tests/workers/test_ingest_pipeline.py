@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from vibecut_agent.config import OrchestratorConfig
@@ -232,9 +234,52 @@ def test_each_stage_keeps_its_own_pace(recorder, tmp_path, monkeypatch):
     workers = {"whisper": Whisper(), "vlm": Slow(), "vector": Quick()}
     assert run({"paths": paths, "stages": ["vision", "index"]}, recorder, workers) == 0
     halves = [e for e in recorder.events if e["type"] == "progress" and e["detail"].endswith("half way")]
-    # The first file: 50 s more of its analysis, then its indexing at the analysis's pace (nothing else known).
+    # The run goes stage by stage (model migration v2): both analyses, then both indexings.
+    # The first file: 50 s more of its analysis, the second's, and both indexings at the analysis's pace
+    # (nothing else known).
     assert halves[0]["etaSeconds"] == 50 + 100 + 100 + 100
-    # The second: 50 s more, then 2 s of indexing.
-    assert halves[1]["etaSeconds"] == 52.0
+    # The second: 50 s more, then both indexings, still at the analysis's pace (none has run yet).
+    assert halves[1]["etaSeconds"] == 50 + 100 + 100
+    # Once one indexing has run, the other is at its own pace.
     index = next(e for e in recorder.events if e["type"] == "progress" and e["detail"] == "Indexing two.mov")
     assert index["etaSeconds"] == 2.0
+
+
+def test_the_run_goes_stage_by_stage_across_files(recorder, tmp_path):
+    """Model migration v2: every file's transcript, then every file's shots, then the index, so the
+    local server keeps one model loaded at a time instead of swapping three for each file."""
+    order = []
+    paths = []
+    for name in ("one.mov", "two.mov", "three.mov"):
+        (tmp_path / name).write_bytes(b"")
+        paths.append(str(tmp_path / name))
+
+    class W(Whisper):
+        def transcribe(self, path, **options):
+            order.append(("transcribe", os.path.basename(path)))
+            return super().transcribe(path, **options)
+
+    class V(Vlm):
+        def analyze(self, path, **options):
+            order.append(("vision", os.path.basename(path)))
+            return super().analyze(path, **options)
+
+    class S(Store):
+        def index_transcript(self, transcript):
+            order.append(("index", os.path.basename(transcript["path"])))
+            return super().index_transcript(transcript)
+
+    missing = str(tmp_path / "gone.mov")
+    assert (
+        run({"paths": [paths[0], missing, *paths[1:]]}, recorder, {"whisper": W(), "vlm": V(), "vector": S()})
+        == 0
+    )
+    names = ["one.mov", "two.mov", "three.mov"]
+    assert order == [(stage, name) for stage in ("transcribe", "vision", "index") for name in names]
+    [result] = [e for e in recorder.events if e["type"] == "result"]
+    files = {os.path.basename(f["path"]): f for f in result["files"]}
+    # The missing file is reported once, and the others still carry what each stage made.
+    assert files["gone.mov"]["errors"] == ["The file isn't there (is its drive attached?)"]
+    assert all(files[name]["indexed"] > 0 and not files[name]["errors"] for name in names)
+    fractions = [e["fraction"] for e in recorder.events if e["type"] == "progress"]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0

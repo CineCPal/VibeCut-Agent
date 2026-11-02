@@ -350,58 +350,18 @@ def test_a_late_abort_turn_between_turns_is_ignored(monkeypatch):
     assert capture.of_type("error") == []
 
 
-# ------------------------------------------------------------------------------ provider: claude
+# ------------------------------------------------------------------------------ providers
 
 
-def test_a_claude_session_runs_claudes_loop_with_claudes_call_ids(monkeypatch):
-    from tests.agent.claude_fakes import install, message, text, tool_use
-
-    client = install(
-        monkeypatch,
-        [
-            message(tool_use("toolu_9", "split_at_playhead", {}), stop_reason="tool_use"),
-            message(text("Split.")),
-        ],
-    )
-    called_gemini = []
-    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: called_gemini.append(1))
+@pytest.mark.parametrize("provider", ["claude", "antigravity"])
+def test_the_removed_providers_are_refused(monkeypatch, provider):
+    """The Anthropic API and Antigravity are gone (model migration v2): Claude is the subscription's."""
     stdin = FakeStdin(
         [
             json.dumps(
                 {
-                    "provider": "claude",
-                    "model": "claude-sonnet-5-5",
-                    "apiKey": "k",
-                    "systemInstruction": "s",
-                    "toolDeclarations": [{"name": "split_at_playhead", "description": "d", "parameters": {}}],
-                    "history": [],
-                    "userMessage": "split it",
-                }
-            ),
-            json.dumps({"type": "tool_result", "id": "toolu_9", "result": {"summary": "Split"}}),
-            json.dumps({"type": "end_session"}),
-        ]
-    )
-    capture = Capture()
-
-    code = run_chat(monkeypatch, stdin, capture)
-
-    assert code == 0
-    assert not called_gemini
-    assert capture.of_type("tool_calls")[0]["calls"][0]["id"] == "toolu_9"
-    result = capture.of_type("result")[0]
-    assert result["text"] == "Split."
-    assert result["history"][0] == {"role": "user", "content": "split it"}
-    assert client.requests[0]["model"] == "claude-sonnet-5-5"
-
-
-def test_a_missing_claude_key_names_claude(monkeypatch):
-    stdin = FakeStdin(
-        [
-            json.dumps(
-                {
-                    "provider": "claude",
-                    "apiKey": "",
+                    "provider": provider,
+                    "apiKey": "test-key-xyz",
                     "toolDeclarations": [],
                     "history": [],
                     "userMessage": "hi",
@@ -412,7 +372,7 @@ def test_a_missing_claude_key_names_claude(monkeypatch):
     capture = Capture()
 
     assert run_chat(monkeypatch, stdin, capture) == 2
-    assert "Claude API key" in capture.of_type("error")[0]["message"]
+    assert "Unknown provider" in capture.of_type("error")[0]["message"]
 
 
 def test_an_unknown_provider_is_refused(monkeypatch):
@@ -455,8 +415,9 @@ def test_max_steps_is_held_to_its_range_and_out_of_steps_is_passed_on(monkeypatc
     assert capture.of_type("result")[0]["outOfSteps"] is True
 
 
-@pytest.mark.parametrize("provider,module", [("claude", "claude_chat"), ("claude-code", "claude_code_chat")])
-def test_settings_effort_reaches_the_claude_providers(monkeypatch, provider, module):
+@pytest.mark.parametrize("provider,module", [("gemini", "gemini_chat"), ("claude-code", "claude_code_chat")])
+def test_settings_effort_reaches_both_providers(monkeypatch, provider, module):
+    """Claude's effort, or Gemini's thinking level (model migration v2)."""
     import importlib
 
     seen = {}
@@ -479,21 +440,6 @@ def test_settings_effort_reaches_the_claude_providers(monkeypatch, provider, mod
 
     assert run_chat(monkeypatch, stdin, Capture()) == 0
     assert seen["effort"] == "high"
-
-
-def test_gemini_is_not_given_an_effort(monkeypatch):
-    seen = {}
-
-    def fake_turn(**kwargs):
-        seen.update(kwargs)
-        return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
-
-    monkeypatch.setattr(gemini_chat, "run_chat_turn", fake_turn)
-    request = {"apiKey": "k", "effort": "high", "toolDeclarations": [], "history": [], "userMessage": "go"}
-    stdin = FakeStdin([json.dumps(request), json.dumps({"type": "end_session"})])
-
-    assert run_chat(monkeypatch, stdin, Capture()) == 0
-    assert "effort" not in seen
 
 
 # --- Images with a message (Phase 8g) ---------------------------------------------------------------
@@ -534,34 +480,6 @@ def test_images_go_to_gemini_as_inline_data_ahead_of_the_text(monkeypatch):
     assert bodies[1]["contents"][-1]["parts"] == [{"text": "and now?"}]
     # The image stays in the history the app keeps.
     assert capture.of_type("result")[0]["history"][0]["parts"][0]["inline_data"]["data"] == PNG
-
-
-def test_images_go_to_claude_as_image_blocks(monkeypatch):
-    from tests.agent.claude_fakes import install, message, text
-
-    client = install(monkeypatch, [message(text("Red."))])
-    stdin = FakeStdin(
-        [
-            json.dumps(
-                {
-                    "provider": "claude",
-                    "apiKey": "k",
-                    "toolDeclarations": [],
-                    "history": [],
-                    "userMessage": "colour?",
-                    "attachments": [{"mime": "image/png", "data": PNG}],
-                }
-            ),
-            json.dumps({"type": "end_session"}),
-        ]
-    )
-    capture = Capture()
-
-    assert run_chat(monkeypatch, stdin, capture) == 0
-    assert client.requests[0]["messages"][-1]["content"] == [
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}},
-        {"type": "text", "text": "colour?"},
-    ]
 
 
 @pytest.mark.parametrize(

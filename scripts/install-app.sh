@@ -7,8 +7,9 @@
 #
 # `npm run install-app -- --orchestrated` makes the installed copy start in orchestrated mode (Phase 21)
 # however it's opened (Dock, Spotlight, at login): EXECUTION_MODE goes in its Info.plist's LSEnvironment,
-# with any VIBECUT_GEMMA_MODEL, VIBECUT_VLM_MODEL, VIBECUT_EMBED_MODEL and VIBECUT_LOCAL_LLM_BASE_URL set
-# when you run this. The code's default stays direct; installing again without the flag drops it.
+# with any VIBECUT_GEMMA_MODEL, VIBECUT_VLM_MODEL, VIBECUT_EMBED_MODEL, VIBECUT_WHISPER_MODEL,
+# VIBECUT_VALIDATOR_MODE and VIBECUT_LOCAL_LLM_BASE_URL set when you run this. The code's default stays
+# direct; installing again without the flag drops it.
 
 set -u
 ORCHESTRATED=0
@@ -74,7 +75,8 @@ if (( ORCHESTRATED )); then
   /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$plist" >/dev/null 2>&1
   /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$plist" || fail "Couldn't edit $plist"
   /usr/libexec/PlistBuddy -c "Add :LSEnvironment:EXECUTION_MODE string orchestrated" "$plist"
-  for name in VIBECUT_GEMMA_MODEL VIBECUT_VLM_MODEL VIBECUT_EMBED_MODEL VIBECUT_LOCAL_LLM_BASE_URL; do
+  for name in VIBECUT_GEMMA_MODEL VIBECUT_VLM_MODEL VIBECUT_EMBED_MODEL VIBECUT_WHISPER_MODEL \
+    VIBECUT_VALIDATOR_MODE VIBECUT_LOCAL_LLM_BASE_URL; do
     if [[ -n "${(P)name:-}" ]]; then
       /usr/libexec/PlistBuddy -c "Add :LSEnvironment:$name string ${(P)name}" "$plist"
       print "  $name=${(P)name}"

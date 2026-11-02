@@ -14,14 +14,15 @@ Last 24h · 12 requests · 8 sessions
   Top MCP servers: vibecut 3%`;
 
 describe("usage arithmetic", () => {
-  it("prices API turns from their tokens, with cached input at the cache-read rate", () => {
-    expect(turnCost("claude-opus-5-5", usage({ promptTokens: 1_000_000, cachedTokens: 500_000, outputTokens: 100_000 }))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 0.1 * 20);
-    expect(turnCost("claude-sonnet-5-5", usage({ promptTokens: 2_000_000 }))).toBeCloseTo(4);
+  it("prices Gemini Pro turns from their tokens, thinking as output and cached input at the cache-read rate", () => {
+    const turn = usage({ promptTokens: 1_000_000, cachedTokens: 500_000, outputTokens: 100_000, thoughtsTokens: 50_000 });
+    expect(turnCost("gemini-pro", turn)).toBeCloseTo(0.5 * 2 + 0.5 * 0.2 + 0.15 * 12);
   });
 
-  it("takes Claude Code's own figure for the subscription, and doesn't guess Gemini's", () => {
+  it("takes Claude Code's own figure for the subscription, else its tokens, and doesn't guess Gemini Flash's", () => {
     expect(turnCost("claude-code-opus-5-5", usage({ costUsd: 0.0158 }))).toBe(0.0158);
-    expect(turnCost("claude-code-opus-5-5", usage())).toBeNull();
+    expect(turnCost("claude-code-opus-5-5", usage({ promptTokens: 1_000_000, cachedTokens: 500_000, outputTokens: 100_000 }))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 0.1 * 20);
+    expect(turnCost("claude-code-sonnet-5-5", usage({ promptTokens: 2_000_000, thoughtsTokens: 1_000_000 }))).toBeCloseTo(4);
     expect(turnCost("gemini", usage({ promptTokens: 5000 }))).toBeNull();
   });
 

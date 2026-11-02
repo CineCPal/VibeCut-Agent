@@ -27,6 +27,38 @@ BASE_DELAY_SECONDS = 2.0
 # on_retry(attempt, max_attempts, wait_seconds, reason): told before each backoff wait.
 OnRetry = Callable[[int, int, float, str], None] | None
 
+# The Gemini API's two tiers (model migration v2, PLAN.md D1): Flash for the chat, titles, the first pass
+# and the critic; Pro for the Story Editor's narrative pass and the "Gemini Pro" chat choice.
+FLASH_MODEL = "gemini-3.8-flash"
+PRO_MODEL = "gemini-3.1-pro-preview"
+# A model this key can't reach (HTTP 404: retired, or not offered to the project) is tried once more on
+# the next one down, and the caller says so (D2), so Pro never quietly becomes Flash.
+FALLBACK_MODELS = {PRO_MODEL: FLASH_MODEL, FLASH_MODEL: "gemini-flash-latest"}
+# Settings' effort as Gemini 3's thinking level (thinkingConfig.thinkingLevel). The Pro models take only
+# low and high, so medium is high there.
+GEMINI_THINKING_LEVELS = ("low", "medium", "high")
+
+
+def thinking_level(model: str, effort: str | None) -> str | None:
+    """The thinking level for `model` at Settings' `effort`, or None when the model takes none (before
+    Gemini 3, or no effort set)."""
+    if effort not in GEMINI_THINKING_LEVELS or not model.startswith("gemini-3"):
+        return None
+    return "high" if effort == "medium" and "-pro" in model else effort
+
+
+def generation_config(model: str, effort: str | None = None, temperature: float = 0.4) -> dict[str, Any]:
+    """`generationConfig` for one call. Gemini 3 is left at its own temperature (Google: lower ones can
+    make it loop), and given the thinking level when there is one (D13)."""
+    if not model.startswith("gemini-3"):
+        return {"temperature": temperature}
+    level = thinking_level(model, effort)
+    return {"thinkingConfig": {"thinkingLevel": level}} if level else {}
+
+
+def fallback_notice(model: str, fallback: str) -> str:
+    return f"{model} isn't available on this Gemini API key; using {fallback} instead."
+
 
 class GeminiError(Exception):
     pass

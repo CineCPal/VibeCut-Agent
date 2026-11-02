@@ -176,6 +176,20 @@ def claude_tools() -> list[dict[str, Any]]:
     ]
 
 
+def gemini_tools() -> list[dict[str, Any]]:
+    """The six tools as Gemini function declarations (model migration v2, PLAN.md D5). Their schemas
+    are full JSON Schema (`additionalProperties`, `const`, `pattern`), which Gemini's `parameters` (an
+    OpenAPI subset) refuses, so they go as `parametersJsonSchema`, inlined as for Claude."""
+    return [
+        {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parametersJsonSchema": inline_refs(tool["input_schema"]),
+        }
+        for tool in ORCHESTRATOR_TOOLS
+    ]
+
+
 def fit(result: Any, limit: int = MAX_RESULT_CHARS) -> Any:
     """`result`, cut down to `limit` characters of JSON when it is longer (see the module docstring)."""
 

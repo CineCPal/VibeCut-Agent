@@ -45,8 +45,21 @@ from vibecut_agent.transcribe import pipeline
 from vibecut_agent.workers.base import GpuLock, WorkerHealth
 
 BACKENDS = ("mlx-whisper", "faster-whisper", "whisper.cpp")
-TIERS = ("tiny", "small", "medium", "large-v3")
-MLX_MODELS = {tier: f"mlx-community/whisper-{tier}-mlx" for tier in TIERS}
+TIERS = ("tiny", "small", "medium", "large-v3-turbo", "large-v3")
+# Each tier's model per backend (model migration v2 added large-v3-turbo, whose repos don't follow the
+# others' names). faster-whisper takes the tier names it knows, and the turbo repo by name.
+MLX_MODELS = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+}
+FASTER_WHISPER_MODELS = {
+    **{tier: tier for tier in TIERS},
+    "large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+}
+WHISPER_CPP_MODELS = {tier: f"ggml-{tier}.bin" for tier in TIERS}
 # A file with no picture has no frame rate of its own; its frames are counted at this one.
 AUDIO_ONLY_RATE = 30.0
 CACHED_MODEL_ID = "ivt-cache"
@@ -95,29 +108,34 @@ def mlx_backend(wav: str, model: str) -> list[RawSegment]:
     return segments
 
 
-def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
-    from faster_whisper import WhisperModel
+# faster-whisper models loaded in this process, by name (model migration v2): an ingest of many files
+# loads its model once, not once per file. A sidecar process is one job, so the model goes when it ends.
+_FASTER_WHISPER_CACHE: dict[str, Any] = {}
 
-    whisper = WhisperModel(model, device="auto", compute_type="auto")
-    try:
-        found, _info = whisper.transcribe(wav, word_timestamps=True)
-        segments: list[RawSegment] = []
-        for seg in found:
-            words = [_raw_word(w.word, w.start, w.end, w.probability) for w in seg.words or []]
-            segments.append(
-                {
-                    "start": float(seg.start),
-                    "end": float(seg.end),
-                    "text": str(seg.text).strip(),
-                    "avg_logprob": float(seg.avg_logprob),
-                    "no_speech_prob": float(seg.no_speech_prob),
-                    "words": [w for w in words if w] or None,
-                }
-            )
-        return segments
-    finally:
-        del whisper
-        gc.collect()
+
+def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
+    whisper = _FASTER_WHISPER_CACHE.get(model)
+    if whisper is None:
+        from faster_whisper import WhisperModel
+
+        whisper = WhisperModel(model, device="auto", compute_type="auto")
+        _FASTER_WHISPER_CACHE.clear()
+        _FASTER_WHISPER_CACHE[model] = whisper
+    found, _info = whisper.transcribe(wav, word_timestamps=True)
+    segments: list[RawSegment] = []
+    for seg in found:
+        words = [_raw_word(w.word, w.start, w.end, w.probability) for w in seg.words or []]
+        segments.append(
+            {
+                "start": float(seg.start),
+                "end": float(seg.end),
+                "text": str(seg.text).strip(),
+                "avg_logprob": float(seg.avg_logprob),
+                "no_speech_prob": float(seg.no_speech_prob),
+                "words": [w for w in words if w] or None,
+            }
+        )
+    return segments
 
 
 def parse_whisper_cpp(document: dict[str, Any]) -> list[RawSegment]:
@@ -263,6 +281,16 @@ def in_window(result: dict[str, Any], start: float | None, end: float | None) ->
     return {**result, "segments": [s for s in result["segments"] if s["end"] > low and s["start"] < high]}
 
 
+def tier_of_model(model: str) -> str | None:
+    """The tier a model name is of (`mlx-community/whisper-large-v3-turbo` is large-v3-turbo), or None.
+    large-v3-turbo is checked before large-v3, whose name it contains."""
+    name = Path(model).name.lower()
+    for tier in sorted(TIERS, key=len, reverse=True):
+        if f"-{tier}" in name or name == tier or name.startswith(f"{tier}-"):
+            return tier
+    return None
+
+
 class WhisperWorker:
     name = "whisper"
 
@@ -293,11 +321,13 @@ class WhisperWorker:
             return MLX_MODELS[tier] if tier else configured
         if self.backend == "faster-whisper":
             if tier:
-                return tier
-            # The default (an mlx-community repo) means nothing to faster-whisper.
-            return "medium" if configured.startswith("mlx-community/") else configured
+                return FASTER_WHISPER_MODELS[tier]
+            # The default (an mlx-community repo) means nothing to faster-whisper: its own of that tier.
+            if configured.startswith("mlx-community/"):
+                return FASTER_WHISPER_MODELS[tier_of_model(configured) or "large-v3-turbo"]
+            return configured
         if tier:
-            sibling = Path(configured).with_name(f"ggml-{tier}.bin")
+            sibling = Path(configured).with_name(WHISPER_CPP_MODELS[tier])
             if sibling.is_file():
                 return str(sibling)
         return configured

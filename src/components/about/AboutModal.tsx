@@ -8,7 +8,7 @@ import { useLibraryStore } from "../../store/useLibraryStore";
 import { INDEX_SOURCE } from "../settings/LibrarySection";
 import { useNleStateStore } from "../../store/useNleStateStore";
 import { useSystemStore } from "../../store/useSystemStore";
-import { AI_CHOICES, KEY_ENV, antigravityUsable, claudeCodeUsable } from "../../types/agent";
+import { AI_CHOICES, KEY_ENV, claudeCodeUsable } from "../../types/agent";
 import { NLE_HOSTS, NLE_LABELS } from "../../types/nle";
 import type { OrchestratorHealth } from "../../types/orchestrator";
 import { DependencyList } from "../common/DependencyList";
@@ -56,7 +56,7 @@ function LocalAgentsSection() {
             health === undefined || health === null
               ? "Set by EXECUTION_MODE (direct or orchestrated) when the app starts"
               : orchestrated
-                ? `Claude plans each change as an OTIO delta, checked on this Mac before it reaches the editor · local models at ${health.localLlmBaseUrl} (Ollama or llama.cpp, on this Mac) · index in ${health.indexDir}`
+                ? `The chat's model (Gemini or Claude) plans each change as an OTIO delta, checked on this Mac before it reaches the editor · local models at ${health.localLlmBaseUrl} (Ollama or llama.cpp, on this Mac) · index in ${health.indexDir}`
                 : "The chat's model calls the editor's tools itself (EXECUTION_MODE=direct); no local sub-agents run"
           }
         />
@@ -80,7 +80,6 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
   const keys = useSystemStore((s) => s.keys);
   const claudeCode = useSystemStore((s) => s.claudeCode);
-  const antigravity = useSystemStore((s) => s.antigravity);
   const hwAccel = useSystemStore((s) => s.hwAccel);
   const storage = useSystemStore((s) => s.storage);
   const sidecar = useSystemStore((s) => s.sidecar);
@@ -103,26 +102,12 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  const provider = model?.provider;
-  const modelKeyReady = !model
-    ? false
-    : model.provider === "claude-code"
-      ? claudeCodeUsable(claudeCode)
-      : model.provider === "antigravity"
-        ? antigravityUsable(antigravity)
-        : keys
-          ? keys[model.provider]
-          : false;
-  const modelChecked = provider === "claude-code" ? claudeCode !== null : provider === "antigravity" ? antigravity !== null : keys !== null;
-  const readyText = provider === "claude-code" ? "Claude Code signed in" : provider === "antigravity" ? "Antigravity signed in" : "Key configured";
-  const missingText = provider === "claude-code" ? "Claude Code not ready" : provider === "antigravity" ? "Antigravity not ready" : "Key missing";
-  const modelDetail = !model
-    ? undefined
-    : model.provider === "claude-code"
-      ? "Your Claude subscription, through Claude Code"
-      : model.provider === "antigravity"
-        ? "Your Google AI plan, through Antigravity"
-        : KEY_ENV[model.provider];
+  const subscription = model?.provider === "claude-code";
+  const modelKeyReady = !model ? false : model.provider === "claude-code" ? claudeCodeUsable(claudeCode) : keys ? keys[model.provider] : false;
+  const modelChecked = subscription ? claudeCode !== null : keys !== null;
+  const readyText = subscription ? "Claude Code signed in" : "Key configured";
+  const missingText = subscription ? "Claude Code not ready" : "Key missing";
+  const modelDetail = !model ? undefined : model.provider === "claude-code" ? "Your Claude subscription, through Claude Code" : KEY_ENV[model.provider];
 
   return (
     <Modal title="About This App" onClose={onClose}>
@@ -143,31 +128,25 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             label="Claude Code (subscription)"
             tone={claudeCodeUsable(claudeCode) ? "ok" : "off"}
             value={claudeCode === null ? "Unknown" : claudeCodeUsable(claudeCode) ? `Signed in${claudeCode.subscription ? ` (${claudeCode.subscription})` : ""}` : "Not ready"}
-            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent) and, when Settings sets the critic to the agent's model, review_edit's critic (stills from the cut and what is said) · counts against your Claude plan's usage limits · the usage meter reads the plan's limits from Claude Code's own reports and its /usage (answered without a model call) · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
-          />
-          <StatusRow
-            label="Antigravity (Gemini subscription)"
-            tone={antigravityUsable(antigravity) ? "ok" : "off"}
-            value={antigravity === null ? "Unknown" : antigravityUsable(antigravity) ? "Signed in" : "Not ready"}
-            detail={`Your own Antigravity CLI (${antigravity?.program ?? "agy"}), which calls Google's servers · only while chatting with a Gemini "(subscription)" model (text only: images can't be attached), for its Story Editor cuts (the interviews' transcripts are sent) and for naming its chats · Settings checks sign-in with agy models · counts against your Google AI plan's limits · each turn sends agy's own prompt (about 11,000 tokens on VibeCut's agent) with the conversation so far · VibeCut's tools are added to agy's MCP config only when you press Add in Settings, and come back through VibeCut's MCP bridge (files, no network port)`}
+            detail={`Your own Claude Code (${claudeCode?.program ?? "claude"}), which calls api.anthropic.com · only while chatting with a "(subscription)" model (with any images you attach), and for its Story Editor cuts (the interviews' transcripts are sent), for naming its chats when the local model can't, and, when Settings sets the critic to the agent's model, review_edit's critic (stills from the cut and what is said) · counts against your Claude plan's usage limits · the usage meter reads the plan's limits from Claude Code's own reports and its /usage (answered without a model call) · tool calls come back through VibeCut's MCP bridge (files, no network port)`}
           />
           <StatusRow
             label="Gemini API"
             tone={keys?.gemini ? "ok" : "off"}
             value={keys?.gemini ? "Key configured" : "Not configured"}
-            detail={`generativelanguage.googleapis.com · only while chatting with Gemini (with any images you attach; its Story Editor cuts too: the interviews' transcripts are sent; review_edit's critic by default, whatever the chat model: stills from the cut and what is said; and naming its chats, from the first message and answer), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
-          />
-          <StatusRow
-            label="Anthropic API"
-            tone={keys?.anthropic ? "ok" : "off"}
-            value={keys?.anthropic ? "Key configured" : "Not configured"}
-            detail={`api.anthropic.com · only while chatting with Claude (with any images you attach; its Story Editor cuts too: the interviews' transcripts are sent; review_edit's critic when Settings sets it to the agent's model: stills from the cut and what is said)${keys?.anthropicSource ? ` · key ${keys.anthropicSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+            detail={`generativelanguage.googleapis.com · Gemini 3.8 Flash and Gemini 3.1 Pro · only while chatting with Gemini (with any images you attach; its Story Editor cuts too: the interviews' transcripts are sent; and naming its chats when the local model can't, from the first message and answer), for review_edit's critic by default, whatever the chat model (stills from the cut and what is said; when Settings sets the critic to Local, only if the local model can't review), or for the Story Editor's first read of long footage when Settings sets it to Gemini Flash${keys?.geminiSource ? ` · key ${keys.geminiSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
           />
           <StatusRow
             label="Hugging Face"
             tone="off"
             value="First content-aware run only"
             detail={`huggingface.co · downloads the SigLIP 2 and Whisper models once (analysis, Library search and transcripts then run offline); with a token, pyannote's speaker models${keys?.huggingfaceSource ? ` · token ${keys.huggingfaceSource === "keychain" ? "in the Keychain" : "from the environment"}` : ""}`}
+          />
+          <StatusRow
+            label="Local models"
+            tone="ok"
+            value="On this Mac"
+            detail="The local model server (Ollama or llama.cpp, VIBECUT_LOCAL_LLM_BASE_URL, 127.0.0.1:11434 by default) · names each chat with Gemma when it is there and the GPU is free, so no cloud model is asked · reviews edits with Qwen3-VL when Settings sets the critic to Local · in orchestrated mode, the sub-agents too · nothing it reads leaves this Mac"
           />
           <StatusRow
             label="Spyglass index"

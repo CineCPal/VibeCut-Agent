@@ -11,22 +11,28 @@ an agent asked to review its own conversation tends to defend the choices it jus
 only ever sees this call's structured findings (the app's `review_edit` tool).
 
 What differs from VibeCut's:
-- Any of the chat's three providers (Gemini, the Claude API, or Claude Code on the subscription), through
-  story/models.py's general calls, which take the parts with their images.
+- Either of the chat's providers (Gemini, or Claude Code on the subscription), through story/models.py's
+  general calls, which take the parts with their images. Gemini is the Flash tier (CRITIC_GEMINI_MODEL)
+  unless the request names one: a review is a quick look, not the Story Editor's narrative pass.
+- Or, when the request says `"local": true` (model migration v2, Phase 3b), the local VLM
+  (OrchestratorConfig.vlm_model, the ingest's own) on the local model server, under the GPU lock. When
+  it can't review now (no server or model, the GPU busy past LOCAL_LOCK_SECONDS, no usable answer), the
+  request's provider does, and the result says why in `localFallback`.
 - Frames are read with media/frames.py's ``grab`` (the local ffmpeg), sent inline, never written to disk.
 - There are no editor-rendered stills, so the rubric's sentence about them is left out.
 
 request: {
-    "provider": "gemini" | "claude" | "claude-code" | "antigravity" (optional, "gemini"; the chat's; on
-        "antigravity" the stills can't be sent, so it's refused), "model": str (optional),
-    "apiKey": str (injected by Rust; not for "claude-code"), "claudeCode": {...} (injected by Rust),
+    "provider": "gemini" | "claude-code" (optional, "gemini"), "model": str (optional),
+    "local": bool (optional; try the local VLM first),
+    "apiKey": str (injected by Rust for "gemini"), "claudeCode": {...} (injected by Rust),
     "frames": [{"path": a media file, "sourceTime": seconds in it, "time": timeline seconds, "label": str}]
               (1..MAX_FRAMES, timeline order),
     "brief", "snapshot", "transcript": str (optional),
     "lint": [...] (the automatic check's findings, passed through as context)
 }
 result: {"overall": str, "findings": [{"time", "severity", "category", "issue", "suggestedFix"}],
-         "framesSent": int, "framesFailed": int}
+         "framesSent": int, "framesFailed": int, "reviewer": str (who reviewed),
+         "localFallback": str (only when the local VLM was asked for and couldn't review)}
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TextIO
 
 from vibecut_agent.agent.chat import provider_of
+from vibecut_agent.agent.gemini_client import FLASH_MODEL
 from vibecut_agent.agent.redact import register_secret, scrub
 from vibecut_agent.protocol import CancelFlag, Emitter, RequestError, read_request, require_absolute_paths
 
@@ -49,13 +56,12 @@ EXTRACT_WORKERS = 4
 MAX_FINDINGS = 20
 MAX_TEXT = 20_000
 MAX_LINT = 60
-CLAUDE_MAX_TOKENS = 8000
-WHO = {
-    "gemini": "Gemini",
-    "claude": "Claude",
-    "claude-code": "Claude (subscription)",
-    "antigravity": "Gemini (subscription)",
-}
+WHO = {"gemini": "Gemini", "claude-code": "Claude (subscription)"}
+# Pinned here, apart from story/models.py's default (the Pro tier, for the story itself).
+CRITIC_GEMINI_MODEL = FLASH_MODEL
+# How long the local review waits for the GPU (an ingest, a transcription) before the cloud reviews.
+LOCAL_LOCK_SECONDS = 30.0
+LOCAL_TIMEOUT_SECONDS = 300.0
 
 SEVERITIES = ("high", "medium", "low")
 CATEGORIES = ("pacing", "continuity", "framing", "broll_relevance", "audio", "story", "other")
@@ -255,6 +261,43 @@ def findings_from_text(text: str) -> dict[str, Any]:
     return findings_from(answer)
 
 
+def local_prompt(frames: list[tuple[dict[str, Any], bytes]], parts: list[dict[str, Any]]) -> str:
+    """build_parts' text for the local VLM, which takes the images as one list after the text: each
+    caption names its image by number instead of standing before it."""
+    text = [p["text"] for p in parts[:5]]
+    text += [f"Image {i}: {_frame_caption(frame)}" for i, (frame, _jpeg) in enumerate(frames, start=1)]
+    text.append(parts[-1]["text"])
+    return "\n\n".join(text)
+
+
+def local_review(frames: list[tuple[dict[str, Any], bytes]], parts: list[dict[str, Any]]) -> tuple[Any, str]:
+    """(the local VLM's answer, its model). Raises CriticError saying why it can't review now."""
+    from vibecut_agent.agent.claude_schema import to_json_schema
+    from vibecut_agent.config import OrchestratorConfig
+    from vibecut_agent.workers.base import GpuLock, GpuLockTimeout, LocalLlmClient, LocalLlmError
+
+    config = OrchestratorConfig.from_env()
+    client = LocalLlmClient(config.local_llm_base_url, timeout=LOCAL_TIMEOUT_SECONDS)
+    model = client.resolve_available_model(config.vlm_model)
+    available, detail = client.has_model(model)
+    if not available:
+        raise CriticError(detail)
+    try:
+        with GpuLock.for_config(config, timeout=LOCAL_LOCK_SECONDS):
+            answer = client.chat_json(
+                model,
+                local_prompt(frames, parts),
+                to_json_schema(RESPONSE_SCHEMA),
+                images=[jpeg for _frame, jpeg in frames],
+                system=SYSTEM_INSTRUCTION,
+            )
+    except GpuLockTimeout:
+        raise CriticError(f"the GPU was busy with another job for {LOCAL_LOCK_SECONDS:g} s") from None
+    except (LocalLlmError, OSError) as e:
+        raise CriticError(str(e)) from None
+    return answer, model
+
+
 def _text(request: dict[str, Any], key: str) -> str:
     value = request.get(key) or ""
     if not isinstance(value, str):
@@ -265,15 +308,7 @@ def _text(request: dict[str, Any], key: str) -> str:
 def run(
     request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None, grab: Grab = grab_jpeg
 ) -> int:
-    from vibecut_agent.story.models import StoryModelError, claude_code_json_answer, claude_json, gemini_json
-
-    if provider_of(request) == "antigravity":
-        # agy's headless mode takes text only (Phase 17), and the critic's whole job is the stills.
-        emitter.error(
-            "Gemini (subscription) can't look at stills: Antigravity's headless mode accepts text only. "
-            "Set Settings → Agent model → Edit review critic to Gemini Flash (needs a Gemini key)."
-        )
-        return 1
+    from vibecut_agent.story.models import StoryModelError, claude_code_json_answer, gemini_json
 
     register_secret(request.get("apiKey"))
     provider = provider_of(request)
@@ -281,9 +316,6 @@ def run(
     if provider == "claude-code":
         if not isinstance(request.get("claudeCode"), dict):
             raise RequestError("Claude Code isn't set up. See Settings → Claude subscription.")
-    elif provider == "antigravity":
-        if not isinstance(request.get("antigravity"), dict):
-            raise RequestError("Antigravity isn't set up. See Settings → Gemini subscription.")
     elif not api_key:
         raise RequestError(f"No {WHO[provider]} API key was provided.")
     frames = parse_frames(request.get("frames"))
@@ -304,11 +336,30 @@ def run(
         emitter.error("None of the stills could be read (are the media files there?)")
         return 1
     parts = build_parts(ok, brief, snapshot, transcript, lint[:MAX_LINT])
+    extra: dict[str, Any] = {}
+    if request.get("local") is True:
+        emitter.progress(
+            len(frames), len(frames), phase="reviewing", detail="The local VLM is reviewing the cut"
+        )
+        try:
+            answer, local_model = local_review(ok, parts)
+            review = findings_from(answer)
+        except CriticError as e:
+            extra["localFallback"] = f"The local VLM couldn't review: {e}"
+            emitter.emit(
+                "status", phase="reviewing", detail=f"{extra['localFallback']}. {WHO[provider]} will."
+            )
+        else:
+            emitter.emit(
+                "result", **review, framesSent=len(ok), framesFailed=len(failed), reviewer=local_model
+            )
+            return 0
     emitter.progress(
         len(frames), len(frames), phase="reviewing", detail=f"{WHO[provider]} is reviewing the cut"
     )
     try:
         if provider == "claude-code":
+            reviewer = model or "Claude (subscription)"
             answer = claude_code_json_answer(
                 request.get("claudeCode"),
                 SYSTEM_INSTRUCTION,
@@ -318,24 +369,23 @@ def run(
                 effort="medium",
                 should_abort=should_abort,
             )
-        elif provider == "claude":
-            answer = claude_json(
+        else:
+            reviewer = model or CRITIC_GEMINI_MODEL
+            answer = gemini_json(
                 api_key,
                 SYSTEM_INSTRUCTION,
                 parts,
                 RESPONSE_SCHEMA,
-                model,
-                should_abort=should_abort,
+                reviewer,
+                temperature=0.3,
                 effort="medium",
-                max_tokens=CLAUDE_MAX_TOKENS,
+                on_fallback=lambda notice: emitter.emit("status", phase="reviewing", detail=notice),
             )
-        else:
-            answer = gemini_json(api_key, SYSTEM_INSTRUCTION, parts, RESPONSE_SCHEMA, model, temperature=0.3)
         review = findings_from(answer)
     except (StoryModelError, CriticError) as e:
         emitter.error(scrub(e, api_key))
         return 1
-    emitter.emit("result", **review, framesSent=len(ok), framesFailed=len(failed))
+    emitter.emit("result", **review, framesSent=len(ok), framesFailed=len(failed), reviewer=reviewer, **extra)
     return 0
 
 

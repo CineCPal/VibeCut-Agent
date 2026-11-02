@@ -8,10 +8,13 @@
 2. orchestrator/otio_delta.py replays it on the timeline snapshot it was planned against, frame by frame,
    and lowers it to bridge calls (`translated_nle_batch`). Those checks and that translation are
    deterministic: every ERROR comes from them, and the calls are exactly what they say.
-3. The local Gemma (`VIBECUT_GEMMA_MODEL`) then reads the delta, the timeline and those findings, and may
-   add WARNINGs an editor would raise (a cut mid-word, a jump in continuity) under the same codes. Its
-   notes can never make a delta valid or invalid, and a Gemma that isn't running only means no notes
-   (`validator_model` then says "deterministic").
+3. Only with `VIBECUT_VALIDATOR_MODE=llm` (model migration v2; the default is "deterministic", which
+   stops at step 2 with no model call): the local Gemma (`VIBECUT_GEMMA_MODEL`, or the first of its
+   MODEL_ALIASES the server has) then reads the delta, the timeline and those findings, and may add
+   WARNINGs an editor would raise (a cut mid-word, a jump in continuity) under the same codes. Its notes
+   can never make a delta valid or invalid, and a Gemma that isn't running only means no notes
+   (`validator_model` then says "deterministic"). Seen live (Phase 21): its notes cost 1-30 s a proposal
+   and were mostly false alarms, which is why it is opt-in.
 
 A valid delta gets a `validation_token`: an HMAC of the delta, its calls and the timeline hash under this
 validator's key, which `commit_otio_delta` must present. `verify_token` checks one; a token from another
@@ -152,8 +155,10 @@ class GemmaValidator:
         key: bytes | None = None,
         media_duration: MediaDuration = ffprobe_util.probe_duration_seconds,
         media_channels: MediaChannels = probe_channels,
+        validator_mode: str | None = None,
     ) -> None:
         self.config = config
+        self.validator_mode = validator_mode or config.validator_mode
         self.model = config.gemma_model
         self.client = client or LocalLlmClient(config.local_llm_base_url, timeout=30.0)
         self.breaker = breaker or CircuitBreaker("The local validator model")
@@ -162,6 +167,14 @@ class GemmaValidator:
         self.media_channels = media_channels
 
     def health(self) -> WorkerHealth:
+        if self.validator_mode != "llm":
+            return {
+                "worker": self.name,
+                "backend": "deterministic",
+                "model": DETERMINISTIC,
+                "available": True,
+                "detail": "deltas are checked by otio_delta alone (VIBECUT_VALIDATOR_MODE=llm adds Gemma's notes)",
+            }
         available, detail = self.client.has_model(self.model)
         if not available:
             detail += "; deltas are still checked, without the model's notes"
@@ -205,11 +218,12 @@ class GemmaValidator:
                 },
             )
         validator_model = DETERMINISTIC
-        if review:
-            notes = self._review(delta, snapshot, diagnostics)
+        if review and self.validator_mode == "llm":
+            notes_model = self.review_model()
+            notes = self._review(delta, snapshot, diagnostics, notes_model)
             if notes is not None:
                 diagnostics += notes
-                validator_model = self.model
+                validator_model = notes_model
         valid = not any(d["severity"] == "ERROR" for d in diagnostics)
         result = {
             "schema_version": GEMMA_VALIDATOR_VERSION,
@@ -223,8 +237,12 @@ class GemmaValidator:
         validate(result, GEMMA_VALIDATION_ID)
         return result
 
+    def review_model(self) -> str:
+        """The model `_review` asks: the configured Gemma, or the first of its aliases the server has."""
+        return self.client.resolve_available_model(self.model)
+
     def _review(
-        self, delta: dict[str, Any], snapshot: dict[str, Any], diagnostics: list[Diagnostic]
+        self, delta: dict[str, Any], snapshot: dict[str, Any], diagnostics: list[Diagnostic], model: str
     ) -> list[Diagnostic] | None:
         """Gemma's notes as WARNINGs, or None when it couldn't give any (not running, failing, or off-format)."""
         prompt = REVIEW_PROMPT % {
@@ -237,7 +255,7 @@ class GemmaValidator:
         }
         try:
             with self.breaker.guard():
-                answer = self.client.chat_json(self.model, prompt, REVIEW_SCHEMA)
+                answer = self.client.chat_json(model, prompt, REVIEW_SCHEMA)
         except (LocalLlmError, CircuitOpen):
             return None
         if errors_against(answer, REVIEW_SCHEMA):

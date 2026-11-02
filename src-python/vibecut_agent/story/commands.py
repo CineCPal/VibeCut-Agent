@@ -6,15 +6,15 @@ request: {
     "sources": [{"sourceId": str, "segments": [{"start", "end", "text", "speaker"}, ...]}, ...],
     "media": {sourceId: absolute video path}   (optional; names each cut after its video),
     "fps": 25,
-    "provider": "gemini" | "claude" | "claude-code" | "antigravity"   (optional, "gemini"; the chat's),
-    "model": str                               (optional),
+    "provider": "gemini" | "claude-code"       (optional, "gemini"; the chat's),
+    "model": str                               (optional; the chat's model: Claude's, or Gemini's tier,
+                                                Flash when absent),
     "apiKey": str                              (injected by Rust, sidecar.rs `prepare_request`; not for
                                                 "claude-code"),
     "claudeCode": {...}                        (injected by Rust for "claude-code": claude_code.rs),
-    "antigravity": {...}                       (injected by Rust for "antigravity": antigravity.rs),
     "extraction": "same" | "gemini"            (optional, Phase 7e: the model of the first pass over
                                                 long footage; "same" is the story's provider, on
-                                                Sonnet or Gemini Flash),
+                                                Sonnet at low effort or Gemini Flash),
     "extractionKey": str                       (injected by Rust for "gemini": its key, when one is set),
     "prompt": str, "sequenceName": str,
     "targetDuration": "90" | "2 minutes" | "1:30"   (optional),
@@ -36,38 +36,35 @@ import os
 from typing import Any, TextIO
 
 from vibecut_agent.agent.chat import provider_of
+from vibecut_agent.agent.gemini_client import FLASH_MODEL
 from vibecut_agent.agent.redact import register_secret, scrub
 from vibecut_agent.protocol import CancelFlag, Emitter, RequestError, read_request, require_absolute_paths
 from vibecut_agent.story import extract
 from vibecut_agent.story.assemble import Story, parse_duration_string
 from vibecut_agent.story.models import (
     StoryModelError,
-    antigravity_json_answer,
-    antigravity_story,
     claude_code_json_answer,
     claude_code_story,
-    claude_json,
-    claude_story,
     gemini_json,
     gemini_story,
 )
 
 TOOL = "story-editor"
-WHO = {
-    "gemini": "Gemini",
-    "claude": "Claude",
-    "claude-code": "Claude (subscription)",
-    "antigravity": "Gemini (subscription)",
-}
-# The first pass's models: quicker and lighter on a plan's limits than the story's.
+WHO = {"gemini": "Gemini", "claude-code": "Claude (subscription)"}
+# The first pass's models: quicker and lighter on a plan's limits than the story's. Finding the
+# strongest lines verbatim is filtering, not judgment, so Sonnet runs it at low effort.
 EXTRACT_CLAUDE_MODEL = "claude-sonnet-5-5"
-EXTRACT_GEMINI_MODEL = "gemini-flash-latest"
-# On Gemini (subscription): agy's Flash family (antigravity_chat.MODELS).
-EXTRACT_AGY_MODEL = "gemini-3.8-flash"
+EXTRACT_CLAUDE_EFFORT = "low"
+EXTRACT_GEMINI_MODEL = FLASH_MODEL
 
 
 def extraction_asker(
-    request: dict[str, Any], provider: str, api_key: str, should_abort: Any, on_retry: Any
+    request: dict[str, Any],
+    provider: str,
+    api_key: str,
+    should_abort: Any,
+    on_retry: Any,
+    on_fallback: Any = None,
 ) -> tuple[extract.Ask, str]:
     """How the first pass asks its model, and who that is."""
     choice = request.get("extraction") or "same"
@@ -87,36 +84,28 @@ def extraction_asker(
         register_secret(key)
         return (
             lambda system, text, schema: gemini_json(
-                key, system, text, schema, EXTRACT_GEMINI_MODEL, on_retry
+                key,
+                system,
+                text,
+                schema,
+                EXTRACT_GEMINI_MODEL,
+                on_retry,
+                effort="low",
+                on_fallback=on_fallback,
             )
         ), "Gemini Flash"
-    if provider == "antigravity":
-        agy_setup = request.get("antigravity")
-        return (
-            lambda system, text, schema: antigravity_json_answer(
-                agy_setup, system, text, schema, EXTRACT_AGY_MODEL, effort="medium", should_abort=should_abort
-            )
-        ), "Gemini Flash (subscription)"
-    if provider == "claude-code":
-        setup = request.get("claudeCode")
-        return (
-            lambda system, text, schema: claude_code_json_answer(
-                setup, system, text, schema, EXTRACT_CLAUDE_MODEL, effort="medium", should_abort=should_abort
-            )
-        ), "Claude Sonnet (subscription)"
+    setup = request.get("claudeCode")
     return (
-        lambda system, text, schema: claude_json(
-            api_key,
+        lambda system, text, schema: claude_code_json_answer(
+            setup,
             system,
             text,
             schema,
             EXTRACT_CLAUDE_MODEL,
-            on_retry,
-            should_abort,
-            effort="medium",
-            max_tokens=16000,
+            effort=EXTRACT_CLAUDE_EFFORT,
+            should_abort=should_abort,
         )
-    ), "Claude Sonnet"
+    ), "Claude Sonnet (subscription)"
 
 
 def _catalog(raw: Any) -> list[dict[str, Any]]:
@@ -161,9 +150,6 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     if provider == "claude-code":
         if not isinstance(request.get("claudeCode"), dict):
             raise RequestError("Claude Code isn't set up. See Settings → Claude subscription.")
-    elif provider == "antigravity":
-        if not isinstance(request.get("antigravity"), dict):
-            raise RequestError("Antigravity isn't set up. See Settings → Gemini subscription.")
     elif not api_key:
         raise RequestError(f"No {WHO[provider]} API key was provided.")
     prompt = request.get("prompt")
@@ -201,6 +187,9 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
             reason=reason,
         )
 
+    def on_fallback(notice: str) -> None:
+        emitter.emit("status", phase="generating", detail=notice)
+
     model = request.get("model") if isinstance(request.get("model"), str) else None
     who = WHO[provider]
     should_abort = cancel.is_set if cancel else lambda: False
@@ -209,7 +198,7 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
     first_pass_note: str | None = None
     try:
         if extract.needs_first_pass(sources):
-            ask, reader = extraction_asker(request, provider, api_key, should_abort, on_retry)
+            ask, reader = extraction_asker(request, provider, api_key, should_abort, on_retry, on_fallback)
             lines = extract.line_count(sources)
 
             def progress(done: int, total: int) -> None:
@@ -226,20 +215,21 @@ def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = N
                 f"shortlisted {extract.line_count(sources)} for the story."
             )
         emitter.emit("status", phase="generating", detail=f"Waiting for {who}")
-        if provider == "antigravity":
-            raw = antigravity_story(
-                request.get("antigravity"), brief, sources, catalog, target_seconds, model, should_abort
-            )
-        elif provider == "claude-code":
+        if provider == "claude-code":
             raw = claude_code_story(
                 request.get("claudeCode"), brief, sources, catalog, target_seconds, model, should_abort
             )
-        elif provider == "claude":
-            raw = claude_story(
-                api_key, brief, sources, catalog, target_seconds, model, on_retry, should_abort=should_abort
-            )
         else:
-            raw = gemini_story(api_key, brief, sources, catalog, target_seconds, model, on_retry)
+            raw = gemini_story(
+                api_key,
+                brief,
+                sources,
+                catalog,
+                target_seconds,
+                model,
+                on_retry=on_retry,
+                on_fallback=on_fallback,
+            )
         result = story.result(raw, catalog, sequence_name, target_seconds)
     except extract.ExtractionStopped:
         emitter.error("Stopped")

@@ -5,7 +5,7 @@ VibeCut Agent is a standalone AI video editing assistant for Premiere Pro and Da
 ## Features
 - **Local-first Architecture:** Operates with a Tauri v2 frontend and a Rust/Python backend.
 - **NLE Integration:** Connects directly to Premiere Pro and DaVinci Resolve via their plugin architectures.
-- **AI Agent:** Supports Gemini and Claude models for multi-step timeline assembly and edits, with API keys or with your own signed-in CLI and no key: Claude Code for Claude (your Claude subscription), or Antigravity (`agy`) for Gemini (your Google AI plan; text only).
+- **AI Agent:** Multi-step timeline assembly and edits with Gemini 3.8 Flash or Gemini 3.1 Pro (your Gemini API key) or with Claude Opus or Sonnet through your own signed-in Claude Code (your Claude subscription, no key). Chat titles, and optionally edit reviews, run on local models on your Mac when they're there.
 - **Outside control:** a Claude Code session (including one driven from your phone through Remote Control) can call the agent's tools over a local MCP bridge.
 - **B-Roll Library:** Searches and browses Spyglass's index of your archive (Rough Cut Studio Suite - Blair Themed), scopes the agent's B-roll searches, previews shots in the editor's source viewer, and imports, places or drags clips into Premiere Pro or DaVinci Resolve.
 - **B-Roll Analyzer:** Scans a folder and rates its B-roll, placing the best stretches on the timeline.

@@ -1,4 +1,5 @@
-"""The delta pre-flight (workers/gemma_validator.py): deterministic verdicts, Gemma's notes as warnings, tokens."""
+"""The delta pre-flight (workers/gemma_validator.py): deterministic verdicts, Gemma's notes as warnings (only
+with VIBECUT_VALIDATOR_MODE=llm, model migration v2), tokens."""
 
 from __future__ import annotations
 
@@ -23,8 +24,13 @@ def config(tmp_path):
     return OrchestratorConfig.from_env("orchestrated")
 
 
-def validator(config, answers, key=b"k" * 32):
-    return GemmaValidator(config, client=Client(answers), key=key, media_duration=lambda path: 60.0)  # type: ignore[arg-type]
+def validator(config, answers, key=b"k" * 32, mode="llm", models=()):
+    """A validator whose Gemma (when asked) answers `answers`: in "llm" mode unless a test says otherwise,
+    since most of these are about its notes."""
+    client = Client(answers, models=models)
+    return GemmaValidator(
+        config, client=client, key=key, media_duration=lambda path: 60.0, validator_mode=mode
+    )  # type: ignore[arg-type]
 
 
 def test_a_valid_delta_gets_a_token_and_its_calls(config, snapshot):
@@ -143,9 +149,44 @@ def test_a_malformed_delta_is_refused(config, snapshot):
         validator(config, [{"notes": []}]).validate(bad, snapshot)
 
 
+def test_by_default_no_model_is_asked(config, snapshot):
+    """Model migration v2: otio_delta's checks alone, with no model call, unless VIBECUT_VALIDATOR_MODE=llm."""
+    assert config.validator_mode == "deterministic"
+    check = GemmaValidator(
+        config, client=Client([{"notes": []}]), key=b"k" * 32, media_duration=lambda path: 60.0
+    )  # type: ignore[arg-type]
+    result = check.validate(delta(op("op_001", "DELETE_CLIP", clip_id="c2")), snapshot)
+    assert result["valid"] is True and result["validator_model"] == DETERMINISTIC
+    assert check.client.prompts == []
+    health = check.health()
+    assert (
+        health["available"] is True
+        and health["model"] == DETERMINISTIC
+        and "VIBECUT_VALIDATOR_MODE=llm" in health["detail"]
+    )
+
+
+def test_llm_mode_comes_from_the_environment(monkeypatch, snapshot):
+    monkeypatch.setenv("VIBECUT_VALIDATOR_MODE", "llm")
+    check = GemmaValidator(
+        OrchestratorConfig.from_env("orchestrated"),
+        client=Client([{"notes": []}]),
+        media_duration=lambda path: 60.0,
+    )  # type: ignore[arg-type]
+    check.validate(delta(op("op_001", "DELETE_CLIP", clip_id="c2")), snapshot)
+    assert len(check.client.prompts) == 1
+
+
+def test_an_older_gemma_tag_reviews_when_the_configured_one_isnt_pulled(config, snapshot):
+    check = validator(config, [{"notes": []}], models=("gemma3:4b-it",))
+    result = check.validate(delta(op("op_001", "DELETE_CLIP", clip_id="c2")), snapshot)
+    assert check.client.prompts[0][0] == "gemma3:4b-it"
+    assert result["validator_model"] == "gemma3:4b-it"
+
+
 def test_health(config):
-    check = GemmaValidator(config, client=Client([{}], models=(config.gemma_model,)))  # type: ignore[arg-type]
+    check = GemmaValidator(config, client=Client([{}], models=(config.gemma_model,)), validator_mode="llm")  # type: ignore[arg-type]
     assert check.health()["available"] is True
-    check = GemmaValidator(config, client=Client([{}]))  # type: ignore[arg-type]
+    check = GemmaValidator(config, client=Client([{}]), validator_mode="llm")  # type: ignore[arg-type]
     health = check.health()
     assert health["available"] is False and "still checked" in health["detail"]

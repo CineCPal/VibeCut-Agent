@@ -1,4 +1,3 @@
-mod antigravity;
 mod audiosync;
 mod broll_panel;
 mod broll_preview;
@@ -132,11 +131,7 @@ pub fn run() {
             mcp_bridge::mcp_status,
             mcp_bridge::mcp_set_outside_allowed,
             mcp_bridge::mcp_client_setup,
-            antigravity::antigravity_status,
-            antigravity::antigravity_set,
-            antigravity::antigravity_add_tools,
-            antigravity::antigravity_remove_tools,
-            claude_code::claude_code_status,
+                            claude_code::claude_code_status,
             claude_code::claude_code_set,
             claude_code::claude_code_usage,
             chat_store::chat_list,

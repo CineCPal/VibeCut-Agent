@@ -1,8 +1,7 @@
 """effort.py
 
-How long Claude thinks (`output_config.effort`, and Claude Code's `--effort`), kept apart from
-claude_client so the Claude Code path doesn't import the `anthropic` SDK just for these (Phase 11f:
-it's about 0.6 s of a chat job's start).
+How long Claude thinks (Claude Code's `--effort`), kept in a module of its own so the Claude Code
+path imports nothing else for these (Phase 11f: a chat job's start is kept short).
 
 Both models take all five levels. The chat's default is "medium" for both (Phase 9a): Opus 5.5's own
 default, and Sonnet 5.5's recommended start for multi-step tool use. Settings → Agent model can

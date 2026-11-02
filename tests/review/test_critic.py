@@ -14,11 +14,13 @@ from typing import Any
 
 import pytest
 
+from tests.workers.fakes import Client
 from vibecut_agent import headless
-from vibecut_agent.agent import claude_client, claude_code_json
+from vibecut_agent.agent import claude_code_json
 from vibecut_agent.protocol import Emitter, RequestError
 from vibecut_agent.review import critic
 from vibecut_agent.story import models
+from vibecut_agent.workers import base
 
 KEY = "test-key-critic"
 JPEG = b"\xff\xd8fake-jpeg"
@@ -150,39 +152,18 @@ def test_gemini_gets_the_stills_inline_with_the_schema(monkeypatch: pytest.Monke
     body = sent["body"]
     assert sent["headers"]["x-goog-api-key"] == KEY
     assert body["systemInstruction"]["parts"][0]["text"] == critic.SYSTEM_INSTRUCTION
-    assert body["generationConfig"]["temperature"] == 0.3
+    # The Flash tier, thinking at medium, at Gemini 3's own temperature.
+    assert "/models/gemini-3.8-flash:" in sent["url"]
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert "temperature" not in body["generationConfig"]
     assert body["generationConfig"]["responseSchema"] == critic.RESPONSE_SCHEMA
     parts = body["contents"][0]["parts"]
     assert sum("inline_data" in p for p in parts) == 2, "the unreadable still is left out"
     assert any(p.get("text", "").startswith("Automatic check findings:\n[{") for p in parts)
     result = next(e for e in events if e["type"] == "result")
     assert result["framesSent"] == 2 and result["framesFailed"] == 1
+    assert result["reviewer"] == "gemini-3.8-flash" and "localFallback" not in result
     assert [f["time"] for f in result["findings"]] == [4.21, 9.0]
-
-
-def test_claude_gets_image_blocks_at_medium_effort(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent: dict[str, Any] = {}
-
-    def send(
-        api_key: str, params: dict[str, Any], timeout: float, on_retry: Any, should_abort: Any
-    ) -> dict[str, Any]:
-        sent.update(api_key=api_key, params=params)
-        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": json.dumps(ANSWER)}]}
-
-    monkeypatch.setattr(claude_client, "send", send)
-    code, events = run(request(provider="claude", model="claude-opus-5-5"))
-    assert code == 0, events
-    params = sent["params"]
-    assert sent["api_key"] == KEY and params["model"] == "claude-opus-5-5"
-    assert params["output_config"]["effort"] == "medium" and params["max_tokens"] == critic.CLAUDE_MAX_TOKENS
-    content = params["messages"][0]["content"]
-    images = [b for b in content if b["type"] == "image"]
-    assert len(images) == 2 and images[0]["source"] == {
-        "type": "base64",
-        "media_type": "image/jpeg",
-        "data": base64.b64encode(JPEG).decode(),
-    }
-    assert content[0] == {"type": "text", "text": "Editor's brief: A 60 s cut"}
 
 
 def test_claude_code_gets_the_blocks_on_the_subscription(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,13 +212,79 @@ def test_failures_are_reported_without_the_key(monkeypatch: pytest.MonkeyPatch) 
         critic.run(request(provider="claude-code"), Capture().emitter, grab=fake_grab)
 
 
-def test_gemini_subscription_is_refused_since_it_cant_take_stills() -> None:
-    code, events = run(
-        request(provider="antigravity", apiKey=None, antigravity={"program": "/agy", "workDir": "/w"})
-    )
-    assert code == 1
-    error = next(e for e in events if e["type"] == "error")["message"]
-    assert "can't look at stills" in error and "Edit review critic" in error
+@pytest.mark.parametrize("provider", ["claude", "antigravity"])
+def test_the_removed_providers_are_refused(provider: str) -> None:
+    with pytest.raises(RequestError, match="Unknown provider"):
+        critic.run(request(provider=provider), Capture().emitter, grab=fake_grab)
+
+
+# ------------------------------------------------------------------------------ the local VLM
+
+
+@pytest.fixture
+def local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """The local server faked, the GPU lock in a test folder, and a cloud reviewer that says so."""
+    monkeypatch.setenv("VIBECUT_INDEX_DIR", str(tmp_path))
+    monkeypatch.delenv("VIBECUT_VLM_MODEL", raising=False)
+    monkeypatch.setattr(models, "gemini_json", lambda *a, **k: {"overall": "From the cloud.", "findings": []})
+
+    def install(client: Client) -> Client:
+        monkeypatch.setattr(base, "LocalLlmClient", lambda *a, **k: client)
+        return client
+
+    return install
+
+
+def test_the_local_vlm_reviews_the_stills_when_asked(local: Any) -> None:
+    client = local(Client([ANSWER], models=("qwen3-vl:8b",)))
+    code, events = run(request(local=True))
+    assert code == 0, events
+    result = next(e for e in events if e["type"] == "result")
+    assert result["reviewer"] == "qwen3-vl:8b" and "localFallback" not in result
+    assert [f["time"] for f in result["findings"]] == [4.21, 9.0]
+    model, prompt, images = client.prompts[0]
+    assert model == "qwen3-vl:8b" and len(images) == 2
+    # Each caption names its image by number, since the images follow the text as one list.
+    assert "Image 1: shot 1, first frame — timeline 10.00s" in prompt
+    assert "Image 2: shot 2, first frame — timeline 11.00s" in prompt
+    assert prompt.startswith("Editor's brief: A 60 s cut") and prompt.endswith("Review the cut now.")
+
+
+def test_an_older_qwen_stands_in(local: Any) -> None:
+    client = local(Client([ANSWER], models=("qwen2.5vl:7b",)))
+    code, _ = run(request(local=True))
+    assert code == 0 and client.prompts[0][0] == "qwen2.5vl:7b"
+
+
+@pytest.mark.parametrize(
+    ("client", "says"),
+    [
+        (Client([ANSWER], models=()), "missing"),
+        (Client([base.LocalLlmError("server down")], models=("qwen3-vl:8b",)), "server down"),
+        (Client(["not an object"], models=("qwen3-vl:8b",)), "not a JSON object"),
+    ],
+)
+def test_when_the_local_vlm_cant_review_the_cloud_does_and_says_why(
+    local: Any, client: Client, says: str
+) -> None:
+    local(client)
+    code, events = run(request(local=True))
+    assert code == 0, events
+    result = next(e for e in events if e["type"] == "result")
+    assert result["overall"] == "From the cloud." and result["reviewer"] == "gemini-3.8-flash"
+    assert says in result["localFallback"]
+
+
+def test_a_busy_gpu_hands_the_review_to_the_cloud(
+    local: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = local(Client([ANSWER], models=("qwen3-vl:8b",)))
+    monkeypatch.setattr(critic, "LOCAL_LOCK_SECONDS", 0.2)
+    with base.GpuLock(tmp_path):
+        code, events = run(request(local=True))
+    assert code == 0 and client.prompts == []
+    result = next(e for e in events if e["type"] == "result")
+    assert "GPU was busy" in result["localFallback"] and result["overall"] == "From the cloud."
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")

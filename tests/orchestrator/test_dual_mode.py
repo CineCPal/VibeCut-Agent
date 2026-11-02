@@ -1,10 +1,11 @@
 """Both execution modes end to end through agent/chat.py (ORCHESTRATOR_SPEC.md §5 Phase 5), with the
-Anthropic client faked and the app's answers queued on stdin as the app would send them.
+Gemini API faked and the app's answers queued on stdin as the app would send them.
 
-Orchestrated: Claude proposes and commits a delta in one step; the bus reads the timeline through the app,
+Orchestrated: Gemini proposes and commits a delta in one step; the bus reads the timeline through the app,
 validates and signs the delta, reads it again and forwards the validated calls, which the app runs through
 the editor's `execute_otio_batch` (nle/bridge_runner.py, here with the editor's edits faked). Direct: the
-same answer from Claude reaches the app call for call, as before Phase 21."""
+same answer from Gemini reaches the app call for call, as before Phase 21. Claude (subscription) follows
+the mode through its own shim."""
 
 from __future__ import annotations
 
@@ -14,7 +15,16 @@ import json
 
 import pytest
 
-from tests.agent.claude_fakes import install, message, text, tool_use
+from tests.agent.gemini_fakes import (
+    answered,
+    call,
+    fixed_ids,
+    install,
+    message,
+    system_text,
+    text,
+    tool_names,
+)
 from tests.agent.test_chat_session import Capture, FakeStdin, run_chat
 from tests.orchestrator.app import App
 from tests.orchestrator.timeline import delta, make_media, make_snapshot, op
@@ -55,7 +65,7 @@ def mode(monkeypatch, tmp_path):
 
 def request():
     return {
-        "provider": "claude",
+        "provider": "gemini",
         "apiKey": "k",
         "systemInstruction": "s",
         "toolDeclarations": DECLARATIONS,
@@ -66,14 +76,6 @@ def request():
 
 def tool_result(call_id, result):
     return json.dumps({"type": "tool_result", "id": call_id, "result": result})
-
-
-def results_of(claude_request):
-    return {
-        b["tool_use_id"]: (json.loads(b["content"]), b.get("is_error", False))
-        for b in claude_request["messages"][-1]["content"]
-        if b.get("type") == "tool_result"
-    }
 
 
 class Editor:
@@ -123,11 +125,8 @@ def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, 
         monkeypatch,
         [
             message(
-                tool_use("t1", "propose_otio_delta", {"delta": removal}),
-                tool_use(
-                    "t2", "commit_otio_delta", {"validation_token": token, "commit_summary": "Drop shot two"}
-                ),
-                stop_reason="tool_use",
+                call("propose_otio_delta", {"delta": removal}),
+                call("commit_otio_delta", {"validation_token": token, "commit_summary": "Drop shot two"}),
             ),
             message(text("Dropped the second shot.")),
         ],
@@ -164,25 +163,25 @@ def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, 
     assert ("otioPath" in commit) == (importlib.util.find_spec("opentimelineio") is not None)
     # The editor ran the delete alone: the app's backup stood in for the batch's own.
     assert editor.calls == [("delete_clips", {"timeline": "Cut", "itemIds": ["c2"], "withLinked": False})]
-    answered = results_of(client.requests[1])
-    assert answered["t1"][0]["valid"] is True
-    assert answered["t1"][0]["validator_model"] == "deterministic"
-    assert answered["t2"] == ({"committed": True, "editId": "e1", **committed}, False)
+    [(_, proposal), commit_answer] = answered(client.requests[1])
+    assert proposal["valid"] is True
+    assert proposal["validator_model"] == "deterministic"
+    assert commit_answer == ("commit_otio_delta", {"committed": True, "editId": "e1", **committed})
     statuses = [e["detail"] for e in capture.of_type("status") if e.get("phase") == "tool"]
     assert statuses == ["Checking the planned edit…", "Sending the edit to the editor…"]
     assert capture.of_type("result")[0]["text"] == "Dropped the second shot."
 
 
-def test_a_direct_chat_sends_claudes_calls_to_the_app_as_they_are(monkeypatch, mode, snapshot):
+def test_a_direct_chat_sends_geminis_calls_to_the_app_as_they_are(monkeypatch, mode, snapshot):
     mode("direct")
     removal = delta(op("op_001", "DELETE_CLIP", clip_id="c2"))
+    fixed_ids(monkeypatch, "t1", "t2")
     client = install(
         monkeypatch,
         [
             message(
-                tool_use("t1", "delete_clips", {"itemIds": ["c2"]}),
-                tool_use("t2", "propose_otio_delta", {"delta": removal}),
-                stop_reason="tool_use",
+                call("delete_clips", {"itemIds": ["c2"]}),
+                call("propose_otio_delta", {"delta": removal}),
             ),
             message(text("Done.")),
         ],
@@ -204,10 +203,10 @@ def test_a_direct_chat_sends_claudes_calls_to_the_app_as_they_are(monkeypatch, m
         ("t1", "delete_clips", {"itemIds": ["c2"]}),
         ("t2", "propose_otio_delta", {"delta": removal}),
     ]
-    assert [t["name"] for t in client.requests[0]["tools"]] == ["list_timeline_clips", "delete_clips"]
-    assert client.requests[0]["system"][0]["text"] == "s"
+    assert tool_names(client.requests[0]) == ["list_timeline_clips", "delete_clips"]
+    assert system_text(client.requests[0]) == "s"
     assert not [e for e in capture.of_type("status") if e.get("phase") == "tool"]
-    assert results_of(client.requests[1])["t1"] == ({"editId": "e1"}, False)
+    assert answered(client.requests[1])[0] == ("delete_clips", {"editId": "e1"})
 
 
 @pytest.mark.parametrize("value,orchestrated", [("orchestrated", True), ("direct", False)])

@@ -196,6 +196,18 @@ class LocalLlmError(RuntimeError):
 
 Dialect = Literal["ollama", "openai"]
 
+# Other tags for the same job, in order, for a machine that has pulled one of them and not the configured
+# one (model migration v2, PLAN.md D3/D14): the VLM and the validator's Gemma. Each list stays within what
+# the worker's prompt and schema were written for. Embedding models have none: an index is bound to the
+# model that built it (vector_store.py), so a missing one is pulled, never stood in for.
+MODEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "qwen3-vl:8b": ("qwen2.5vl:7b", "qwen2.5-vl:7b-instruct"),
+    "qwen2.5vl:7b": ("qwen2.5-vl:7b-instruct", "qwen3-vl:8b"),
+    "qwen2.5-vl:7b-instruct": ("qwen2.5vl:7b", "qwen3-vl:8b"),
+    "gemma3:4b": ("gemma3:4b-it-qat", "gemma3:4b-it"),
+    "gemma3:4b-it": ("gemma3:4b", "gemma3:4b-it-qat"),
+}
+
 
 class LocalLlmClient:
     """JSON chat (with images) and embeddings from the local model server at `base_url`.
@@ -249,11 +261,17 @@ class LocalLlmClient:
         prompt: str,
         schema: dict[str, Any],
         *,
-        images: Sequence[str | os.PathLike[str]] = (),
+        images: Sequence[str | os.PathLike[str] | bytes] = (),
         system: str | None = None,
+        keep_alive: str | int | None = None,
     ) -> dict[str, Any]:
-        """The model's answer to `prompt` (with `images`, small JPEGs), as a JSON object fitting `schema`."""
-        encoded = [base64.b64encode(Path(image).read_bytes()).decode("ascii") for image in images]
+        """The model's answer to `prompt` (with `images`, small JPEGs: paths, or the bytes themselves), as
+        a JSON object fitting `schema`. `keep_alive` (Ollama's, as for `embed`) keeps the model loaded
+        between the calls of a batch."""
+        encoded = [
+            base64.b64encode(image if isinstance(image, bytes) else Path(image).read_bytes()).decode("ascii")
+            for image in images
+        ]
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}] if system else []
         ollama_messages = [
             *messages,
@@ -264,17 +282,17 @@ class LocalLlmClient:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in encoded
         ]
         openai_messages = [*messages, {"role": "user", "content": parts}]
+        ollama: dict[str, Any] = {
+            "model": model,
+            "messages": ollama_messages,
+            "format": schema,
+            "stream": False,
+            "options": {"temperature": 0},
+        }
+        if keep_alive is not None:
+            ollama["keep_alive"] = keep_alive
         dialect, answer = self._request(
-            (
-                "/api/chat",
-                {
-                    "model": model,
-                    "messages": ollama_messages,
-                    "format": schema,
-                    "stream": False,
-                    "options": {"temperature": 0},
-                },
-            ),
+            ("/api/chat", ollama),
             (
                 "/v1/chat/completions",
                 {
@@ -328,18 +346,44 @@ class LocalLlmClient:
             raise LocalLlmError(f"{model} gave {len(result)} embeddings for {len(texts)} texts")
         return result
 
-    def has_model(self, model: str) -> tuple[bool, str]:
-        """(whether the server is up and has `model`, a sentence for the About modal)."""
+    def model_names(self) -> list[str]:
+        """The models the server has (Ollama's `/api/tags`, else `/v1/models`). Raises LocalLlmError."""
         try:
             response = self._session.get(f"{self.base_url}/api/tags", timeout=5)
             if response.status_code == 404:
                 response = self._session.get(f"{self.base_url}/v1/models", timeout=5)
-                names = [str(m.get("id", "")) for m in self._json(response).get("data", [])]
-            else:
-                names = [str(m.get("name", "")) for m in self._json(response).get("models", [])]
-        except (requests.RequestException, LocalLlmError, AttributeError) as e:
-            return False, f"The local model server ({self.base_url}) isn't answering: {e}"
-        wanted = {model, f"{model}:latest"} if ":" not in model else {model}
-        if wanted & set(names):
+                return [str(m.get("id", "")) for m in self._json(response).get("data", [])]
+            return [str(m.get("name", "")) for m in self._json(response).get("models", [])]
+        except (requests.RequestException, AttributeError) as e:
+            raise LocalLlmError(f"The local model server ({self.base_url}) isn't answering: {e}") from None
+
+    def resolve_available_model(self, preferred: str) -> str:
+        """`preferred`, or the first of its MODEL_ALIASES the server has; `preferred` itself when it has
+        none of them (or can't be asked), so the call's own error names the configured model."""
+        try:
+            names = set(self.model_names())
+        except LocalLlmError:
+            return preferred
+        for candidate in (preferred, *MODEL_ALIASES.get(preferred, ())):
+            if _wanted(candidate) & names:
+                return candidate
+        return preferred
+
+    def has_model(self, model: str) -> tuple[bool, str]:
+        """(whether the server is up and has `model` or one of its aliases, a sentence for the About
+        modal)."""
+        try:
+            names = set(self.model_names())
+        except LocalLlmError as e:
+            return False, str(e)
+        if _wanted(model) & names:
             return True, f"{model} is ready on {self.base_url}"
+        for alias in MODEL_ALIASES.get(model, ()):
+            if _wanted(alias) & names:
+                return True, f"{alias} is ready on {self.base_url} (in place of {model})"
         return False, f"{model} isn't on {self.base_url} (ollama pull {model})"
+
+
+def _wanted(model: str) -> set[str]:
+    """The names the server may list `model` under (an untagged name is its `:latest`)."""
+    return {model, f"{model}:latest"} if ":" not in model else {model}

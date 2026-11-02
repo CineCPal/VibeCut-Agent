@@ -1,18 +1,21 @@
-"""The orchestrated chat turn (ORCHESTRATOR_SPEC.md §1.1, §3.2, §4.3; PLAN.md, "Phase 21"): Claude as
-the supervising editor, with the local workers behind the tool bus.
+"""The orchestrated chat turn (ORCHESTRATOR_SPEC.md §1.1, §3.2, §4.3; PLAN.md, "Phase 21"): Gemini (the
+API-key chat) as the supervising editor, with the local workers behind the tool bus. Claude through the
+user's subscription supervises through its MCP shim instead (mcp_server.py), with the same instruction.
 
-`make_orchestrated_turn_runner(config)` returns a turn runner with `claude_chat.run_chat_turn`'s
+`make_orchestrated_turn_runner(config)` returns a turn runner with `gemini_chat.run_chat_turn`'s
 signature, which `config.resolve_chat_turn_runner` hands agent/chat.py when `EXECUTION_MODE=orchestrated`
-and the provider is "claude". Each turn runs claude_chat's own loop, unchanged, with three differences:
+and the provider is "gemini" (model migration v2; it was the Anthropic API's Claude until then). Each turn
+runs gemini_chat's own loop, unchanged, with three differences:
 
-- Claude is given the six orchestration tools (tool_bus.claude_tools) and, of the app's tools, only the
-  ones that read (tool_bus.READ_ONLY_TOOLS); every edit goes through `propose_otio_delta` and
-  `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to say how.
-- When Claude calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
+- Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
+  app's tools, only the ones that read (tool_bus.READ_ONLY_TOOLS); every edit goes through
+  `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
+  say how.
+- When Gemini calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
   orchestration calls run in this process on the bus (each announced with a `status` line, since the
   app doesn't run them), the read-only calls go on to the app as one `tool_calls` event, and any other
-  call is answered with an error. claude_chat then reads the bus's results first and the app's after,
-  through the same `read_tool_result`, and answers them in the order Claude made the calls.
+  call is answered with an error. gemini_chat then reads the bus's results first and the app's after,
+  through the same `read_tool_result`, and answers them in the order Gemini made the calls.
 - The bus reaches the app itself (to read the timeline, and to commit) with `tool_calls` events of its
   own, ids `orch_<n>`, whose results it reads before the turn goes on. The app runs them as it runs any
   call, so they show in the chat as tool calls.
@@ -26,14 +29,14 @@ import itertools
 from collections.abc import Callable
 from typing import Any
 
-from vibecut_agent.agent import claude_chat
+from vibecut_agent.agent import gemini_chat
 from vibecut_agent.agent.chat_steps import ChatError
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.orchestrator.tool_bus import (
     READ_ONLY_TOOLS,
     STATUS,
     OrchestratorToolBus,
-    claude_tools,
+    gemini_tools,
 )
 
 ORCHESTRATED_INSTRUCTION = """\
@@ -62,7 +65,7 @@ TOOL_RESULT_ID_PREFIX = "orch_"
 
 
 class _Router:
-    """One turn's tool traffic between claude_chat, the bus and the app; see the module docstring."""
+    """One turn's tool traffic between the chat loop, the bus and the app; see the module docstring."""
 
     def __init__(
         self,
@@ -147,9 +150,9 @@ def make_orchestrated_turn_runner(
             if system_instruction
             else ORCHESTRATED_INSTRUCTION
         )
-        return claude_chat.run_chat_turn(
+        return gemini_chat.run_chat_turn(
             system_instruction=instruction,
-            tool_declarations=[*reading, *claude_tools()],
+            tool_declarations=[*reading, *gemini_tools()],
             emit=router.emit,
             read_tool_result=router.read_tool_result,
             **turn,

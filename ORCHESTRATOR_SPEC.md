@@ -3,6 +3,8 @@
 **Target Repository:** `/Users/cj/Developer/Personal/VibeCut Agent`  
 **Baseline Architecture:** Tauri v2 (`src-tauri/src/lib.rs`) + React 19 (`src/App.tsx`) + Python 3.13 Sidecar (`src-python/vibecut_agent/headless.py`) + NLE Watchers (`src-python/vibecut_agent/nle/watch.py`) + Premiere CEP Bridge (`src-premiere-panel/bridge.js`, `src-premiere-panel/host.jsx`).
 
+> **Amended by model migration v2 (`docs/specs/model-migration-plan.md`; PLAN.md, "Model migration v2", 2026-11-02).** The Anthropic API path (`agent/claude_chat.py`, `claude_client.py`, `provider: "claude"`) and Antigravity were removed. The supervisor below now runs **`gemini_chat.run_chat_turn`** for `provider: "gemini"`; Claude supervises only through the user's Claude Code subscription (`claude_code_chat.py` + `mcp_server.py`), with the same `ORCHESTRATED_INSTRUCTION`. `transcribe_and_align.model_tier` gained `"large-v3-turbo"` (now its default), and the local defaults are `qwen3-vl:8b`, `gemma3:4b` and `mlx-community/whisper-large-v3-turbo`; the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`. Where this document still names `claude_chat.py`, read `gemini_chat.py`. All schema ids are unchanged.
+
 ---
 
 ## 1. System Architecture & Topology
@@ -27,7 +29,7 @@
          | EXECUTION_MODE=direct           | EXECUTION_MODE=orchestrated       |
          v (Legacy Baseline Path)          v (New Decoupled Supervisor Path)   |
 +------------------------+    +================================================+=======================+
-| [claude_chat.py]       |    |                 CLAUDE SUPERVISING EDITOR / ORCHESTRATOR               |
+| [claude_code_chat.py]  |    |         GEMINI OR CLAUDE (SUBSCRIPTION) SUPERVISING EDITOR             |
 | [gemini_chat.py]       |    |              (src-python/vibecut_agent/orchestrator/supervisor.py)     |
 | Emits raw low-level    |    |  - Interprets narrative intent, pacing, story structure, & rhythm      |
 | NLE tool_calls back    |    |  - Queries local semantic/vision/audio indexes via High-Level Tools    |
@@ -129,7 +131,7 @@ All new backend orchestration, worker, and deterministic media modules reside un
 │       ├── health.py                                      # [MODIFIED] Probe Ollama/llama.cpp, Whisper, Vector DB, and OTIO availability
 │       ├── agent/
 │       │   ├── chat.py                                    # [MODIFIED] Route turn execution via ExecutionDispatcher (direct vs orchestrated)
-│       │   └── claude_chat.py                             # [EXISTING] Preserved untouched for direct mode & wrapped by supervisor in orchestrated mode
+│       │   └── gemini_chat.py                             # [EXISTING] Untouched for direct mode & wrapped by supervisor in orchestrated mode (claude_chat.py until model migration v2)
 │       ├── core/                                          # [NEW] Deterministic Media & Timecode Core
 │       │   ├── __init__.py
 │       │   ├── timecode_math.py                           # [NEW] Exact RationalTime, TimeRange, SMPTE drop/non-drop math & frame snapping
@@ -294,8 +296,8 @@ When `EXECUTION_MODE=orchestrated`, Claude receives six high-level orchestration
           },
           "model_tier": {
             "type": "string",
-            "enum": ["tiny", "small", "medium", "large-v3"],
-            "default": "medium"
+            "enum": ["tiny", "small", "medium", "large-v3-turbo", "large-v3"],
+            "default": "large-v3-turbo"
           },
           "enable_diarization": {
             "type": "boolean",
@@ -918,12 +920,14 @@ VIBECUT_EXECUTION_MODE=direct
 
 # Local LLM / VLM Runtime (Ollama or llama.cpp OpenAI-compatible server)
 VIBECUT_LOCAL_LLM_BASE_URL=http://127.0.0.1:11434
-VIBECUT_GEMMA_MODEL=gemma3:4b-it
-VIBECUT_VLM_MODEL=qwen2.5-vl:7b-instruct
+VIBECUT_GEMMA_MODEL=gemma3:4b
+VIBECUT_VLM_MODEL=qwen3-vl:8b
+# The OTIO delta validator: "deterministic" (default; otio_delta's own checks) | "llm" (adds Gemma's review)
+VIBECUT_VALIDATOR_MODE=deterministic
 
 # Local Speech-to-Text Worker ("mlx-whisper" | "faster-whisper" | "whisper.cpp")
 VIBECUT_WHISPER_BACKEND=mlx-whisper
-VIBECUT_WHISPER_MODEL=mlx-community/whisper-medium-mlx
+VIBECUT_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo
 VIBECUT_WHISPER_CPP_BIN=/opt/homebrew/bin/whisper-cli
 
 # Local Dense Vector Store ("sqlite-vec" | "lancedb") & Embedding Model
@@ -991,10 +995,10 @@ class OrchestratorConfig:
         return cls(
             execution_mode=mode,
             local_llm_base_url=os.environ.get("VIBECUT_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434"),
-            gemma_model=os.environ.get("VIBECUT_GEMMA_MODEL", "gemma3:4b-it"),
-            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen2.5-vl:7b-instruct"),
+            gemma_model=os.environ.get("VIBECUT_GEMMA_MODEL", "gemma3:4b"),
+            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen3-vl:8b"),
             whisper_backend=os.environ.get("VIBECUT_WHISPER_BACKEND", "mlx-whisper"),
-            whisper_model=os.environ.get("VIBECUT_WHISPER_MODEL", "mlx-community/whisper-medium-mlx"),
+            whisper_model=os.environ.get("VIBECUT_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"),
             whisper_cpp_bin=os.environ.get("VIBECUT_WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),
             vector_backend=os.environ.get("VIBECUT_VECTOR_BACKEND", "sqlite-vec"),
             embed_model=os.environ.get("VIBECUT_EMBED_MODEL", "BAAI/bge-m3"),
@@ -1006,21 +1010,19 @@ def resolve_chat_turn_runner(
     provider: str,
     config: OrchestratorConfig,
 ) -> Callable[..., dict[str, Any]]:
-    """Factory returning the turn runner for `agent/chat.py`.
+    """Factory returning the Gemini API chat's turn runner for `agent/chat.py` ("claude-code" has its own).
 
-    - ExecutionMode.DIRECT: returns the existing `claude_chat.run_chat_turn` or `gemini_chat.run_chat_turn` untouched.
+    - ExecutionMode.DIRECT: returns `gemini_chat.run_chat_turn` untouched.
     - ExecutionMode.ORCHESTRATED: returns `orchestrator.supervisor.run_orchestrated_turn`, which intercepts
       orchestrator tool calls in-process via `ToolBus` and delegates NLE commits back through the host channel.
     """
-    if config.execution_mode == ExecutionMode.ORCHESTRATED and provider == "claude":
+    if provider != "gemini":
+        raise ValueError(f"Unknown chat provider: {provider!r}")
+
+    if config.execution_mode == ExecutionMode.ORCHESTRATED:
         from vibecut_agent.orchestrator.supervisor import make_orchestrated_turn_runner
 
         return make_orchestrated_turn_runner(config)
-
-    if provider == "claude":
-        from vibecut_agent.agent import claude_chat
-
-        return claude_chat.run_chat_turn
 
     from vibecut_agent.agent import gemini_chat
 

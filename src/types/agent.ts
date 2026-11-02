@@ -84,10 +84,10 @@ export interface ChatMessage {
  */
 export type AgentStatus = "offline" | "idle" | "thinking" | "stopping" | "error";
 
-/** The sidecar's name for each provider (chat.py's PROVIDER_NAMES). "claude-code": Claude (subscription),
- * the user's own signed-in Claude Code CLI (Phase 7b). "antigravity": Gemini (subscription), the user's
- * own signed-in Antigravity CLI (Phase 17). */
-export type ChatProvider = "gemini" | "claude" | "claude-code" | "antigravity";
+/** The sidecar's name for each provider (chat.py's PROVIDER_NAMES): "gemini", the Gemini API on the user's
+ * key, and "claude-code": Claude (subscription), the user's own signed-in Claude Code CLI (Phase 7b). The
+ * Anthropic API ("claude") and Antigravity ("antigravity") were removed in model migration v2. */
+export type ChatProvider = "gemini" | "claude-code";
 
 /** The last message's turn as it can be taken back (Phase 8c): the history exactly as it was sent with
  * that message. Retry and Edit put it back, then send again. */
@@ -108,25 +108,19 @@ export interface ChatUsage {
   costUsd?: number;
 }
 
-/** Same ids as VibeCut's `useAiProviderStore`, so preferences carry over. */
-export type AiChoiceId =
-  | "gemini"
-  | "claude-opus-5-5"
-  | "claude-sonnet-5-5"
-  | "claude-code-opus-5-5"
-  | "claude-code-sonnet-5-5"
-  | "antigravity-gemini-4-argon"
-  | "antigravity-gemini-3.8-flash";
+/** Same ids as VibeCut's `useAiProviderStore`, so preferences carry over. Ids saved before model
+ * migration v2 are mapped by useAgentStore's persist migration (`migrateAiChoice`). */
+export type AiChoiceId = "gemini" | "gemini-pro" | "claude-code-opus-5-5" | "claude-code-sonnet-5-5";
 
-export type AiProvider = "gemini" | "anthropic";
+export type AiProvider = "gemini";
 
-/** What a choice needs to run: an API key (`AiProvider`), or the user's signed-in Claude Code or agy. */
-export type ChoiceAccess = AiProvider | "claude-code" | "antigravity";
+/** What a choice needs to run: an API key (`AiProvider`), or the user's signed-in Claude Code. */
+export type ChoiceAccess = AiProvider | "claude-code";
 
 export interface AiChoice {
   id: AiChoiceId;
   label: string;
-  /** Whose API key it needs (KeyStatus), or "claude-code" / "antigravity" for none (the user's plan). */
+  /** Whose API key it needs (KeyStatus), or "claude-code" for none (the user's plan). */
   provider: ChoiceAccess;
   /** How the chat sidecar names the provider, and the model id it's given (none: the sidecar's default). */
   chatProvider: ChatProvider;
@@ -134,51 +128,53 @@ export interface AiChoice {
 }
 
 export const AI_CHOICES: readonly AiChoice[] = [
-  { id: "gemini", label: "Gemini", provider: "gemini", chatProvider: "gemini" },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic", chatProvider: "claude", model: "claude-opus-5-5" },
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", provider: "anthropic", chatProvider: "claude", model: "claude-sonnet-5-5" },
+  { id: "gemini", label: "Gemini 3.8 Flash", provider: "gemini", chatProvider: "gemini", model: "gemini-3.8-flash" },
+  { id: "gemini-pro", label: "Gemini 3.1 Pro", provider: "gemini", chatProvider: "gemini", model: "gemini-3.1-pro-preview" },
   { id: "claude-code-opus-5-5", label: "Claude Opus 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-opus-5-5" },
   { id: "claude-code-sonnet-5-5", label: "Claude Sonnet 5.5 (subscription)", provider: "claude-code", chatProvider: "claude-code", model: "claude-sonnet-5-5" },
-  {
-    id: "antigravity-gemini-4-argon",
-    label: "Gemini 4 Argon (subscription)",
-    provider: "antigravity",
-    chatProvider: "antigravity",
-    model: "gemini-4-argon",
-  },
-  {
-    id: "antigravity-gemini-3.8-flash",
-    label: "Gemini 3.8 Flash (subscription)",
-    provider: "antigravity",
-    chatProvider: "antigravity",
-    model: "gemini-3.8-flash",
-  },
 ];
+
+/** What a choice saved before model migration v2 became: the API's Claude is the subscription's, and
+ * Antigravity's Gemini is the API's tier of the same weight. Anything else unknown is Gemini. */
+const LEGACY_CHOICES: Record<string, AiChoiceId> = {
+  "claude-opus-5-5": "claude-code-opus-5-5",
+  "claude-sonnet-5-5": "claude-code-sonnet-5-5",
+  "antigravity-gemini-4-argon": "gemini-pro",
+  "antigravity-gemini-3.8-flash": "gemini",
+};
+
+export function migrateAiChoice(value: unknown): AiChoiceId {
+  if (typeof value !== "string") return AI_CHOICES[0].id;
+  if (AI_CHOICES.some((c) => c.id === value)) return value as AiChoiceId;
+  return LEGACY_CHOICES[value] ?? AI_CHOICES[0].id;
+}
 
 /** How long Claude thinks (Phase 9a): the API's `output_config.effort`, Claude Code's `--effort`. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_EFFORT: EffortLevel = "medium";
 
-/** Effort is set per Claude model, the same on the API and on the subscription. */
+/** Effort is set per Claude model. */
 export type ClaudeFamily = "opus" | "sonnet";
 
-/** How long Gemini (subscription) thinks (Phase 17): agy's `-low`, `-medium` or `-high` model variant. */
-export type AntigravityEffort = "low" | "medium" | "high";
-export const ANTIGRAVITY_EFFORTS: readonly AntigravityEffort[] = ["low", "medium", "high"];
+/** How long Gemini thinks (model migration v2): Gemini 3's `thinkingLevel`, one setting for both tiers
+ * (the Pro tier takes only low and high, so medium is high there: gemini_client.py). */
+export type GeminiEffort = "low" | "medium" | "high";
+export const GEMINI_EFFORTS: readonly GeminiEffort[] = ["low", "medium", "high"];
 
-/** Which Claude model a choice runs, or null for Gemini (on a key or the subscription). */
+/** Which Claude model a choice runs, or null for Gemini. */
 export function familyOf(choice: AiChoice): ClaudeFamily | null {
-  if (choice.chatProvider === "gemini" || choice.chatProvider === "antigravity") return null;
+  if (choice.chatProvider === "gemini") return null;
   return choice.model?.includes("opus") ? "opus" : "sonnet";
 }
 
 /** The Story Editor's first pass over long footage (Phase 7e): the story's own provider (Sonnet on
  * Claude, Flash on Gemini), or always Gemini Flash (needs a Gemini key). */
 export type StoryFirstPass = "same" | "gemini";
-/** Which model review_edit's critic runs on: Gemini Flash (the default: cheapest, and spares a Claude plan
- * or API budget), or the chat's own. */
-export type CriticModel = "gemini" | "same";
+/** Which model review_edit's critic runs on: Gemini Flash (the default: cheapest, and spares a Claude
+ * plan), the chat's own, or the local VLM (Qwen3-VL through the local model server, model migration v2),
+ * which hands the review to one of the other two when it can't take it. */
+export type CriticModel = "gemini" | "same" | "local";
 
 /** Mirrors `ClaudeCodeStatus` in src-tauri/src/claude_code.rs. */
 export interface ClaudeCodeStatus {
@@ -193,30 +189,9 @@ export interface ClaudeCodeStatus {
   detail: string | null;
 }
 
-/** Mirrors `AntigravityStatus` in src-tauri/src/antigravity.rs (Phase 17). */
-export interface AntigravityStatus {
-  program: string | null;
-  programSaved: string | null;
-  /** Null when it couldn't be checked. */
-  signedIn: boolean | null;
-  /** The Gemini families the account offers (e.g. "gemini-4-argon"), without the effort suffix. */
-  models: string[];
-  /** Whether VibeCut's tools are in agy's MCP config, and whether they're this build's. */
-  toolsAdded: boolean;
-  toolsCurrent: boolean;
-  /** Why it isn't usable, when it isn't. */
-  detail: string | null;
-}
-
-/** Whether an agy check says a Gemini (subscription) turn can start: installed, not signed out, with
- * this build's tools added. */
-export function antigravityUsable(status: AntigravityStatus | null): boolean {
-  return Boolean(status?.program) && status?.signedIn !== false && Boolean(status?.toolsCurrent);
-}
-
 /** Whether a Claude Code check says a subscription turn can start. */
 export function claudeCodeUsable(status: ClaudeCodeStatus | null): boolean {
   return Boolean(status?.program) && status?.signedIn !== false;
 }
 
-export const KEY_ENV: Record<AiProvider, string> = { gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
+export const KEY_ENV: Record<AiProvider, string> = { gemini: "GEMINI_API_KEY" };

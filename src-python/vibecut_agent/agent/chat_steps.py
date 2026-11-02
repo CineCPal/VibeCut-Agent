@@ -1,7 +1,7 @@
 """chat_steps.py
 
-The step budget both chat loops share (gemini_chat and claude_chat.run_chat_turn), kept free of any
-provider's request shape (PLAN.md, "13j").
+The step budget the chat loops share (gemini_chat.run_chat_turn, and claude_code_chat's turn
+limit), kept free of any provider's request shape (PLAN.md, "13j").
 
 A step is one model call. A turn gets `DEFAULT_MAX_STEPS` of them. Five steps before the end the
 model is told how many are left, and the last step is called with tools turned off, so the turn ends

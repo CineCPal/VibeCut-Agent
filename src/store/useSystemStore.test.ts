@@ -18,7 +18,7 @@ describe("useSystemStore", () => {
   });
 
   it("refresh loads every status in parallel", async () => {
-    ipc.getKeyStatus.mockResolvedValue({ gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null });
+    ipc.getKeyStatus.mockResolvedValue({ gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null });
     ipc.getDependencyStatus.mockResolvedValue([{ name: "ffmpeg", path: "/opt/homebrew/bin/ffmpeg", version: "7.1" }]);
     ipc.getHardwareAcceleration.mockResolvedValue({ videotoolbox: true, nvenc: false });
     ipc.getStoragePaths.mockResolvedValue({ config: "/c", data: "/d", logs: "/l" });
@@ -27,7 +27,7 @@ describe("useSystemStore", () => {
     await useSystemStore.getState().refresh();
 
     expect(useSystemStore.getState()).toMatchObject({
-      keys: { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null },
+      keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null },
       dependencies: [{ name: "ffmpeg", version: "7.1" }],
       hwAccel: { videotoolbox: true },
       storage: { config: "/c" },
@@ -39,7 +39,7 @@ describe("useSystemStore", () => {
   });
 
   it("refresh records an error and keeps previous values", async () => {
-    useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
+    useSystemStore.setState({ keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
     ipc.getKeyStatus.mockRejectedValue(new Error("IPC unavailable"));
     ipc.getDependencyStatus.mockResolvedValue([]);
     ipc.getHardwareAcceleration.mockResolvedValue({ videotoolbox: false, nvenc: false });
@@ -48,7 +48,7 @@ describe("useSystemStore", () => {
 
     await useSystemStore.getState().refresh();
 
-    expect(useSystemStore.getState()).toMatchObject({ loading: false, error: "IPC unavailable", keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
+    expect(useSystemStore.getState()).toMatchObject({ loading: false, error: "IPC unavailable", keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
   });
 
   it("ignores a refresh while one is running", async () => {

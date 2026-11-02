@@ -82,7 +82,7 @@ describe("agent controller", () => {
     hosts.premiere = nleState("premiere", { status: "disconnected" });
     useNleStateStore.setState({ hosts, preferredHost: "auto" });
     useSidecarStore.setState({ session: { state: "ready", version: "0.1.0", python: "3.14.0", message: null } });
-    useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
+    useSystemStore.setState({ keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
     useAgentStore.setState({ messages: [], status: "idle", statusDetail: null, aiChoice: "gemini", jobId: null, sessionKey: null, history: [], historyProvider: null, activity: null, lastTurn: null, editingMessageId: null, draft: "", draftMentions: [], queue: [], queuePaused: false, reviewEdits: false });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
     useMcpStore.setState({ outsideRunning: 0 });
@@ -101,7 +101,7 @@ describe("agent controller", () => {
     expect(command).toBe("chat");
     expect(jobId).toBe(agent().jobId);
     expect(request.provider).toBe("gemini");
-    expect(request.model).toBeUndefined();
+    expect(request.model).toBe("gemini-3.8-flash");
     expect(request.apiKey).toBeUndefined();
     expect(request.userMessage).toMatch(/^\[Resolve timeline "Main" in project "Doc"/);
     expect(request.userMessage.endsWith("\n\nmark the hook")).toBe(true);
@@ -183,16 +183,17 @@ describe("agent controller", () => {
     await sendUserMessage("first");
     const first = agent().jobId;
     event({ type: "result", text: "ok", history: ["gemini-history"] });
-    useAgentStore.getState().setAiChoice("claude-sonnet-5-5");
+    useSystemStore.setState({ claudeCode: { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: null, subscription: "pro", detail: null } });
+    useAgentStore.getState().setAiChoice("claude-code-sonnet-5-5");
     await sendUserMessage("second");
     expect(ipc.sendToSidecar).toHaveBeenCalledWith(first, { type: "end_session" });
     const request = ipc.startSidecar.mock.calls[1][2];
-    expect(request).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5", history: [] });
+    expect(request).toMatchObject({ provider: "claude-code", model: "claude-sonnet-5-5", history: [] });
   });
 
   it("runs Claude (subscription) with no key, its model, and Claude Code's session as history", async () => {
     useSystemStore.setState({
-      keys: { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null },
+      keys: { gemini: false, geminiSource: null, huggingface: false, huggingfaceSource: null },
       claudeCode: { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: null, subscription: "pro", detail: null },
     });
     useAgentStore.getState().setAiChoice("claude-code-opus-5-5");
@@ -208,9 +209,10 @@ describe("agent controller", () => {
   });
 
   it("sends Settings' effort for a Claude model and starts a new job when it changes (Phase 9a)", async () => {
-    useAgentStore.getState().setAiChoice("claude-opus-5-5");
+    useSystemStore.setState({ claudeCode: { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: null, subscription: "pro", detail: null } });
+    useAgentStore.getState().setAiChoice("claude-code-opus-5-5");
     await sendUserMessage("first");
-    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "claude", effort: "medium" });
+    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "claude-code", effort: "medium" });
     event({ type: "result", text: "ok", history: ["h1"] });
     useAgentStore.getState().setEffort("opus", "max");
     await sendUserMessage("second");
@@ -219,29 +221,30 @@ describe("agent controller", () => {
     useAgentStore.getState().setEffort("opus", "medium");
   });
 
-  it("sends Gemini (subscription) its own effort, and no Claude one (Phase 17)", async () => {
-    useAgentStore.getState().setAiChoice("antigravity-gemini-3.8-flash");
-    useAgentStore.getState().setAntigravityEffort("high");
+  it("sends Gemini Pro its model and Settings' thinking level, and no Claude effort (model migration v2)", async () => {
+    useAgentStore.getState().setAiChoice("gemini-pro");
+    useAgentStore.getState().setGeminiEffort("high");
     await sendUserMessage("go");
-    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "antigravity", model: "gemini-3.8-flash", effort: "high" });
-    useAgentStore.getState().setAntigravityEffort("medium");
+    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "gemini", model: "gemini-3.1-pro-preview", effort: "high" });
+    useAgentStore.getState().setGeminiEffort("medium");
     useAgentStore.getState().setAiChoice("gemini");
   });
 
-  it("gives Gemini no effort", async () => {
+  it("gives Gemini Flash its model and the default thinking level", async () => {
     await sendUserMessage("go");
-    expect(ipc.startSidecar.mock.calls[0][2].effort).toBeUndefined();
+    expect(ipc.startSidecar.mock.calls[0][2]).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash", effort: "medium" });
   });
 
   it("keeps the plan's limits and counts each turn's tokens and cost (Phase 9b)", async () => {
-    useAgentStore.getState().setAiChoice("claude-sonnet-5-5");
+    useAgentStore.getState().setAiChoice("gemini-pro");
     await sendUserMessage("go");
     event({ type: "rate_limit", limits: { status: "allowed", fiveHour: { used: 0.42, resetsAt: 1791382200 }, weekly: { used: "lots" } } });
     expect(useUsageStore.getState().plan).toEqual({ status: "allowed", fiveHour: { used: 0.42, resetsAt: 1791382200 } });
     event({ type: "result", text: "ok", history: [], usage: { promptTokens: 1_000_000, cachedTokens: 0, outputTokens: 100_000, thoughtsTokens: 0, steps: 1 } });
     const chat = useUsageStore.getState().chats[agent().chatId];
     expect(chat).toMatchObject({ turns: 1, promptTokens: 1_000_000, outputTokens: 100_000 });
-    expect(chat.costUsd).toBeCloseTo(3);
+    // Gemini 3.1 Pro: $2 per million in, $12 per million out.
+    expect(chat.costUsd).toBeCloseTo(3.2);
   });
 
   it("stops a turn and reports it", async () => {
@@ -267,9 +270,9 @@ describe("agent controller", () => {
   });
 
   it("reports a job that couldn't start, such as a missing key", async () => {
-    ipc.startSidecar.mockRejectedValue(new Error("ANTHROPIC_API_KEY is not set."));
+    ipc.startSidecar.mockRejectedValue(new Error("GEMINI_API_KEY is not set."));
     await sendUserMessage("go");
-    expect(agent().messages.at(-1)).toMatchObject({ role: "error", text: "ANTHROPIC_API_KEY is not set." });
+    expect(agent().messages.at(-1)).toMatchObject({ role: "error", text: "GEMINI_API_KEY is not set." });
     expect(agent()).toMatchObject({ jobId: null, status: "idle" });
   });
 

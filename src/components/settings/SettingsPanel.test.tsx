@@ -58,12 +58,32 @@ describe("SettingsPanel", () => {
 
   it("picks the edit review critic, Gemini Flash by default", async () => {
     useAgentStore.setState({ criticModel: "gemini" });
-    useSystemStore.setState({ keys: { gemini: false, anthropic: true } as never });
+    useSystemStore.setState({ keys: { gemini: false } as never });
     await renderPanel();
     const critic = screen.getByRole("combobox", { name: "Edit review critic" }) as HTMLSelectElement;
     expect(critic.value).toBe("gemini");
     expect(screen.getByRole("option", { name: /Gemini Flash \(default\) — key missing, uses the agent's model/ })).toBeInTheDocument();
     fireEvent.change(critic, { target: { value: "same" } });
     expect(useAgentStore.getState().criticModel).toBe("same");
+    fireEvent.change(critic, { target: { value: "local" } });
+    expect(useAgentStore.getState().criticModel).toBe("local");
+    expect(screen.getByRole("option", { name: "Local (Qwen3-VL), on this Mac" })).toBeInTheDocument();
+  });
+
+  it("offers the two Gemini tiers and the subscription's Claude, with one Gemini thinking setting", async () => {
+    useAgentStore.setState({ aiChoice: "gemini", geminiEffort: "medium" });
+    useSystemStore.setState({ keys: { gemini: true } as never, claudeCode: null });
+    await renderPanel();
+    const model = screen.getByRole("combobox", { name: "Agent model" }) as HTMLSelectElement;
+    expect([...model.options].map((o) => o.text)).toEqual([
+      "Gemini 3.8 Flash",
+      "Gemini 3.1 Pro",
+      "Claude Opus 5.5 (subscription) — Claude Code not ready",
+      "Claude Sonnet 5.5 (subscription) — Claude Code not ready",
+    ]);
+    expect(screen.queryByText(/Antigravity|Gemini \(subscription\)/)).toBeNull();
+    const thinking = screen.getByRole("combobox", { name: "Gemini thinking" }) as HTMLSelectElement;
+    fireEvent.change(thinking, { target: { value: "high" } });
+    expect(useAgentStore.getState().geminiEffort).toBe("high");
   });
 });

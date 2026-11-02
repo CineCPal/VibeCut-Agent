@@ -56,7 +56,7 @@ describe("the agent's transcript and draft tools", () => {
     useConnectionStore.setState({ connections: { premiere: emptyConnection("Doc"), resolve: emptyConnection("Doc") } });
     useEditLogStore.setState({ entries: [], backups: {}, restoredIds: { premiere: {}, resolve: {} } });
     useNleStateStore.setState({ hosts: { ...initialHosts(), premiere: nleState("premiere") } });
-    useSystemStore.setState({ keys: { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null } });
+    useSystemStore.setState({ keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
     useAgentStore.setState({ messages: [] });
     ipc.nleCall.mockImplementation(async (_host: string, command: string, args: Record<string, unknown>) => {
       if (command === "read_timeline") return TIMELINE;

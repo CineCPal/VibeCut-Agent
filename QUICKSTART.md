@@ -18,12 +18,11 @@
    uv sync
    ```
 
-3. **API keys** (only the model you'll use needs one; the "(subscription)" models need none, see **Claude without an API key** below):
+3. **API keys** (only Gemini needs one; Claude runs on your Claude subscription through Claude Code and needs none, see **Claude without an API key** below):
    - **Any build:** open Settings → Accounts → API keys, paste the key and press Save. It's stored in your macOS login Keychain (service `com.cj.vibecutagent`) and never shown again. Remove deletes it.
    - **Dev builds:** you can also create a `.env` at the root; it's git-ignored and takes precedence over the Keychain:
      ```env
      GEMINI_API_KEY=your_key_here
-     ANTHROPIC_API_KEY=your_key_here
      ```
    - **Release builds opened from Finder** don't see `.env` or your shell variables, so use Settings.
 

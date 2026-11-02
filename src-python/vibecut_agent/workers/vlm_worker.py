@@ -1,14 +1,16 @@
 """The local vision worker (ORCHESTRATOR_SPEC.md §3.4 B, `analyze_shot_visuals`; PLAN.md, "Phase 21").
 
-Each shot's middle frame (core/ffmpeg_ops.py, `extract_keyframes_for_vlm`: at scene cuts, every 2 s, or the
-middle of the range) goes to the local VLM (`VIBECUT_VLM_MODEL` on `VIBECUT_LOCAL_LLM_BASE_URL`), which
-labels it with the spec's fixed vocabulary: shot scale, camera movement, lighting, composition, a sentence
-and tags, and a 0-100 editorial usability score. Its answer is held to that schema; one that doesn't fit is
-asked for again once, with what was wrong.
+Each shot (core/ffmpeg_ops.py, `extract_keyframes_for_vlm`: at scene cuts, every 2 s, or the middle of the
+range) goes to the local VLM (`VIBECUT_VLM_MODEL` on `VIBECUT_LOCAL_LLM_BASE_URL`, or the first of its
+MODEL_ALIASES the server has) as a 3-frame contact strip: its start, middle and end side by side (model
+migration v2), so camera movement is read from three moments rather than guessed from one frame's blur; a
+shot too short for one goes as its middle frame. The model labels it with the spec's fixed vocabulary: shot
+scale, camera movement, lighting, composition, a sentence and tags, and a 0-100 editorial usability score.
+Its answer is held to that schema; one that doesn't fit is asked for again once, with what was wrong.
 
-One frame goes to the model at a time, each holding the GPU lock only for its own call, so a chat turn can
-get in between frames of a long ingest. A model server that keeps failing opens the worker's circuit
-breaker.
+One shot goes to the model at a time, each holding the GPU lock only for its own call, so a chat turn can
+get in between shots of a long ingest; each call asks Ollama to keep the model loaded (KEEP_ALIVE), so it
+isn't loaded again between them. A model server that keeps failing opens the worker's circuit breaker.
 
 A whole-file analysis is cached next to the file as `<file>.vlm-tags.json`, valid while the file's size and
 modified time, the model and the sampling are the same; a range is answered from that cache when it
@@ -39,7 +41,9 @@ from vibecut_agent.orchestrator.schemas import (
 from vibecut_agent.workers.base import CircuitBreaker, GpuLock, LocalLlmClient, LocalLlmError, WorkerHealth
 
 CACHE_SUFFIX = ".vlm-tags.json"
-CACHE_VERSION = 1
+# 2 (model migration v2): shots are read from contact strips, so a single-frame analysis is done again.
+CACHE_VERSION = 2
+KEEP_ALIVE = "10m"
 KEYFRAME_FOLDER = "keyframes"
 ATTEMPTS = 2
 # The share of a whole-file analysis's progress the scene-cut scan fills (`analyze`). Seen live (the Phase
@@ -55,14 +59,13 @@ ANALYSIS_SCHEMA: dict[str, Any] = {
     "properties": {k: copy.deepcopy(v) for k, v in SHOT_SCHEMA["properties"].items() if k not in _KNOWN},
 }
 
-PROMPT = """You are a film editor's assistant logging footage. Look at this frame from a video and describe it
-with these labels, choosing only from the allowed values:
+PROMPT = """You are a film editor's assistant logging footage. Look at this image from a video and describe it
+with these labels, choosing only from the allowed values:%(strip)s
 
 - shot_scale: ECU (extreme close-up: part of a face), CU (a face), MCU (head and shoulders), MS (waist up),
   MWS (knees up), WS (the whole body), EWS (people small in a big space), INSERT (a detail of an object or
   hands), OTS (over a shoulder), TWO_SHOT (two people framed together).
-- camera_movement: what the camera is most likely doing, judged from motion blur and framing; STATIC when
-  nothing suggests movement.
+- camera_movement: %(movement)s
 - lighting: key_style, color_temperature and contrast.
 - composition: subject_count (people), eyeline_direction of the main subject (NONE without one),
   focus_quality, and obstructions (something blocking the subject).
@@ -73,6 +76,28 @@ with these labels, choosing only from the allowed values:
   well framed is high; blurred, dark, blocked or badly framed is low).
 
 Answer with the JSON object only."""
+
+STRIP_NOTE = """
+
+The image is a contact strip of one shot: three frames side by side, left to right, from its start, its
+middle and its end. Describe the shot as a whole; take scale, lighting and composition from the middle
+frame."""
+STRIP_MOVEMENT = """how the camera moves across the shot, judged by comparing the three frames left (start)
+  to right (end): the scene sliding right means PAN_LEFT, sliding left PAN_RIGHT, sliding down TILT_UP,
+  sliding up TILT_DOWN; the subject growing with the background shifting behind it means DOLLY_IN, shrinking
+  DOLLY_OUT; growing with nothing shifting, ZOOM; small uneven shifts, HANDHELD; a smooth move following a
+  moving subject, GIMBAL_TRACK; STATIC when the three frames are framed the same."""
+FRAME_MOVEMENT = """what the camera is most likely doing, judged from motion blur and framing; STATIC when
+  nothing suggests movement."""
+
+
+def prompt_for(strip: bool) -> str:
+    """PROMPT for a contact strip, or for one frame (a shot too short for a strip)."""
+    return PROMPT % {
+        "strip": STRIP_NOTE if strip else "",
+        "movement": STRIP_MOVEMENT if strip else FRAME_MOVEMENT,
+    }
+
 
 Progress = Callable[[str, float, str], None]
 
@@ -173,9 +198,18 @@ class VlmWorker:
         digest = hashlib.sha1(media_path.encode("utf-8")).hexdigest()[:16]
         return Path(self.config.index_dir) / KEYFRAME_FOLDER / digest
 
-    def cached(self, media_path: str, sample_strategy: str = "scene_cuts") -> dict[str, Any] | None:
-        """The file's whole-file analysis from its `.vlm-tags.json` when that still fits, else None."""
-        return load_cache(media_path, self.model, sample_strategy) if os.path.isfile(media_path) else None
+    def serving_model(self) -> str:
+        """The model this worker asks: the configured one, or the first of its aliases the server has."""
+        return self.client.resolve_available_model(self.model)
+
+    def cached(
+        self, media_path: str, sample_strategy: str = "scene_cuts", model: str | None = None
+    ) -> dict[str, Any] | None:
+        """The file's whole-file analysis from its `.vlm-tags.json` when that still fits the model the
+        worker asks (or `model`), else None."""
+        if not os.path.isfile(media_path):
+            return None
+        return load_cache(media_path, model or self.serving_model(), sample_strategy)
 
     def analyze(
         self,
@@ -193,18 +227,18 @@ class VlmWorker:
             raise VlmWorkerError(f"sample_strategy must be one of {', '.join(SAMPLE_STRATEGIES)}")
         focus = (custom_prompt_focus or "").strip() or None
         whole = start <= 0 and end is None
+        model = self.serving_model()
         if use_cache and focus is None and os.path.isfile(media_path):
-            cached = self.cached(media_path, sample_strategy)
+            cached = self.cached(media_path, sample_strategy, model)
             if cached is not None:
                 return in_window(cached, start, end)
         # The scene-cut scan decodes the whole range first (a 4K file took 12 s, silent, in Phase 21's
         # live checks): it fills the first SCAN_SHARE of the progress, the shots the rest.
         scanned = SCAN_SHARE if sample_strategy == "scene_cuts" and on_progress is not None else 0.0
-        on_scan = (
-            (lambda f: on_progress("scanning", f * SCAN_SHARE, f"Finding the shots ({round(f * 100)}%)"))
-            if scanned
-            else None
-        )
+        on_scan: Callable[[float], None] | None = None
+        if scanned and on_progress is not None:
+            report = on_progress
+            on_scan = lambda f: report("scanning", f * SCAN_SHARE, f"Finding the shots ({round(f * 100)}%)")
         try:
             keyframes = ffmpeg_ops.extract_keyframes_for_vlm(
                 media_path,
@@ -213,6 +247,7 @@ class VlmWorker:
                 end=end,
                 strategy=sample_strategy,
                 on_scan=on_scan,
+                strip=True,
             )
         except ffmpeg_ops.FfmpegOpError as e:
             raise VlmWorkerError(str(e)) from None
@@ -226,7 +261,9 @@ class VlmWorker:
                     scanned + (1 - scanned) * index / len(keyframes),
                     f"Looking at shot {index + 1} of {len(keyframes)}",
                 )
-            analysis = self._analyze_frame(keyframe["image_path"], focus)
+            analysis = self._analyze_frame(
+                keyframe["image_path"], focus, "strip_timestamps_sec" in keyframe, model
+            )
             shots.append(
                 {
                     "shot_id": keyframe["shot_id"],
@@ -242,7 +279,7 @@ class VlmWorker:
             "video_size": size,
             "video_mtime": mtime,
             "media_fps": keyframes[0]["source_range"]["start_time"]["rate"],
-            "vlm_model_id": self.model,
+            "vlm_model_id": model,
             "shots": shots,
         }
         validate(result, VLM_KEYFRAME_ID)
@@ -252,8 +289,8 @@ class VlmWorker:
             on_progress("vision", 1.0, f"Looked at {len(shots)} shots")
         return result
 
-    def _analyze_frame(self, image: str, focus: str | None) -> dict[str, Any]:
-        prompt = PROMPT
+    def _analyze_frame(self, image: str, focus: str | None, strip: bool, model: str) -> dict[str, Any]:
+        prompt = prompt_for(strip)
         if focus:
             prompt += f"\n\nAlso answer this, starting the description with the answer: {focus}"
         problems: list[str] = []
@@ -263,7 +300,9 @@ class VlmWorker:
                 asked += "\n\nYour last answer didn't fit the format: " + "; ".join(problems[:5])
             try:
                 with self.breaker.guard(), self.lock:
-                    answer = self.client.chat_json(self.model, asked, ANALYSIS_SCHEMA, images=[image])
+                    answer = self.client.chat_json(
+                        model, asked, ANALYSIS_SCHEMA, images=[image], keep_alive=KEEP_ALIVE
+                    )
             except LocalLlmError as e:
                 raise VlmWorkerError(str(e)) from None
             answer = {k: v for k, v in answer.items() if k in ANALYSIS_SCHEMA["properties"]}
@@ -274,5 +313,5 @@ class VlmWorker:
             if not problems:
                 return answer
         raise VlmWorkerError(
-            f"{self.model}'s description of a frame never fit the format: {'; '.join(problems[:3])}"
+            f"{model}'s description of a shot never fit the format: {'; '.join(problems[:3])}"
         )

@@ -12,6 +12,8 @@ sourced instead of maintaining a second copy of ~70 tools per target.
   `[type, "null"]` union, and recurses through `properties`/`items`.
 - `strict_schema`: the same, plus what structured outputs (`output_config.format`) require of every
   object: `additionalProperties: false` and every property listed in `required`.
+- `to_claude_content`: Gemini-shaped request parts (text, inline images) as Claude content blocks, for
+  the critic and the Story Editor's Claude Code calls.
 """
 
 from __future__ import annotations
@@ -67,3 +69,23 @@ def to_claude_tool(declaration: dict[str, Any]) -> dict[str, Any]:
 
 def to_claude_tools(declarations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [to_claude_tool(d) for d in declarations if isinstance(d, dict) and d.get("name")]
+
+
+def to_claude_content(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Gemini-shaped request parts (`{"text"}` / `{"inline_data": {mime_type, data}}`) as Claude content
+    blocks, in the same order — so the critic and the looker build their prompt once for either model."""
+    content: list[dict[str, Any]] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str) and part["text"]:
+            content.append({"type": "text", "text": part["text"]})
+        inline = part.get("inline_data")
+        if isinstance(inline, dict) and inline.get("data"):
+            source = {
+                "type": "base64",
+                "media_type": inline.get("mime_type") or "image/jpeg",
+                "data": inline["data"],
+            }
+            content.append({"type": "image", "source": source})
+    return content

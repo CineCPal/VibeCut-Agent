@@ -9,24 +9,27 @@ const ready: SessionStatus = { state: "ready", version: "0.1.0", python: "3.14.0
 
 describe("availability", () => {
   it("waits for the sidecar and reports its failure", () => {
-    expect(availability({ ...ready, state: "starting" }, { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null }, "gemini").status).toBe("offline");
+    expect(availability({ ...ready, state: "starting" }, { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null }, "gemini").status).toBe("offline");
     expect(availability({ ...ready, state: "stopped", message: "uv not found" }, null, "gemini")).toEqual({
       status: "error",
       detail: "uv not found",
     });
   });
 
-  it("needs the chosen model's key", () => {
+  it("needs the Gemini key for either Gemini tier", () => {
+    const noKeys = { gemini: false, geminiSource: null, huggingface: false, huggingfaceSource: null };
     expect(availability(ready, null, "gemini").detail).toBe("Checking API keys…");
-    expect(availability(ready, { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null }, "claude-opus-5-5")).toEqual({
+    expect(availability(ready, noKeys, "gemini-pro")).toEqual({
       status: "offline",
-      detail: "Add your Anthropic API key (ANTHROPIC_API_KEY) in Settings to use Claude Opus 5.5, or choose another model.",
+      detail: "Add your Gemini API key (GEMINI_API_KEY) in Settings to use Gemini 3.1 Pro, or choose another model.",
     });
-    expect(availability(ready, { gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null, huggingface: false, huggingfaceSource: null }, "gemini")).toEqual({ status: "idle", detail: null });
+    const keys = { ...noKeys, gemini: true, geminiSource: "keychain" as const };
+    expect(availability(ready, keys, "gemini")).toEqual({ status: "idle", detail: null });
+    expect(availability(ready, keys, "gemini-pro")).toEqual({ status: "idle", detail: null });
   });
 
   it("needs Claude Code installed and signed in for a subscription model, and no key", () => {
-    const noKeys = { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null };
+    const noKeys = { gemini: false, geminiSource: null, huggingface: false, huggingfaceSource: null };
     const code = { program: "/u/.local/bin/claude", programSaved: null, configDir: null, signedIn: true, email: "a@b.c", subscription: "pro", detail: null };
     expect(availability(ready, noKeys, "claude-code-sonnet-5-5", null)).toEqual({ status: "offline", detail: "Checking Claude Code…" });
     expect(availability(ready, noKeys, "claude-code-sonnet-5-5", code)).toEqual({ status: "idle", detail: null });
@@ -39,37 +42,10 @@ describe("availability", () => {
     expect(availability(ready, noKeys, "claude-code-opus-5-5", { ...code, signedIn: null }).status).toBe("idle");
   });
 
-  it("needs agy installed, signed in and with VibeCut's tools for a Gemini subscription model (Phase 17)", () => {
-    const noKeys = { gemini: false, anthropic: false, geminiSource: null, anthropicSource: null, huggingface: false, huggingfaceSource: null };
-    const agy = {
-      program: "/u/.local/bin/agy",
-      programSaved: null,
-      signedIn: true,
-      models: ["gemini-4-argon", "gemini-3.8-flash"],
-      toolsAdded: true,
-      toolsCurrent: true,
-      detail: null,
-    };
-    const choice = "antigravity-gemini-4-argon";
-    expect(availability(ready, noKeys, choice, null, null)).toEqual({ status: "offline", detail: "Checking Antigravity…" });
-    expect(availability(ready, noKeys, choice, null, agy)).toEqual({ status: "idle", detail: null });
-    expect(availability(ready, noKeys, choice, null, { ...agy, toolsAdded: false, toolsCurrent: false, detail: "VibeCut's tools aren't added to Antigravity yet." })).toEqual({
-      status: "offline",
-      detail: "VibeCut's tools aren't added to Antigravity yet. See Settings → Gemini subscription, or choose another model.",
-    });
-    expect(availability(ready, noKeys, choice, null, { ...agy, signedIn: false }).status).toBe("offline");
-    expect(availability(ready, noKeys, choice, null, { ...agy, models: ["gemini-3.8-flash"] })).toEqual({
-      status: "offline",
-      detail: "Antigravity doesn't offer Gemini 4 Argon on your account. Choose another model.",
-    });
-    // An unread list (no models reported) doesn't block it.
-    expect(availability(ready, noKeys, choice, null, { ...agy, models: [] }).status).toBe("idle");
-  });
-
   describe("refreshAgentStatus", () => {
     beforeEach(() => {
       useSidecarStore.setState({ session: ready });
-      useSystemStore.setState({ keys: { gemini: true, anthropic: true, geminiSource: "keychain", anthropicSource: "keychain", huggingface: false, huggingfaceSource: null } });
+      useSystemStore.setState({ keys: { gemini: true, geminiSource: "keychain", huggingface: false, huggingfaceSource: null } });
       useAgentStore.setState({ aiChoice: "gemini", status: "offline", statusDetail: "x" });
     });
 

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from vibecut_agent.agent import claude_client
+from vibecut_agent.agent import claude_code_json
 from vibecut_agent.agent.redact import _reset_for_tests
 from vibecut_agent.protocol import Emitter
 from vibecut_agent.story import commands, models
@@ -80,9 +80,11 @@ def test_gemini_is_sent_the_brief_with_the_story_schema(monkeypatch):
     monkeypatch.setattr(models.requests, "post", post)
     code, events = run(request(targetDuration="2 minutes"))
     assert code == 0
-    assert "gemini-flash-latest:generateContent" in sent["url"]
+    # Flash by default, thinking hard, at Gemini 3's own temperature.
+    assert "gemini-3.8-flash:generateContent" in sent["url"]
     assert sent["headers"]["x-goog-api-key"] == KEY
     config = sent["body"]["generationConfig"]
+    assert config["thinkingConfig"] == {"thinkingLevel": "high"} and "temperature" not in config
     assert (
         config["responseMimeType"] == "application/json"
         and "broll_segments" in config["responseSchema"]["properties"]
@@ -100,53 +102,77 @@ def test_gemini_is_sent_the_brief_with_the_story_schema(monkeypatch):
     assert events[0]["type"] == "starting" and events[-1] == {"type": "done", "cancelled": False}
 
 
-def test_claude_answers_through_structured_outputs(monkeypatch):
+def test_a_chat_on_gemini_pro_cuts_its_story_on_pro(monkeypatch):
+    urls = []
+
+    def post(url, headers, data, timeout):
+        urls.append(url)
+        return FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(ANSWER)}]}}]})
+
+    monkeypatch.setattr(models.requests, "post", post)
+    assert run(request(model="gemini-3.1-pro-preview"))[0] == 0
+    assert "gemini-3.1-pro-preview:generateContent" in urls[0]
+
+
+def test_a_key_without_pro_gets_flash_and_is_told(monkeypatch):
+    urls = []
+
+    def post(url, headers, data, timeout):
+        urls.append(url)
+        if "pro" in url:
+            return FakeResponse(404, {"error": {"code": 404, "message": "not found"}})
+        return FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(ANSWER)}]}}]})
+
+    monkeypatch.setattr(models.requests, "post", post)
+    code, events = run(request(model="gemini-3.1-pro-preview"))
+    assert code == 0
+    assert [u.split("/models/")[1].split(":")[0] for u in urls] == [
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+    ]
+    notices = [
+        e["detail"] for e in events if e["type"] == "status" and "isn't available" in e.get("detail", "")
+    ]
+    assert notices == [
+        "gemini-3.1-pro-preview isn't available on this Gemini API key; using gemini-3.8-flash instead."
+    ]
+
+
+def test_a_retired_flash_falls_back_to_the_alias_and_then_gives_up(monkeypatch):
+    urls = []
+
+    def post(url, headers, data, timeout):
+        urls.append(url)
+        return FakeResponse(404, {"error": {"code": 404}})
+
+    monkeypatch.setattr(models.requests, "post", post)
+    with pytest.raises(models.StoryModelError, match="gemini-flash-latest isn't available"):
+        models.gemini_json(KEY, "s", "u", {"type": "OBJECT"}, "gemini-3.8-flash")
+    assert [u.split("/models/")[1].split(":")[0] for u in urls] == ["gemini-3.8-flash", "gemini-flash-latest"]
+
+
+def test_claude_answers_through_the_subscriptions_claude_code(monkeypatch):
     sent = {}
 
-    def send(api_key, params, timeout, on_retry, should_abort):
-        sent.update(api_key=api_key, params=params)
-        return {
-            "stop_reason": "end_turn",
-            "content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": json.dumps(ANSWER)}],
+    def run_json(setup, model, system, user, schema, effort, should_abort):
+        sent.update(setup=setup, model=model, schema=schema, effort=effort)
+        return ANSWER
+
+    monkeypatch.setattr(claude_code_json, "run_json", run_json)
+    code, events = run(
+        {
+            **request(provider="claude-code", model="claude-opus-5-5", claudeCode={"program": "/c"}),
+            "apiKey": "",
         }
-
-    monkeypatch.setattr(claude_client, "send", send)
-    code, events = run(request(provider="claude", model="claude-opus-5-5"))
-    assert code == 0
-    params = sent["params"]
-    assert sent["api_key"] == KEY
-    assert params["model"] == "claude-opus-5-5"
-    assert params["betas"] == [claude_client.FALLBACK_BETA] and params["fallbacks"] == "default"
-    schema = params["output_config"]["format"]["schema"]
-    assert params["output_config"]["format"]["type"] == "json_schema"
-    # Structured outputs need every object closed and every property required.
-    item = schema["properties"]["broll_segments"]["items"]
-    assert item["additionalProperties"] is False and "duck_db" in item["required"]
-    assert item["properties"]["audio_mode"] == {"type": "string", "enum": ["silent", "full", "duck_main"]}
-    assert "thinking" not in params and "tool_choice" not in params
-    assert any(e["type"] == "result" and e["narrativeSummary"] == "How it began." for e in events)
-
-
-def test_an_unknown_claude_model_falls_back_to_the_default(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(
-        claude_client,
-        "send",
-        lambda api_key, params, **_: (
-            seen.update(params)
-            or {"stop_reason": "end_turn", "content": [{"type": "text", "text": json.dumps(ANSWER)}]}
-        ),
     )
-    run(request(provider="claude", model="gpt-whatever"))
-    assert seen["model"] == claude_client.DEFAULT_MODEL
-
-
-@pytest.mark.parametrize(("stop", "says"), [("refusal", "declined"), ("max_tokens", "cut off")])
-def test_claude_stopping_early_is_an_error(monkeypatch, stop, says):
-    monkeypatch.setattr(claude_client, "send", lambda *a, **k: {"stop_reason": stop, "content": []})
-    code, events = run(request(provider="claude"))
-    assert code == 1
-    assert says in next(e for e in events if e["type"] == "error")["message"]
+    assert code == 0
+    assert (
+        sent["setup"] == {"program": "/c"} and sent["model"] == "claude-opus-5-5" and sent["effort"] == "high"
+    )
+    # Structured outputs need every object closed and every property required.
+    item = sent["schema"]["properties"]["broll_segments"]["items"]
+    assert item["additionalProperties"] is False and "duck_db" in item["required"]
+    assert any(e["type"] == "result" and e["narrativeSummary"] == "How it began." for e in events)
 
 
 def test_the_key_never_appears_in_an_event(monkeypatch):
@@ -181,6 +207,8 @@ def test_a_cut_with_no_usable_line_is_an_error(monkeypatch):
         ({"prompt": "  "}, "brief"),
         ({"sources": []}, "No transcripts"),
         ({"provider": "llama"}, "Unknown provider"),
+        ({"provider": "claude"}, "Unknown provider"),
+        ({"provider": "antigravity"}, "Unknown provider"),
         ({"targetDuration": "soonish"}, "as a duration"),
         (
             {"brollCatalog": [{"brollId": "b1", "path": "relative.mov", "durationSeconds": 3}]},

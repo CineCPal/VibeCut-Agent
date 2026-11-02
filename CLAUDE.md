@@ -59,7 +59,7 @@ You operate strictly as the **Tactical Implementation Engineer** executing Gemin
    - Do NOT collapse local worker boundaries back into prompt-stuffed monolithic LLM calls.
 
 2. **Zero Regression on `EXECUTION_MODE=direct`:**
-   - Never delete, rename, or change the behavior of existing modules in `src-python/vibecut_agent/nle/`, `src-python/vibecut_agent/agent/claude_chat.py`, or `src/lib/agent/tools.ts` when `EXECUTION_MODE=direct`.
+   - Never delete, rename, or change the behavior of existing modules in `src-python/vibecut_agent/nle/`, `src-python/vibecut_agent/agent/gemini_chat.py`, `src-python/vibecut_agent/agent/claude_code_chat.py`, or `src/lib/agent/tools.ts` when `EXECUTION_MODE=direct`. (`claude_chat.py`, the Anthropic API path, was removed by model migration v2 at the user's request; see `PLAN.md`, "Model migration v2".)
    - All existing `pytest` (`uv run pytest tests/`) and `vitest` (`npm run test:run`) suites must pass at the end of every implementation phase.
 
 3. **Strict Hardware & Memory Discipline:**

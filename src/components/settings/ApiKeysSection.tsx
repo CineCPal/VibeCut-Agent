@@ -6,11 +6,10 @@ import type { KeyProvider, KeySource, KeyStatus } from "../../types/system";
 import { Section } from "../common/Section";
 import { StatusDot } from "../common/StatusDot";
 
-const LABEL: Record<KeyProvider, string> = { gemini: "Gemini", anthropic: "Anthropic (Claude)", huggingface: "Hugging Face (speaker labels)" };
-const KEY_ENV: Record<KeyProvider, string> = { gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY", huggingface: "HF_TOKEN" };
+const LABEL: Record<KeyProvider, string> = { gemini: "Gemini", huggingface: "Hugging Face (speaker labels)" };
+const KEY_ENV: Record<KeyProvider, string> = { gemini: "GEMINI_API_KEY", huggingface: "HF_TOKEN" };
 const SOURCE: Record<KeyProvider, (k: KeyStatus) => KeySource | null> = {
   gemini: (k) => k.geminiSource,
-  anthropic: (k) => k.anthropicSource,
   huggingface: (k) => k.huggingfaceSource ?? null,
 };
 const SOURCE_TEXT: Record<KeySource, string> = { environment: "From the environment", keychain: "In the Keychain" };
@@ -115,7 +114,6 @@ export function ApiKeysSection() {
     <Section title="API keys">
       <ul className="divide-y divide-border">
         <KeyRow provider="gemini" />
-        <KeyRow provider="anthropic" />
         <KeyRow provider="huggingface" />
       </ul>
       <p className="mt-1 text-[11px] text-cool-grey">

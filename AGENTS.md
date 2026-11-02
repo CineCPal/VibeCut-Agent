@@ -153,15 +153,15 @@ Every app must ship an accessible "About This App" modal or configuration panel:
 VibeCut Agent supports a dual-mode execution topology controlled by `EXECUTION_MODE` (`VIBECUT_EXECUTION_MODE`). See `ORCHESTRATOR_SPEC.md` for full schemas and module contracts:
 
 1. **`EXECUTION_MODE=direct` (Legacy Baseline):**
-   - Single-agent tool loop (`src-python/vibecut_agent/agent/claude_chat.py` and `src/lib/agent/tools.ts`) where the LLM directly invokes granular NLE bridge commands. This path is frozen against breaking changes.
+   - Single-agent tool loop (`src-python/vibecut_agent/agent/gemini_chat.py` for the Gemini API, `claude_code_chat.py` for Claude through the user's Claude Code subscription, and `src/lib/agent/tools.ts`) where the LLM directly invokes granular NLE bridge commands. This path is frozen against breaking changes. (The Anthropic API's `claude_chat.py` and Antigravity were removed by model migration v2, `docs/specs/model-migration-plan.md`.)
 
 2. **`EXECUTION_MODE=orchestrated` (Supervisor + Heterogeneous Local Sub-Agents):**
-   - **Supervising Editor (`src-python/vibecut_agent/orchestrator/supervisor.py`):** Claude handles natural language dialogue, narrative pacing, story structure, high-level edit planning, and declarative OpenTimelineIO (`OtioDeltaPayload`) generation.
+   - **Supervising Editor (`src-python/vibecut_agent/orchestrator/supervisor.py` for Gemini; Claude Code's MCP shim, `mcp_server.py`, for Claude):** the chat's model handles natural language dialogue, narrative pacing, story structure, high-level edit planning, and declarative OpenTimelineIO (`OtioDeltaPayload`) generation.
    - **Local Sub-Agent Workers (`src-python/vibecut_agent/workers/`):**
-     - `whisper_worker.py`: Local Whisper (`mlx-whisper`, `faster-whisper`, or `whisper.cpp`) producing word-level rational timecode JSON (`vibecut.whisper.v2`).
-     - `vlm_worker.py`: Local Vision-Language Model (`Qwen2.5-VL` or `Gemma-3-Vision` via local Ollama/llama.cpp HTTP) tagging keyframes with `shot_scale`, `camera_movement`, `lighting`, and `composition` (`vibecut.vlm.v1`).
+     - `whisper_worker.py`: Local Whisper (`mlx-whisper`, `faster-whisper`, or `whisper.cpp`; `large-v3-turbo` by default) producing word-level rational timecode JSON (`vibecut.whisper.v2`).
+     - `vlm_worker.py`: Local Vision-Language Model (`Qwen3-VL`, falling back to `Qwen2.5-VL`, via local Ollama/llama.cpp HTTP) tagging 3-frame contact strips of each shot with `shot_scale`, `camera_movement`, `lighting`, and `composition` (`vibecut.vlm.v1`).
      - `vector_store.py`: Local dense vector retrieval (`BAAI/bge-m3` or `nomic-embed-text-v1.5` backed by `sqlite-vec` or `LanceDB`) with Reciprocal Rank Fusion across transcripts, VLM tags, and SigLIP 2 embeddings (`vibecut.vector.v1`).
-     - `gemma_validator.py`: Local Gemma (`gemma3:4b-it` / `gemma2:9b-instruct` via Ollama/llama.cpp) performing fast JSON schema validation, timeline collision checks, and translating `OtioDeltaPayload` operations into deterministic NLE bridge batches (`vibecut.gemma.validator.v1`).
+     - `gemma_validator.py`: Deterministic JSON schema validation and timeline collision checks (with an opt-in local Gemma review, `VIBECUT_VALIDATOR_MODE=llm`, `gemma3:4b`), translating `OtioDeltaPayload` operations into deterministic NLE bridge batches (`vibecut.gemma.validator.v1`).
    - **Deterministic Media Core (`src-python/vibecut_agent/core/`):**
      - `timecode_math.py`: Frame-accurate `RationalTime` and `TimeRange` arithmetic. Floating-point seconds without a bound frame `rate` are prohibited in `OtioDeltaPayload`.
      - `ffmpeg_ops.py`: Streaming subprocess wrappers (`silencedetect`, scene cuts, proxy keyframe extraction).

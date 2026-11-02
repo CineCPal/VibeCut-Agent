@@ -65,7 +65,7 @@ const sentRequest = () => jobs.runJob.mock.calls[0][2] as Record<string, unknown
 beforeEach(() => {
   vi.clearAllMocks();
   useConnectionStore.setState({ connections: { premiere: emptyConnection("Doc"), resolve: emptyConnection("Doc") } });
-  useAgentStore.setState({ aiChoice: "claude-opus-5-5", status: "thinking" });
+  useAgentStore.setState({ aiChoice: "claude-code-opus-5-5", status: "thinking" });
   useLibraryStore.setState({ scopes: ["/lib"] });
   ipc.nleCall.mockImplementation(async (_h: string, command: string) => (command === "read_timeline" ? VIEW : null));
   core.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
@@ -93,9 +93,9 @@ describe("run_story_editor", () => {
   it("sends the interviews' answers with the chat's model and opens the cut as a draft", async () => {
     const outcome = await run({ prompt: "How the bakery began", targetDuration: "2 minutes", sequenceName: "Bakery story" });
     expect(jobs.runJob).toHaveBeenCalledWith("assemble", 'Story Editor: "Bakery story" from 1 file(s)', expect.any(Object), expect.any(Function));
-    expect(jobs.runJob.mock.calls[0][2]).toMatchObject({ provider: "claude", model: "claude-opus-5-5", extraction: "same" });
+    expect(jobs.runJob.mock.calls[0][2]).toMatchObject({ provider: "claude-code", model: "claude-opus-5-5", extraction: "same" });
     expect(sentRequest()).toMatchObject({
-      provider: "claude",
+      provider: "claude-code",
       model: "claude-opus-5-5",
       // The interviewer's question is left out; the answer goes with its speaker's name.
       sources: [{ sourceId: "s1", segments: [{ start: 2, end: 9, text: "We opened in 1999.", speaker: "Ana" }] }],
@@ -245,8 +245,8 @@ describe("the Story Editor's model", () => {
 
   it("is the chat's own, including Claude (subscription), with the first-pass setting", () => {
     useAgentStore.setState({ storyFirstPass: "same" });
-    expect(storyModel(choice("claude-opus-5-5"))).toEqual({ provider: "claude", model: "claude-opus-5-5", extraction: "same" });
-    expect(storyModel(choice("gemini"))).toEqual({ provider: "gemini", model: undefined, extraction: "same" });
+    expect(storyModel(choice("claude-code-opus-5-5"))).toEqual({ provider: "claude-code", model: "claude-opus-5-5", extraction: "same" });
+    expect(storyModel(choice("gemini"))).toEqual({ provider: "gemini", model: "gemini-3.8-flash", extraction: "same" });
     expect(storyModel(choice("claude-code-sonnet-5-5"))).toEqual({ provider: "claude-code", model: "claude-sonnet-5-5", extraction: "same" });
     useAgentStore.setState({ storyFirstPass: "gemini" });
     expect(storyModel(choice("claude-code-opus-5-5")).extraction).toBe("gemini");

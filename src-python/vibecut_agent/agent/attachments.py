@@ -91,13 +91,6 @@ def tool_images(message: dict[str, Any]) -> list[dict[str, str]]:
         return []
 
 
-def claude_tool_content(text: str, images: list[dict[str, str]]) -> str | list[dict[str, Any]]:
-    """A tool_result block's content: the result's text, then its images."""
-    if not images:
-        return text
-    return [{"type": "text", "text": text}, *claude_blocks(images, "")[:-1]]
-
-
 def gemini_tool_parts(name: str, images: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Parts put after the functionResponse parts of the same turn, for one call's images."""
     if not images:
@@ -105,35 +98,9 @@ def gemini_tool_parts(name: str, images: list[dict[str, str]]) -> list[dict[str,
     return [{"text": f"The images {name} returned:"}, *gemini_parts(images, "")[:-1]]
 
 
-def without_tool_images_claude(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The history with every tool_result's images replaced by TOOL_IMAGES_NOTE. Images the user sent
-    (top-level image blocks) stay."""
-    out = []
-    for message in messages:
-        content = message.get("content")
-        if message.get("role") != "user" or not isinstance(content, list):
-            out.append(message)
-            continue
-        blocks = []
-        for block in content:
-            inner = (
-                block.get("content")
-                if isinstance(block, dict) and block.get("type") == "tool_result"
-                else None
-            )
-            if isinstance(inner, list) and any(
-                isinstance(b, dict) and b.get("type") == "image" for b in inner
-            ):
-                kept = [b for b in inner if not (isinstance(b, dict) and b.get("type") == "image")]
-                block = {**block, "content": [*kept, {"type": "text", "text": TOOL_IMAGES_NOTE}]}
-            blocks.append(block)
-        out.append({**message, "content": blocks})
-    return out
-
-
 def without_tool_images_gemini(contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The same for Gemini: in a turn of functionResponse parts, the images (and their lead-in text)
-    become one TOOL_IMAGES_NOTE. A user's own message never has functionResponse parts."""
+    """The history with every tool's images left out: in a turn of functionResponse parts, the images
+    (and their lead-in text) become one TOOL_IMAGES_NOTE. A user's own message never has functionResponse parts."""
     out = []
     for content in contents:
         parts = content.get("parts")

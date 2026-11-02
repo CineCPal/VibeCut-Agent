@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from vibecut_agent.workers.base import MODEL_ALIASES
+
 
 class Response:
     def __init__(self, status_code: int, body: Any = None, text: str | None = None) -> None:
@@ -45,11 +47,20 @@ class Client:
         self.answers = list(answers or [])
         self.models = models
         self.prompts: list[tuple[str, str, list[str]]] = []
+        self.keep_alive: list[Any] = []
 
     def chat_json(
-        self, model: str, prompt: str, schema: dict[str, Any], *, images: Any = (), system: Any = None
+        self,
+        model: str,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        images: Any = (),
+        system: Any = None,
+        keep_alive: Any = None,
     ) -> Any:
         self.prompts.append((model, prompt, [str(i) for i in images]))
+        self.keep_alive.append(keep_alive)
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, Exception):
             raise answer
@@ -57,3 +68,10 @@ class Client:
 
     def has_model(self, model: str) -> tuple[bool, str]:
         return (model in self.models, "ready" if model in self.models else "missing")
+
+    def resolve_available_model(self, preferred: str) -> str:
+        """LocalLlmClient's: `preferred`, or the first of its aliases this server has."""
+        for candidate in (preferred, *MODEL_ALIASES.get(preferred, ())):
+            if candidate in self.models:
+                return candidate
+        return preferred

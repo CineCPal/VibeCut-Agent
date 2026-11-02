@@ -64,11 +64,11 @@ describe("ipc", () => {
   });
 
   it("saves and removes keys by provider, and never gets one back", async () => {
-    tauri.invoke.mockResolvedValue({ gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null });
-    await expect(ipc.setApiKey("gemini", "AIza-secret")).resolves.toEqual({ gemini: true, anthropic: false, geminiSource: "keychain", anthropicSource: null });
+    tauri.invoke.mockResolvedValue({ gemini: true, geminiSource: "keychain" });
+    await expect(ipc.setApiKey("gemini", "AIza-secret")).resolves.toEqual({ gemini: true, geminiSource: "keychain" });
     expect(tauri.invoke).toHaveBeenCalledWith("llm_key_set", { provider: "gemini", key: "AIza-secret" });
-    await ipc.removeApiKey("anthropic");
-    expect(tauri.invoke).toHaveBeenLastCalledWith("llm_key_remove", { provider: "anthropic" });
+    await ipc.removeApiKey("huggingface");
+    expect(tauri.invoke).toHaveBeenLastCalledWith("llm_key_remove", { provider: "huggingface" });
   });
 
   it("getAppVersion reads the Tauri app version", async () => {

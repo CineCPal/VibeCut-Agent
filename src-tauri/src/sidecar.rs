@@ -177,8 +177,8 @@ pub fn child_path(home: Option<&str>, existing: Option<&str>) -> String {
     parts.join(":")
 }
 
-/// Environment variables a sidecar inherits. Everything else, including `GEMINI_API_KEY` and
-/// `ANTHROPIC_API_KEY`, is dropped: secrets reach the sidecar through its stdin request only.
+/// Environment variables a sidecar inherits. Everything else, including `GEMINI_API_KEY` and any
+/// `ANTHROPIC_API_KEY` in the shell, is dropped: secrets reach the sidecar through its stdin request only.
 pub fn passes_to_child(name: &str) -> bool {
     matches!(
         name,
@@ -222,19 +222,17 @@ pub fn build_args(root: &Path, command: &str, extras: &[&str]) -> Vec<String> {
 }
 
 pub const GEMINI_KEY_ENV: &str = "GEMINI_API_KEY";
-pub const CLAUDE_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
 /// The request as handed to the sidecar. A key or a subscription setup sent by the frontend is
-/// discarded, so the webview can never name a key or a program. `chat` gets its provider's key from this
-/// process's environment (ported from VibeCut's `prepare_request`); a missing `provider` means Gemini.
-/// The two subscription providers need no key: a run on "Claude (subscription)" (claude_code.rs,
-/// Phase 7b) gets `claudeCode`, and one on "Gemini (subscription)" (antigravity.rs, Phase 17) gets
-/// `antigravity`: the `subscription` setup Rust chose for that provider.
+/// discarded, so the webview can never name a key or a program. There are two providers (model
+/// migration v2): "gemini" (a missing `provider`) gets the Gemini key from this process's environment or
+/// the Keychain (ported from VibeCut's `prepare_request`), and "Claude (subscription)" (claude_code.rs,
+/// Phase 7b) needs no key and gets `claudeCode`, the `subscription` setup Rust chose. Any other provider,
+/// the Anthropic API's "claude" and Antigravity's "antigravity" included, is refused.
 pub fn prepare_request(
     command: &str,
     mut request: Value,
     gemini_key: Option<&str>,
-    claude_key: Option<&str>,
     subscription: Option<Value>,
 ) -> Result<Value, String> {
     let Some(object) = request.as_object_mut() else {
@@ -253,22 +251,17 @@ pub fn prepare_request(
         object.insert("claudeCode".into(), setup);
         return Ok(request);
     }
-    if provider == crate::antigravity::PROVIDER {
-        let setup = subscription.ok_or("Antigravity isn't set up. See Settings → Gemini subscription.")?;
-        object.insert("antigravity".into(), setup);
-        return Ok(request);
+    if provider != "gemini" {
+        return Err(format!("Unknown AI provider {provider:?}"));
     }
-    let (key, env, other) = match provider {
-        "gemini" => (gemini_key, GEMINI_KEY_ENV, "Claude"),
-        "claude" => (claude_key, CLAUDE_KEY_ENV, "Gemini"),
-        other => return Err(format!("Unknown AI provider {other:?}")),
-    };
-    match key.map(str::trim).filter(|k| !k.is_empty()) {
+    match gemini_key.map(str::trim).filter(|k| !k.is_empty()) {
         Some(key) => {
             object.insert("apiKey".into(), Value::String(key.to_string()));
             Ok(request)
         }
-        None => Err(format!("{env} is not set. Add it in Settings → API keys, or choose {other}.")),
+        None => Err(format!(
+            "{GEMINI_KEY_ENV} is not set. Add it in Settings → API keys, or choose Claude (subscription)."
+        )),
     }
 }
 
@@ -488,7 +481,7 @@ pub struct SidecarExit {
 /// Where Python keeps bytecode (Phase 11f). A release build (`environment`, the venv in app data) keeps
 /// every `.pyc` in a `pycache` folder beside that venv (`PYTHONPYCACHEPREFIX`): for its packages and for
 /// the bundle's own sources alike, so the signed bundle is never written to. Before, nothing was
-/// compiled and kept, and every job compiled `anthropic`, pydantic and the rest from source (about
+/// compiled and kept, and every job compiled its packages (then `anthropic`, pydantic and the rest) from source (about
 /// 0.5–1.5 s of a chat job's start, measured 2026-10-07). A dev run writes none (its `.venv` was
 /// compiled by uv; `src-python` stays free of `__pycache__`).
 pub fn bytecode_env(environment: Option<&Path>) -> (String, String) {
@@ -535,15 +528,15 @@ pub fn orchestrated() -> bool {
     is_orchestrated(execution_mode().as_deref())
 }
 
-/// Phase 21: what the orchestrated path adds to `extras_for`. A Claude chat in orchestrated mode runs the
-/// tool bus (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the chat's Whisper (mlx-whisper:
-/// `transcribe`); `orchestrator-health` asks the same workers. Nothing in direct mode, or for another
-/// provider.
+/// Phase 21: what the orchestrated path adds to `extras_for`. A Gemini chat in orchestrated mode runs the
+/// tool bus in the chat's own process (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the
+/// chat's Whisper (mlx-whisper: `transcribe`); `orchestrator-health` asks the same workers. Nothing in
+/// direct mode, or for Claude (subscription), whose MCP shim gets them instead (claude_code.rs).
 pub fn orchestrated_extras(command: &str, request: &Value, mode: Option<&str>) -> Vec<&'static str> {
     let orchestrated = is_orchestrated(mode);
-    let claude = request.get("provider").and_then(Value::as_str) == Some("claude");
+    let gemini = request.get("provider").and_then(Value::as_str).unwrap_or("gemini") == "gemini";
     match command {
-        "chat" if orchestrated && claude => vec!["orchestrator", "transcribe"],
+        "chat" if orchestrated && gemini => vec!["orchestrator", "transcribe"],
         "orchestrator-health" if orchestrated => vec!["orchestrator", "transcribe"],
         _ => Vec::new(),
     }
@@ -879,25 +872,21 @@ pub async fn sidecar_start(
     if spec.managed {
         return Err(format!("{command} is started by the app, not on request"));
     }
-    // The environment first, then the Keychain (secrets.rs); only a chat, a Story Editor run or a chat-title run is given one.
+    // The environment first, then the Keychain (secrets.rs); only a chat, a Story Editor run, a chat-title
+    // run or a critique is given the Gemini key.
     let store = app.state::<crate::secrets::Keys>();
-    let (gemini_key, claude_key) = if needs_llm_key(spec.name) {
-        (
-            crate::secrets::resolve(GEMINI_KEY_ENV, store.0.as_ref()).map(|(key, _)| key),
-            crate::secrets::resolve(CLAUDE_KEY_ENV, store.0.as_ref()).map(|(key, _)| key),
-        )
+    let gemini_key = if needs_llm_key(spec.name) {
+        crate::secrets::resolve(GEMINI_KEY_ENV, store.0.as_ref()).map(|(key, _)| key)
     } else {
-        (None, None)
+        None
     };
-    // A run on a subscription gets the program (and, for Claude, the profile) Rust chose: claude_code.rs
-    // for Claude (subscription), antigravity.rs for Gemini (subscription).
+    // A run on Claude (subscription) gets the program and profile Rust chose (claude_code.rs).
     let provider = if needs_llm_key(spec.name) { request.get("provider").and_then(Value::as_str) } else { None };
     let subscription = match provider {
         Some(crate::claude_code::PROVIDER) => Some(crate::claude_code::setup_for(&app, &job_id)?),
-        Some(crate::antigravity::PROVIDER) => Some(crate::antigravity::setup_for(&app, &job_id)?),
         _ => None,
     };
-    let mut request = prepare_request(spec.name, request, gemini_key.as_deref(), claude_key.as_deref(), subscription)?;
+    let mut request = prepare_request(spec.name, request, gemini_key.as_deref(), subscription)?;
     if spec.name == "assemble" {
         // The Story Editor's first pass over long footage may be set to Gemini (Phase 7e).
         set_extraction_key(&mut request, gemini_key.as_deref());
@@ -958,7 +947,7 @@ pub fn sidecar_send(jobs: State<'_, SidecarJobs>, job_id: String, message: Value
         return Err("The message must be a JSON object".into());
     }
     // Later lines never carry a key: the sidecar already has it from its first request.
-    let message = prepare_request("", message, None, None, None)?;
+    let message = prepare_request("", message, None, None)?;
     match jobs.get(&job_id) {
         Some(job) => job.send_line(&message).map(|_| ()),
         None => Ok(()),
@@ -1084,13 +1073,14 @@ mod tests {
     }
 
     #[test]
-    fn an_orchestrated_claude_chat_runs_with_the_orchestrator_extra() {
-        let claude = json!({"provider": "claude"});
-        assert_eq!(orchestrated_extras("chat", &claude, Some("orchestrated")), ["orchestrator", "transcribe"]);
-        assert_eq!(orchestrated_extras("chat", &claude, Some(" Orchestrated ")), ["orchestrator", "transcribe"]);
-        assert!(orchestrated_extras("chat", &claude, Some("direct")).is_empty());
-        assert!(orchestrated_extras("chat", &claude, None).is_empty());
-        assert!(orchestrated_extras("chat", &json!({"provider": "gemini"}), Some("orchestrated")).is_empty());
+    fn an_orchestrated_gemini_chat_runs_with_the_orchestrator_extra() {
+        let gemini = json!({"provider": "gemini"});
+        assert_eq!(orchestrated_extras("chat", &gemini, Some("orchestrated")), ["orchestrator", "transcribe"]);
+        assert_eq!(orchestrated_extras("chat", &gemini, Some(" Orchestrated ")), ["orchestrator", "transcribe"]);
+        assert_eq!(orchestrated_extras("chat", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"], "no provider is Gemini");
+        assert!(orchestrated_extras("chat", &gemini, Some("direct")).is_empty());
+        assert!(orchestrated_extras("chat", &gemini, None).is_empty());
+        // Claude (subscription) runs the bus in its MCP shim, which claude_code.rs gives the extras.
         assert!(orchestrated_extras("chat", &json!({"provider": "claude-code"}), Some("orchestrated")).is_empty());
         assert!(find_command("orchestrator-health").is_ok());
         assert_eq!(orchestrated_extras("orchestrator-health", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"]);
@@ -1150,61 +1140,50 @@ mod tests {
 
     #[test]
     fn requests_must_be_objects_and_lose_any_api_key() {
-        assert_eq!(prepare_request("health", json!({"apiKey": "secret", "claudeCode": {"program": "/bin/sh"}, "a": 1}), Some("g"), None, None).unwrap(), json!({"a": 1}));
-        assert!(prepare_request("health", json!([1]), None, None, None).is_err());
+        assert_eq!(prepare_request("health", json!({"apiKey": "secret", "claudeCode": {"program": "/bin/sh"}, "antigravity": {}, "a": 1}), Some("g"), None).unwrap(), json!({"a": 1}));
+        assert!(prepare_request("health", json!([1]), None, None).is_err());
     }
 
     #[test]
     fn chat_gets_its_providers_key_from_the_environment_only() {
         let sent = json!({"apiKey": "from-the-ui", "userMessage": "hi"});
-        let gemini = prepare_request("chat", sent.clone(), Some(" g-key "), Some("c-key"), None).unwrap();
+        let gemini = prepare_request("chat", sent.clone(), Some(" g-key "), None).unwrap();
         assert_eq!(gemini["apiKey"], "g-key");
-        let claude = prepare_request("chat", json!({"provider": "claude"}), Some("g-key"), Some("c-key"), None).unwrap();
-        assert_eq!(claude["apiKey"], "c-key");
+        let missing = prepare_request("chat", json!({}), None, None).unwrap_err();
+        assert!(missing.starts_with("GEMINI_API_KEY is not set") && missing.ends_with("or choose Claude (subscription)."));
+        assert!(prepare_request("chat", json!({"provider": "openai"}), Some("g"), None).is_err());
+    }
 
-        let missing = prepare_request("chat", json!({"provider": "claude"}), Some("g-key"), Some("  "), None).unwrap_err();
-        assert!(missing.starts_with("ANTHROPIC_API_KEY is not set") && missing.ends_with("or choose Gemini."));
-        assert!(prepare_request("chat", json!({}), None, None, None).unwrap_err().starts_with("GEMINI_API_KEY is not set"));
-        assert!(prepare_request("chat", json!({"provider": "openai"}), Some("g"), Some("c"), None).is_err());
+    #[test]
+    fn the_removed_providers_are_refused_and_never_given_a_key() {
+        // The Anthropic API and Antigravity are gone (model migration v2).
+        for provider in ["claude", "antigravity"] {
+            for command in ["chat", "assemble", "chat-title", "critique"] {
+                let refused = prepare_request(command, json!({"provider": provider, "apiKey": "ui"}), Some("g-key"), None).unwrap_err();
+                assert_eq!(refused, format!("Unknown AI provider {provider:?}"), "{command}");
+            }
+        }
     }
 
     #[test]
     fn claude_subscription_chats_get_rusts_setup_and_no_key() {
         let setup = json!({"program": "/u/.local/bin/claude", "jobId": "j1"});
         let sent = json!({"provider": "claude-code", "apiKey": "ui", "claudeCode": {"program": "/bin/rm"}});
-        let chat = prepare_request("chat", sent, Some("g-key"), Some("c-key"), Some(setup.clone())).unwrap();
+        let chat = prepare_request("chat", sent, Some("g-key"), Some(setup.clone())).unwrap();
         assert_eq!(chat["claudeCode"], setup);
         assert!(chat.get("apiKey").is_none());
-        assert!(prepare_request("chat", json!({"provider": "claude-code"}), None, None, None).unwrap_err().contains("isn't set up"));
-        let story = prepare_request("assemble", json!({"provider": "claude-code", "extractionKey": "ui"}), None, None, Some(setup.clone())).unwrap();
+        assert!(prepare_request("chat", json!({"provider": "claude-code"}), None, None).unwrap_err().contains("isn't set up"));
+        let story = prepare_request("assemble", json!({"provider": "claude-code", "extractionKey": "ui"}), None, Some(setup.clone())).unwrap();
         assert_eq!(story["claudeCode"], setup, "the Story Editor runs on the subscription too (7e)");
-        let title = prepare_request("chat-title", json!({"provider": "claude-code", "apiKey": "ui"}), None, None, Some(setup.clone())).unwrap();
+        let title = prepare_request("chat-title", json!({"provider": "claude-code", "apiKey": "ui"}), None, Some(setup.clone())).unwrap();
         assert_eq!(title["claudeCode"], setup, "a chat's name comes from its own provider (8d)");
         assert!(title.get("apiKey").is_none());
-        let critic = prepare_request("critique", json!({"provider": "claude-code", "apiKey": "ui"}), None, None, Some(setup.clone())).unwrap();
+        let critic = prepare_request("critique", json!({"provider": "claude-code", "apiKey": "ui"}), None, Some(setup.clone())).unwrap();
         assert_eq!(critic["claudeCode"], setup, "the critic runs on the subscription too (14b)");
         assert!(critic.get("apiKey").is_none());
         assert!(story.get("extractionKey").is_none());
-        let later = prepare_request("", json!({"type": "user_message", "claudeCode": {"program": "/bin/rm"}}), None, None, None).unwrap();
+        let later = prepare_request("", json!({"type": "user_message", "claudeCode": {"program": "/bin/rm"}}), None, None).unwrap();
         assert!(later.get("claudeCode").is_none(), "a later line can't name a program");
-    }
-
-    #[test]
-    fn gemini_subscription_runs_get_rusts_setup_and_no_key() {
-        let setup = json!({"program": "/u/.local/bin/agy", "jobId": "j1", "workDir": "/w"});
-        let sent = json!({"provider": "antigravity", "apiKey": "ui", "antigravity": {"program": "/bin/rm"}, "claudeCode": {"program": "/bin/rm"}});
-        let chat = prepare_request("chat", sent, Some("g-key"), Some("c-key"), Some(setup.clone())).unwrap();
-        assert_eq!(chat["antigravity"], setup);
-        assert!(chat.get("apiKey").is_none(), "the plan, never a Gemini key");
-        assert!(chat.get("claudeCode").is_none());
-        assert!(prepare_request("chat", json!({"provider": "antigravity"}), Some("g"), None, None).unwrap_err().contains("Gemini subscription"));
-        for command in ["assemble", "chat-title", "critique"] {
-            let run = prepare_request(command, json!({"provider": "antigravity", "apiKey": "ui"}), Some("g"), None, Some(setup.clone())).unwrap();
-            assert_eq!(run["antigravity"], setup, "{command} runs on the chat's provider");
-            assert!(run.get("apiKey").is_none());
-        }
-        let later = prepare_request("", json!({"type": "user_message", "antigravity": {"program": "/bin/rm"}}), None, None, None).unwrap();
-        assert!(later.get("antigravity").is_none(), "a later line can't name a program");
     }
 
     #[test]
@@ -1221,19 +1200,16 @@ mod tests {
     }
 
     #[test]
-    fn the_story_editor_gets_the_chat_providers_key() {
-        let claude = prepare_request("assemble", json!({"provider": "claude", "apiKey": "ui"}), Some("g-key"), Some("c-key"), None).unwrap();
-        assert_eq!(claude["apiKey"], "c-key");
-        let gemini = prepare_request("assemble", json!({}), Some("g-key"), None, None).unwrap();
-        assert_eq!(gemini["apiKey"], "g-key");
-        let title = prepare_request("chat-title", json!({"provider": "claude", "apiKey": "ui"}), Some("g-key"), Some("c-key"), None).unwrap();
-        assert_eq!(title["apiKey"], "c-key");
-        assert!(prepare_request("chat-title", json!({}), None, Some("c-key"), None).is_err());
-        assert!(prepare_request("assemble", json!({}), None, Some("c-key"), None).is_err());
-        assert!(prepare_request("transcribe", json!({"apiKey": "ui"}), Some("g-key"), None, None).unwrap().get("apiKey").is_none());
-        // The critic runs on the chat's provider (Phase 14b).
-        assert_eq!(prepare_request("critique", json!({"provider": "claude", "apiKey": "ui"}), Some("g-key"), Some("c-key"), None).unwrap()["apiKey"], "c-key");
-        assert_eq!(prepare_request("critique", json!({}), Some("g-key"), None, None).unwrap()["apiKey"], "g-key");
+    fn the_story_editor_title_and_critic_get_the_gemini_key() {
+        for command in ["assemble", "chat-title", "critique"] {
+            let gemini = prepare_request(command, json!({"apiKey": "ui"}), Some("g-key"), None).unwrap();
+            assert_eq!(gemini["apiKey"], "g-key", "{command}");
+            assert!(prepare_request(command, json!({}), None, None).is_err(), "{command}");
+        }
+        // A critique that asks for the local VLM first keeps the cloud reviewer's key for its fallback.
+        let local = prepare_request("critique", json!({"local": true}), Some("g-key"), None).unwrap();
+        assert_eq!((local["apiKey"].as_str(), local["local"].as_bool()), (Some("g-key"), Some(true)));
+        assert!(prepare_request("transcribe", json!({"apiKey": "ui"}), Some("g-key"), None).unwrap().get("apiKey").is_none());
     }
 
     #[test]

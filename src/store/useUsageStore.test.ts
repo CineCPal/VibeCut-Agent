@@ -11,10 +11,10 @@ describe("useUsageStore", () => {
 
   it("counts a turn by day, model and chat, and persists it", () => {
     const at = new Date(2026, 9, 7, 12).getTime();
-    store().addTurn("claude-sonnet-5-5", "c1", usage, at);
-    store().addTurn("claude-sonnet-5-5", "c1", usage, at + 1000);
+    store().addTurn("claude-code-sonnet-5-5", "c1", usage, at);
+    store().addTurn("claude-code-sonnet-5-5", "c1", usage, at + 1000);
     store().addTurn("gemini", "c2", usage, at);
-    expect(store().days["2026-10-07"]["claude-sonnet-5-5"]).toMatchObject({ turns: 2, promptTokens: 2000, outputTokens: 200 });
+    expect(store().days["2026-10-07"]["claude-code-sonnet-5-5"]).toMatchObject({ turns: 2, promptTokens: 2000, outputTokens: 200 });
     expect(store().days["2026-10-07"].gemini?.costUsd).toBeNull();
     expect(store().chats.c1).toMatchObject({ turns: 2, updatedAt: at + 1000 });
     expect(JSON.parse(localStorage.getItem("vibecut-agent.usage") ?? "{}").state.chats.c2.turns).toBe(1);

@@ -3,7 +3,7 @@
 The chat agent on "Claude (subscription)" (PLAN.md, "Phase 7b"): each turn runs the user's own
 signed-in Claude Code CLI (``claude -p``), so it uses their Claude subscription and needs no API key.
 
-The same contract as gemini_chat/claude_chat.run_chat_turn (one user message in; ``status`` events
+The same contract as gemini_chat.run_chat_turn (one user message in; ``status`` events
 while it works; an outcome with text, history, usage, aborted and outOfSteps out), with two
 differences:
 
@@ -107,6 +107,7 @@ ORCHESTRATOR_ENV = (
     "VIBECUT_VECTOR_BACKEND",
     "VIBECUT_EMBED_MODEL",
     "VIBECUT_INDEX_DIR",
+    "VIBECUT_VALIDATOR_MODE",
 )
 
 

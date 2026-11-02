@@ -3,20 +3,20 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import type {
   AgentStatus,
   AiChoiceId,
-  AntigravityEffort,
   ChatMention,
   ChatMessage,
   ChatProvider,
   ChatUsage,
   ClaudeFamily,
   EffortLevel,
+  GeminiEffort,
   LastTurn,
   PendingImage,
   QueuedMessage,
   StoryFirstPass,
   CriticModel,
 } from "../types/agent";
-import { AI_CHOICES, ANTIGRAVITY_EFFORTS, DEFAULT_EFFORT, EFFORT_LEVELS } from "../types/agent";
+import { AI_CHOICES, DEFAULT_EFFORT, EFFORT_LEVELS, GEMINI_EFFORTS, migrateAiChoice } from "../types/agent";
 import { newId } from "../lib/id";
 import { lastTurnFrom } from "../lib/agent/rewind";
 import type { SavedChat } from "../types/history";
@@ -32,8 +32,8 @@ export interface AgentState {
   aiChoice: AiChoiceId;
   /** How long each Claude model thinks in the chat (Settings → Agent model, Phase 9a). Remembered. */
   effort: Record<ClaudeFamily, EffortLevel>;
-  /** How long Gemini (subscription) thinks (Phase 17): agy's model variant. Remembered. */
-  antigravityEffort: AntigravityEffort;
+  /** How long Gemini thinks (model migration v2): its thinking level, for both tiers. Remembered. */
+  geminiEffort: GeminiEffort;
   /** Which model reads long footage first for the Story Editor (Phase 7e). */
   storyFirstPass: StoryFirstPass;
   criticModel: CriticModel;
@@ -78,7 +78,7 @@ export interface AgentState {
   setStoryFirstPass: (choice: StoryFirstPass) => void;
   setCriticModel: (choice: CriticModel) => void;
   setEffort: (family: ClaudeFamily, level: EffortLevel) => void;
-  setAntigravityEffort: (level: AntigravityEffort) => void;
+  setGeminiEffort: (level: GeminiEffort) => void;
   setDraft: (draft: string) => void;
   setPendingImages: (images: PendingImage[]) => void;
   setDraftMentions: (mentions: ChatMention[]) => void;
@@ -112,6 +112,19 @@ export const AGENT_OFFLINE_DETAIL = "Agent sidecar not running";
 /** How many messages can wait their turn (Phase 11b). */
 export const MAX_QUEUE = 5;
 
+export const AGENT_PREFS_VERSION = 1;
+
+/** Preferences saved before model migration v2, brought up to date: a model choice on the Anthropic API or
+ * Antigravity becomes its counterpart (`migrateAiChoice`), and agy's thinking setting becomes Gemini's. */
+export function migrateAgentPrefs(persisted: unknown): Record<string, unknown> {
+  const prefs: Record<string, unknown> = persisted && typeof persisted === "object" ? { ...persisted } : {};
+  prefs.aiChoice = migrateAiChoice(prefs.aiChoice);
+  const effort = prefs.geminiEffort ?? prefs.antigravityEffort;
+  prefs.geminiEffort = GEMINI_EFFORTS.includes(effort as GeminiEffort) ? effort : "medium";
+  delete prefs.antigravityEffort;
+  return prefs;
+}
+
 export const useAgentStore = create<AgentState>()(
   persist(
     (set) => ({
@@ -123,7 +136,7 @@ export const useAgentStore = create<AgentState>()(
       storyFirstPass: "same",
       criticModel: "gemini",
       effort: { opus: DEFAULT_EFFORT, sonnet: DEFAULT_EFFORT },
-      antigravityEffort: "medium",
+      geminiEffort: "medium",
       draft: "",
       pendingImages: [],
       draftMentions: [],
@@ -161,12 +174,13 @@ export const useAgentStore = create<AgentState>()(
         if (AI_CHOICES.some((c) => c.id === choice)) set({ aiChoice: choice });
       },
       setStoryFirstPass: (storyFirstPass) => set({ storyFirstPass: storyFirstPass === "gemini" ? "gemini" : "same" }),
-      setCriticModel: (criticModel) => set({ criticModel: criticModel === "same" ? "same" : "gemini" }),
+      setCriticModel: (criticModel) =>
+        set({ criticModel: criticModel === "same" || criticModel === "local" ? criticModel : "gemini" }),
       setEffort: (family, level) => {
         if (EFFORT_LEVELS.includes(level)) set((state) => ({ effort: { ...state.effort, [family]: level } }));
       },
-      setAntigravityEffort: (level) => {
-        if (ANTIGRAVITY_EFFORTS.includes(level)) set({ antigravityEffort: level });
+      setGeminiEffort: (level) => {
+        if (GEMINI_EFFORTS.includes(level)) set({ geminiEffort: level });
       },
       setDraft: (draft) => set({ draft }),
       setPendingImages: (pendingImages) => set({ pendingImages }),
@@ -241,12 +255,15 @@ export const useAgentStore = create<AgentState>()(
     {
       name: "vibecut-agent.agent",
       storage: createJSONStorage(() => localStorage),
+      // Version 1 (model migration v2): the Anthropic API and Antigravity are gone (`migrateAgentPrefs`).
+      version: AGENT_PREFS_VERSION,
+      migrate: (persisted) => migrateAgentPrefs(persisted) as unknown as AgentState,
       partialize: (state) => ({
         aiChoice: state.aiChoice,
         storyFirstPass: state.storyFirstPass,
         criticModel: state.criticModel,
         effort: state.effort,
-        antigravityEffort: state.antigravityEffort,
+        geminiEffort: state.geminiEffort,
         chatId: state.chatId,
         autoTitles: state.autoTitles,
         reviewEdits: state.reviewEdits,
