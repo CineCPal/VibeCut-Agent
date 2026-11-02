@@ -25,6 +25,8 @@ export interface EditLogState {
   setBackup: (key: string, name: string) => void;
   addRestoredIds: (host: NleHost, ids: Record<string, string>) => void;
   markReverted: (id: string, info: NonNullable<EditEntry["reverted"]>) => void;
+  /** Marks the user's reverts of these entries as said in a chat message (editLogContext). */
+  markRevertsTold: (ids: string[]) => void;
   /** Loads the saved log at launch, ahead of anything logged since; its entries are `fromEarlierRun`. */
   hydrate: (saved: SavedEditLog) => void;
 }
@@ -47,6 +49,10 @@ export const useEditLogStore = create<EditLogState>()((set, get) => ({
     set((s) => ({ restoredIds: { ...s.restoredIds, [host]: { ...s.restoredIds[host], ...ids } } })),
   markReverted: (id, info) =>
     set((s) => ({ entries: s.entries.map((e) => (e.id === id ? { ...e, reverted: info } : e)) })),
+  markRevertsTold: (ids) =>
+    set((s) => ({
+      entries: s.entries.map((e) => (e.reverted && ids.includes(e.id) ? { ...e, reverted: { ...e.reverted, told: true } } : e)),
+    })),
   hydrate: (saved) =>
     set((s) => {
       const taken = new Set(s.entries.map((e) => e.id));

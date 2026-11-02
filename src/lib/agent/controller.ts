@@ -22,7 +22,7 @@ import { keptMentions, mentionBlock } from "./mentions";
 import { awaitReview, skipAllReviews } from "./review";
 import { describeChange, needsReview } from "./toolKinds";
 import { notifyAway } from "../notify";
-import { revertLastRequest } from "./edits";
+import { revertLastRequest, untoldUserReverts } from "./edits";
 import { MAX_IMAGES, attachmentOf, loadImages, saveImages, saveToolImages } from "./attachments";
 import { MAX_TURN_IMAGES, takeImages } from "./turnImages";
 import { systemInstruction } from "./prompt";
@@ -208,6 +208,8 @@ export async function sendUserMessage(text: string, images: PendingImage[] = [],
   useAgentStore.getState().setActivity(images.length ? "Saving the images and reading the timeline…" : "Reading the timeline…");
 
   const { host, timeline, choice, key } = jobPlan();
+  // The user's reverts this message tells the chat of (editLogContext), marked told once it's sent.
+  const reverts = untoldUserReverts().map((e) => e.id);
   // The images are filed while the timeline is read (Phase 11f): neither waits for the other.
   const [saved, snapshot] = await Promise.all([
     images.length ? saveImages(store.chatId, images).then(() => null, (error: unknown) => error) : Promise.resolve(null),
@@ -224,6 +226,7 @@ export async function sendUserMessage(text: string, images: PendingImage[] = [],
   markTiming("context");
   const block = mentionBlock(pointed);
   const userMessage = `${snapshot}${block ? `\n\n${block}` : ""}\n\n${words}`;
+  if (reverts.length) useEditLogStore.getState().markRevertsTold(reverts);
   context = host ? { host, timeline, step, stepText: words } : null;
   provider = choice.chatProvider;
   turnChoice = choice.id;

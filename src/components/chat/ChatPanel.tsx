@@ -72,7 +72,7 @@ export function ChatPanel() {
   const revert = async () => {
     setReverting(true);
     try {
-      const outcome = await revertLastRequest();
+      const outcome = await revertLastRequest({ byUser: true });
       useAgentStore.getState().addMessage({ role: "tool", text: outcome.summary });
     } catch (error) {
       useAgentStore.getState().addMessage({ role: "error", text: error instanceof Error ? error.message : String(error) });
