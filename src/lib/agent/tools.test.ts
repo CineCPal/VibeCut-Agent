@@ -132,6 +132,21 @@ describe("agent tools", () => {
     expect(toolDeclarations("resolve").find((t) => t.name === "duck_music")?.description).toContain("crossfaded");
   });
 
+  it("declares enums only on strings, as Gemini's parameters require", () => {
+    // A NUMBER enum (cut_to_beats' everyBeats once) is an HTTP 400 that fails every Gemini chat turn.
+    const bad: string[] = [];
+    const walk = (schema: unknown, path: string) => {
+      if (!schema || typeof schema !== "object") return;
+      const s = schema as Record<string, unknown>;
+      if (Array.isArray(s.enum) && (s.type !== "STRING" || s.enum.some((v) => typeof v !== "string"))) bad.push(path);
+      for (const [key, value] of Object.entries(s)) walk(value, `${path}.${key}`);
+    };
+    for (const host of ["premiere", "resolve"] as const) {
+      for (const tool of toolDeclarations(host)) walk(tool.parameters, `${host}:${tool.name}`);
+    }
+    expect(bad).toEqual([]);
+  });
+
   it("sends every call with the open timeline", async () => {
     ipc.nleCall.mockResolvedValue({ time: 4.2 });
     const run = executorsFor({ host: "resolve", timeline: "Main", ...STEP });

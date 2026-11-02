@@ -169,7 +169,9 @@ def _read_stream(
     finish_reason: Any = None
     saw_candidate = False
     try:
-        for raw in resp.iter_lines(decode_unicode=True):
+        # Bytes, decoded below: the stream is UTF-8, but its `text/event-stream` type names no charset,
+        # so `requests` would decode it as ISO-8859-1 ("−" became "â\x88\x92").
+        for raw in resp.iter_lines():
             if should_abort():
                 return None
             line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw

@@ -129,7 +129,8 @@ export function beatToolDeclarations(host: NleHost): ToolDeclaration[] {
           },
           start: { type: "NUMBER", description: `Only cut from this ${noun} time. Default the music's start.` },
           end: { type: "NUMBER", description: `Only cut up to this ${noun} time. Default the music's end.` },
-          everyBeats: { type: "NUMBER", enum: [...BEAT_STEPS], description: "1, 2 (default), 4 or 8." },
+          // No `enum`: Gemini takes enums on STRING only (a NUMBER one is an HTTP 400 for the whole chat).
+          everyBeats: { type: "NUMBER", description: "1, 2 (default), 4 or 8." },
           offsetFrames: { type: "NUMBER", description: "Move every cut this many frames (negative: before the beat, which can feel tighter). Default 0." },
           videoTrack: { type: "NUMBER", description: "1-based; must be empty over the stretch. Optional." },
         },

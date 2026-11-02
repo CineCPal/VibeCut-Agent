@@ -508,6 +508,28 @@ def test_thought_parts_are_not_streamed():
     assert parts == [{"text": "plan more", "thought": True}, {"text": "Answer"}]
 
 
+def test_the_stream_is_read_as_utf8_whatever_requests_guesses(monkeypatch):
+    class Undeclared(FakeResponse):
+        """As the API sends it (raw UTF-8, not \\u escapes) and `requests` serves a `text/event-stream`
+        with no charset: bytes, or ISO-8859-1 text when asked to decode."""
+
+        def iter_lines(self, decode_unicode=False):
+            for chunk in self._chunks:
+                for line in (f"data: {json.dumps(chunk, ensure_ascii=False)}", ""):
+                    raw = line.encode("utf-8")
+                    yield raw.decode("iso-8859-1") if decode_unicode else raw
+
+    text = "Oli at −6 dB, 0:00–0:30, café."
+    response = Undeclared(200, chunks=[{"candidates": [{"content": {"parts": [{"text": text}]}}]}])
+    monkeypatch.setattr(gemini_chat, "_http_post", lambda *a, **k: response)
+    rec = Recorder()
+
+    outcome = run_turn(rec)
+
+    assert outcome["text"] == text
+    assert "".join(e["text"] for e in rec.events if e["type"] == "reply_delta") == text
+
+
 def test_a_dropped_stream_is_retried_from_the_start_and_the_streamed_text_reset(monkeypatch):
     class Dropped(FakeResponse):
         def iter_lines(self, decode_unicode=False):
