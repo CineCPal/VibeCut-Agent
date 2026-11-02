@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockTrace } from "../../lib/reconciler/mockTraceGenerator";
 import { useVisualizerStore } from "../../store/useVisualizerStore";
-import { clampZoom, DagCanvas, fitViewport } from "./DagCanvas";
+import { clampZoom, COMPACT_BELOW, DagCanvas, fitViewport, MIN_ZOOM } from "./DagCanvas";
 
 describe("DagCanvas", () => {
   beforeEach(() => {
@@ -31,9 +31,9 @@ describe("DagCanvas", () => {
     expect(useVisualizerStore.getState().selectedTaskId).toBeNull();
   });
 
-  it("zooms within 0.25x to 4x and fits the graph to the box", () => {
+  it("zooms within 0.1x to 4x and fits the graph to the box", () => {
     expect(clampZoom(10)).toBe(4);
-    expect(clampZoom(0.01)).toBe(0.25);
+    expect(clampZoom(0.01)).toBe(0.1);
     const fit = fitViewport(1000, 400, 600, 400);
     expect(fit.scale).toBeCloseTo(536 / 1000, 3);
     expect(fit.x).toBeCloseTo((600 - 1000 * fit.scale) / 2, 3);
@@ -44,5 +44,21 @@ describe("DagCanvas", () => {
     expect(zoomed()).toBe("4.00");
     fireEvent.keyDown(window, { key: "f" });
     expect(zoomed()).not.toBe("4.00");
+  });
+
+  it("shows compact cards with a readable label when zoomed out", () => {
+    const run = mockTrace();
+    act(() => useVisualizerStore.getState().hydrateSnapshot("trc_mock_0001", run.length, run));
+    render(<DagCanvas />);
+    const cutter = () => screen.getByRole("button", { name: /Assemble the teaser/ });
+    expect(cutter()).not.toHaveAttribute("data-compact");
+    fireEvent.wheel(screen.getByRole("group"), { deltaY: 100000, clientX: 0, clientY: 0 });
+    expect((document.querySelector("[data-zoom]") as HTMLElement).dataset.zoom).toBe(MIN_ZOOM.toFixed(2));
+    expect(cutter()).toHaveAttribute("data-compact", "true");
+    // 13 px on screen would be 130 px at 0.1x: capped so a label still fits its card.
+    const label = cutter().querySelector("span[style*='font-size']") as HTMLElement;
+    expect(label.style.fontSize).toBe(`${40}px`);
+    expect(cutter()).toHaveAttribute("title", expect.stringContaining("Assemble the teaser"));
+    expect(COMPACT_BELOW).toBeGreaterThan(MIN_ZOOM);
   });
 });

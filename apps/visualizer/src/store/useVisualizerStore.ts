@@ -3,7 +3,8 @@
  *
  * The socket never writes here. The reconciler hands a frame's envelopes to `applyBatch` at most once per
  * animation frame, and the reducer (lib/reconciler/reduce.ts) runs on the Immer draft. The DAG layout
- * runs only when the topology changed (`topology_version`).
+ * ranks only when the topology changed (`topology_version`), and is placed again for the DAG pane's size
+ * (`setDagBox`), which decides how many columns a tall rank wraps into.
  *
  * The live state follows one trace. Envelopes of other traces only update `knownTraces`, unless
  * `followLatest` is on and a new run starts (a root SPAWN), which then becomes the followed trace.
@@ -67,6 +68,8 @@ export interface VisualizerState {
   aboutOpen: boolean;
   /** The DAG layout's size (for fit-to-view). */
   dagSize: { width: number; height: number };
+  /** The DAG pane's size, which the layout is shaped for (0 x 0 until it's measured). */
+  dagBox: { width: number; height: number };
 
   applyBatch: (envelopes: readonly TelemetryEnvelope[], nowMs?: number) => void;
   hydrateSnapshot: (traceId: string, seq: number, events: readonly TelemetryEnvelope[]) => void;
@@ -83,6 +86,7 @@ export interface VisualizerState {
   addWaveform: (seq: number, peaks: number[]) => void;
   addContactStrip: (seq: number, url: string) => void;
   setAboutOpen: (open: boolean) => void;
+  setDagBox: (width: number, height: number) => void;
   prunePackets: (nowMs?: number) => void;
   reset: () => void;
 }
@@ -90,9 +94,9 @@ export interface VisualizerState {
 const layoutMemo = createLayoutMemo();
 const projections = new ProjectionCache();
 
-function layOut(live: TraceState): { width: number; height: number } {
+function layOut(live: TraceState, box: { width: number; height: number }): { width: number; height: number } {
   const nodes = Object.values(live.nodes);
-  const result = layoutMemo(nodes, Object.values(live.edges));
+  const result = layoutMemo(nodes, Object.values(live.edges), box.width, box.height);
   for (const node of nodes) {
     const position = result.positions[node.task_id];
     if (position) node.layout = position;
@@ -120,6 +124,7 @@ const initial = () => ({
   contactStrips: {},
   aboutOpen: false,
   dagSize: { width: 0, height: 0 },
+  dagBox: { width: 0, height: 0 },
 });
 
 export const useVisualizerStore = create<VisualizerState>()(
@@ -157,7 +162,7 @@ export const useVisualizerStore = create<VisualizerState>()(
         if (!mine.length) return;
         const before = s.live.topology_version;
         reduceEnvelopes(s.live, mine, { packets: s.replayCursorSeqId === null, nowMs });
-        if (s.live.topology_version !== before) s.dagSize = layOut(s.live);
+        if (s.live.topology_version !== before) s.dagSize = layOut(s.live, s.dagBox);
       }),
 
     hydrateSnapshot: (traceId, seq, events) =>
@@ -169,7 +174,7 @@ export const useVisualizerStore = create<VisualizerState>()(
         projections.reset(traceId);
         reduceEnvelopes(s.live, events, { packets: false });
         s.live.max_seq_id = Math.max(s.live.max_seq_id, seq);
-        s.dagSize = layOut(s.live);
+        s.dagSize = layOut(s.live, s.dagBox);
         s.knownTraces[traceId] = {
           trace_id: traceId,
           latest_seq_id: seq,
@@ -239,6 +244,20 @@ export const useVisualizerStore = create<VisualizerState>()(
         s.contactStrips[seq] = url;
       }),
     setAboutOpen: (open) => set((s) => void (s.aboutOpen = open)),
+    setDagBox: (width, height) =>
+      set((s) => {
+        if (s.dagBox.width === width && s.dagBox.height === height) return;
+        s.dagBox = { width, height };
+        if (!Object.keys(s.live.nodes).length) return;
+        s.dagSize = layOut(s.live, s.dagBox);
+        // A replay's projection takes its places from the live DAG.
+        if (s.projection) {
+          for (const node of Object.values(s.projection.nodes)) {
+            const placed = s.live.nodes[node.task_id];
+            if (placed) node.layout = { ...placed.layout };
+          }
+        }
+      }),
     prunePackets: (nowMs = Date.now()) =>
       set((s) => {
         const alive = s.live.activePackets.filter((p) => p.born_ms + p.duration_ms > nowMs);

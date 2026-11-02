@@ -1,7 +1,9 @@
 /**
  * The execution DAG (visualizer-spec.md §2.1, §4.2): SVG edges under HTML node cards, laid out by
- * lib/dag/layout.ts. Wheel zooms (0.25x to 4x) around the pointer; dragging with the middle button, or
- * with Space held, pans; F fits the graph. Edge styles: a spawn parent is dashed #30363D, a data
+ * lib/dag/layout.ts, shaped for this pane's size (a tall rank wraps into columns; the pane's size goes to
+ * the store). Wheel zooms (0.1x to 4x) around the pointer; dragging with the middle button, or with Space
+ * held, pans; F fits the graph. Below COMPACT_BELOW, cards show only what reads at that size: avatar,
+ * label and status colour, the label kept readable. Edge styles: a spawn parent is dashed #30363D, a data
  * dependency solid #4a90d9, and a handoff takes its packet's colour and flows while recent. Selecting a
  * node lights its edges and neighbours and dims the rest.
  */
@@ -9,13 +11,19 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { useNow } from "../../hooks/useTicker";
 import { neighbourhood } from "../../lib/reconciler/reduce";
 import type { DagEdge, DagNode } from "../../types/dag";
+import { FIT_PAD, fitScale } from "../../lib/dag/layout";
 import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
 import { DagNodeCard } from "./DagNodeCard";
 
-export const MIN_ZOOM = 0.25;
+/** Low enough for fit-to-view to show a large run whole (visualizer-spec.md said 0.25x; decided 2026-11-02). */
+export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 4;
-const PAD = 32;
+/** Below this zoom a card's 10-12 px text is too small to read, so cards go compact. */
+export const COMPACT_BELOW = 0.75;
+const PAD = FIT_PAD;
 const HANDOFF_ACTIVE_MS = 2000;
+/** The pane's size is passed on in steps this big, so a drag of its edge doesn't lay out every pixel. */
+const BOX_STEP = 16;
 
 const PACKET_COLOR: Record<string, string> = {
   PROMPT_TOKENS: "#4a90d9",
@@ -40,7 +48,7 @@ export function clampZoom(scale: number): number {
 /** The viewport that fits a `width` x `height` graph into a `boxW` x `boxH` box. */
 export function fitViewport(width: number, height: number, boxW: number, boxH: number): Viewport {
   if (width <= 0 || height <= 0 || boxW <= 0 || boxH <= 0) return { x: PAD, y: PAD, scale: 1 };
-  const scale = clampZoom(Math.min((boxW - 2 * PAD) / width, (boxH - 2 * PAD) / height, 1.25));
+  const scale = clampZoom(fitScale(width, height, boxW, boxH));
   return { x: (boxW - width * scale) / 2, y: (boxH - height * scale) / 2, scale };
 }
 
@@ -65,6 +73,7 @@ export function DagCanvas() {
   const selectedTaskId = useVisualizerStore((s) => s.selectedTaskId);
   const hoveredTaskId = useVisualizerStore((s) => s.hoveredTaskId);
   const selectTask = useVisualizerStore((s) => s.selectTask);
+  const setDagBox = useVisualizerStore((s) => s.setDagBox);
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: PAD, y: PAD, scale: 1 });
   const [userMoved, setUserMoved] = useState(false);
@@ -80,10 +89,26 @@ export function DagCanvas() {
     setUserMoved(false);
   }, [size.width, size.height]);
 
-  // Follow the graph as it grows until the user pans or zooms.
+  // The layout is shaped for the pane: tell the store its size, and again when it changes.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const measure = () => {
+      const step = (v: number) => Math.round(v / BOX_STEP) * BOX_STEP;
+      setDagBox(step(box.clientWidth), step(box.clientHeight));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [setDagBox]);
+
+  // Follow the graph as it grows, and the pane as it resizes, until the user pans or zooms.
+  const box = useVisualizerStore((s) => s.dagBox);
   useEffect(() => {
     if (!userMoved) fit();
-  }, [fit, userMoved]);
+  }, [fit, userMoved, box.width, box.height]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -138,6 +163,9 @@ export function DagCanvas() {
   const edges = Object.values(view.edges);
   const width = Math.max(size.width, 1);
   const height = Math.max(size.height, 1);
+  // Compact cards keep their label about 13 px on screen, in 2 px steps so a wheel tick re-renders rarely.
+  const compact = viewport.scale < COMPACT_BELOW;
+  const labelPx = compact ? Math.min(40, Math.round(13 / viewport.scale / 2) * 2) : 0;
 
   return (
     <div
@@ -209,6 +237,7 @@ export function DagCanvas() {
             highlighted={node.task_id === hoveredTaskId}
             dimmed={lit !== null && !lit.has(node.task_id)}
             onSelect={selectTask}
+            labelPx={labelPx}
           />
         ))}
       </div>

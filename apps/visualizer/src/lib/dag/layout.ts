@@ -5,10 +5,14 @@
  *    path). Back edges found by a DFS are ignored, so a cycle can't hang it.
  * 2. Order within each rank: down and up barycenter sweeps (the median position of a node's neighbours
  *    in the next rank), ties broken by SubagentType ordinal so same-type workers stay together, then id.
- * 3. Coordinates: ranks left to right, each rank centred vertically.
+ * 3. Coordinates: ranks left to right. A rank taller than `rows` cards wraps into as many columns side by
+ *    side as it needs, filled top to bottom and evenly, each column centred vertically. `chooseRows` picks
+ *    `rows` for the panel's shape: a run's tasks are mostly one rank (all the supervisor's children), and
+ *    one column of them was too tall to read at any zoom that fit it (2026-11-02: 16 tasks, 488 x 1956).
  *
- * `createLayoutMemo` caches the result by an FNV-1a hash of the sorted node and edge ids: the layout runs
- * when a node or edge is added, never when a node's metrics or progress change.
+ * `createLayoutMemo` caches the ranking by an FNV-1a hash of the sorted node and edge ids: it runs when a
+ * node or edge is added, never when a node's metrics or progress change. Placing is cheap and runs again
+ * when the panel's size changes the rows.
  */
 import type { SubagentType } from "@vibecut/contracts";
 import { SUBAGENT_ORDER } from "../studio/bays";
@@ -17,6 +21,12 @@ export const NODE_WIDTH = 208;
 export const NODE_HEIGHT = 96;
 export const RANK_GAP = 72;
 export const ROW_GAP = 28;
+/** Between the columns one rank wraps into: closer than ranks, so a rank reads as one group. */
+export const WRAP_GAP = 28;
+/** The margin fit-to-view keeps around the graph. */
+export const FIT_PAD = 32;
+/** The most fit-to-view zooms in. */
+export const FIT_MAX_ZOOM = 1.25;
 
 export interface LayoutNode {
   task_id: string;
@@ -43,6 +53,15 @@ export interface LayoutResult {
   width: number;
   height: number;
   /** Edges left out of ranking because they close a cycle. */
+  backEdges: string[];
+  /** The most cards a column holds. */
+  rows: number;
+}
+
+/** Ranks and their order (steps 1-2): what the topology decides. */
+export interface Ranking {
+  hash: string;
+  layers: string[][];
   backEdges: string[];
 }
 
@@ -112,7 +131,7 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export function computeLayout(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]): LayoutResult {
+export function rankNodes(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]): Ranking {
   const hash = topologyHash(nodes, edges);
   const byId = new Map(nodes.map((n) => [n.task_id, n]));
   const pairs = uniqueEdges(nodes, edges);
@@ -204,46 +223,108 @@ export function computeLayout(nodes: readonly LayoutNode[], edges: readonly Layo
     }
   }
 
-  const tallest = Math.max(1, ...best.map((l) => l.length));
-  const height = tallest * NODE_HEIGHT + (tallest - 1) * ROW_GAP;
+  return { hash, layers: best, backEdges: [...back] };
+}
+
+const tallestOf = (layers: readonly string[][]) => Math.max(1, ...layers.map((l) => l.length));
+const stack = (cards: number, size: number, gap: number) => cards * size + Math.max(0, cards - 1) * gap;
+
+/** How many columns a rank of `count` cards wraps into at `rows`, and how many go in each. */
+function wrap(count: number, rows: number): { columns: number; perColumn: number } {
+  const columns = Math.max(1, Math.ceil(count / rows));
+  return { columns, perColumn: Math.max(1, Math.ceil(count / columns)) };
+}
+
+/** The graph's size at `rows`. */
+export function sizeAt(layers: readonly string[][], rows: number): { width: number; height: number } {
+  let width = 0;
+  layers.forEach((layer, r) => {
+    const { columns } = wrap(layer.length, rows);
+    width += (r ? RANK_GAP : 0) + stack(columns, NODE_WIDTH, WRAP_GAP);
+  });
+  const tallest = Math.max(1, ...layers.map((l) => Math.min(l.length, wrap(l.length, rows).perColumn)));
+  return { width, height: stack(tallest, NODE_HEIGHT, ROW_GAP) };
+}
+
+/** The zoom fit-to-view gives a `width` x `height` graph in a `boxW` x `boxH` box (before clamping). */
+export function fitScale(width: number, height: number, boxW: number, boxH: number): number {
+  if (width <= 0 || height <= 0 || boxW <= 0 || boxH <= 0) return 1;
+  return Math.min((boxW - 2 * FIT_PAD) / width, (boxH - 2 * FIT_PAD) / height, FIT_MAX_ZOOM);
+}
+
+/** The rows that show the graph largest in the box; every rank in one column when the box isn't known. */
+export function chooseRows(layers: readonly string[][], boxW: number, boxH: number): number {
+  const tallest = tallestOf(layers);
+  if (boxW <= 2 * FIT_PAD || boxH <= 2 * FIT_PAD) return tallest;
+  let best = tallest;
+  let bestScale = -Infinity;
+  // From the most rows down, so a tie keeps fewer columns. Rows that wrap the same way (16 cards at 5 rows
+  // make 4 columns of 4) count as the rows the columns hold.
+  for (let rows = tallest; rows >= 1; rows--) {
+    const held = Math.max(1, ...layers.map((l) => Math.min(l.length, wrap(l.length, rows).perColumn)));
+    const { width, height } = sizeAt(layers, held);
+    const scale = fitScale(width, height, boxW, boxH);
+    if (scale > bestScale + 1e-9) {
+      best = held;
+      bestScale = scale;
+    }
+  }
+  return best;
+}
+
+/** Step 3: coordinates for a ranking at `rows` cards a column. */
+export function placeLayers(ranking: Ranking, rows: number): LayoutResult {
+  const { layers } = ranking;
+  const limit = Math.max(1, Math.min(Math.floor(rows), tallestOf(layers)));
+  const { width, height } = sizeAt(layers, limit);
   const positions: Record<string, NodePosition> = {};
-  best.forEach((layer, r) => {
-    const layerHeight = layer.length * NODE_HEIGHT + Math.max(0, layer.length - 1) * ROW_GAP;
-    const top = (height - layerHeight) / 2;
+  let left = 0;
+  layers.forEach((layer, r) => {
+    const { columns, perColumn } = wrap(layer.length, limit);
     layer.forEach((id, order) => {
+      const column = Math.floor(order / perColumn);
+      const inColumn = Math.min(perColumn, layer.length - column * perColumn);
+      const top = (height - stack(inColumn, NODE_HEIGHT, ROW_GAP)) / 2;
       positions[id] = {
         rank: r,
         order,
-        x: r * (NODE_WIDTH + RANK_GAP),
-        y: top + order * (NODE_HEIGHT + ROW_GAP),
+        x: left + column * (NODE_WIDTH + WRAP_GAP),
+        y: top + (order % perColumn) * (NODE_HEIGHT + ROW_GAP),
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
       };
     });
+    left += stack(columns, NODE_WIDTH, WRAP_GAP) + RANK_GAP;
   });
-  return {
-    hash,
-    positions,
-    width: Math.max(0, best.length * (NODE_WIDTH + RANK_GAP) - RANK_GAP),
-    height,
-    backEdges: [...back],
-  };
+  return { hash: ranking.hash, positions, width, height, backEdges: ranking.backEdges, rows: limit };
+}
+
+/** The whole layout. `rows` defaults to every rank in one column. */
+export function computeLayout(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], rows?: number): LayoutResult {
+  const ranking = rankNodes(nodes, edges);
+  return placeLayers(ranking, rows ?? tallestOf(ranking.layers));
 }
 
 export interface LayoutMemo {
-  (nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]): LayoutResult;
-  /** How many times the layout actually ran. */
+  /** The layout for the box (`boxW` x `boxH`, 0 when not known yet). */
+  (nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], boxW?: number, boxH?: number): LayoutResult;
+  /** How many times the ranking actually ran. */
   runs: number;
 }
 
-/** `computeLayout`, run only when the topology hash changes. */
+/** The ranking runs only when the topology hash changes; placing, only when it or the rows change. */
 export function createLayoutMemo(): LayoutMemo {
+  let ranking: Ranking | null = null;
   let last: LayoutResult | null = null;
-  const memo = ((nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]) => {
+  const memo = ((nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], boxW = 0, boxH = 0) => {
     const hash = topologyHash(nodes, edges);
-    if (last && last.hash === hash) return last;
-    memo.runs += 1;
-    last = computeLayout(nodes, edges);
+    if (!ranking || ranking.hash !== hash) {
+      memo.runs += 1;
+      ranking = rankNodes(nodes, edges);
+      last = null;
+    }
+    const rows = chooseRows(ranking.layers, boxW, boxH);
+    if (!last || last.rows !== rows) last = placeLayers(ranking, rows);
     return last;
   }) as LayoutMemo;
   memo.runs = 0;

@@ -2812,6 +2812,20 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
 2. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
 
+**The DAG in large runs (2026-11-02, the user's report: "the DAG chart becomes too tall to fit the panel, everything becomes too small to see"):**
+- **Cause 1, one tall column.** In an orchestrated run every task is the supervisor's child, so all of them were rank 1 in one column. Today's 16-task run was 488 x 1956 px, which needs 17% zoom to fit a 900 x 400 pane, and the floor was 25%, so it overflowed as well as being unreadable.
+- **Cause 2, the split pane was mostly off-screen.** The left column's inner grid had no column template, so it grew to the OTIO dock's timeline width: 2094 px in a 1440 px window. Half the DAG pane and the whole inspector were pushed off-screen. Fixed in `App.tsx` with `grid-cols-[minmax(0,1fr)]` and `min-w-0`.
+- **The fix (`lib/dag/layout.ts`):**
+  - Ranking (`rankNodes`) and placing (`placeLayers`) are split.
+  - A rank taller than `rows` wraps into evenly filled columns, top to bottom, `WRAP_GAP` apart.
+  - `chooseRows` picks the rows that show the graph largest in the pane.
+  - The store keeps the pane's size (`dagBox`, measured by a `ResizeObserver` in 16 px steps). Placing runs again when the size changes the rows; ranking still runs only on topology changes.
+  - The 16-task run now fits a 900 x 400 pane at 63% (was 17%), and the split pane at 48%.
+- **Compact cards (`DagNodeCard`, `labelPx`):** below 75% zoom a card shows its avatar, its label at about 13 px on screen (as many lines as the card holds) and its status as the card's colour. The rest is in its tooltip and the inspector.
+- **Decided (Claude; no Gemini review):** the zoom floor is 0.1x, not visualizer-spec.md's 0.25x, so Fit can show a large run whole.
+- **Checked:** headless Chromium screenshots of today's real trace (91 events, 17 tasks) in the split layout at 1440 x 900, before and after.
+- **Tests:** layout wrapping, the row choice, even splits and the memo; compact cards when zoomed out; the store placing again for the pane and the replay projection. Visualizer vitest 86.
+
 ## Sync in orchestrated mode (2026-11-02)
 
 **Why (the user, 2026-11-02):** the installed app (orchestrated) told the user it couldn't sync audio and video. It was right: an orchestrated chat got the six orchestration tools and the five read-only ones, and none of them can find a sync offset. A delta can link picture and sound (`link_group_id`) but can't match waveforms; that needs the app's `audiosync.rs`.
@@ -3536,3 +3550,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Sync in orchestrated mode.** The three sync tools now go through to the app in orchestrated chats, which had no way to sync audio and video; see "Sync in orchestrated mode" above.
 - **2026-11-02 (Claude): Phase 22, a trace's root finishes in the app too.** Claude Code ends the shim with a signal, which skipped the finish; an orchestrated shim now finishes its trace on SIGTERM, SIGHUP and SIGINT. See "In the app" under Phase 22.
 - **2026-11-02 (Claude): Premiere's clip order.** A scripted move past another clip left Premiere's track list out of time order, so its timeline drew and played the wrong clips (Sequence 02). Every move now places such clips again at their destination, unwanted halves on free or scratch tracks; `reshape_clip` checks each clip against its own file. Both modes, the user's call. See "Premiere's clip order" above.
+- **2026-11-02 (Claude): The visualizer's DAG fits large runs.** A tall rank wraps into columns shaped for the pane, cards go compact below 75% zoom, the zoom floor is 0.1x, and the split layout no longer grows to the OTIO dock's width. See "The DAG in large runs" under Phase 22.

@@ -75,7 +75,9 @@ export default function App({ adapter }: AppProps) {
         <CompactLayout />
       ) : (
         <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem] grid-rows-[minmax(0,1fr)_minmax(0,14rem)]">
-          <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,13rem)] border-r border-border">
+          {/* One column that can't grow with its content: the OTIO dock's wide timeline made it the dock's
+              width (2026-11-02: 2094 px in a 1440 px window), pushing half the DAG and the inspector off-screen. */}
+          <div className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(0,13rem)] border-r border-border">
             <div className="min-h-0 border-b border-border">
               <WorkspaceViewport />
             </div>

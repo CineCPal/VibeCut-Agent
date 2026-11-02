@@ -23,6 +23,26 @@ describe("useVisualizerStore", () => {
     expect(store().dagSize.width).toBeGreaterThan(0);
   });
 
+  it("lays the DAG out again for the pane, wrapping the supervisor's many tasks into columns", () => {
+    const tasks = Array.from({ length: 16 }, (_, i) => `task_${String(i).padStart(2, "0")}`);
+    store().applyBatch([
+      env(1, spawn("task_root"), { subagent: "MASTER_ORCHESTRATOR", parent: null }),
+      ...tasks.map((t, i) => env(i + 2, spawn(t, ["task_root"]))),
+    ]);
+    expect(store().dagSize).toEqual({ width: 488, height: 1956 });
+    store().setReplayCursor(5);
+    store().setDagBox(912, 400);
+    expect(store().dagBox).toEqual({ width: 912, height: 400 });
+    const { live, projection, dagSize } = store();
+    expect(dagSize.height).toBeLessThan(600);
+    expect(new Set(tasks.map((t) => live.nodes[t].layout.x)).size).toBe(4);
+    // Scrubbing, the projection takes the new places too.
+    for (const node of Object.values(projection?.nodes ?? {})) expect(node.layout).toEqual(live.nodes[node.task_id].layout);
+    const before = store().dagSize;
+    store().setDagBox(912, 400);
+    expect(store().dagSize).toBe(before);
+  });
+
   it("keeps statuses on the lattice and lets a recoverable failure retry", () => {
     store().applyBatch([env(1, spawn("t")), env(2, failed("t")), env(3, planning("t"))]);
     expect(store().live.nodes.t.status).toBe("FAILED");
