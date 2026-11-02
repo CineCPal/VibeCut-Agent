@@ -2669,9 +2669,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - Tests added: Gemini's tiers, thinking levels and 404 fallback; the supervisor on Gemini (`tests/agent/gemini_fakes.py`) and its `parametersJsonSchema`; the persist migration; the local titler and critic, with their fallbacks; alias resolution; deterministic validation; stage-major ingest; the contact strip against frames grabbed one at a time (real ffmpeg); SigLIP's GPU lock never nested. `tests/conftest.py` now points `VIBECUT_INDEX_DIR` at a temporary folder for every test, so none touches the real GPU lock.
 
 **Still to check live:**
-1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~~orchestrated mode in Premiere~~, 6. ~~the Local critic~~: checked 2026-11-02 ("The remaining live checks", below).
-3. ~~Ingest with Qwen3-VL~~, 4. ~~turbo transcription~~, 5. ~~chat titles~~: checked from the terminal 2026-11-02 (below).
-7. Reinstall the app: `npm run install-app -- --orchestrated`, with any model variables set. It copies `VIBECUT_WHISPER_MODEL` and `VIBECUT_VALIDATOR_MODE` too now.
+None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~~orchestrated mode in Premiere~~, 6. ~~the Local critic~~, 7. ~~the reinstall~~: checked 2026-11-02 ("The remaining live checks", below). 3. ~~Ingest with Qwen3-VL~~, 4. ~~turbo transcription~~, 5. ~~chat titles~~: checked from the terminal 2026-11-02 (below).
 
 **Checked live from the terminal (2026-11-02, Claude; Ollama 0.32.5; Bernice and Grady, 7.4 and 6.4 min of 4K, symlinked into a scratch folder so no cache landed beside the originals; a scratch index on `nomic-embed-text`, as `bge-m3` isn't pulled here):**
 - **Stage-major ingest: passed.** Both transcripts, then both analyses, then both indexings (905 s in all, 91 s of it the turbo model's first download). `ollama ps`: the VLM loaded once and stayed through both files; the embedder loaded only for the index stage.
@@ -2695,6 +2693,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
   - `qwen3-vl:2b` (not pulled, no alias): Gemini Flash reviewed; `localFallback` named the model and `ollama pull`. 33 s.
   - The GPU lock held by another process: after 30 s, Gemini reviewed; `localFallback` said the GPU was busy.
   - The local review is slower than the cloud's on this Mac.
+- **7. Reinstall: passed.** `VIBECUT_GEMMA_MODEL=gemma3:4b VIBECUT_VLM_MODEL=qwen3-vl:8b-instruct VIBECUT_EMBED_MODEL=nomic-ai/nomic-embed-text-v1.5 npm run install-app -- --orchestrated` (the VLM now the instruct build, D3; the embedder the one the existing index was built with, D14). Info.plist's `LSEnvironment` holds the four values, the signature verifies with the lasting identity, and the running app and its sidecars have them. The installed copy's `orchestrator-health`: orchestrated; Whisper `large-v3-turbo` (mlx), `qwen3-vl:8b-instruct`, `nomic-embed-text` and the deterministic validator all ready. It carries the UTF-8 fix.
 - Tests: pytest (1256, 2 skipped; `test_mcp_server.py::test_an_orchestrated_chat_edits_only_through_a_validated_delta` failed once under full-suite load and passed alone 3 of 3, like this morning's timing test), vitest (867), tsc, ESLint, ruff, mypy.
 
 ## Installing and Launching (2026-10-07)
