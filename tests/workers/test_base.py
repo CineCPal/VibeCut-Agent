@@ -153,6 +153,9 @@ def test_client_speaks_ollama(tmp_path):
         and body["stream"] is False
     )
     assert client.embed("bge-m3", ["a", "b"]) == [[1.0, 0.0], [0.0, 1.0]]
+    assert "keep_alive" not in session.calls[-1][1]
+    client.embed("bge-m3", ["a", "b"], keep_alive="30m")
+    assert session.calls[-1][1]["keep_alive"] == "30m"
     assert client.has_model("gemma3:4b-it")[0]
     assert client.has_model("bge-m3")[0]
     assert not client.has_model("qwen2.5-vl:7b-instruct")[0]

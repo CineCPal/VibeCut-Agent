@@ -257,3 +257,35 @@ def test_another_embedding_model_is_refused(monkeypatch, store, tmp_path):
     other = VectorStore(OrchestratorConfig.from_env(), embedder=WordEmbedder())
     with pytest.raises(VectorStoreError, match="built with BAAI/bge-m3"):
         other.search("bread", "visual")
+
+
+def test_queries_keep_the_embedding_model_loaded_and_are_remembered(monkeypatch):
+    # Seen live (Phase 21, check 12): Ollama evicted the embedding model under load, and a search took 13.9 s.
+    from vibecut_agent.workers import vector_store
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def embed(self, model, texts, keep_alive=None):
+            self.calls.append((model, list(texts), keep_alive))
+            return [[float(len(t)), 1.0] for t in texts]
+
+    monkeypatch.delenv("VIBECUT_EMBED_KEEP_ALIVE", raising=False)
+    client = Client()
+    embedder = vector_store.ServerEmbedder(client, "nomic-ai/nomic-embed-text-v1.5")
+    assert embedder.embed(["mentors"], query=True) == [[len("search_query: mentors"), 1.0]]
+    assert embedder.embed(["mentors"], query=True) == [[len("search_query: mentors"), 1.0]]
+    assert client.calls == [("nomic-embed-text", ["search_query: mentors"], "30m")]
+    # Documents aren't remembered; the oldest query goes past QUERY_CACHE.
+    embedder.embed(["a line"], query=False)
+    embedder.embed(["a line"], query=False)
+    assert len(client.calls) == 3
+    for i in range(vector_store.QUERY_CACHE):
+        embedder.embed([f"query {i}"], query=True)
+    assert "mentors" not in embedder.queries and len(embedder.queries) == vector_store.QUERY_CACHE
+
+    monkeypatch.setenv("VIBECUT_EMBED_KEEP_ALIVE", "-1")
+    assert vector_store.keep_alive_from_env() == -1
+    monkeypatch.setenv("VIBECUT_EMBED_KEEP_ALIVE", "")
+    assert vector_store.keep_alive_from_env() is None

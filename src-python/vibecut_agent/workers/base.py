@@ -300,12 +300,18 @@ class LocalLlmClient:
             raise LocalLlmError(f"{model} answered with JSON that isn't an object")
         return parsed
 
-    def embed(self, model: str, texts: Sequence[str]) -> list[list[float]]:
-        """One embedding per text, in order."""
+    def embed(
+        self, model: str, texts: Sequence[str], keep_alive: str | int | None = None
+    ) -> list[list[float]]:
+        """One embedding per text, in order. `keep_alive` (Ollama's: "30m", seconds, -1 for ever) keeps the
+        model loaded after the call; the OpenAI-compatible route has no such field."""
         if not texts:
             return []
+        ollama: dict[str, Any] = {"model": model, "input": list(texts)}
+        if keep_alive is not None:
+            ollama["keep_alive"] = keep_alive
         dialect, answer = self._request(
-            ("/api/embed", {"model": model, "input": list(texts)}),
+            ("/api/embed", ollama),
             ("/v1/embeddings", {"model": model, "input": list(texts)}),
         )
         try:

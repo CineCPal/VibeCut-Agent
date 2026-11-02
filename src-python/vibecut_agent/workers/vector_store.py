@@ -44,6 +44,18 @@ EMBED_MODELS: dict[str, tuple[str, str, str]] = {
 }
 EMBED_BATCH = 32
 MAX_POOL = 400
+# Seen live (Phase 21, check 12): while Whisper and Qwen were loaded, Ollama evicted the embedding model and
+# a search took 13.9 s to load it again. Each embedding call asks Ollama to keep it this long
+# (VIBECUT_EMBED_KEEP_ALIVE: "30m", seconds, or -1 for ever), and repeated queries skip the call.
+DEFAULT_KEEP_ALIVE = "30m"
+QUERY_CACHE = 64
+
+
+def keep_alive_from_env() -> str | int | None:
+    raw = os.environ.get("VIBECUT_EMBED_KEEP_ALIVE", DEFAULT_KEEP_ALIVE).strip()
+    if not raw:
+        return None
+    return int(raw) if raw.lstrip("-").isdigit() else raw
 
 
 class VectorStoreError(RuntimeError):
@@ -60,13 +72,26 @@ class ServerEmbedder:
     def __init__(self, client: LocalLlmClient, embed_model: str) -> None:
         self.client = client
         self.server_model, self.document_prefix, self.query_prefix = EMBED_MODELS[embed_model]
+        self.keep_alive = keep_alive_from_env()
+        # The latest queries' embeddings, oldest first (a dict keeps insertion order).
+        self.queries: dict[str, list[float]] = {}
 
     def embed(self, texts: Sequence[str], *, query: bool) -> list[list[float]]:
+        if query and len(texts) == 1 and texts[0] in self.queries:
+            vector = self.queries.pop(texts[0])
+            self.queries[texts[0]] = vector
+            return [vector]
         prefix = self.query_prefix if query else self.document_prefix
         try:
-            return self.client.embed(self.server_model, [prefix + text for text in texts])
+            vectors = self.client.embed(self.server_model, [prefix + text for text in texts], self.keep_alive)
         except LocalLlmError as e:
             raise VectorStoreError(str(e)) from None
+        if query:
+            for text, vector in zip(texts, vectors, strict=True):
+                self.queries[text] = vector
+            while len(self.queries) > QUERY_CACHE:
+                del self.queries[next(iter(self.queries))]
+        return vectors
 
 
 @dataclass
