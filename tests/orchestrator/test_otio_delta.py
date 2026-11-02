@@ -506,7 +506,9 @@ def test_the_otio_is_the_timeline_as_the_delta_leaves_it(media, snapshot):
     assert (left.source_range.start_time.value, left.source_range.duration.value) == (250, 50)
     assert (right.source_range.start_time.value, right.source_range.duration.value) == (300, 50)
     assert plain(left.metadata["vibecut"]) == {"id": "c1", "madeBy": None, "linkedIds": ["a1"]}
-    assert plain(right.metadata["vibecut"]) == {"id": None, "madeBy": "op_001", "linkedIds": []}
+    # The split cut c1's linked sound too, and linked the right pieces, as the editors do.
+    assert plain(right.metadata["vibecut"]) == {"id": None, "madeBy": "op_001", "linkedIds": ["a1:right"]}
+    assert items(a1) == [("Clip", "a1"), ("Clip", "a1:right"), ("Clip", "a2")]
     assert dissolve.transition_type == otio.schema.TransitionTypes.SMPTE_Dissolve
     assert (dissolve.in_offset.value, dissolve.out_offset.value) == (5, 5)
     assert left.media_reference.target_url == f"file://{media['a.mov']}"
@@ -585,3 +587,70 @@ def test_linked_picture_and_sound_deleted_together_go_in_one_call(snapshot):
     ]
     assert [c["source_op_id"] for c in commands[1:]] == ["op_001,op_002", "op_003", "op_004"]
     assert [c["seq"] for c in commands] == [1, 2, 3, 4]
+
+
+def test_a_split_cuts_the_linked_sound_too_so_splitting_it_again_does_nothing(snapshot):
+    # Seen live in Resolve: splitting V1 cut A1 as well, so a second split of A1 there failed in the editor.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+            op("op_002", "SPLIT_CLIP", "Audio", 1, clip_id="a1", timeline_range=tr(50, 1)),
+            op("op_003", "TRIM_CLIP", "Audio", 1, clip_id="a1", source_range=tr(250, 25)),
+        ),
+        snapshot,
+    )
+    assert calls(commands)[1:] == [
+        ("split_clips", {"itemIds": ["c1"], "time": 2.0}),
+        # a1's left piece is 10-12 s now; trimming it to 10-11 s is a real change.
+        ("reshape_clip", {"itemId": "a1", "sourceOut": 11.0}),
+    ]
+    assert codes(diagnostics) == [("WARNING", "NEGATIVE_OR_ZERO_DURATION", "op_002")]
+    assert "already cut at 2 s" in diagnostics[0]["message"]
+
+
+def test_a_trim_moves_the_linked_sound_too_so_trimming_it_again_does_nothing(snapshot):
+    # Seen live in Resolve: reshape_clip trims the clip's linked partner with it.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(275, 75)),
+            op("op_002", "TRIM_CLIP", "Audio", 1, clip_id="a1", source_range=tr(275, 75)),
+        ),
+        snapshot,
+    )
+    assert calls(commands)[1:] == [("reshape_clip", {"itemId": "c1", "sourceIn": 11.0})]
+    assert codes(diagnostics) == [("WARNING", "NEGATIVE_OR_ZERO_DURATION", "op_002")]
+
+
+def test_a_trim_within_half_a_frame_of_the_current_point_leaves_it(snapshot):
+    # Seen live: Claude's out point was 45.011633 s where Resolve reported 45.012 s, and a no-op call went out.
+    nudged = copy.deepcopy(snapshot)
+    nudged["tracks"][0]["clips"][0]["sourceOut"] = 14.004
+    commands, diagnostics = run(
+        delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(275, 75))), nudged
+    )
+    assert calls(commands)[1:] == [("reshape_clip", {"itemId": "c1", "sourceIn": 11.0})]
+    assert diagnostics == []
+
+
+def test_a_trimmed_clips_linked_sound_must_have_room_too(snapshot):
+    # With c2 gone, V1 has room for c1 to run a second longer, but its linked a1 would run into a2 on A1.
+    _, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id="c2"),
+            op("op_002", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 125)),
+        ),
+        snapshot,
+    )
+    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", "op_002")]
+    assert "Extending clip a1 would run into clip(s) a2" in diagnostics[0]["message"]
+    # With a2 gone as well, there's room on both tracks.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id="c2"),
+            op("op_002", "DELETE_CLIP", "Audio", 1, clip_id="a2"),
+            op("op_003", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 125)),
+        ),
+        snapshot,
+    )
+    assert diagnostics == []
+    assert calls(commands)[-1:] == [("reshape_clip", {"itemId": "c1", "sourceOut": 15.0})]

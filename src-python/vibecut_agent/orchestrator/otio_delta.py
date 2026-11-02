@@ -131,6 +131,8 @@ class _Compiler:
         # The latest delete_clips call, and the clips linked to what it removes (see `delete`).
         self._last_delete: NleCommand | None = None
         self._last_delete_links: set[str] = set()
+        # (clip id, frame) for linked clips a split has already cut there (see `split`).
+        self._split_with: set[tuple[str, int]] = set()
         for track in snapshot.get("tracks", []):
             kind = track.get("type")
             if kind not in ("video", "audio"):
@@ -459,9 +461,17 @@ class _Compiler:
         if source is None:
             return
         new_in, new_out = float(source[0]), float(source[1])
-        # Trimming the start moves the clip's start on the timeline with it; its end stays.
-        first = clip.first + self._frame(new_in - clip.source_in) if new_in != clip.source_in else clip.first
-        last = clip.last + self._frame(new_out - clip.source_out) if new_out != clip.source_out else clip.last
+        # Within half a frame is the same point: an editor rounds what it reports.
+        half = 0.5 / float(self.frames)
+        moves_in = abs(new_in - clip.source_in) >= half
+        moves_out = abs(new_out - clip.source_out) >= half
+        new_in = new_in if moves_in else clip.source_in
+        new_out = new_out if moves_out else clip.source_out
+        # Trimming the start moves the clip's start on the timeline with it; its end stays. The editors trim
+        # the clip's linked picture or sound with it (reshape_clip), so they move the same way.
+        shift_first = self._frame(new_in - clip.source_in) if moves_in else 0
+        shift_last = self._frame(new_out - clip.source_out) if moves_out else 0
+        first, last = clip.first + shift_first, clip.last + shift_last
         if first < 0 or last <= first:
             self._error(
                 "NEGATIVE_OR_ZERO_DURATION",
@@ -470,31 +480,42 @@ class _Compiler:
                 "Keep the clip's out after its in",
             )
             return
-        busy = self._collisions(clip.track, first, last, {clip.id})
-        if busy:
-            self._error(
-                "TRACK_OVERLAP_COLLISION",
-                op_id,
-                f"Extending clip {clip.id} would run into clip(s) {', '.join(busy)}",
-                "Make room first, or trim less",
+        group = [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]
+        ignore = {member.id for member in group}
+        for member in group:
+            busy = self._collisions(
+                member.track, member.first + shift_first, member.last + shift_last, ignore
             )
-            return
-        changed = False
-        if not math.isclose(new_in, clip.source_in, abs_tol=1e-6):
+            if busy:
+                self._error(
+                    "TRACK_OVERLAP_COLLISION",
+                    op_id,
+                    f"Extending clip {member.id} would run into clip(s) {', '.join(busy)}",
+                    "Make room first, or trim less",
+                )
+                return
+        if moves_in:
             self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceIn": round(new_in, 6)})
-            changed = True
-        if not math.isclose(new_out, clip.source_out, abs_tol=1e-6):
+        if moves_out:
             self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceOut": round(new_out, 6)})
-            changed = True
-        if not changed:
+        if not (moves_in or moves_out):
             self._flag(
                 "WARNING",
                 "NEGATIVE_OR_ZERO_DURATION",
                 op_id,
-                f"Clip {clip.id} already has that source range",
+                f"Clip {clip.id} already has that source range (a trim of a linked clip trims it too)",
                 "Leave this operation out",
             )
-        clip.first, clip.last, clip.source_in, clip.source_out = first, last, new_in, new_out
+            return
+        delta_in, delta_out = new_in - clip.source_in, new_out - clip.source_out
+        for member in group:
+            member.first += shift_first
+            member.last += shift_last
+            if member.source_in is not None:
+                member.source_in = round(member.source_in + delta_in, 6)
+            if member.source_out is not None:
+                member.source_out = round(member.source_out + delta_out, 6)
+        clip.source_in, clip.source_out = new_in, new_out
 
     def split(self, op: dict[str, Any], op_id: str) -> None:
         clip = self._clip(op, op_id)
@@ -518,6 +539,16 @@ class _Compiler:
             )
             return
         cut = int(span["start_time"]["value"])
+        if (clip.id, cut) in self._split_with:
+            self._flag(
+                "WARNING",
+                "NEGATIVE_OR_ZERO_DURATION",
+                op_id,
+                f"Clip {clip.id} is already cut at {self._seconds(cut):g} s: splitting a clip splits its linked "
+                "picture or sound too",
+                "Leave this operation out",
+            )
+            return
         if not clip.first < cut < clip.last:
             self._error(
                 "SOURCE_OUT_OF_BOUNDS",
@@ -527,12 +558,27 @@ class _Compiler:
             )
             return
         self._emit(op_id, "split_clips", {"itemIds": [clip.id], "time": self._seconds(cut)})
+        # The editors cut the clip's linked picture or sound too, where it runs across the cut, and link
+        # the right pieces to each other.
+        group = [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]
+        group = [member for member in group if member.first < cut < member.last]
+        rights = [self._split_piece(member, cut, op_id) for member in group]
+        for right in rights:
+            right.linked = [other.id for other in rights if other is not right]
+            self.clips[right.id] = right
+        self._split_with.update((member.id, cut) for member in group[1:])
+
+    def _split_piece(self, clip: _Clip, cut: int, op_id: str) -> _Clip:
+        """Cuts `clip` at frame `cut`: it keeps the left piece; the right one is returned."""
         # The cut divides the source too: the left piece now ends where the right one starts.
         at = None
         if clip.source_in is not None:
             at = round(float(Fraction(clip.source_in) + Fraction(cut - clip.first) / self.frames), 6)
+        right_id = f"{clip.id}:right"
+        if right_id in self.clips:
+            right_id = f"{clip.id}:right@{cut}"
         right = _Clip(
-            f"{clip.id}:right",
+            right_id,
             clip.track,
             cut,
             clip.last,
@@ -546,7 +592,7 @@ class _Compiler:
         clip.last = cut
         if at is not None:
             clip.source_out = at
-        self.clips[right.id] = right
+        return right
 
     def delete(self, op: dict[str, Any], op_id: str) -> None:
         if not self._no_ripple(op, op_id):
