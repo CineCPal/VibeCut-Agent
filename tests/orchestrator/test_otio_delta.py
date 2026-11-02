@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import math
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
 
 import pytest
 
@@ -667,3 +669,29 @@ def test_the_hash_is_the_same_however_the_numbers_were_written(snapshot):
                 clip[key] = float(clip[key])
     assert timeline_hash(as_floats) == timeline_hash(snapshot)
     assert timeline_hash({**snapshot, "fps": 24}) != timeline_hash(snapshot)
+
+
+def test_frame_times_are_sent_rounded_up_so_premiere_lands_on_the_frame(media, snapshot):
+    # Seen live in Premiere: frame 899 at 29.97 sent as 29.996633 s (a hair before the frame) became 898.
+    ntsc = {**snapshot, "fps": 29.97}
+    for track in ntsc["tracks"]:
+        track["clips"] = []
+    commands, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "INSERT_CLIP",
+                media_reference=ref(media["a.mov"]),
+                source_range=tr(899, 450, 29.97),
+                timeline_range=tr(0, 450, 29.97),
+            ),
+            fps=29.97,
+        ),
+        ntsc,
+    )
+    assert diagnostics == []
+    [clip] = commands[1]["args"]["clips"]
+    assert clip["sourceIn"] == 29.996634
+    exact = Fraction(899 * 1001, 30000)
+    assert 0 <= Fraction(clip["sourceIn"]) - exact < Fraction(1, 1_000_000)
+    assert math.floor(Fraction(clip["sourceIn"]) * Fraction(30000, 1001)) == 899

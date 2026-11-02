@@ -96,6 +96,14 @@ def timeline_hash(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def micro(seconds: Fraction) -> float:
+    """An exact time for a bridge call, in seconds rounded up to the microsecond. A frame's time rounded to
+    the nearest microsecond can land a hair before the frame, and Premiere takes a clip's in point to the
+    frame at or before it (seen live: frame 899 at 29.97 sent as 29.996633 s became frame 898). Rounding up
+    lands every editor on the frame: one that rounds to the nearest frame moves less than a microsecond."""
+    return math.ceil(seconds * 1_000_000) / 1_000_000
+
+
 def media_path_of(target_url: str) -> str:
     """The plain path of a `file:///` URL (percent-encoded or not)."""
     return unquote(urlparse(target_url).path)
@@ -167,7 +175,7 @@ class _Compiler:
         return math.floor(Fraction(seconds) * self.frames + Fraction(1, 2))
 
     def _seconds(self, frame: int) -> float:
-        return round(float(Fraction(frame) / self.frames), 6)
+        return micro(Fraction(frame) / self.frames)
 
     def _flag(self, severity: Severity, code: str, op_id: str | None, message: str, hint: str) -> None:
         self.diagnostics.append(
@@ -405,7 +413,7 @@ class _Compiler:
             _, clip = partner
             same = (
                 clip["path"] == path
-                and clip["sourceIn"] == round(float(source[0]), 6)
+                and clip["sourceIn"] == micro(source[0])
                 and clip["at"] == self._seconds(first)
                 and not clip.get(side)
             )
@@ -424,8 +432,8 @@ class _Compiler:
         else:
             clip = {
                 "path": path,
-                "sourceIn": round(float(source[0]), 6),
-                "sourceOut": round(float(source[1]), 6),
+                "sourceIn": micro(source[0]),
+                "sourceOut": micro(source[1]),
                 "at": self._seconds(first),
                 track_arg: track[1],
                 "picture": side == "picture",
@@ -503,9 +511,9 @@ class _Compiler:
                 )
                 return
         if moves_in:
-            self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceIn": round(new_in, 6)})
+            self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceIn": micro(source[0])})
         if moves_out:
-            self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceOut": round(new_out, 6)})
+            self._emit(op_id, "reshape_clip", {"itemId": clip.id, "sourceOut": micro(source[1])})
         if not (moves_in or moves_out):
             self._flag(
                 "WARNING",
