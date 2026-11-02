@@ -90,6 +90,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "ingest-index", interactive: false, managed: false },
     // Phase 21: the execution mode and the local workers' health, for the About modal.
     CommandSpec { name: "orchestrator-health", interactive: false, managed: false },
+    // Phase 22: the visualizer's telemetry gateway (HTTP / SSE / WebSocket on 127.0.0.1:18765, stdlib only).
+    // Long-running; it stops on the job's cancel (SIGTERM). Nothing in the app starts it yet.
+    CommandSpec { name: "telemetry-gateway", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -1000,6 +1003,13 @@ mod tests {
             assert!(spec.interactive && spec.managed, "{watcher} is Rust's to run");
         }
         assert!(find_command("rm").is_err());
+    }
+
+    #[test]
+    fn the_telemetry_gateway_is_a_plain_command_with_no_extras() {
+        let spec = find_command("telemetry-gateway").unwrap();
+        assert!(!spec.interactive && !spec.managed);
+        assert!(extras_for("telemetry-gateway", &serde_json::json!({})).is_empty());
     }
 
     #[test]

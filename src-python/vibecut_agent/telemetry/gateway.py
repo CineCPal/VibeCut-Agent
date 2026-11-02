@@ -1,0 +1,974 @@
+"""The telemetry gateway (visualizer-spec.md §5.2; PLAN.md, "Phase 22"): HTTP, SSE and WebSocket on
+`127.0.0.1:18765`, built on `asyncio.start_server` with the stdlib only (RFC 6455 framing by hand: sha1,
+base64, struct), so the sidecar's locked base install doesn't grow.
+
+Events come from two places into one `TraceStore`:
+- this process's own bus (a mock run started with TRIGGER_MOCK_RUN), through a bus listener;
+- `JournalTailer`, which reads `<appDataDir>/telemetry/*.jsonl` every 100 ms. Those files are written by the
+  processes that do the work: the MCP shim's tool bus and the `ingest-index` command. Each trace has one
+  writer, so its seq ids run on without gaps.
+
+The store keeps each trace's events by seq id (a line read twice is the same event), serves
+`/events?from_seq&to_seq` for gap recovery and `/snapshot` for hydration (snapshot.py), and sends what's new
+to the WebSocket and SSE clients.
+
+Endpoints:
+- `WS /ws/v1/telemetry`: CLIENT_HELLO -> SERVER_WELCOME, then TELEMETRY_BATCH frames, PING -> PONG, and VCTB
+  binary frames.
+- `GET /sse/v1/telemetry?trace_id=`
+- `GET /api/v1/health`
+- `GET /api/v1/traces`
+- `GET /api/v1/traces/{id}/snapshot`
+- `GET /api/v1/traces/{id}/events?from_seq=&to_seq=`
+- `POST /api/v1/control/{id}` with `{action, params}`
+
+Security (V5): the gateway binds loopback by default. A non-loopback bind (VIBECUT_TELEMETRY_BIND, for an
+iPad on the studio LAN) is refused unless VIBECUT_TELEMETRY_TOKEN is set; with a token, every HTTP request
+must carry it (`Authorization: Bearer`, or `?token=` for EventSource and WebSocket) and so must the
+WebSocket hello. Without a token, a browser page from another origin can't read it: requests whose `Origin`
+or `Host` isn't loopback are refused (DNS rebinding, cross-site WebSocket hijacking)."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import signal
+import struct
+import sys
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, TextIO
+from urllib.parse import parse_qs, urlsplit
+
+from vibecut_agent.telemetry.bus import Envelope, TelemetryBus, telemetry_dir, validate_envelope
+from vibecut_agent.telemetry.snapshot import snapshot
+
+VERSION = "1.0.0"
+PROTOCOL_VERSION = "vibecut.ws.v1"
+DEFAULT_BIND = "127.0.0.1"
+DEFAULT_PORT = 18765
+BIND_ENV = "VIBECUT_TELEMETRY_BIND"
+PORT_ENV = "VIBECUT_TELEMETRY_PORT"
+TOKEN_ENV = "VIBECUT_TELEMETRY_TOKEN"
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+HEARTBEAT_INTERVAL_MS = 5000
+TAIL_INTERVAL_SECONDS = 0.1
+MAX_HEADER_BYTES = 16 * 1024
+MAX_BODY_BYTES = 64 * 1024
+MAX_WS_MESSAGE_BYTES = 1024 * 1024
+MAX_EVENTS_PER_TRACE = 200_000
+MAX_EVENTS_PER_RESPONSE = 20_000
+CLIENT_QUEUE_SIZE = 512
+# A journal touched this recently is a live run.
+LIVE_SECONDS = 30.0
+# A client this many events behind is sent to the snapshot rather than replayed.
+REPLAY_LIMIT = 2_000
+SSE_KEEPALIVE_SECONDS = 15.0
+
+# VCTB binary frames (§5.2 C).
+VCTB_MAGIC = 0x56435442
+VCTB_HEADER = struct.Struct(">IBBHII")
+FRAME_AUDIO_PEAKS = 0x01
+FRAME_CONTACT_STRIP = 0x02
+FRAME_SCRUB_AUDIO = 0x03
+
+OP_CONTINUATION, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
+
+STATUS_TEXT = {
+    101: "Switching Protocols",
+    200: "OK",
+    204: "No Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    409: "Conflict",
+    413: "Payload Too Large",
+    426: "Upgrade Required",
+}
+
+
+class GatewayError(Exception):
+    """A refusal with its HTTP status."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def pack_binary_frame(frame_type: int, channel: int, seq_id: int, payload: bytes) -> bytes:
+    """A VCTB frame: magic, type (u8), channel (u8), reserved (u16 = 0), seq id (u32), length (u32), then
+    the payload, big-endian."""
+    if not 0 <= frame_type <= 0xFF or not 0 <= channel <= 0xFF:
+        raise ValueError("frame_type and channel are single bytes")
+    if not 0 <= seq_id <= 0xFFFFFFFF:
+        raise ValueError("seq_id must fit in 32 bits")
+    return VCTB_HEADER.pack(VCTB_MAGIC, frame_type, channel, 0, seq_id, len(payload)) + payload
+
+
+def unpack_binary_frame(frame: bytes) -> tuple[int, int, int, bytes]:
+    """(frame_type, channel, seq_id, payload) of a VCTB frame."""
+    if len(frame) < VCTB_HEADER.size:
+        raise ValueError("A VCTB frame has a 16-byte header")
+    magic, frame_type, channel, _reserved, seq_id, length = VCTB_HEADER.unpack_from(frame)
+    if magic != VCTB_MAGIC:
+        raise ValueError("Not a VCTB frame")
+    if len(frame) - VCTB_HEADER.size != length:
+        raise ValueError("The VCTB frame's length doesn't match its payload")
+    return frame_type, channel, seq_id, frame[VCTB_HEADER.size :]
+
+
+def accept_key(key: str) -> str:
+    return base64.b64encode(hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+
+
+def is_loopback_host(host: str) -> bool:
+    name = host.strip().strip("[]").lower()
+    if name in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
+def host_of(value: str) -> str:
+    """`host` of `host:port`, `[v6]:port`, or a URL's netloc."""
+    value = value.strip()
+    if value.startswith("["):
+        return value[1 : value.find("]")] if "]" in value else value
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+# ------------------------------------------------------------------------------ the trace store
+
+
+@dataclass
+class Trace:
+    trace_id: str
+    events: dict[int, Envelope] = field(default_factory=dict)
+    latest_seq_id: int = 0
+    source: str = "live"
+    updated: float = field(default_factory=time.time)
+
+    def summary(self) -> dict[str, Any]:
+        stamps = [e["timestamp_ms"] for e in self.events.values()]
+        return {
+            "trace_id": self.trace_id,
+            "latest_seq_id": self.latest_seq_id,
+            "event_count": len(self.events),
+            "first_timestamp_ms": min(stamps) if stamps else None,
+            "last_timestamp_ms": max(stamps) if stamps else None,
+            "live": time.time() - self.updated < LIVE_SECONDS,
+            "source": self.source,
+        }
+
+
+class TraceStore:
+    """Every trace's events by seq id; tells its listeners what's new."""
+
+    def __init__(self) -> None:
+        self.traces: dict[str, Trace] = {}
+        self.listeners: list[Callable[[str, list[Envelope]], None]] = []
+        self.binary_listeners: list[Callable[[str, bytes], None]] = []
+
+    def add(self, envelopes: list[Envelope], source: str = "live", updated: float | None = None) -> None:
+        fresh: dict[str, list[Envelope]] = {}
+        for env in envelopes:
+            if validate_envelope(env):
+                continue
+            trace = self.traces.get(env["trace_id"])
+            if trace is None:
+                trace = self.traces[env["trace_id"]] = Trace(env["trace_id"], source=source)
+            seq_id = env["seq_id"]
+            if seq_id in trace.events:
+                continue
+            trace.events[seq_id] = env
+            trace.latest_seq_id = max(trace.latest_seq_id, seq_id)
+            trace.updated = updated if updated is not None else time.time()
+            if len(trace.events) > MAX_EVENTS_PER_TRACE:
+                del trace.events[min(trace.events)]
+            fresh.setdefault(env["trace_id"], []).append(env)
+        for trace_id, events in fresh.items():
+            events.sort(key=lambda e: e["seq_id"])
+            for listener in list(self.listeners):
+                listener(trace_id, events)
+
+    def add_binary(self, trace_id: str, frame: bytes) -> None:
+        for listener in list(self.binary_listeners):
+            listener(trace_id, frame)
+
+    def active_trace_id(self) -> str | None:
+        if not self.traces:
+            return None
+        return max(self.traces.values(), key=lambda t: t.updated).trace_id
+
+    def latest_seq(self, trace_id: str | None) -> int:
+        trace = self.traces.get(trace_id or "")
+        return trace.latest_seq_id if trace else 0
+
+    def events(self, trace_id: str, from_seq: int = 1, to_seq: int | None = None) -> list[Envelope]:
+        trace = self.traces.get(trace_id)
+        if trace is None:
+            return []
+        upper = trace.latest_seq_id if to_seq is None else min(to_seq, trace.latest_seq_id)
+        found = [trace.events[s] for s in range(max(1, from_seq), upper + 1) if s in trace.events]
+        return found[:MAX_EVENTS_PER_RESPONSE]
+
+    def snapshot(self, trace_id: str) -> dict[str, Any]:
+        trace = self.traces.get(trace_id)
+        return snapshot(trace_id, list(trace.events.values()) if trace else [])
+
+
+class JournalTailer:
+    """Reads new lines of `<folder>/*.jsonl` into the store, from where it last stopped in each file."""
+
+    def __init__(self, folder: Path, store: TraceStore) -> None:
+        self.folder = folder
+        self.store = store
+        self.offsets: dict[Path, int] = {}
+        self.partial: dict[Path, bytes] = {}
+
+    def poll(self) -> int:
+        """Reads what's new; the number of events read."""
+        try:
+            paths = sorted(self.folder.glob("*.jsonl"))
+        except OSError:
+            return 0
+        count = 0
+        for path in paths:
+            count += self._read(path)
+        return count
+
+    def _read(self, path: Path) -> int:
+        try:
+            stat = path.stat()
+        except OSError:
+            return 0
+        offset = self.offsets.get(path, 0)
+        if stat.st_size < offset:
+            # Rewritten from the start (a mock run written again): read it afresh.
+            offset = 0
+            self.partial.pop(path, None)
+        if stat.st_size == offset:
+            return 0
+        try:
+            with path.open("rb") as fh:
+                fh.seek(offset)
+                data = fh.read(stat.st_size - offset)
+        except OSError:
+            return 0
+        self.offsets[path] = offset + len(data)
+        data = self.partial.pop(path, b"") + data
+        lines = data.split(b"\n")
+        if lines[-1]:
+            # A line still being written: kept for the next read.
+            self.partial[path] = lines[-1]
+        envelopes = []
+        for line in lines[:-1]:
+            if not line.strip():
+                continue
+            try:
+                envelopes.append(json.loads(line))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+        self.store.add(envelopes, source="journal", updated=stat.st_mtime)
+        return len(envelopes)
+
+    async def run(self, interval: float = TAIL_INTERVAL_SECONDS) -> None:
+        while True:
+            self.poll()
+            await asyncio.sleep(interval)
+
+
+# ------------------------------------------------------------------------------ HTTP and WebSocket plumbing
+
+
+@dataclass
+class Request:
+    method: str
+    path: str
+    query: dict[str, list[str]]
+    headers: dict[str, str]
+    body: bytes = b""
+
+    def param(self, name: str) -> str | None:
+        values = self.query.get(name)
+        return values[0] if values else None
+
+
+async def read_request(reader: asyncio.StreamReader) -> Request | None:
+    try:
+        head = await reader.readuntil(b"\r\n\r\n")
+    except asyncio.IncompleteReadError:
+        return None
+    except asyncio.LimitOverrunError:
+        raise GatewayError(413, "The request's headers are too long") from None
+    if len(head) > MAX_HEADER_BYTES:
+        raise GatewayError(413, "The request's headers are too long")
+    lines = head.decode("latin-1").split("\r\n")
+    try:
+        method, target, _version = lines[0].split(" ", 2)
+    except ValueError:
+        raise GatewayError(400, "Malformed request line") from None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            name, value = line.split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+    url = urlsplit(target)
+    body = b""
+    length = int(headers.get("content-length", "0") or 0)
+    if length > MAX_BODY_BYTES:
+        raise GatewayError(413, "The request's body is too long")
+    if length:
+        body = await reader.readexactly(length)
+    return Request(method.upper(), url.path, parse_qs(url.query), headers, body)
+
+
+class WebSocket:
+    """One server-side RFC 6455 connection."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.reader = reader
+        self.writer = writer
+        self.closed = False
+        self._lock = asyncio.Lock()
+
+    async def _send(self, opcode: int, data: bytes) -> None:
+        if self.closed and opcode != OP_CLOSE:
+            return
+        length = len(data)
+        if length < 126:
+            header = struct.pack(">BB", 0x80 | opcode, length)
+        elif length < 1 << 16:
+            header = struct.pack(">BBH", 0x80 | opcode, 126, length)
+        else:
+            header = struct.pack(">BBQ", 0x80 | opcode, 127, length)
+        async with self._lock:
+            self.writer.write(header + data)
+            await self.writer.drain()
+
+    async def send_text(self, text: str) -> None:
+        await self._send(OP_TEXT, text.encode("utf-8"))
+
+    async def send_bytes(self, data: bytes) -> None:
+        await self._send(OP_BINARY, data)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        if self.closed:
+            return
+        self.closed = True
+        with contextlib.suppress(ConnectionError, RuntimeError):
+            await self._send(OP_CLOSE, struct.pack(">H", code) + reason.encode("utf-8")[:120])
+
+    async def _frame(self) -> tuple[bool, int, bytes]:
+        first, second = await self.reader.readexactly(2)
+        fin, opcode = bool(first & 0x80), first & 0x0F
+        if first & 0x70:
+            raise GatewayError(400, "Reserved bits set without an extension")
+        if not second & 0x80:
+            raise GatewayError(400, "A client's frames must be masked")
+        length = second & 0x7F
+        if length == 126:
+            (length,) = struct.unpack(">H", await self.reader.readexactly(2))
+        elif length == 127:
+            (length,) = struct.unpack(">Q", await self.reader.readexactly(8))
+        if length > MAX_WS_MESSAGE_BYTES:
+            raise GatewayError(413, "The message is too long")
+        if opcode >= 0x8 and (length > 125 or not fin):
+            raise GatewayError(400, "A control frame must be whole and short")
+        mask = await self.reader.readexactly(4)
+        data = bytearray(await self.reader.readexactly(length))
+        for i in range(length):
+            data[i] ^= mask[i % 4]
+        return fin, opcode, bytes(data)
+
+    async def receive(self) -> tuple[int, bytes] | None:
+        """The next text or binary message (pings answered, fragments joined); None once closed."""
+        message = bytearray()
+        message_opcode: int | None = None
+        while True:
+            try:
+                fin, opcode, data = await self._frame()
+            except (asyncio.IncompleteReadError, ConnectionError):
+                self.closed = True
+                return None
+            except GatewayError as exc:
+                await self.close(1002 if exc.status == 400 else 1009, str(exc))
+                return None
+            if opcode == OP_PING:
+                await self._send(OP_PONG, data)
+                continue
+            if opcode == OP_PONG:
+                continue
+            if opcode == OP_CLOSE:
+                code = struct.unpack(">H", data[:2])[0] if len(data) >= 2 else 1000
+                await self.close(code)
+                return None
+            if opcode == OP_CONTINUATION:
+                if message_opcode is None:
+                    await self.close(1002, "A continuation with nothing to continue")
+                    return None
+            elif opcode in (OP_TEXT, OP_BINARY):
+                if message_opcode is not None:
+                    await self.close(1002, "A new message before the last one ended")
+                    return None
+                message_opcode = opcode
+            else:
+                await self.close(1002, "Unknown opcode")
+                return None
+            message += data
+            if len(message) > MAX_WS_MESSAGE_BYTES:
+                await self.close(1009, "The message is too long")
+                return None
+            if fin:
+                return message_opcode, bytes(message)
+
+
+@dataclass(eq=False)
+class Client:
+    """A WebSocket or SSE viewer: what it follows, and its outgoing queue."""
+
+    kind: str
+    trace_id: str | None = None
+    queue: asyncio.Queue[str | bytes] = field(default_factory=lambda: asyncio.Queue(CLIENT_QUEUE_SIZE))
+    ready: bool = False
+
+    def follows(self, trace_id: str) -> bool:
+        return self.ready and (self.trace_id is None or self.trace_id == trace_id)
+
+
+# ------------------------------------------------------------------------------ the gateway
+
+
+class Gateway:
+    def __init__(
+        self,
+        folder: Path | None = None,
+        *,
+        bind: str = DEFAULT_BIND,
+        port: int = DEFAULT_PORT,
+        token: str | None = None,
+        bus: TelemetryBus | None = None,
+        tail_interval: float = TAIL_INTERVAL_SECONDS,
+    ) -> None:
+        if not is_loopback_host(bind) and not token:
+            raise GatewayError(
+                403,
+                f"Serving telemetry on {bind} would let anyone on the network read it: set "
+                f"{TOKEN_ENV} too, or bind 127.0.0.1",
+            )
+        self.folder = folder
+        self.bind = bind
+        self.port = port
+        self.token = token or None
+        self.store = TraceStore()
+        self.bus = bus or TelemetryBus(folder, heartbeat=True)
+        self.tailer = JournalTailer(folder, self.store) if folder is not None else None
+        self.tail_interval = tail_interval
+        self.clients: set[Client] = set()
+        self.paused = False
+        self.mock_runs = 0
+        self._server: asyncio.Server | None = None
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._connections: set[asyncio.StreamWriter] = set()
+        self.store.listeners.append(self._broadcast)
+        self.store.binary_listeners.append(self._broadcast_binary)
+        self.bus.add_listener(lambda envelopes: self.store.add(envelopes))
+        self.bus.active_workers = lambda: len(self.clients)
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.bind}:{self.port}"
+
+    async def start(self) -> None:
+        if self.tailer is not None:
+            self.tailer.poll()
+            self._spawn(self.tailer.run(self.tail_interval))
+        await self.bus.start()
+        self._server = await asyncio.start_server(
+            self._handle, self.bind, self.port, limit=MAX_HEADER_BYTES * 4
+        )
+        sockets = self._server.sockets
+        if sockets:
+            self.port = int(sockets[0].getsockname()[1])
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            # wait_closed waits for every connection: a WebSocket or SSE viewer would hold it open.
+            for client in list(self.clients):
+                self._offer(client, b"")
+            for writer in list(self._connections):
+                writer.close()
+            await self._server.wait_closed()
+        for task in list(self._tasks):
+            task.cancel()
+        for task in list(self._tasks):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        await self.bus.stop()
+
+    def _spawn(self, coro: Awaitable[Any]) -> asyncio.Task[Any]:
+        task: asyncio.Task[Any] = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    # Fan-out.
+
+    def _offer(self, client: Client, message: str | bytes) -> None:
+        try:
+            client.queue.put_nowait(message)
+        except asyncio.QueueFull:
+            # Too slow to keep up: dropped, and told so (b""); it reconnects and catches up from the snapshot.
+            self.clients.discard(client)
+            while not client.queue.empty():
+                client.queue.get_nowait()
+            client.queue.put_nowait(b"")
+
+    def _broadcast(self, trace_id: str, events: list[Envelope]) -> None:
+        if self.paused:
+            return
+        for start in range(0, len(events), 128):
+            frame = json.dumps(
+                {"type": "TELEMETRY_BATCH", "trace_id": trace_id, "events": events[start : start + 128]},
+                ensure_ascii=False,
+            )
+            for client in list(self.clients):
+                if client.follows(trace_id):
+                    self._offer(client, frame)
+
+    def _broadcast_binary(self, trace_id: str, frame: bytes) -> None:
+        if self.paused:
+            return
+        for client in list(self.clients):
+            if client.kind == "ws" and client.follows(trace_id):
+                self._offer(client, frame)
+
+    # Connections.
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._connections.add(writer)
+        try:
+            request = await read_request(reader)
+            if request is None:
+                return
+            await self._route(request, reader, writer)
+        except GatewayError as exc:
+            with contextlib.suppress(ConnectionError, RuntimeError):
+                await self._respond(writer, exc.status, {"error": str(exc)}, None)
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        except Exception as exc:  # noqa: BLE001 - one bad connection never stops the gateway
+            print(f"vibecut telemetry gateway: {type(exc).__name__}: {exc}", file=sys.stderr)
+        finally:
+            self._connections.discard(writer)
+            with contextlib.suppress(ConnectionError, RuntimeError):
+                writer.close()
+                await writer.wait_closed()
+
+    def _cors_origin(self, request: Request) -> str | None:
+        origin = request.headers.get("origin")
+        if origin is None:
+            return None
+        if self.token is not None or is_loopback_host(host_of(urlsplit(origin).netloc)):
+            return origin
+        return None
+
+    def _check(self, request: Request) -> None:
+        """V5: a token when there is one; else only loopback hosts and origins."""
+        if self.token is not None:
+            given = request.param("token") or ""
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                given = auth[7:].strip()
+            # The WebSocket's token comes in its hello.
+            exempt = request.method == "OPTIONS" or request.path == "/ws/v1/telemetry"
+            if not exempt and not hmac.compare_digest(given.encode(), self.token.encode()):
+                raise GatewayError(401, "A telemetry token is needed")
+            return
+        if not is_loopback_host(host_of(request.headers.get("host", ""))):
+            raise GatewayError(403, "Only this Mac may read its telemetry")
+        origin = request.headers.get("origin")
+        if origin is not None and not is_loopback_host(host_of(urlsplit(origin).netloc)):
+            raise GatewayError(403, "Only pages served from this Mac may read its telemetry")
+
+    async def _respond(
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        body: Any,
+        request: Request | None,
+        content_type: str = "application/json",
+    ) -> None:
+        data = b"" if status == 204 else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers = [
+            f"HTTP/1.1 {status} {STATUS_TEXT.get(status, 'OK')}",
+            f"Content-Type: {content_type}; charset=utf-8",
+            f"Content-Length: {len(data)}",
+            "Cache-Control: no-store",
+            "Connection: close",
+        ]
+        origin = self._cors_origin(request) if request is not None else None
+        if origin is not None:
+            headers += [
+                f"Access-Control-Allow-Origin: {origin}",
+                "Vary: Origin",
+                "Access-Control-Allow-Methods: GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers: Content-Type, Authorization",
+            ]
+        writer.write(("\r\n".join(headers) + "\r\n\r\n").encode("latin-1") + data)
+        await writer.drain()
+
+    async def _route(
+        self, request: Request, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        self._check(request)
+        if request.method == "OPTIONS":
+            await self._respond(writer, 204, None, request)
+            return
+        parts = [p for p in request.path.split("/") if p]
+        if request.path == "/ws/v1/telemetry":
+            await self._websocket(request, reader, writer)
+        elif request.path == "/sse/v1/telemetry" and request.method == "GET":
+            await self._sse(request, reader, writer)
+        elif request.path == "/api/v1/health" and request.method == "GET":
+            await self._respond(writer, 200, self.health(), request)
+        elif request.path == "/api/v1/traces" and request.method == "GET":
+            await self._respond(writer, 200, {"traces": self.trace_summaries()}, request)
+        elif len(parts) == 5 and parts[:3] == ["api", "v1", "traces"] and request.method == "GET":
+            trace_id = parts[3]
+            if parts[4] == "snapshot":
+                await self._respond(writer, 200, self.store.snapshot(trace_id), request)
+            elif parts[4] == "events":
+                from_seq = int(request.param("from_seq") or 1)
+                to_seq_text = request.param("to_seq")
+                events = self.store.events(trace_id, from_seq, int(to_seq_text) if to_seq_text else None)
+                await self._respond(writer, 200, events, request)
+            else:
+                raise GatewayError(404, "No such endpoint")
+        elif len(parts) == 4 and parts[:3] == ["api", "v1", "control"]:
+            if request.method != "POST":
+                raise GatewayError(405, "Control takes POST")
+            status, body = await self.control(parts[3], request.body)
+            await self._respond(writer, status, body, request)
+        else:
+            raise GatewayError(404, "No such endpoint")
+
+    # The endpoints.
+
+    def health(self) -> dict[str, Any]:
+        from vibecut_agent.config import OrchestratorConfig
+
+        config = OrchestratorConfig.from_env()
+        return {
+            "status": "ok",
+            "version": VERSION,
+            "active_trace_id": self.store.active_trace_id(),
+            "connected_clients": len(self.clients),
+            "host_metrics": self.bus.resource_sample(),
+            "workers": {
+                "execution_mode": str(config.execution_mode),
+                "whisper": {"backend": config.whisper_backend, "model": config.whisper_model},
+                "vlm": {"model": config.vlm_model},
+                "vector": {"backend": config.vector_backend, "model": config.embed_model},
+                "validator": {"model": config.gemma_model},
+            },
+            "telemetry_dir": str(self.folder) if self.folder is not None else None,
+            "paused": self.paused,
+        }
+
+    def trace_summaries(self) -> list[dict[str, Any]]:
+        return sorted(
+            (t.summary() for t in self.store.traces.values()),
+            key=lambda s: s["last_timestamp_ms"] or 0,
+            reverse=True,
+        )
+
+    async def control(self, trace_id: str, body: bytes) -> tuple[int, dict[str, Any]]:
+        try:
+            request = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            raise GatewayError(400, "The body isn't JSON") from None
+        action = request.get("action") if isinstance(request, dict) else None
+        params = request.get("params") if isinstance(request, dict) else None
+        if action == "PAUSE":
+            self.paused = True
+            return 200, {"ok": True, "paused": True}
+        if action == "RESUME":
+            self.paused = False
+            return 200, {"ok": True, "paused": False}
+        if action == "TRIGGER_MOCK_RUN":
+            self.mock_runs += 1
+            speed = float((params or {}).get("speed", 1.0)) if isinstance(params, dict) else 1.0
+            mock_id = trace_id if trace_id not in ("", "new", "mock") else f"trc_mock_{self.mock_runs:04d}"
+            self._spawn(self._mock_run(mock_id, speed))
+            return 200, {"ok": True, "trace_id": mock_id}
+        if action in ("CANCEL", "REVEAL_IN_FINDER", "SET_NLE_PLAYHEAD"):
+            # V6: the gateway only watches; the agents run in other processes it can't reach.
+            return 409, {"error": f"{action} isn't wired: the gateway only watches the agents"}
+        raise GatewayError(400, f"Unknown action: {action!r}")
+
+    async def _mock_run(self, trace_id: str, speed: float) -> None:
+        from vibecut_agent.telemetry import mock_emitter
+
+        await mock_emitter.play(self.bus, trace_id, speed)
+        await asyncio.sleep(self.bus.flush_interval * 2)
+        # The music bed's waveform for the OTIO dock (VCTB 0x01), tied to the commit.
+        committed = [
+            e["seq_id"]
+            for e in self.store.events(trace_id)
+            if e["event_type"] == "MUTATION_EMITTED" and e["payload"]["mutation_stage"] == "COMMITTED"
+        ]
+        if committed:
+            self.store.add_binary(
+                trace_id,
+                pack_binary_frame(FRAME_AUDIO_PEAKS, 2, committed[-1], mock_emitter.waveform_peaks()),
+            )
+
+    async def _websocket(
+        self, request: Request, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        if request.headers.get("upgrade", "").lower() != "websocket":
+            raise GatewayError(426, "This endpoint is a WebSocket")
+        key = request.headers.get("sec-websocket-key")
+        if not key or request.headers.get("sec-websocket-version") != "13":
+            raise GatewayError(400, "A WebSocket handshake needs Sec-WebSocket-Key and version 13")
+        writer.write(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept_key(key)}\r\n\r\n"
+            ).encode("latin-1")
+        )
+        await writer.drain()
+        socket = WebSocket(reader, writer)
+        client = Client("ws")
+        self.clients.add(client)
+        sender = self._spawn(self._pump_ws(client, socket))
+        try:
+            while True:
+                message = await socket.receive()
+                if message is None:
+                    break
+                opcode, data = message
+                if opcode != OP_TEXT:
+                    continue
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and not await self._on_message(client, socket, payload):
+                    break
+        finally:
+            self.clients.discard(client)
+            sender.cancel()
+            await socket.close()
+
+    async def _on_message(self, client: Client, socket: WebSocket, message: dict[str, Any]) -> bool:
+        kind = message.get("type")
+        if kind == "CLIENT_HELLO":
+            if self.token is not None and not hmac.compare_digest(
+                str(message.get("auth_token") or "").encode(), self.token.encode()
+            ):
+                await socket.send_text(
+                    json.dumps({"type": "ERROR", "message": "A telemetry token is needed"})
+                )
+                await socket.close(4401, "unauthorized")
+                return False
+            wanted = message.get("subscribe_trace_id")
+            client.trace_id = wanted if isinstance(wanted, str) and wanted else None
+            last_seen = message.get("last_seen_seq_id")
+            last_seen = last_seen if isinstance(last_seen, int) and last_seen >= 0 else 0
+            trace_id = client.trace_id or self.store.active_trace_id()
+            current = self.store.latest_seq(trace_id)
+            needs_snapshot = current - last_seen > REPLAY_LIMIT or (last_seen == 0 and current > 0)
+            await socket.send_text(
+                json.dumps(
+                    {
+                        "type": "SERVER_WELCOME",
+                        "protocol_version": PROTOCOL_VERSION,
+                        "server_time_ms": time.time() * 1000.0,
+                        "active_trace_id": trace_id,
+                        "current_seq_id": current,
+                        "requires_snapshot_fetch": needs_snapshot,
+                        "heartbeat_interval_ms": HEARTBEAT_INTERVAL_MS,
+                    }
+                )
+            )
+            if trace_id and not needs_snapshot and last_seen < current:
+                # Back after a short drop: what it missed, then live.
+                missed = self.store.events(trace_id, last_seen + 1, current)
+                for start in range(0, len(missed), 128):
+                    await socket.send_text(
+                        json.dumps(
+                            {
+                                "type": "TELEMETRY_BATCH",
+                                "trace_id": trace_id,
+                                "events": missed[start : start + 128],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+            client.ready = True
+        elif kind == "PING":
+            trace_id = client.trace_id or self.store.active_trace_id()
+            await socket.send_text(
+                json.dumps(
+                    {
+                        "type": "PONG",
+                        "client_time_ms": message.get("client_time_ms", 0),
+                        "server_time_ms": time.time() * 1000.0,
+                        "latest_seq_id": self.store.latest_seq(trace_id),
+                    }
+                )
+            )
+        return True
+
+    async def _pump_ws(self, client: Client, socket: WebSocket) -> None:
+        with contextlib.suppress(ConnectionError, RuntimeError):
+            while True:
+                message = await client.queue.get()
+                if message == b"":
+                    await socket.close(1013, "too slow; reconnect")
+                    return
+                if isinstance(message, bytes):
+                    await socket.send_bytes(message)
+                else:
+                    await socket.send_text(message)
+
+    async def _sse(
+        self, request: Request, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        headers = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/event-stream; charset=utf-8",
+            "Cache-Control: no-store",
+            "Connection: keep-alive",
+        ]
+        origin = self._cors_origin(request)
+        if origin is not None:
+            headers += [f"Access-Control-Allow-Origin: {origin}", "Vary: Origin"]
+        writer.write(("\r\n".join(headers) + "\r\n\r\n").encode("latin-1"))
+        await writer.drain()
+        client = Client("sse", trace_id=request.param("trace_id") or None, ready=True)
+        self.clients.add(client)
+
+        async def hang_up() -> None:
+            # An SSE client never sends anything: end of input means it went away.
+            with contextlib.suppress(ConnectionError, asyncio.IncompleteReadError):
+                while await reader.read(1024):
+                    pass
+            self._offer(client, b"")
+
+        watcher = self._spawn(hang_up())
+        try:
+            writer.write(b": vibecut telemetry\n\n")
+            await writer.drain()
+            while True:
+                try:
+                    message = await asyncio.wait_for(client.queue.get(), SSE_KEEPALIVE_SECONDS)
+                except TimeoutError:
+                    writer.write(b": keepalive\n\n")
+                    await writer.drain()
+                    continue
+                if message == b"" or isinstance(message, bytes):
+                    if message == b"":
+                        return
+                    continue
+                writer.write(f"event: batch\ndata: {message}\n\n".encode())
+                await writer.drain()
+        finally:
+            watcher.cancel()
+            self.clients.discard(client)
+
+
+# ------------------------------------------------------------------------------ the command
+
+
+def options_from(request: dict[str, Any]) -> dict[str, Any]:
+    from vibecut_agent.protocol import RequestError
+
+    bind = request.get("bind") or os.environ.get(BIND_ENV, "").strip() or DEFAULT_BIND
+    port = request.get("port") or os.environ.get(PORT_ENV, "").strip() or DEFAULT_PORT
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        raise RequestError("port must be a number") from None
+    if not 0 <= port <= 65535:
+        raise RequestError("port must be 0 to 65535")
+    folder = request.get("telemetryDir")
+    return {
+        "bind": str(bind),
+        "port": port,
+        "token": os.environ.get(TOKEN_ENV, "").strip() or None,
+        "folder": Path(folder) if isinstance(folder, str) and folder else telemetry_dir(),
+    }
+
+
+def read_optional_request(stdin: TextIO) -> dict[str, Any]:
+    """The request, or `{}` when there is none (run from a terminal, or an empty stdin)."""
+    from vibecut_agent.protocol import parse_request_object
+
+    if stdin.isatty():
+        return {}
+    text = stdin.read()
+    return parse_request_object(text) if text.strip() else {}
+
+
+async def serve(gateway: Gateway, on_ready: Callable[[], None]) -> None:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, stop.set)
+    await gateway.start()
+    on_ready()
+    try:
+        await stop.wait()
+    finally:
+        await gateway.stop()
+
+
+def main(stdin: TextIO, emitter: Any) -> int:
+    """`telemetry-gateway`: request `{bind?, port?, telemetryDir?}` (or none); emits `ready {url, wsUrl,
+    telemetryDir}` once listening and `done` after SIGTERM."""
+    from vibecut_agent.protocol import RequestError
+
+    options = options_from(read_optional_request(stdin))
+    try:
+        gateway = Gateway(
+            options["folder"], bind=options["bind"], port=options["port"], token=options["token"]
+        )
+    except GatewayError as exc:
+        raise RequestError(str(exc)) from None
+
+    def ready() -> None:
+        host = gateway.bind if ":" not in gateway.bind else f"[{gateway.bind}]"
+        emitter.emit(
+            "ready",
+            url=f"http://{host}:{gateway.port}",
+            wsUrl=f"ws://{host}:{gateway.port}/ws/v1/telemetry",
+            telemetryDir=str(gateway.folder),
+        )
+
+    try:
+        asyncio.run(serve(gateway, ready))
+    except OSError as exc:
+        raise RequestError(
+            f"The telemetry gateway couldn't listen on {gateway.bind}:{gateway.port}: {exc}"
+        ) from None
+    emitter.emit("done")
+    return 0

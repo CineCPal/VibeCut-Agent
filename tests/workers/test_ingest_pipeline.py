@@ -283,3 +283,72 @@ def test_the_run_goes_stage_by_stage_across_files(recorder, tmp_path):
     assert all(files[name]["indexed"] > 0 and not files[name]["errors"] for name in names)
     fractions = [e["fraction"] for e in recorder.events if e["type"] == "progress"]
     assert fractions == sorted(fractions) and fractions[-1] == 1.0
+
+
+# ------------------------------------------------------------------------------ telemetry (Phase 22)
+
+
+def test_an_ingest_is_traced_stage_by_stage(recorder, files):
+    from vibecut_agent.telemetry.bus import TelemetryBus, validate_envelope
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    trace = TraceEmitter(TelemetryBus(), "trc_test_ingest")
+    workers = {"whisper": Whisper(fail=[files[1]]), "vlm": Vlm(), "vector": Store()}
+    ingest = ingest_pipeline.Ingest(
+        parse_request({"paths": files}),
+        recorder.emitter,
+        CancelFlag(),
+        OrchestratorConfig.from_env("orchestrated"),
+        lambda config: workers,
+        trace,
+    )
+    ingest.run()
+    envelopes = trace.bus.flush()
+    assert [validate_envelope(e) for e in envelopes if validate_envelope(e)] == []
+    spawns = [e for e in envelopes if e["event_type"] == "SPAWN"]
+    assert [e["subagent_type"] for e in spawns] == [
+        "MASTER_ORCHESTRATOR",
+        "INGEST_TRANSCRIBE",
+        "INGEST_TRANSCRIBE",
+        "VISION_TAGGER",
+        "VISION_TAGGER",
+        "BROLL_RETRIEVER",
+        "BROLL_RETRIEVER",
+    ]
+    # a.mov's vision step waits on its transcript, and its index on its vision.
+    a_transcribe, a_vision, a_index = (spawns[1], spawns[3], spawns[5])
+    assert a_vision["payload"]["upstream_task_ids"] == [a_transcribe["payload"]["task_id"]]
+    assert a_index["payload"]["upstream_task_ids"] == [a_vision["payload"]["task_id"]]
+    failed = [e["payload"] for e in envelopes if e["event_type"] == "FAILED"]
+    assert [f["error_message"] for f in failed] == ["transcribe: no sound"]
+    assert any(e["event_type"] == "BATCH_PROGRESS" for e in envelopes)
+    assert envelopes[-1]["event_type"] == "COMPLETED"
+    assert envelopes[-1]["payload"]["task_id"] == "task_root"
+
+
+def test_an_ingest_without_telemetry_writes_no_trace(recorder, files, monkeypatch, tmp_path):
+    monkeypatch.delenv("VIBECUT_TELEMETRY", raising=False)
+    monkeypatch.setenv("VIBECUT_APP_DATA_DIR", str(tmp_path / "app"))
+    from vibecut_agent.telemetry.bus import reset_bus
+
+    reset_bus()
+    workers = {"whisper": Whisper(), "vlm": Vlm(), "vector": Store()}
+    assert run({"paths": files}, recorder, workers) == 0
+    assert not (tmp_path / "app").exists()
+    reset_bus()
+
+
+def test_an_ingest_with_telemetry_journals_its_trace(recorder, files, monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBECUT_TELEMETRY", "1")
+    monkeypatch.setenv("VIBECUT_APP_DATA_DIR", str(tmp_path / "app"))
+    from vibecut_agent.telemetry.bus import get_bus, reset_bus
+
+    reset_bus()
+    workers = {"whisper": Whisper(), "vlm": Vlm(), "vector": Store()}
+    assert run({"paths": files}, recorder, workers) == 0
+    get_bus().stop_thread()
+    [journal] = (tmp_path / "app" / "telemetry").iterdir()
+    assert journal.name.startswith("trc_ing_")
+    lines = journal.read_text("utf-8").splitlines()
+    assert '"task_root"' in lines[-1] and '"COMPLETED"' in lines[-1]
+    reset_bus()

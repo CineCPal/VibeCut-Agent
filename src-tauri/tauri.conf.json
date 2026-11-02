@@ -64,7 +64,8 @@
       "../src-python/vibecut_agent/review/*.py": "python/src-python/vibecut_agent/review/",
     "../src-python/vibecut_agent/core/*.py": "python/src-python/vibecut_agent/core/",
     "../src-python/vibecut_agent/workers/*.py": "python/src-python/vibecut_agent/workers/",
-    "../src-python/vibecut_agent/orchestrator/*.py": "python/src-python/vibecut_agent/orchestrator/"
+    "../src-python/vibecut_agent/orchestrator/*.py": "python/src-python/vibecut_agent/orchestrator/",
+    "../src-python/vibecut_agent/telemetry/*.py": "python/src-python/vibecut_agent/telemetry/"
     }
   }
 }

@@ -20,14 +20,24 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.core.ffmpeg_ops import SAMPLE_STRATEGIES
 from vibecut_agent.protocol import CancelFlag, Emitter, RequestError, read_request, require_absolute_paths
 from vibecut_agent.workers.whisper_worker import TIERS
 
+if TYPE_CHECKING:
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
 STAGES = ("transcribe", "vision", "index")
+# Phase 22: each stage's worker as the visualizer shows it (subagent type, agent id, label, what it hands on).
+STAGE_AGENTS = {
+    "transcribe": ("INGEST_TRANSCRIBE", "worker.whisper", "Transcribe", "TRANSCRIPT_SLICES"),
+    "vision": ("VISION_TAGGER", "worker.vlm", "Shot tags", "VLM_TAGS"),
+    "index": ("BROLL_RETRIEVER", "worker.vector", "Index", "CLIP_MANIFEST"),
+}
+INGEST_AGENT = ("orchestrator.ingest", "MASTER_ORCHESTRATOR")
 MAX_FILES = 500
 
 
@@ -74,8 +84,13 @@ class Ingest:
         cancel: CancelFlag,
         config: OrchestratorConfig,
         make_workers: Callable[[OrchestratorConfig], dict[str, Any]] | None = None,
+        telemetry: TraceEmitter | None = None,
     ) -> None:
         self.options = options
+        # Phase 22: None (telemetry off) emits nothing.
+        self.telemetry = telemetry
+        self.task_of: dict[tuple[str, str], str] = {}
+        self.current_task: str | None = None
         self.emitter = emitter
         self.cancel = cancel
         self.config = config
@@ -123,6 +138,20 @@ class Ingest:
         within = min(1.0, max(0.0, within))
         done = self.done + within
         eta = self.eta(within)
+        if self.telemetry is not None and self.current_task is not None:
+            subagent, agent_id, _, _ = STAGE_AGENTS[self.stage_of(self.done)]
+            self.telemetry.progress(
+                self.current_task,
+                agent_id=agent_id,
+                subagent=subagent,
+                phase=phase,
+                fraction=within,
+                completed_items=self.done,
+                total_items=self.steps,
+                eta_seconds=eta,
+                label=detail or None,
+                parent=self.telemetry.root_task_id,
+            )
         self.emitter.progress(
             done,
             self.steps,
@@ -150,6 +179,8 @@ class Ingest:
         use_cache = not self.options["force"]
         self.step_began = time.monotonic()
         self.step_working = stage == "index"
+        errors_before = len(entry["errors"])
+        self.observe_start(stage, path)
         try:
             if stage == "transcribe":
                 self.report("transcribe", 0.0, f"Transcribing {name}")
@@ -185,6 +216,7 @@ class Ingest:
                     entry["indexed"] += store.index_shots(shots)
         except Exception as e:  # noqa: BLE001 - one stage failing is recorded on its file; the run goes on
             entry["errors"].append(f"{stage}: {e}")
+        self.observe_end(stage, path, entry, entry["errors"][errors_before:])
         if self.step_working:
             self.stage_worked[stage] = self.stage_worked.get(stage, 0) + 1
             self.stage_seconds[stage] = (
@@ -193,7 +225,94 @@ class Ingest:
         self.step_working = False
         self.done += 1
 
+    def observe_start(self, stage: str, path: str) -> None:
+        """SPAWN for one file's stage, after a handoff from its previous stage (Phase 22)."""
+        if self.telemetry is None:
+            return
+        subagent, agent_id, label, _ = STAGE_AGENTS[stage]
+        task_id = self.telemetry.next_task_id(stage[:3])
+        stages = self.options["stages"]
+        before = stages[stages.index(stage) - 1] if stages.index(stage) > 0 else None
+        upstream = self.task_of.get((before, path)) if before else None
+        self.task_of[(stage, path)] = task_id
+        self.current_task = task_id
+        self.telemetry.spawn(
+            task_id,
+            agent_id=agent_id,
+            subagent=subagent,
+            label=f"{label}: {os.path.basename(path)}",
+            model_id=self.model_of(stage),
+            backend="METAL_MPS",
+            parent=self.telemetry.root_task_id,
+            upstream=[upstream or self.telemetry.root_task_id],
+            input_summary=path,
+        )
+        if upstream is not None and before is not None:
+            from_subagent, from_agent, _, packet = STAGE_AGENTS[before]
+            from_pair, to_pair = (from_agent, from_subagent), (agent_id, subagent)
+        else:
+            packet, from_pair, to_pair = "PROMPT_TOKENS", INGEST_AGENT, (agent_id, subagent)
+        self.telemetry.handoff(
+            upstream or self.telemetry.root_task_id,
+            task_id,
+            from_agent=from_pair,
+            to_agent=to_pair,
+            packet_type=packet,
+            summary=os.path.basename(path),
+        )
+
+    def observe_end(self, stage: str, path: str, entry: dict[str, Any], errors: list[str]) -> None:
+        if self.telemetry is None or self.current_task is None:
+            return
+        subagent, agent_id, _, _ = STAGE_AGENTS[stage]
+        task_id, self.current_task = self.current_task, None
+        parent = self.telemetry.root_task_id
+        if errors:
+            self.telemetry.failed(
+                task_id, agent_id=agent_id, subagent=subagent, message=errors[0], parent=parent
+            )
+            return
+        counts = {"transcribe": "segments", "vision": "shots", "index": "indexed"}
+        latency_ms = (time.monotonic() - self.step_began) * 1000.0
+        self.telemetry.completed(
+            task_id,
+            agent_id=agent_id,
+            subagent=subagent,
+            latency_ms=latency_ms,
+            summary=f"{entry.get(counts[stage])} {counts[stage]}: {os.path.basename(path)}",
+            parent=parent,
+        )
+
+    def model_of(self, stage: str) -> str:
+        names = {"transcribe": "whisper_model", "vision": "vlm_model", "index": "embed_model"}
+        return str(getattr(self.config, names[stage], ""))
+
     def run(self) -> list[dict[str, Any]]:
+        if self.telemetry is not None:
+            self.telemetry.ensure_root(model_id="ingest-index", agent_id=INGEST_AGENT[0])
+        try:
+            files = self._run()
+        except Cancelled:
+            if self.telemetry is not None:
+                self.telemetry.failed(
+                    self.telemetry.root_task_id,
+                    agent_id=INGEST_AGENT[0],
+                    subagent=INGEST_AGENT[1],
+                    message="The ingest was stopped",
+                    code="TASK_CANCELLED",
+                )
+            raise
+        if self.telemetry is not None:
+            self.telemetry.completed(
+                self.telemetry.root_task_id,
+                agent_id=INGEST_AGENT[0],
+                subagent=INGEST_AGENT[1],
+                latency_ms=0.0,
+                summary=f"{len(files)} files, {sum(f['indexed'] for f in files)} indexed",
+            )
+        return files
+
+    def _run(self) -> list[dict[str, Any]]:
         paths = self.options["paths"]
         entries = {
             path: {"path": path, "segments": None, "shots": None, "indexed": 0, "errors": []}
@@ -230,14 +349,20 @@ def run(
     config: OrchestratorConfig | None = None,
     make_workers: Callable[[OrchestratorConfig], dict[str, Any]] | None = None,
 ) -> int:
+    from vibecut_agent.telemetry.instrument import for_process
+
     options = parse_request(request)
     config = config or OrchestratorConfig.from_env()
-    ingest = Ingest(options, emitter, cancel, config, make_workers)
+    telemetry = for_process("ing", root_label=f"Ingest {len(options['paths'])} files")
+    ingest = Ingest(options, emitter, cancel, config, make_workers, telemetry)
     try:
         files = ingest.run()
     except Cancelled:
         emitter.emit("done", cancelled=True)
         return 0
+    finally:
+        if telemetry is not None:
+            telemetry.bus.flush()
     emitter.emit(
         "result", files=files, indexPath=str(getattr(ingest.workers.get("vector"), "db_path", "")) or None
     )

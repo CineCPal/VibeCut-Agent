@@ -2696,6 +2696,104 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **7. Reinstall: passed.** `VIBECUT_GEMMA_MODEL=gemma3:4b VIBECUT_VLM_MODEL=qwen3-vl:8b-instruct VIBECUT_EMBED_MODEL=nomic-ai/nomic-embed-text-v1.5 npm run install-app -- --orchestrated` (the VLM now the instruct build, D3; the embedder the one the existing index was built with, D14). Info.plist's `LSEnvironment` holds the four values, the signature verifies with the lasting identity, and the running app and its sidecars have them. The installed copy's `orchestrator-health`: orchestrated; Whisper `large-v3-turbo` (mlx), `qwen3-vl:8b-instruct`, `nomic-embed-text` and the deterministic validator all ready. It carries the UTF-8 fix.
 - Tests: pytest (1256, 2 skipped; `test_mcp_server.py::test_an_orchestrated_chat_edits_only_through_a_validated_delta` failed once under full-suite load and passed alone 3 of 3, like this morning's timing test), vitest (867), tsc, ESLint, ruff, mypy.
 
+## Phase 22: The visualizer and its telemetry (2026-11-02)
+
+**Spec:** `docs/specs/visualizer-spec.md` (`vibecut.visualizer.spec.v1`), Phases 1-4, executed by Claude. The user chose three things up front: `zod`, `immer` and `@tanstack/react-virtual` as direct dependencies of the new packages; root npm workspaces; and telemetry opt-in through `VIBECUT_TELEMETRY=1`.
+
+**What it is:** a read-only window on the orchestrated runtime. The sidecar emits lifecycle events; a stdlib gateway serves them; `apps/visualizer` (React 19, Zustand 5 + Immer, Tailwind 4, Canvas 2D) shows four panes:
+- a pixel-art virtual studio with seven bays and an execution DAG;
+- the OTIO deltas on V2/V1/A1/A2 as they're proposed, validated and committed;
+- an agent inspector;
+- a virtualized log with time travel.
+
+**New boundaries:**
+- **The telemetry package, `src-python/vibecut_agent/telemetry/`** (stdlib only; bundled through `tauri.conf.json`):
+  - `bus.py`: `TelemetryBus`. `emit_nowait` takes about 1 µs and is thread-safe. Tier 0 is never dropped; Tier 1 goes to a 4,096-slot ring. A 50 ms flush coalesces it into frames of at most 128 events and journals each trace to `<appDataDir>/telemetry/<trace_id>.jsonl`. The bus is a no-op unless `VIBECUT_TELEMETRY=1`.
+  - `instrument.py`: `TraceEmitter`, the payload builders.
+  - `snapshot.py`: the server-side reduction.
+  - `gateway.py`: HTTP, SSE and RFC 6455 WebSocket on `127.0.0.1:18765`, with VCTB binary frames and the journal tailer.
+  - `mock_emitter.py`: a deterministic documentary run across all seven roles.
+- **Instrumented, orchestrated paths only.** Direct mode never builds a bus, and `gemini_chat.py`, `claude_code_chat.py`, `nle/` and `tools.ts` are untouched.
+  - `OrchestratorToolBus.dispatch` runs each tool as a task (SPAWN, handoff, TOOL_INVOCATION, COMPLETED/FAILED) through `bus.telemetry`. That is None by default, and then dispatch is the old `_dispatch` byte for byte.
+  - `propose_otio_delta` and `commit_otio_delta` emit MUTATION_EMITTED: PROPOSED, then VALIDATED, then COMMITTED or ROLLED_BACK.
+  - `mcp_server.Orchestration.bus` attaches the trace.
+  - `ingest_pipeline.Ingest` emits a task per (stage, file), chained by upstream, plus BATCH_PROGRESS.
+- **New sidecar command `telemetry-gateway`** (`headless.py`, `sidecar.rs`; not managed, not interactive, no extras). A request is optional: `{bind?, port?, telemetryDir?}`. It emits `ready {url, wsUrl, telemetryDir}`, then `done` after SIGTERM. Nothing in the app starts it yet. Run it from a terminal:
+  - `PYTHONPATH=src-python uv run python -m vibecut_agent telemetry-gateway </dev/null`
+  - then `npm --prefix apps/visualizer run dev`
+  - `?source=mock` plays the built-in run with no gateway.
+- **Environment:**
+  - `VIBECUT_TELEMETRY` (`mcp_bridge.rs` `telemetry_env` forwards it to the MCP shim; `install-app.sh` writes it with `--orchestrated`).
+  - `VIBECUT_TELEMETRY_BIND`, `VIBECUT_TELEMETRY_PORT`, `VIBECUT_TELEMETRY_TOKEN`.
+- **`packages/contracts`** (`@vibecut/contracts`):
+  - `telemetry.ts` (spec §1.1 verbatim) and `protocol.ts` (§5.2, VCTB).
+  - `telemetry.py`, which re-exports the bus.
+  - `fixtures/mock_trace.jsonl`. The mock emitter's output is checked byte for byte in pytest and Zod-parsed in vitest, so the two languages can't drift.
+  - `packages/{core,agents,timeline}` are pointer READMEs.
+- **Root wiring:**
+  - `package.json` `workspaces: ["packages/*", "apps/*"]`.
+  - `vitest.config.ts` excludes `apps/**` and `packages/**`; the visualizer runs its own suite.
+  - ESLint ignores `**/dist` and `**/node_modules`; root `npm run lint` now covers the visualizer too.
+
+**Spec decisions (decided 2026-11-02; no Gemini review):**
+- **V1:** the canonical Python is `src-python/vibecut_agent/telemetry/bus.py`; `packages/contracts/telemetry.py` re-exports it. This reverses the spec's direction because `packages/` isn't bundled or on the sidecar's path.
+- **V2:** two flush modes.
+  - An asyncio task in the gateway, which broadcasts.
+  - A daemon thread in the sync emitters (the MCP shim's worker thread, `ingest-index`), which only journals. A final flush runs at exit.
+- **V3:** the heartbeat is measured, not the spec's hardcoded figures.
+  - CPU comes from the `getrusage` delta; memory from `sysconf`; RSS is the peak `ru_maxrss`.
+  - The GPU-lock holder is the pid `.gpu.lock` records, read without locking.
+  - NLE links report false (unknown).
+  - Only the gateway emits heartbeats, and only to a trace active in the last 10 s, so an idle trace stops growing.
+- **V4:** a trace has one writer, so its seq ids are contiguous: `trc_mcp_<caller>_<rand>`, `trc_ing_<rand>`, `trc_mock_<n>`. Event ids are `evt_<time hex><random>` (Python 3.13 has no `uuid7`).
+- **V5:** loopback only by default. A non-loopback bind is refused without `VIBECUT_TELEMETRY_TOKEN`; with one, HTTP needs `Bearer`/`?token=` and the WS hello needs `auth_token`. Without a token, requests whose Origin or Host isn't loopback get 403 (DNS rebinding, cross-site WebSocket).
+- **V6:** control does `TRIGGER_MOCK_RUN` and `PAUSE`/`RESUME` (viewer broadcast only). `CANCEL`, `REVEAL_IN_FINDER` and `SET_NLE_PLAYHEAD` answer 409 "not wired": the gateway can't reach the agents' processes.
+- **V7:** the snapshot carries both the spec's reduced `nodes`/`edges`/`otio_tracks`/`recent_logs` and `replay_events`, the trace compacted. The visualizer hydrates by reducing those itself, so its reducer is the UI's single source of truth.
+- **V8:** no PNG atlases ship. `ProceduralPixelAvatar` draws every sprite: 16x16, 8 states x 8 frames, into the §3.4 atlas layout. A `public/sprites/<role>_atlas.png` that loads wins.
+- **V9:** the OTIO dock is built from the deltas alone; there is no fetch of the timeline as it was.
+- **V10:** the embedded host modes only resolve the gateway URL. Wiring the visualizer into the Tauri window or the Premiere panel needs `ws://127.0.0.1:18765` in the app's CSP `connect-src`; not done.
+- **V11:** Vite 8, Vitest 5 and TS 6 (the root's), not the spec's Vite 7, as in Phase 1.
+- **V12:** timing assertions take the best of 5 runs (1,000 emits < 2 ms; 10,000 events reconciled and reduced < 25 ms).
+- **V13:** a SPAWN for a task that failed recoverably is a retry: the lattice lets it go back to SPAWNED and clears the error. The spec's SPAWN payload has no `retry_attempt`.
+- **V14:** waveform peaks (VCTB 0x01) are little-endian int16 pairs (what an `Int16Array` reads); the 16-byte header stays big-endian.
+- **V15:** the mock source and the visualizer's tests replay the Python fixture (`mockTraceGenerator.ts` imports it `?raw`), not a second TypeScript scenario.
+
+**Not done here:**
+- No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).
+- No producer sends contact strips (VCTB 0x02) or scrub audio (0x03) yet: the VLM worker doesn't keep its strip bytes. The viewer shows a placeholder, and the mock run streams only a waveform.
+- The supervisor (not routed to) isn't instrumented, and neither are token counts or thought streams from Claude Code. The tool bus only sees tool calls, so live MUTATION and lifecycle events come through but THOUGHT chunks only come from the mock.
+- `nle_connected` is always false in a real heartbeat.
+- Not seen in a real browser here: the built-in browser can't open a localhost server started from this shell. The canvas and layout are covered by jsdom tests (with no canvas context) and a production build, not by eye.
+
+**Verification (2026-11-02):**
+- Python:
+  - `ruff check` and `ruff format --check` (packages/contracts, src-python, tests): clean.
+  - `mypy packages/contracts/telemetry.py src-python/ tests/telemetry/`: clean.
+  - pytest: 1304 passed, 2 skipped (40 of them in `tests/telemetry`).
+- `cargo test`: 142 passed (new: `telemetry_reaches_the_shim_only_when_turned_on`, `the_telemetry_gateway_is_a_plain_command_with_no_extras`).
+- Root: ESLint and `tsc --noEmit` clean; vitest 867 passed (unchanged).
+- Visualizer: lint, `tsc --noEmit` and `build` clean; vitest 81 passed, in 13 files:
+  - the contracts against the Python fixture;
+  - the reconciler: reorder, duplicates, the 150 ms gap fill, abandoning a gap, and 10k events < 25 ms;
+  - the WS client: handshake, ping, backoff, snapshot after > 5 s, and invalid envelopes dropped;
+  - VCTB, the host adapter, the store and its time travel;
+  - the DAG layout, the avatar FSM for every lifecycle event, and packets;
+  - the DAG canvas;
+  - SMPTE parity with `timecode_math.py`'s vectors;
+  - the OTIO dock at 23.976 and 29.97;
+  - the 4-pane App end to end, plus replay.
+- **Live smoke test from the terminal**, with a scratch `VIBECUT_APP_DATA_DIR` and the gateway as a real `telemetry-gateway` process:
+  - `/api/v1/health` returned ok.
+  - `TRIGGER_MOCK_RUN` streamed live.
+  - A trace another process journaled (`mock_emitter --realtime`) was tailed, listed as `journal`, and served by `/events?from_seq=60&to_seq=63`.
+  - `Origin: https://evil.example` got 403.
+  - SIGTERM gave `done`.
+
+**To check live:**
+1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1` (dev build, or a reinstall with `--orchestrated` and the variable). Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with SPAWN, TOOL_INVOCATION and MUTATION events for propose and commit.
+2. An `ingest-index` run with telemetry on, watched live in the visualizer.
+3. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -3354,3 +3452,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - The Anthropic API and Antigravity are removed: Gemini (API key) and Claude (subscription, Claude Code) remain, and only Claude orchestrates (Gemini edits directly in either mode, the user's call). Gemini's two tiers are 3.8 Flash and 3.1 Pro, with a thinking level and a 404 fallback that says so.
   - The local workers: Qwen3-VL on 3-frame contact strips, kept loaded; Gemma only with `VIBECUT_VALIDATOR_MODE=llm`; Whisper `large-v3-turbo` with a model cache; stage-major ingest; SigLIP under the GPU lock. Chat titles try the local Gemma first, and the critic can be set to Local.
   - Decisions D1-D18, what wasn't done, the verification and the live checks still owed: "Model migration v2" above.
+- **2026-11-02 (Claude): Phase 22, the visualizer and its telemetry (`docs/specs/visualizer-spec.md`, Phases 1-4).**
+  - A stdlib telemetry bus and gateway (`src-python/vibecut_agent/telemetry/`, the `telemetry-gateway` command), opt-in with `VIBECUT_TELEMETRY=1`, and instrumented in the orchestrator's tool bus and `ingest-index` only. Direct mode is unchanged.
+  - The shared contracts (`packages/contracts`) and the visualizer (`apps/visualizer`), wired in as npm workspaces.
+  - Decisions V1-V15, what wasn't done, the verification and the live checks owed: "Phase 22" above.

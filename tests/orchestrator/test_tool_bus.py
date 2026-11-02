@@ -390,3 +390,96 @@ def test_the_otio_goes_to_the_apps_data_folder(monkeypatch, tmp_path):
     )
     monkeypatch.delenv("VIBECUT_APP_DATA_DIR")
     assert default_otio_dir(OrchestratorConfig.from_env("orchestrated")) == tmp_path / "index" / "otio_deltas"
+
+
+# ------------------------------------------------------------------------------ telemetry (Phase 22)
+
+
+def traced(bus):
+    from vibecut_agent.telemetry.bus import TelemetryBus
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    bus.telemetry = TraceEmitter(TelemetryBus(), "trc_test_bus")
+    return bus.telemetry
+
+
+def kinds(envelopes):
+    return [
+        (e["event_type"], e["payload"].get("mutation_stage") or e["payload"].get("error_code"))
+        for e in envelopes
+        if e["event_type"] not in ("CONTEXT_HANDOFF",)
+    ]
+
+
+def test_without_telemetry_the_bus_emits_nothing(config, tmp_path, snapshot):
+    bus = make_bus(config, tmp_path, App(snapshot))
+    assert bus.telemetry is None
+    assert bus.dispatch("propose_otio_delta", removal())["valid"] is True
+
+
+def test_a_propose_and_commit_are_traced_as_tasks_and_mutations(config, tmp_path, snapshot):
+    from vibecut_agent.telemetry.bus import validate_envelope
+
+    bus = make_bus(config, tmp_path, App(snapshot))
+    trace = traced(bus)
+    token = bus.dispatch("propose_otio_delta", removal())["validation_token"]
+    outcome = bus.dispatch("commit_otio_delta", {"validation_token": token, "commit_summary": "Drop it"})
+    assert outcome == {"committed": True}
+    envelopes = trace.bus.flush()
+    assert [validate_envelope(e) for e in envelopes if validate_envelope(e)] == []
+    assert kinds(envelopes) == [
+        ("SPAWN", None),
+        ("SPAWN", None),
+        ("TOOL_INVOCATION", None),
+        ("MUTATION_EMITTED", "PROPOSED"),
+        ("MUTATION_EMITTED", "VALIDATED"),
+        ("COMPLETED", None),
+        ("SPAWN", None),
+        ("TOOL_INVOCATION", None),
+        ("MUTATION_EMITTED", "COMMITTED"),
+        ("COMPLETED", None),
+    ]
+    root, propose = envelopes[0]["payload"], envelopes[1]["payload"]
+    assert (root["task_id"], envelopes[0]["subagent_type"]) == ("task_root", "MASTER_ORCHESTRATOR")
+    assert envelopes[1]["subagent_type"] == "PACING_CUTTER" and propose["upstream_task_ids"] == ["task_root"]
+    validated = next(e for e in envelopes if e["payload"].get("mutation_stage") == "VALIDATED")["payload"]
+    assert validated["validation_token"] == token
+    assert validated["operations"][0]["op_type"] == "DELETE_CLIP"
+    assert validated["operations"][0]["clip_id"] == "c2"
+    report = next(e for e in envelopes if e["event_type"] == "COMPLETED")["payload"]["artifacts"][0]
+    assert report["artifact_type"] == "VALIDATION_REPORT" and report["valid"] is True
+
+
+def test_an_app_that_cant_commit_is_traced_as_rolled_back(config, tmp_path, snapshot):
+    app = App(snapshot, commit_result={"error": "Unknown tool: commit_otio_delta"})
+    bus = make_bus(config, tmp_path, app)
+    trace = traced(bus)
+    token = bus.dispatch("propose_otio_delta", removal())["validation_token"]
+    bus.dispatch("commit_otio_delta", {"validation_token": token, "commit_summary": "Drop it"})
+    tail = kinds(trace.bus.flush())[-2:]
+    assert tail == [("MUTATION_EMITTED", "ROLLED_BACK"), ("FAILED", "UPSTREAM_PROVIDER_ERROR")]
+
+
+def test_tool_failures_are_traced_with_their_codes(config, tmp_path):
+    args = {"query": "laughing", "modality": "dialogue"}
+    busy = make_bus(config, tmp_path, vector=Worker(GpuLockTimeout("held")))
+    trace = traced(busy)
+    busy.dispatch("semantic_asset_search", args)
+    busy.dispatch("semantic_asset_search", {"query": "x"})
+    failures = [e["payload"] for e in trace.bus.flush() if e["event_type"] == "FAILED"]
+    assert [f["error_code"] for f in failures] == ["LOCAL_MODEL_UNAVAILABLE", "SCHEMA_VALIDATION_FAILED"]
+
+    broken = make_bus(config, tmp_path, vector=Worker(ChatError("Tool result for unknown call id 'x'")))
+    trace = traced(broken)
+    with pytest.raises(ChatError):
+        broken.dispatch("semantic_asset_search", args)
+    assert kinds(trace.bus.flush())[-1] == ("FAILED", "NLE_BRIDGE_TIMEOUT")
+
+
+def test_a_traced_result_is_the_same_result(config, tmp_path):
+    hits = {"query": "laughing", "modality": "dialogue", "hits": []}
+    plain = make_bus(config, tmp_path, vector=Worker(hits))
+    watched = make_bus(config, tmp_path, vector=Worker(hits))
+    traced(watched)
+    args = {"query": "laughing", "modality": "dialogue"}
+    assert watched.dispatch("semantic_asset_search", args) == plain.dispatch("semantic_asset_search", args)

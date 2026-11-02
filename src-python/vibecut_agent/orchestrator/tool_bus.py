@@ -38,7 +38,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urldefrag, urljoin
 
 from vibecut_agent.agent.chat_steps import ChatError
@@ -58,6 +58,9 @@ from vibecut_agent.orchestrator.schemas import (
 )
 from vibecut_agent.protocol import RequestError
 from vibecut_agent.workers.base import CircuitOpen, GpuLock, GpuLockTimeout
+
+if TYPE_CHECKING:
+    from vibecut_agent.telemetry.instrument import TraceEmitter
 
 # The app's tools Claude keeps in orchestrated mode: they only read (ORCHESTRATOR_SPEC.md §3.2).
 READ_ONLY_TOOLS = (
@@ -294,6 +297,9 @@ class OrchestratorToolBus:
         self.otio_dir = Path(otio_dir) if otio_dir else default_otio_dir(config)
         self.hf_token = hf_token
         self.proposals: dict[str, Proposal] = {}
+        # Phase 22: a telemetry.instrument.TraceEmitter when VIBECUT_TELEMETRY=1 (mcp_server.py sets it);
+        # None, the default, emits nothing and leaves dispatch as it was.
+        self.telemetry: TraceEmitter | None = None
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "semantic_asset_search": self.semantic_asset_search,
             "transcribe_and_align": self.transcribe_and_align,
@@ -314,6 +320,11 @@ class OrchestratorToolBus:
     def dispatch(self, name: str, args: Any) -> Any:
         """The tool's result for Claude; see the module docstring. A broken tool_result exchange with the
         app (ChatError, RequestError) is not the tool's failure and is raised."""
+        if self.telemetry is not None:
+            return self.telemetry.tool_call(name, args, lambda: self._dispatch(name, args))
+        return self._dispatch(name, args)
+
+    def _dispatch(self, name: str, args: Any) -> Any:
         handler = self._handlers.get(name)
         if handler is None:
             return {"error": f"{name} isn't one of the orchestrator's tools"}
@@ -439,12 +450,14 @@ class OrchestratorToolBus:
 
     def propose_otio_delta(self, args: dict[str, Any]) -> Any:
         delta = args["delta"]
+        self._observe("PROPOSED", delta)
         snapshot = self.read_timeline()
         result = self.worker("validator").validate(delta, snapshot)
         if result["valid"]:
             self.proposals[result["validation_token"]] = Proposal(
                 delta, result["translated_nle_batch"], timeline_hash(snapshot)
             )
+            self._observe("VALIDATED", delta, result["validation_token"])
         return result
 
     def commit_otio_delta(self, args: dict[str, Any]) -> Any:
@@ -487,7 +500,22 @@ class OrchestratorToolBus:
         [outcome] = self.call_app([("commit_otio_delta", commit)])
         if not (isinstance(outcome, dict) and "error" in outcome):
             del self.proposals[token]
+            self._observe("COMMITTED", proposal.delta, token, otio_path)
+        else:
+            self._observe("ROLLED_BACK", proposal.delta, token, otio_path)
         return outcome
+
+    def _observe(
+        self, stage: str, delta: Any, token: str | None = None, otio_path: str | None = None
+    ) -> None:
+        """A MUTATION_EMITTED event for the visualizer (Phase 22); nothing when telemetry is off."""
+        telemetry = self.telemetry
+        if telemetry is None or telemetry.current_task is None or not isinstance(delta, dict):
+            return
+        task_id, agent_id, subagent = telemetry.current_task
+        telemetry.mutation(
+            task_id, stage, delta, agent_id=agent_id, subagent=subagent, token=token, snapshot_path=otio_path
+        )
 
     def _write_projection(self, delta: dict[str, Any], snapshot: dict[str, Any]) -> str | None:
         """The timeline as the delta will leave it, saved as OTIO; None when OTIO isn't installed or the

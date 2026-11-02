@@ -295,8 +295,11 @@ class Orchestration:
         if self._bus is None:
             from vibecut_agent.config import OrchestratorConfig
             from vibecut_agent.orchestrator.tool_bus import OrchestratorToolBus
+            from vibecut_agent.telemetry.instrument import for_process
 
             self._bus = OrchestratorToolBus(OrchestratorConfig.from_env("orchestrated"))
+            # Phase 22: this run's events go to <appDataDir>/telemetry when VIBECUT_TELEMETRY=1.
+            self._bus.telemetry = for_process("mcp", self.bridge.caller)
         return self._bus
 
     def handles(self, name: str) -> bool:

@@ -389,7 +389,15 @@ pub fn app_shim_launch_with(app: &AppHandle, extras: &[&str]) -> ShimLaunch {
     let mut launch = shim_launch_with(&uv_binary(), &python_root(app), uv_environment(app).as_deref(), bridge_override.as_deref(), extras);
     // The app's own chat (Phase 21 follow-up): the orchestrator saves its .otio files in the app's data folder.
     launch.env.extend(crate::sidecar::app_data_env(app));
+    // Phase 22: the visualizer's telemetry, on only when the app was started with VIBECUT_TELEMETRY=1.
+    launch.env.extend(telemetry_env(std::env::var("VIBECUT_TELEMETRY").ok()));
     launch
+}
+
+/// `VIBECUT_TELEMETRY=1` for the shim when the app has it (the shim journals each orchestration tool call
+/// to `<appDataDir>/telemetry` for the visualizer); nothing otherwise, so telemetry stays opt-in.
+pub fn telemetry_env(value: Option<String>) -> Option<(String, String)> {
+    value.filter(|v| v.trim() == "1").map(|_| ("VIBECUT_TELEMETRY".to_string(), "1".to_string()))
 }
 
 #[derive(serde::Serialize)]
@@ -456,6 +464,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         prepare_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn telemetry_reaches_the_shim_only_when_turned_on() {
+        assert_eq!(telemetry_env(Some("1".into())), Some(("VIBECUT_TELEMETRY".into(), "1".into())));
+        assert_eq!(telemetry_env(Some("0".into())), None);
+        assert_eq!(telemetry_env(Some("yes".into())), None);
+        assert_eq!(telemetry_env(None), None);
     }
 
     #[test]

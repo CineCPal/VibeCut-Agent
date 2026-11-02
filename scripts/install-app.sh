@@ -76,7 +76,7 @@ if (( ORCHESTRATED )); then
   /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$plist" || fail "Couldn't edit $plist"
   /usr/libexec/PlistBuddy -c "Add :LSEnvironment:EXECUTION_MODE string orchestrated" "$plist"
   for name in VIBECUT_GEMMA_MODEL VIBECUT_VLM_MODEL VIBECUT_EMBED_MODEL VIBECUT_WHISPER_MODEL \
-    VIBECUT_VALIDATOR_MODE VIBECUT_LOCAL_LLM_BASE_URL; do
+    VIBECUT_VALIDATOR_MODE VIBECUT_LOCAL_LLM_BASE_URL VIBECUT_TELEMETRY; do
     if [[ -n "${(P)name:-}" ]]; then
       /usr/libexec/PlistBuddy -c "Add :LSEnvironment:$name string ${(P)name}" "$plist"
       print "  $name=${(P)name}"

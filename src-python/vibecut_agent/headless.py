@@ -173,6 +173,14 @@ def orchestrator_health(emitter: Emitter, stdin: TextIO) -> int:
     return health_report.main(stdin, emitter)
 
 
+def telemetry_gateway(emitter: Emitter, stdin: TextIO) -> int:
+    """Phase 22: the visualizer's HTTP / SSE / WebSocket gateway on 127.0.0.1:18765 (stdlib only), serving
+    the traces journaled to <appDataDir>/telemetry. Runs until SIGTERM."""
+    from vibecut_agent.telemetry import gateway
+
+    return gateway.main(stdin, emitter)
+
+
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
     from vibecut_agent.nle.watch import PremiereAdapter, watch
 
@@ -213,6 +221,7 @@ COMMANDS: dict[str, Command] = {
     "critique": critique,
     "ingest-index": ingest_index,
     "orchestrator-health": orchestrator_health,
+    "telemetry-gateway": telemetry_gateway,
     "premiere-watch": premiere_watch,
     "resolve-watch": resolve_watch,
 }

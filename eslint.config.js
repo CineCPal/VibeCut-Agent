@@ -4,7 +4,18 @@ import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 
 export default tseslint.config(
-  { ignores: ["dist", "src-premiere-panel/broll/dist", "src-tauri", "src-python", ".venv", "node_modules", "coverage"] },
+  {
+    ignores: [
+      "dist",
+      "**/dist",
+      "src-premiere-panel/broll/dist",
+      "src-tauri",
+      "src-python",
+      ".venv",
+      "**/node_modules",
+      "coverage",
+    ],
+  },
   {
     files: ["**/*.{ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
