@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.orchestrator.timeline import delta, make_media, make_snapshot, op
+from tests.orchestrator.timeline import delta, make_media, make_snapshot, op, tr
 from tests.workers.fakes import Client
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.orchestrator.otio_delta import timeline_hash
@@ -68,43 +68,55 @@ def test_a_stale_timeline(config, snapshot):
 
 def test_gemma_can_only_warn(config, snapshot):
     note = {
-        "code": "UNKNOWN_CLIP_ID",
+        "code": "SOURCE_OUT_OF_BOUNDS",
         "op_id": "op_001",
-        "message": "That's the wrong speaker's answer",
-        "remediation_hint": "Delete c1 instead",
+        "message": "Cuts mid-word",
+        "remediation_hint": "Cut 3 frames later",
     }
     whole = {**note, "op_id": None}
     check = validator(config, [{"notes": [note, whole]}])
-    result = check.validate(delta(op("op_001", "DELETE_CLIP", clip_id="c2")), snapshot)
+    result = check.validate(
+        delta(op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1))), snapshot
+    )
     assert result["valid"] is True
     assert [(d["severity"], d["op_id"]) for d in result["diagnostics"]] == [
         ("WARNING", "op_001"),
         ("WARNING", None),
     ]
     prompt = check.client.prompts[0][1]
-    assert '"op_type":"DELETE_CLIP"' in prompt and "Findings of the structural checks:\nnone" in prompt
-    assert "- INVALID_TRANSITION_HANDLE: APPLY_TRANSITION" in prompt
+    assert '"op_type":"SPLIT_CLIP"' in prompt and "Findings of the structural checks:\nnone" in prompt
+    assert (
+        "- INVALID_TRANSITION_HANDLE: APPLY_TRANSITION" in prompt
+        and "RATE_MISMATCH" not in prompt.split("The change")[0]
+    )
 
 
 def test_notes_about_what_the_delta_doesnt_do_are_dropped(config, snapshot):
-    # Seen live (Phase 21, Gemma 3 4B): nearly every WARNING was about something the delta doesn't do,
-    # under a code that doesn't fit its operation.
+    # Seen live (Phase 21, Gemma 3 4B): nearly every WARNING was about something the delta doesn't do, under
+    # a code that doesn't fit its operation; and (the follow-up's checks) RATE_MISMATCH and
+    # TRACK_OVERLAP_COLLISION on a correct placement, which the structural checks settle exactly.
     def note(code, op_id):
         return {"code": code, "op_id": op_id, "message": "m", "remediation_hint": "h"}
 
-    d = delta(op("op_001", "DELETE_CLIP", clip_id="c2"), op("op_002", "DELETE_CLIP", clip_id="nope"))
+    d = delta(
+        op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+        op("op_002", "DELETE_CLIP", clip_id="nope"),
+    )
     notes = [
-        note("UNKNOWN_CLIP_ID", "op_999"),  # no such operation
-        note("INVALID_TRANSITION_HANDLE", "op_001"),  # a deletion has no transition
+        note("SOURCE_OUT_OF_BOUNDS", "op_999"),  # no such operation
+        note("INVALID_TRANSITION_HANDLE", "op_001"),  # a split has no transition
         note("INVALID_TRANSITION_HANDLE", None),  # nor does the delta
-        note("STALE_TIMELINE_HASH", None),  # the structural checks' alone
-        note("UNKNOWN_CLIP_ID", "op_002"),  # repeats a structural finding
-        note("UNKNOWN_CLIP_ID", "op_001"),  # kept
+        note("SOURCE_OUT_OF_BOUNDS", "op_002"),  # a deletion has no cut point
+        note("RATE_MISMATCH", "op_001"),  # settled by the structural checks
+        note("TRACK_OVERLAP_COLLISION", "op_001"),
+        note("UNKNOWN_CLIP_ID", "op_002"),
+        note("STALE_TIMELINE_HASH", None),
+        note("SOURCE_OUT_OF_BOUNDS", "op_001"),  # kept
     ]
     result = validator(config, [{"notes": notes}]).validate(d, snapshot)
     assert [(x["severity"], x["code"], x["op_id"]) for x in result["diagnostics"]] == [
         ("ERROR", "UNKNOWN_CLIP_ID", "op_002"),
-        ("WARNING", "UNKNOWN_CLIP_ID", "op_001"),
+        ("WARNING", "SOURCE_OUT_OF_BOUNDS", "op_001"),
     ]
 
 

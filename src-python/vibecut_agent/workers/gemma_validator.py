@@ -78,34 +78,29 @@ REVIEW_SCHEMA: dict[str, Any] = {
 }
 
 # The operations each code can be about. Seen live (Phase 21, Gemma 3 4B): nearly all of its notes were about
-# things the delta doesn't do, under codes that don't fit the operation; those are dropped (`_review`).
-_PLACE = {"INSERT_CLIP", "OVERWRITE_CLIP"}
+# things the delta doesn't do, under codes that don't fit the operation; those are dropped (`_review`). Seen
+# live again (the follow-up's checks): a correct 89-frame placement drew RATE_MISMATCH and
+# TRACK_OVERLAP_COLLISION, which fit a placement. The structural checks settle those codes exactly, so
+# Gemma's notes keep only the two where its judgment adds something: a cut point (SOURCE_OUT_OF_BOUNDS on a
+# place, trim or split) and a transition (INVALID_TRANSITION_HANDLE).
+_SETTLED: set[str] = set()
 CODE_OPS: dict[str, set[str]] = {
-    "SOURCE_OUT_OF_BOUNDS": _PLACE | {"TRIM_CLIP", "SPLIT_CLIP"},
-    "NEGATIVE_OR_ZERO_DURATION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP", "DUCK_REGION"},
-    "TRACK_OVERLAP_COLLISION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP"},
-    "MISSING_MEDIA_FILE": _PLACE,
-    "UNKNOWN_CLIP_ID": {
-        "TRIM_CLIP",
-        "SPLIT_CLIP",
-        "DELETE_CLIP",
-        "MOVE_CLIP",
-        "APPLY_TRANSITION",
-        "SET_AUDIO_GAIN",
-        "DUCK_REGION",
-    },
-    "RATE_MISMATCH": _PLACE | {"TRIM_CLIP", "MOVE_CLIP"},
+    "SOURCE_OUT_OF_BOUNDS": {"INSERT_CLIP", "OVERWRITE_CLIP", "TRIM_CLIP", "SPLIT_CLIP"},
     "INVALID_TRANSITION_HANDLE": {"APPLY_TRANSITION"},
-    # The timeline hash is the structural checks' alone.
-    "STALE_TIMELINE_HASH": set(),
+    "NEGATIVE_OR_ZERO_DURATION": _SETTLED,
+    "TRACK_OVERLAP_COLLISION": _SETTLED,
+    "MISSING_MEDIA_FILE": _SETTLED,
+    "UNKNOWN_CLIP_ID": _SETTLED,
+    "RATE_MISMATCH": _SETTLED,
+    "STALE_TIMELINE_HASH": _SETTLED,
 }
 
 REVIEW_PROMPT = """You check a video editor's planned timeline change before it runs. The structural checks
 have already run; their findings are below. Add only problems a picture editor would see that those checks
 can't, in the operations listed in the change: a cut in the middle of a word or a breath, a jump in
 continuity, a transition on a hard sound edit, a clip placed over the wrong speaker. Don't note anything the
-change doesn't do. Each note names the operation (op_id) it is about and uses a code that fits that
-operation's op_type:
+change doesn't do, and nothing about lengths, rates, overlaps, ids or files: those are checked exactly.
+Each note names the operation (op_id) it is about and uses one of these codes, for those op_types:
 %(codes)s
 Don't repeat the findings below. Answer {"notes": []} when there is nothing to add; most changes need none.
 
