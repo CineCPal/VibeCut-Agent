@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -471,3 +474,63 @@ def test_only_the_apps_own_chat_is_orchestrated(monkeypatch: pytest.MonkeyPatch)
     assert mcp_server.orchestrated_from_env(mcp_server.OUTSIDE) is False
     monkeypatch.delenv(mcp_server.ORCHESTRATED_ENV)
     assert mcp_server.orchestrated_from_env("job-1") is False
+
+
+@pytest.mark.parametrize("ending", ["stdin closed", "SIGTERM", "SIGHUP", "SIGINT"])
+def test_an_orchestrated_shim_finishes_its_trace_however_it_ends(tmp_path: Path, ending: str) -> None:
+    # Claude Code ends its MCP servers with a signal, which used to skip the finish: the trace's root never
+    # completed, and a short run journaled nothing.
+    repo = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo / "src-python"),
+        "VIBECUT_TELEMETRY": "1",
+        "VIBECUT_APP_DATA_DIR": str(tmp_path),
+        mcp_server.CALLER_ENV: "job-1",
+        mcp_server.ORCHESTRATED_ENV: "1",
+        mcp_server.DIR_ENV: str(tmp_path / "mcp"),
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-m", "vibecut_agent", "mcp"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        text=True,
+    )
+    assert process.stdin is not None and process.stdout is not None
+
+    def ask(message: dict[str, Any]) -> None:
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+        process.stdin.flush()
+
+    try:
+        hello = {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "t", "version": "1"},
+        }
+        ask({"id": 1, "method": "initialize", "params": hello})
+        process.stdout.readline()
+        ask({"method": "notifications/initialized"})
+        # A bus call (no app is running, so it fails) spawns the trace's root.
+        ask(
+            {
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "propose_otio_delta", "arguments": {"delta": {}}},
+            }
+        )
+        process.stdout.readline()
+        if ending == "stdin closed":
+            process.stdin.close()
+        else:
+            process.send_signal(getattr(signal, ending))
+        process.wait(timeout=20)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    events = [json.loads(line) for f in (tmp_path / "telemetry").glob("*.jsonl") for line in f.open()]
+    root = [e["event_type"] for e in events if e["agent_id"] == "orchestrator.supervisor"]
+    assert root[0] == "SPAWN" and root[-1] == "COMPLETED" and root.count("COMPLETED") == 1

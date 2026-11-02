@@ -356,9 +356,10 @@ class TraceEmitter:
 
     def finish(self, summary: str | None = None) -> None:
         """COMPLETED for the root, with the time since it was spawned (the end of the shim's run, or of an
-        ingest); then a flush. Nothing when the root was never spawned (no tool was called)."""
+        ingest); then a flush. Nothing when the root was never spawned (no tool was called), or once it's done."""
         if not self._root_spawned:
             return
+        self._root_spawned = False
         self.completed(
             self.root_task_id,
             agent_id=self._root_agent,

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 import uuid
@@ -407,6 +408,10 @@ def orchestrated_from_env(caller: str) -> bool:
     return caller != OUTSIDE and os.environ.get(ORCHESTRATED_ENV) == "1"
 
 
+# The signals that end an orchestrated shim's run (see `main`).
+END_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
 def main() -> int:
     caller = caller_from_env()
     bridge = AppBridge(bridge_dir(), caller)
@@ -417,11 +422,25 @@ def main() -> int:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
-    try:
-        anyio.run(run)
-    finally:
+    def finish() -> None:
         # Phase 22: the run is over (Claude Code closed the shim): its trace's root task is done.
         telemetry = getattr(orchestration._bus, "telemetry", None) if orchestration is not None else None
         if telemetry is not None:
             telemetry.finish()
+
+    if orchestration is not None:
+        # Claude Code ends its MCP servers with a signal, which skips `finally`: finish the trace first, then
+        # end as that signal would have. Only the main thread drains the bus here, so the flush can't deadlock.
+        def on_signal(signum: int, _frame: Any) -> None:
+            finish()
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+        for signum in END_SIGNALS:
+            signal.signal(signum, on_signal)
+
+    try:
+        anyio.run(run)
+    finally:
+        finish()
     return 0

@@ -2803,6 +2803,11 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Neither trace's root task finished properly. The MCP root stayed SPAWNED (nothing marks the end of a Claude Code run), and the ingest root said 0 ms. `TraceEmitter.finish()` now completes the root with its real time and a tally ("5 tool calls, 2 failed"). The shim calls it when it exits (`mcp_server.main`) and the ingest when it ends. Checked again: 797 ms and 190 ms.
   - `telemetry-gateway` ignored `{"port": 0}` (0 is falsy) and took 18765. Found when the gateway test ran while the live gateway held that port.
 
+**In the app (2026-11-02, later):**
+- Three `trc_mcp_*` traces from orchestrated turns in the installed app: two searches, two transcriptions, and a propose → commit (`delta_oli_gain_m6`, edit e415, backup "Sequence 01 (before VibeCut 20)") with its COMMITTED. The gateway and the visualizer served them.
+- **Found and fixed:** no root task finished, though `6edeae1` meant to. Claude Code ends its MCP servers with a signal, and SIGTERM and SIGHUP killed the shim before its `finally`. A short run then journaled nothing at all. SIGINT hung, because asyncio waited on the thread reading stdin. Now an orchestrated shim (only) handles SIGTERM, SIGHUP and SIGINT (`END_SIGNALS`): it finishes the trace, then ends as the signal would have. `TraceEmitter.finish` does nothing a second time. Test: `test_an_orchestrated_shim_finishes_its_trace_however_it_ends` (stdin closed and the three signals; the signal cases fail without the fix).
+- A reinstall without `VIBECUT_TELEMETRY=1` cuts the app off from the visualizer: the installer writes only the variables it's given. Reinstall with it, as well as `--orchestrated` and the model variables.
+
 **Still to check live:**
 1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
 2. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
@@ -3487,3 +3492,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Decisions V1-V15, what wasn't done, the verification and the live checks owed: "Phase 22" above.
 - **2026-11-02 (Claude): Phase 22 live checks from the terminal.** A real `ingest-index` and the real MCP shim, both with telemetry on, streamed live through the gateway. Fixed: a trace's root now finishes with its real time (`TraceEmitter.finish`, at shim exit and ingest end), and `telemetry-gateway` honours `port: 0`. The in-app turn and a look in a browser are still owed.
 - **2026-11-02 (Claude): Sync in orchestrated mode.** The three sync tools now go through to the app in orchestrated chats, which had no way to sync audio and video; see "Sync in orchestrated mode" above.
+- **2026-11-02 (Claude): Phase 22, a trace's root finishes in the app too.** Claude Code ends the shim with a signal, which skipped the finish; an orchestrated shim now finishes its trace on SIGTERM, SIGHUP and SIGINT. See "In the app" under Phase 22.
