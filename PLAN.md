@@ -3255,10 +3255,9 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - Not changed: reshaping or replacing a clip already on the timeline, and putting back lifted channels (`premiere_edit.py`), still count one track per channel. They deal with files that did land split.
   - **Gemma's notes:** kept only under `SOURCE_OUT_OF_BOUNDS` (a place, trim or split: a cut point) and `INVALID_TRANSITION_HANDLE` (a transition). The other codes the structural checks settle exactly (`CODE_OPS`), and the prompt tells Gemma so.
   - **Ingest ETA:** a pace per stage. The step under way is paced by its own progress once it reports some, otherwise by its stage's pace; later steps go at their stage's pace, and a stage not yet timed takes the mean of the others. `SCAN_SHARE` is now 0.8.
-  - **To check live:**
-    - Install panel 0.17.0 from the app and reopen it in Premiere.
-    - Place the stereo `tone-gone.wav` on the last audio track, directly and orchestrated: one clip, no refusal.
-    - Set a file to mono channels (Modify → Audio Channels) and place it on the last track: refused, needing 2 tracks.
+  - **Checked live (2026-11-02, the user, Premiere 26.5.2, panel 0.17.0, dev build in direct mode):** passed.
+    - The stereo `tone-gone.wav` placed on A4, the last audio track, landed as one clip with no new track.
+    - Set to mono channels, it was refused for A4, needing 2 free tracks.
   - **ETA checked from the terminal (the same ingest, timed per event):** 199 s in all.
     - Indexing read 2.7 s with 0.2 s left (85 s before).
     - During Grady's scan it read high by a steady 40-50 s: 147 s with 101 s left at 50% (1.45x; it was 2-3x). That's the 20% kept for the shots, which took 8 s for Grady's one shot.
