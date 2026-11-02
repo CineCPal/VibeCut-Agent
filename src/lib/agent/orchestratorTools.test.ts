@@ -48,6 +48,7 @@ const commit = (overrides: Record<string, unknown> = {}) => ({
   host: "resolve",
   timeline: "Cut",
   batch: BATCH,
+  expectedTimelineHash: "a".repeat(64),
   otioPath: "/data/otio_deltas/delta_0001.otio",
   ...overrides,
 });
@@ -84,7 +85,12 @@ describe("commit_otio_delta", () => {
       },
     });
     const outcome = await run(commit());
-    expect(ipc.nleCall).toHaveBeenCalledWith("resolve", "execute_otio_batch", { timeline: "Cut", backup: "Cut (before VibeCut 1)", batch: BATCH });
+    expect(ipc.nleCall).toHaveBeenCalledWith("resolve", "execute_otio_batch", {
+      timeline: "Cut",
+      backup: "Cut (before VibeCut 1)",
+      batch: BATCH,
+      expectedTimelineHash: "a".repeat(64),
+    });
     expect(outcome.summary).toBe('Drop the second shot (1 change in Resolve, 1 call) (backup: "Cut (before VibeCut 1)")');
     expect(outcome.result).toEqual({
       committed: true,
@@ -133,6 +139,7 @@ describe("commit_otio_delta", () => {
     expect(() => commitArgs(commit({ host: "avid" }))).toThrow("host must be one of premiere, resolve");
     expect(() => commitArgs(commit({ commitSummary: " " }))).toThrow("commitSummary must be non-empty text");
     expect(commitArgs(commit({ otioPath: undefined }))).not.toHaveProperty("otioPath");
+    expect(commitArgs(commit({ expectedTimelineHash: undefined }))).not.toHaveProperty("expectedTimelineHash");
   });
 
   it("waits for Apply when edits are reviewed, and says what it will do", () => {

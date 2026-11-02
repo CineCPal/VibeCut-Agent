@@ -26,7 +26,7 @@ class Editor:
 
     def _edit(self, name):
         def run(host, args):
-            assert host is HOST
+            assert host is HOST or isinstance(host, Host)
             self.calls.append((name, args))
             answer = self.answers.get(name)
             if isinstance(answer, Exception):
@@ -219,3 +219,43 @@ def test_both_editors_register_the_batch():
     assert "execute_otio_batch" in resolve_edits()
     # Resolve can't duck from a script, so the validator never sends it duck_clip (otio_delta.py).
     assert "duck_clip" not in resolve_edits()
+
+
+class Host:
+    """An editor host that reads back one timeline."""
+
+    def __init__(self, timeline):
+        self.timeline = timeline
+
+    def read_timeline(self, args):
+        assert args == {"timeline": "Cut"}
+        return self.timeline
+
+
+def test_a_timeline_changed_since_validation_is_refused_before_anything_changes():
+    from tests.orchestrator.timeline import make_snapshot
+    from vibecut_agent.orchestrator.otio_delta import timeline_hash
+
+    media = {name: f"/m/{name}" for name in ("a.mov", "b.mov", "c d.mov", "music.wav")}
+    validated = make_snapshot(media)
+    expected = timeline_hash(validated)
+    changed = make_snapshot(media)
+    changed["tracks"][0]["clips"][1]["start"] = 4.04  # moved by hand while the commit waited for Apply
+    calls = batch(call(2, "delete_clips", itemIds=["c2"]))
+
+    editor = Editor()
+    with pytest.raises(HostError, match="STALE_TIMELINE_HASH: Cut changed after the edit was checked"):
+        bridge_runner.execute_validated_batch(
+            Host(changed),
+            {"timeline": "Cut", "batch": calls, "expectedTimelineHash": expected},
+            editor.edits(),
+        )
+    assert editor.calls == [], "not even a backup"
+
+    editor = Editor()
+    unchanged = Host(make_snapshot(media))
+    result = bridge_runner.execute_validated_batch(
+        unchanged, {"timeline": "Cut", "batch": calls, "expectedTimelineHash": expected}, editor.edits()
+    )
+    assert editor.names() == ["backup_timeline", "delete_clips"]
+    assert result["changes"] == [{"kind": "delete_clips", "itemId": None}]

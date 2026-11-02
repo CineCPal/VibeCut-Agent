@@ -266,6 +266,8 @@ export interface OtioCommitArgs {
   host: NleHost;
   timeline: string;
   batch: NleBatchCommand[];
+  /** The timeline's hash when the delta was validated; the editor checks it again just before it edits. */
+  expectedTimelineHash?: string;
   /** The timeline as the delta leaves it, saved as OTIO, when the sidecar could write it. */
   otioPath?: string;
 }

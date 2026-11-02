@@ -17,7 +17,8 @@ back as `{"error": ...}` (with `details` for a schema mismatch) for Claude to re
 - `commit_otio_delta`: the token must be one this bus handed out and hasn't committed. The timeline is
   read again and must still hash the same (STALE_TIMELINE_HASH otherwise), the token must verify, and
   then the validated calls go to the app as a `commit_otio_delta` call of its own (`validationToken`,
-  `deltaId`, `commitSummary`, `host`, `timeline`, `batch`, and `otioPath` when the `orchestrator` extra
+  `deltaId`, `commitSummary`, `host`, `timeline`, `batch`, `expectedTimelineHash` (which the editor checks
+  again just before it edits, since a commit can wait for Apply), and `otioPath` when the `orchestrator` extra
   could write the timeline as it will be to `<appDataDir>/otio_deltas/<delta_id>.otio`). The app's executor
   for it, and the bridge's `execute_otio_batch`, are Phase 5; until then the app answers "Unknown tool"
   and the token stays usable. Only `incremental_bridge` is offered: neither bridge imports an OTIO yet.
@@ -441,6 +442,9 @@ class OrchestratorToolBus:
             "host": proposal.delta["target_host"],
             "timeline": proposal.delta["target_timeline"],
             "batch": proposal.batch,
+            # The editor checks it again just before it edits: the user may change the timeline while the
+            # commit waits for Apply (nle/bridge_runner.py).
+            "expectedTimelineHash": current,
         }
         otio_path = self._write_projection(proposal.delta, snapshot)
         if otio_path is not None:

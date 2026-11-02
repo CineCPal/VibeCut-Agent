@@ -15,6 +15,7 @@ from vibecut_agent.agent.chat_steps import ChatError
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.core import ffmpeg_ops
 from vibecut_agent.orchestrator import tool_bus
+from vibecut_agent.orchestrator.otio_delta import timeline_hash
 from vibecut_agent.orchestrator.schemas import ORCHESTRATOR_TOOLS, OTIO_DELTA_ID, errors_against, errors_in
 from vibecut_agent.orchestrator.tool_bus import claude_tools, fit, inline_refs
 from vibecut_agent.workers.base import GpuLockTimeout
@@ -255,6 +256,8 @@ def test_a_valid_delta_is_kept_for_its_commit(config, tmp_path, snapshot):
     assert (commit["host"], commit["timeline"]) == ("premiere", "Cut")
     assert commit["batch"] == result["translated_nle_batch"]
     assert [c["command"] for c in commit["batch"]] == ["backup_timeline", "delete_clips"]
+    # The editor checks this again just before it edits (nle/bridge_runner.py).
+    assert commit["expectedTimelineHash"] == timeline_hash(snapshot)
     if HAS_OTIO:
         assert commit["otioPath"] == str(tmp_path / "otio_deltas" / "delta_0001.otio")
         assert (tmp_path / "otio_deltas" / "delta_0001.otio").is_file()
@@ -344,3 +347,11 @@ def test_a_delta_id_is_only_ever_a_plain_file_name(config, tmp_path, snapshot):
 def test_default_workers_wait_only_so_long_for_the_gpu(config):
     whisper = tool_bus.default_workers(config)["whisper"]()
     assert whisper.lock.timeout == tool_bus.CHAT_LOCK_TIMEOUT_SECONDS
+
+
+def test_the_bus_hashes_the_apps_timeline_as_the_editor_hashes_its_own(snapshot):
+    """The bus reads the timeline through the app; the batch runner reads it in the editor. Both must hash
+    the same, or every commit would be refused as stale."""
+    app = App(snapshot)
+    status, clips = app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True})
+    assert timeline_hash(tool_bus._snapshot_from(status, clips)) == timeline_hash(snapshot)

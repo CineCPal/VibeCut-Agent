@@ -2,12 +2,15 @@
 delta's bridge calls, run in the editor as one transaction.
 
 request: {timeline, batch: [{seq, source_op_id, host, command, args}] (the validator's
-          `translated_nle_batch`, in order), backup?: the request's backup when the app already made one}
+          `translated_nle_batch`, in order), backup?: the request's backup when the app already made one,
+          expectedTimelineHash?: the timeline's hash when the batch was validated}
 result:  {backup, changes (every call's change records, oldest first), refused: [], renamed (old id -> new
           id, across the batch), executed: [{seq, sourceOpId, command, changes}]}
 
 The batch may only use the calls orchestrator/otio_delta.py makes (BATCH_COMMANDS), all on the one
-timeline. A backup comes first: the app's for this request when it passes one (the batch's own
+timeline. With `expectedTimelineHash`, the timeline is read first and must still hash the same
+(otio_delta.timeline_hash): a commit can wait for the user's Apply, and the timeline may have changed in
+the editor meanwhile. A changed one is refused before anything is touched (no backup either). A backup comes first: the app's for this request when it passes one (the batch's own
 `backup_timeline` is then skipped), else one made here. Then each call runs in order through the same
 edit functions the direct tools use (nle/edits.py), with the clip ids it names followed through every
 `renamed` an earlier call reported (Resolve replaces a clip it reshapes or splits).
@@ -147,6 +150,15 @@ def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str,
     if not isinstance(timeline, str) or not timeline:
         raise HostError("timeline must name the timeline the batch is for")
     batch = check_batch(args.get("batch"), timeline, edits)
+    expected = args.get("expectedTimelineHash")
+    if expected is not None:
+        from vibecut_agent.orchestrator.otio_delta import timeline_hash
+
+        if timeline_hash(host.read_timeline({"timeline": timeline})) != expected:
+            raise HostError(
+                f"STALE_TIMELINE_HASH: {timeline} changed after the edit was checked (while it waited for "
+                "Apply?), so nothing was changed. Read the timeline again and plan the edit on what it is now."
+            )
     backup = args.get("backup")
     if not isinstance(backup, str) or not backup:
         backup = str(edits["backup_timeline"](host, {"timeline": timeline})["backup"])

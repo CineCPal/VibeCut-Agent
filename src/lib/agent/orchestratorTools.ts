@@ -47,6 +47,7 @@ export function commitArgs(args: Args): OtioCommitArgs {
     host: host as NleHost,
     timeline: text("timeline"),
     batch: batch as NleBatchCommand[],
+    ...(typeof args.expectedTimelineHash === "string" && args.expectedTimelineHash ? { expectedTimelineHash: args.expectedTimelineHash } : {}),
     ...(typeof args.otioPath === "string" && args.otioPath ? { otioPath: args.otioPath } : {}),
   };
 }
@@ -65,7 +66,13 @@ export function orchestratorExecutors(ctx: EditContext): Record<string, Executor
       const view = await readTimeline(ctx);
       for (const call of commit.batch) refuseLocked(ctx, view, call.args);
       const backup = await ensureBackup(ctx);
-      const result = await nleCall<BatchResult>(ctx.host, "execute_otio_batch", { timeline: ctx.timeline, backup, batch: commit.batch });
+      // The editor checks the timeline is still as it was validated (it may have changed while this waited for Apply).
+      const result = await nleCall<BatchResult>(ctx.host, "execute_otio_batch", {
+        timeline: ctx.timeline,
+        backup,
+        batch: commit.batch,
+        ...(commit.expectedTimelineHash ? { expectedTimelineHash: commit.expectedTimelineHash } : {}),
+      });
       if (result.renamed && Object.keys(result.renamed).length) useEditLogStore.getState().addRestoredIds(ctx.host, result.renamed);
       const summary = result.changes.length
         ? `${commit.commitSummary} (${count(result.changes.length, "change")} in ${HOST_SHORT[ctx.host]}, ${count(result.executed.length, "call")})`
