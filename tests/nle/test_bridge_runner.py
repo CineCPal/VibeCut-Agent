@@ -259,3 +259,27 @@ def test_a_timeline_changed_since_validation_is_refused_before_anything_changes(
     )
     assert editor.names() == ["backup_timeline", "delete_clips"]
     assert result["changes"] == [{"kind": "delete_clips", "itemId": None}]
+
+
+def test_a_premiere_duck_is_reported_in_db_too():
+    # Seen live (Phase 21, Premiere check 7): Claude read duck_clip's raw Level values as dB, 15 dB out.
+    from vibecut_agent.nle.premiere import TICKS_PER_SECOND
+    from vibecut_agent.nle.premiere_edit import gain
+
+    keys = [
+        {"ticks": "0", "value": gain(-6)},
+        {"ticks": str(TICKS_PER_SECOND * 3 // 10), "value": gain(-18)},
+        {"ticks": str(TICKS_PER_SECOND * 15), "value": gain(-18)},
+    ]
+    duck = {"kind": "duck", "itemId": "m1", "duckDb": -12, "before": {"keys": [], "value": gain(-6)}, "after": keys}
+    editor = Editor(duck_clip={"changes": [duck], "refused": []})
+    result = run(editor, batch(call(2, "duck_clip", itemId="m1", duckDb=-12)))
+    reported = result["changes"][0]
+    assert reported["beforeDb"] == -6.0
+    assert reported["afterDb"] == [
+        {"sourceSeconds": 0.0, "db": -6.0},
+        {"sourceSeconds": 0.3, "db": -18.0},
+        {"sourceSeconds": 15.0, "db": -18.0},
+    ]
+    # The record Revert uses is the editor's, untouched.
+    assert reported["before"] == duck["before"] and reported["after"] == keys

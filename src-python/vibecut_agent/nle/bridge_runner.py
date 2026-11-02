@@ -7,6 +7,9 @@ request: {timeline, batch: [{seq, source_op_id, host, command, args}] (the valid
 result:  {backup, changes (every call's change records, oldest first), refused: [], renamed (old id -> new
           id, across the batch), executed: [{seq, sourceOpId, command, changes}]}
 
+A Premiere duck's record carries Premiere's raw Level values (`before.value`, `after[].value`); the result
+adds them in dB (`beforeDb`, `afterDb: [{sourceSeconds, db}]`), as Claude misread the raw ones by 15 dB.
+
 The batch may only use the calls orchestrator/otio_delta.py makes (BATCH_COMMANDS), all on the one
 timeline. With `expectedTimelineHash`, the timeline is read first and must still hash the same
 (otio_delta.timeline_hash): a commit can wait for the user's Apply, and the timeline may have changed in
@@ -27,6 +30,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from vibecut_agent.nle.errors import HostError, Unreachable
+from vibecut_agent.nle.premiere import TICKS_PER_SECOND, level_db
 
 Edit = Callable[[Any, dict[str, Any]], Any]
 
@@ -95,6 +99,19 @@ def followed(changes: list[dict[str, Any]], renamed: Mapping[str, str]) -> list[
                         item[side]["id"] = follow(item[side]["id"], renamed)
         out.append(c)
     return out
+
+
+def in_db(change: dict[str, Any]) -> dict[str, Any]:
+    """A Premiere duck's change record with its Level values in dB too (see the module docstring)."""
+    before, after = change.get("before"), change.get("after")
+    if change.get("kind") != "duck" or not isinstance(before, dict) or not isinstance(after, list):
+        return change
+    keys = [
+        {"sourceSeconds": round(int(k["ticks"]) / TICKS_PER_SECOND, 3), "db": level_db(k.get("value"))}
+        for k in after
+        if isinstance(k, dict) and str(k.get("ticks", "")).lstrip("-").isdigit()
+    ]
+    return {**change, "beforeDb": level_db(before.get("value")), "afterDb": keys}
 
 
 def check_batch(batch: Any, timeline: str, edits: Mapping[str, Edit]) -> list[dict[str, Any]]:
@@ -193,4 +210,10 @@ def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str,
                 "changes": len(made),
             }
         )
-    return {"backup": backup, "changes": changes, "refused": [], "renamed": renamed, "executed": executed}
+    return {
+        "backup": backup,
+        "changes": [in_db(c) for c in changes],
+        "refused": [],
+        "renamed": renamed,
+        "executed": executed,
+    }
