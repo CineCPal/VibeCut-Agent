@@ -3248,3 +3248,16 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - **Gemma (2), partly fixed:** "clip placed over the wrong speaker" (on empty tracks, twice), and `RATE_MISMATCH` and `TRACK_OVERLAP_COLLISION` on a correct 89-frame placement, all got through. Their codes fit a placement. Next: drop Gemma's notes under the codes the structural checks settle exactly (rate, overlap, missing media, unknown clip, duration).
     - **Direct mode, passed:** the dev build relaunched without `EXECUTION_MODE`; About said Direct. "Set Oli's clip on A2 to −6 dB" was one `set_clip_levels` card (the user's "Review edits first" is on), and Apply then Revert went −6 dB and back to 0.
     - Left in the Premiere project: the imported `~/Movies/VibeCut Checks/tone-gone.wav`.
+- **2026-11-02 (Claude): the follow-up's live-check findings, fixed.**
+  - **Premiere's channel model (changes direct mode, the user's call):**
+    - `add_clips` asks the panel how many audio clips the file's project item lays down: `audio_clips`, new in panel 0.17.0, reads `getAudioChannelMapping().audioClipsNumber` and imports the file into the VibeCut bin if needed, as placing it would. It then checks and fills that many tracks, not one per channel.
+    - A panel that can't answer (before 0.17) falls back to `premiere_support.estimated_audio_tracks`: one track for mono or stereo, one per channel above that (not yet seen live). The orchestrator's validator (`_channels_fit`) uses the same estimate, as it plans before anything is imported.
+    - Not changed: reshaping or replacing a clip already on the timeline, and putting back lifted channels (`premiere_edit.py`), still count one track per channel. They deal with files that did land split.
+  - **Gemma's notes:** kept only under `SOURCE_OUT_OF_BOUNDS` (a place, trim or split: a cut point) and `INVALID_TRANSITION_HANDLE` (a transition). The other codes the structural checks settle exactly (`CODE_OPS`), and the prompt tells Gemma so.
+  - **Ingest ETA:** a pace per stage. The step under way is paced by its own progress once it reports some, otherwise by its stage's pace; later steps go at their stage's pace, and a stage not yet timed takes the mean of the others. `SCAN_SHARE` is now 0.8.
+  - **To check live:**
+    - Install panel 0.17.0 from the app and reopen it in Premiere.
+    - Place the stereo `tone-gone.wav` on the last audio track, directly and orchestrated: one clip, no refusal.
+    - Set a file to mono channels (Modify → Audio Channels) and place it on the last track: refused, needing 2 tracks.
+    - Re-run the ingest of a cached and an uncached 4K file: the ETA should be near the real time left.
+
