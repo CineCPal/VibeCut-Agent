@@ -61,8 +61,20 @@ class FakePremiere:
             "level": (gain(0) if level is None else level) if track_kind == "audio" else None,
             "label": 9,  # Blue, as panel 0.12.0 reads it (Phase 16b)
         }
-        (self.video if track_kind == "video" else self.audio)[track - 1].append(clip)
+        # A placement goes into the track's list in time order, as Premiere's does. Nothing else changes a
+        # clip's place in the list: a move or new points keep it where it was (checked live, 2026-11-02).
+        clips = (self.video if track_kind == "video" else self.audio)[track - 1]
+        clips.insert(sum(1 for c in clips if int(c["startTicks"]) <= int(clip["startTicks"])), clip)
         return clip
+
+    def out_of_order(self):
+        """The tracks whose list isn't in time order: Premiere's timeline loses clips on them."""
+        return [
+            f"{k[0].upper()}{i + 1}"
+            for k, tracks in (("video", self.video), ("audio", self.audio))
+            for i, t in enumerate(tracks)
+            if [int(c["startTicks"]) for c in t] != sorted(int(c["startTicks"]) for c in t)
+        ]
 
     def link(self, *clips):
         for c in clips:
@@ -105,7 +117,8 @@ class FakePremiere:
             "muted": flags(clips)["muted"],
             "locked": flags(clips)["locked"],
             "targeted": flags(clips)["targeted"],
-            "clips": [{**c, **custom(c)} for c in sorted(clips, key=lambda c: int(c["startTicks"]))],
+            # In the list's own order, as the panel reads it.
+            "clips": [{**c, **custom(c)} for c in clips],
             "transitions": sorted(self.transitions.get(id(clips), []), key=lambda t: int(t["startTicks"])),
         }
         return {
@@ -361,7 +374,7 @@ class FakePremiere:
                     right = {**copy.deepcopy(c), "id": next(self.ids), "linkedIds": []}
                     right["startTicks"], right["inTicks"] = str(cut), str(int(c["inTicks"]) + cut - start)
                     c["endTicks"], c["outTicks"] = str(cut), str(int(c["inTicks"]) + cut - start)
-                    track.append(right)
+                    track.insert(track.index(c) + 1, right)
         return {"tracks": len(tracks)}
 
     def move_items(self, a):
@@ -390,7 +403,7 @@ class FakeProbe:
         return {"channels": self.media[path]["channels"], "sample_rate": 48000}
 
     def timecode(self, path):
-        return {"seconds": 0.0, "duration": 30.0}
+        return {"seconds": 0.0, "duration": self.media[path].get("duration", 30.0)}
 
 
 @pytest.fixture
@@ -414,7 +427,9 @@ def setup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(premiere_edit, "Probe", lambda: FakeProbe(media))
     host = PremiereHost(premiere)
-    return host, premiere, {"A": a, "B": b, "ROLL": roll}
+    yield host, premiere, {"A": a, "B": b, "ROLL": roll}
+    # Whatever a test did, Premiere's lists must still be in time order.
+    assert premiere.out_of_order() == []
 
 
 def call(host, command, **args):
@@ -641,8 +656,9 @@ def test_a_lifted_right_channel_comes_back_as_the_right_channel(setup):
     before = premiere.state()
     result = call(host, "delete_clips", itemIds=[right["id"]], withLinked=False)
     assert result["changes"][0]["channel"] == 2
-    # A1 still has the left channel: the placement is made past the end, its left channel and picture
-    # removed, and the right channel moved back onto A2, linked to the picture and left channel again.
+    # A1 still has the left channel, where the placement lays it: so it's placed again too, with the right
+    # one on A2 (its picture goes on free V2 and is lifted), linked to the picture that stayed. Nothing is
+    # moved, so every track keeps its order.
     revert(host, result)
     assert premiere.state() == before
     # Both channels lifted separately, under a picture that stayed, go back together.
@@ -695,6 +711,109 @@ def test_trim_slip_and_move_change_the_group_in_place_and_revert(setup, args, ex
     assert len(change["items"]) == 3 and result["renamed"] == {}, "ids stay; effects stay on the clip"
     revert(host, result)
     assert premiere.state() == before
+
+
+def synced(premiere, media):
+    """A.mov's picture and camera sound with ROLL.wav, its recorder, on A3 (as sync_and_place lays them):
+    the camera sound off, the recorder at -6 dB, the picture renamed and labelled."""
+    picture, left, right = (
+        premiere.find(i) for i in ids_of(premiere, "A.mov") + ids_of(premiere, "A.mov", "audio")
+    )
+    roll = premiere.clip(media["ROLL"], "audio", 3, 0, 3, 40, level=gain(-6))
+    premiere.link(picture, left, right, roll)
+    left["disabled"] = right["disabled"] = True
+    picture["name"], picture["label"] = "Interview", 4
+    return [picture["id"], left["id"], right["id"], roll["id"]]
+
+
+def test_a_move_past_another_clip_places_the_group_again_in_order_and_reverts(setup):
+    """Sequence 02, 2026-11-02: a camera and its recorder moved past another clip were left out of
+    Premiere's order, so its timeline drew one missing and played the other wrong."""
+    host, premiere, media = setup
+    premiere.media[media["ROLL"]]["duration"] = 60.0
+    old = synced(premiere, media)
+    before = premiere.state()
+    result = call(host, "reshape_clip", itemId=old[0], start=10)
+    assert premiere.out_of_order() == []
+    renamed = result["renamed"]
+    assert sorted(renamed) == sorted(old), "the whole group was placed again"
+    picture, left, right, roll = (premiere.find(renamed[i]) for i in old)
+    assert [int(c["startTicks"]) / T for c in (picture, left, right, roll)] == [10.0] * 4
+    assert (int(picture["inTicks"]) / T, int(roll["inTicks"]) / T) == (2.0, 40.0)
+    assert (left["disabled"], right["disabled"], picture["disabled"]) == (True, True, False)
+    assert round(premiere_edit.level_db(roll["level"]), 3) == -6.0
+    assert (picture["name"], picture["label"]) == ("Interview", 4)
+    assert sorted(picture["linkedIds"]) == sorted(renamed[i] for i in old[1:])
+    assert [i["after"]["id"] for i in result["changes"][0]["items"]] == [renamed[i] for i in old]
+    # Back past B.mov: placed again where it was, as it was.
+    reverted = revert(host, result)
+    assert reverted["reverted"] == [{"kind": "reshaped", "name": "Interview"}]
+    assert sorted(reverted["restoredIds"]) == sorted(renamed[i] for i in old)
+    assert premiere.state() == before
+
+
+def test_a_move_past_another_clip_is_refused_when_placing_again_would_lose_something(setup):
+    host, premiere, _ = setup
+    before = premiere.state()
+    picture = ids_of(premiere, "A.mov")[0]
+    premiere.effects.add(picture)
+    with pytest.raises(HostError, match="has effects.*can't reorder a track's clips"):
+        call(host, "reshape_clip", itemId=picture, start=10)
+    assert premiere.state() == before
+    premiere.fades[ids_of(premiere, "A.mov", "audio")[0]] = {
+        "keys": [{"ticks": "0", "value": 0}, {"ticks": "1", "value": 1}],
+        "value": None,
+    }
+    premiere.effects.clear()
+    with pytest.raises(HostError, match="has a fade or keyframes"):
+        call(host, "reshape_clip", itemId=picture, start=10)
+    assert premiere.state() == before
+
+
+def test_a_trim_checks_each_clip_against_its_own_file(setup):
+    """A recorder longer than its camera: trimming the pair checked the recorder against the camera
+    file's length (Sequence 02's first try, 2026-11-02: "OliU.WAV's file doesn't reach that far")."""
+    host, premiere, media = setup
+    premiere.media[media["ROLL"]]["duration"] = 60.0
+    old = synced(premiere, media)
+    result = call(host, "reshape_clip", itemId=old[0], sourceIn=2.4)
+    assert int(premiere.find(old[3])["inTicks"]) / T == 40.4 and result["renamed"] == {}
+    with pytest.raises(HostError, match=r"ROLL.wav's file doesn't reach that far \(60.0 s long\)"):
+        call(host, "reshape_clip", itemId=old[0], slip=20)
+
+
+def test_a_swap_moves_one_group_and_places_the_other_again(setup):
+    host, premiere, _ = setup
+    a, b = (ids_of(premiere, n) + ids_of(premiere, n, "audio") for n in ("A.mov", "B.mov"))
+    seq = premiere_edit._read(host, "Main")
+    renamed = premiere_edit._move_groups(host, "Main", seq, [(a, 5 * T), (b, -5 * T)])
+    assert premiere.out_of_order() == []
+    assert len(renamed) == 3 and (set(renamed) == set(a) or set(renamed) == set(b))
+    starts = {c["name"]: int(c["startTicks"]) / T for _k, _i, c in premiere.everything()}
+    assert starts == {"A.mov": 5.0, "B.mov": 0.0}
+
+
+def test_a_move_that_breaks_the_order_anyway_is_reported(setup, monkeypatch):
+    host, premiere, _ = setup
+    monkeypatch.setattr(premiere_edit, "_misplaced", lambda seq, moving: set())
+    with pytest.raises(HostError, match=r"clip order on A1, A2, V1 broke.*Revert this edit"):
+        call(host, "reshape_clip", itemId=ids_of(premiere, "A.mov")[0], start=10)
+    # As Premiere would be left: put right for the fixture's own check.
+    for tracks in (premiere.video, premiere.audio):
+        for t in tracks:
+            t.sort(key=lambda c: int(c["startTicks"]))
+
+
+def test_misplaced_leaves_a_track_already_out_of_order_alone():
+    clips = lambda *spans: [
+        {"id": i, "startTicks": str(s * T), "endTicks": str((s + 1) * T)} for i, s in spans
+    ]
+    raw = {"timebase": str(TB_25), "video": [{"clips": clips(("b", 5), ("a", 1), ("c", 9))}], "audio": []}
+    seq = premiere_edit.Sequence(raw)
+    assert premiere_edit._out_of_order(seq) == {"V1"}
+    assert premiere_edit._misplaced(seq, {"c": -9 * T}) == {"c"}, "c would pass a and b"
+    assert premiere_edit._misplaced(seq, {"c": 2 * T}) == set(), "a and b were out of order already"
+    assert premiere_edit._misplaced(seq, {"a": 6 * T}) == set(), "a moves into its place in the list"
 
 
 def test_a_sound_slips_alone_with_its_other_channel_and_reverts(setup):
@@ -822,7 +941,9 @@ def test_a_picture_moves_to_another_track_and_back(setup):
     moved = premiere.find(new_id)
     assert (moved["startTicks"], premiere.video[1][0]["id"]) == (str(10 * T), new_id)
     assert not premiere.video[0] or all(c["id"] != a_id for c in premiere.video[0])
-    # Its sound moved with it along A1+A2 and is linked to the new picture.
+    # Its sound moved with it along A1+A2, past B.mov's: so it was placed again there, and is linked to
+    # the new picture.
+    sound = [result["renamed"][i] for i in sound]
     assert all(premiere.find(i)["startTicks"] == str(10 * T) for i in sound)
     assert sorted(moved["linkedIds"]) == sorted(sound)
     assert change["retracked"]["newTracks"] == [] and result["addedTracks"] == []

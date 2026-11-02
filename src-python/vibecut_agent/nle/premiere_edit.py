@@ -25,7 +25,10 @@ Every decision is made here, on a read of the sequence, before the panel's small
   by Revert while they're the last and empty. Without QE, the old refusal stands.
 - A clip's `start`, `end`, `inPoint` and `outPoint` are set independently: setting `start` alone
   doesn't move the source in. So a trim or slip sets all four, on the clip and each linked partner.
-- `TrackItem.move(offset)` moves only that clip, so a move moves each partner too.
+- `TrackItem.move(offset)` moves only that clip, so a move moves each partner too. Neither a move nor new
+  points change a clip's place in its track's list, which Premiere's timeline expects in time order; a
+  placement goes into it in its place. So a clip is never moved past another: it's placed again at its
+  destination instead (see "Premiere's clip order", checked live 2026-11-02).
 - `remove(false, false)` lifts only that clip; its partners stay, still linked to each other.
 - `disabled` can be set. Level animation is on for every sound clip by default, so a level is set
   with `setValue` unless the clip has real keyframes.
@@ -922,11 +925,15 @@ def reshape_clip(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str
         raise HostError(
             f"{faded} has a fade or keyframes, which would stay where they are in the file; remove the fade first, or use a draft"
         )
-    duration = (probe.timecode(clip["mediaPath"]) or {}).get("duration")
-    length = int(duration * TICKS_PER_SECOND) if duration else None
+    # Each clip against its own file: a camera's recorder is a file of its own, often longer.
+    durations = {
+        path: (probe.timecode(path) or {}).get("duration") for path in {m["mediaPath"] for m in members}
+    }
     value = _number(args[given[0]], given[0])
     updates = []
     for m in members:
+        duration = durations[m["mediaPath"]]
+        length = int(duration * TICKS_PER_SECOND) if duration else None
         start, end, src_in, src_out = (int(m[k]) for k in ("startTicks", "endTicks", "inTicks", "outTicks"))
         if given[0] == "sourceIn":
             delta = seq.ticks(value) - int(clip["inTicks"])
@@ -960,15 +967,10 @@ def reshape_clip(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str
                 "delta": delta,
             }
         )
+    renamed: dict[str, str] = {}
     if how == "moved":
-        host._send(
-            "move_items",
-            {
-                "timeline": timeline,
-                "ids": group,
-                "offsetTicks": str(updates[0]["delta"]),
-            },
-        )
+        # Past other clips, the group is placed again instead (see "Premiere's clip order").
+        renamed = _move_groups(host, timeline, seq, [(group, updates[0]["delta"])], probe)
     else:
         host._send(
             "set_items",
@@ -981,20 +983,21 @@ def reshape_clip(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str
     items = [
         {
             "before": _placement(m, seq.fps),
-            "after": _placement(after.clip(m["id"]), seq.fps),
+            "after": _placement(after.clip(renamed.get(m["id"], m["id"])), seq.fps),
         }
         for m in members
     ]
+    back = [{**i["before"], "id": i["after"]["id"]} for i in items]
     # Premiere can drag linked clips along with an edit; those meant to stay must not have moved.
     stayed = [_placement(m, seq.fps) for m in left]
     if any(_placement(after.clip(p["id"]), seq.fps)["ticks"] != p["ticks"] for p in stayed):
-        _put(host, timeline, after, [i["before"] for i in items] + stayed)
+        _put(host, timeline, after, back + stayed, probe)
         raise HostError(
             f"Premiere moved {clip['name']}'s linked clips with it, so it was put back; slip them together, or unlink them in Premiere first"
         )
     for u, item in zip(updates, items, strict=True):
         if item["after"]["ticks"] != {k: u[k] for k in ("startTicks", "endTicks", "inTicks", "outTicks")}:
-            _put(host, timeline, after, [i["before"] for i in items])
+            _put(host, timeline, after, back, probe)
             verb = {"trimmed": "trim", "slipped": "slip", "moved": "move"}[how]
             raise HostError(f"Premiere didn't {verb} {clip['name']} as asked; it was put back")
     return {
@@ -1008,18 +1011,303 @@ def reshape_clip(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str
             }
         ],
         "refused": [],
-        "renamed": {},
+        "renamed": renamed,
     }
+
+
+# ------------------------------------------------------------------------------- Premiere's clip order
+#
+# Premiere keeps each track's clips in a list it expects in time order, and draws and plays the sequence
+# by walking it. A placement goes into the list in its place; nothing else changes a clip's place in it:
+# `TrackItem.move` and new start or end points keep it where it was, even past other clips (checked live,
+# Premiere 26.5.2, 2026-11-02). A clip moved past another was drawn missing but played, the one it passed
+# was drawn but didn't play, and the project was saved that way. So moves may only leave each track's
+# clips in the same order; a clip that would end up out of it is lifted and placed again at its
+# destination. What happens to the order on the way doesn't matter: only where each clip ends up.
+
+
+# A microsecond past each point of a range placed again: Premiere turns the seconds it's sent into ticks
+# and floors them to a frame, so 21.021 s (630 frames at 29.97) could land on frame 629, or the out point a
+# frame short (checked live, 2026-11-02). A microsecond never reaches the next frame.
+NUDGE_SECONDS = 1e-6
+
+
+def _misplaced(seq: Sequence, moving: dict[str, int]) -> set[str]:
+    """The moving clips (id -> ticks moved) that would end up out of their track's list order. Clips that
+    stay where they are keep their place, so a track already out of order is left as it is."""
+    out: set[str] = set()
+    for kind in ("video", "audio"):
+        for track in seq.tracks[kind]:
+            clips = track.get("clips", [])
+            starts = [int(c["startTicks"]) + moving.get(c["id"], 0) for c in clips]
+            # The heaviest run of the list that's in time order, a clip that stays outweighing every move.
+            weight = [1 if c["id"] in moving else len(clips) + 1 for c in clips]
+            best, prev = list(weight), [-1] * len(clips)
+            for i in range(len(clips)):
+                for j in range(i):
+                    if starts[j] <= starts[i] and best[j] + weight[i] > best[i]:
+                        best[i], prev[i] = best[j] + weight[i], j
+            kept: set[int] = set()
+            i = max(range(len(clips)), key=best.__getitem__, default=-1)
+            while i >= 0:
+                kept.add(i)
+                i = prev[i]
+            out |= {c["id"] for n, c in enumerate(clips) if n not in kept and c["id"] in moving}
+    return out
+
+
+def _out_of_order(seq: Sequence) -> set[str]:
+    """The tracks ("V1", "A2") whose list isn't in time order."""
+    return {
+        _label(kind, index)
+        for kind in ("video", "audio")
+        for index, track in enumerate(seq.tracks[kind], start=1)
+        if [int(c["startTicks"]) for c in track.get("clips", [])]
+        != sorted(int(c["startTicks"]) for c in track.get("clips", []))
+    }
+
+
+def _check_order(host: Any, timeline: str, before: Sequence) -> None:
+    """Raises when a track has fallen out of time order since `before`, rather than leave Premiere's
+    timeline showing and playing the wrong clips."""
+    broken = _out_of_order(_read(host, timeline)) - _out_of_order(before)
+    if broken:
+        raise HostError(
+            f"Premiere's clip order on {', '.join(sorted(broken))} broke, so its timeline may not show or "
+            "play some clips there. Revert this edit, or use the request's backup"
+        )
+
+
+def _refuse_unplaceable(host: Any, timeline: str, ids: list[str]) -> None:
+    """Placing a clip again from its file keeps only its range, switch, level, name and label; refuses
+    clips that would lose more."""
+    seq = _read(host, timeline, effects=True)
+    for item_id in ids:
+        clip = seq.clip(item_id)
+        problem = None
+        if clip.get("speed") not in (None, 1) or clip.get("reversed"):
+            problem = "has a speed change"
+        elif (
+            clip.get("adjustment")
+            or clip.get("nested")
+            or not clip.get("mediaPath")
+            or not clip.get("projectItemId")
+        ):
+            problem = "has no media file to place again"
+        elif seq.touches_transition(clip):
+            problem = "has a transition at an edge"
+        elif clip.get("custom"):
+            problem = "has effects, keyframes or a changed Motion or Opacity"
+        if problem:
+            raise HostError(
+                f"{clip['name']} {problem}. Moving it past other clips means placing it again (Premiere's "
+                "scripting can't reorder a track's clips), which would lose that. Move it in Premiere, or use a draft"
+            )
+    from vibecut_agent.nle.premiere_effects import has_fades
+
+    faded = has_fades(host, timeline, seq, ids)
+    if faded:
+        raise HostError(
+            f"{faded} has a fade or keyframes. Moving it past other clips means placing it again (Premiere's "
+            "scripting can't reorder a track's clips), which would lose them. Remove the fade first, or use a draft"
+        )
+
+
+def _place_parts(
+    host: Any,
+    timeline: str,
+    source: dict[str, Any],
+    at: int,
+    parts: list[dict[str, Any]],
+    probe: Any,
+) -> dict[str, str]:
+    """Places part of a file again from its project item. `source` is {path, itemId, name, inTicks,
+    length}; each part is {id, kind, index, channel} and gets the placed clip on that track. A placement
+    lays the file's picture and all its sound at once, so the parts no one wants go on tracks free there
+    (else scratch tracks added at the end and removed again) and are lifted at once. Never moves a clip:
+    a placement goes into each track's list in its place. Returns part id -> placed clip id."""
+    seq = _read(host, timeline)
+    path, name, length = source["path"], source["name"], int(source["length"])
+    end = at + length
+    has_video = probe.video(path) is not None
+    channels = int((probe.audio(path) or {}).get("channels") or 0)
+    sounds = audio_tracks_from(host)(path, source.get("itemId"), channels) if channels else 0
+    pictures = [p for p in parts if p["kind"] == "video"]
+    heard = [p for p in parts if p["kind"] == "audio"]
+    for p in parts:
+        if not seq.free(p["kind"], p["index"], at, end, ignore={p["id"]}):
+            raise HostError(
+                f"{_label(p['kind'], p['index'])} isn't free from {seconds(at)} s to {seconds(end)} s; VibeCut won't overwrite"
+            )
+    counts = {kind: len(seq.tracks[kind]) for kind in ("video", "audio")}
+
+    def spare(kind: str, many: int) -> int:
+        """The first of `many` tracks in a row free over the span: existing ones, else new ones at the end."""
+        for first in range(1, counts[kind] - many + 2):
+            if all(seq.free(kind, t, at, end) for t in range(first, first + many)):
+                return first
+        return counts[kind] + 1
+
+    if len(pictures) > 1 or (pictures and not has_video):
+        raise HostError(f"{name} can't be placed again as asked")
+    v_track = pictures[0]["index"] if pictures else (spare("video", 1) if has_video else 0)
+    if heard:
+        firsts = {p["index"] - int(p.get("channel") or 1) + 1 for p in heard}
+        if len(firsts) != 1 or min(firsts) < 1:
+            raise HostError(f"{name}'s channels aren't on tracks in a row, so it can't be placed again")
+        a_track = firsts.pop()
+        mine = {p["index"] for p in heard}
+        for t in range(a_track, a_track + sounds):
+            if t not in mine and not seq.free("audio", t, at, end):
+                raise HostError(f"Placing {name} again would lay its sound over A{t}, so it wasn't moved")
+    else:
+        a_track = spare("audio", sounds) if sounds else 0
+    added = {
+        "video": max(0, v_track - counts["video"]),
+        "audio": max(0, a_track + sounds - 1 - counts["audio"]),
+    }
+    _add_tracks(host, timeline, added["video"], added["audio"])
+    in_ticks = int(source["inTicks"])
+    request = {
+        "timeline": timeline,
+        "path": path,
+        "inSeconds": round(in_ticks / TICKS_PER_SECOND + NUDGE_SECONDS, 9),
+        "outSeconds": round((in_ticks + length) / TICKS_PER_SECOND + NUDGE_SECONDS, 9),
+        "atTicks": str(at),
+        # The panel's tracks are 0-based; -1 is none.
+        "videoTrack": v_track - 1 if v_track else -1,
+        "audioTrack": a_track - 1 if a_track else -1,
+        "bin": BIN_NAME,
+        **({"itemId": source["itemId"]} if source.get("itemId") else {}),
+    }
+    placed: list[dict[str, Any]] = host._send("place_clip", request)["placed"]
+    wanted = {(p["kind"], p["index"]): p["id"] for p in parts}
+    got = {
+        wanted[(q["type"], q["track"] + 1)]: q["id"] for q in placed if (q["type"], q["track"] + 1) in wanted
+    }
+    extra = [q["id"] for q in placed if (q["type"], q["track"] + 1) not in wanted]
+    if extra:
+        host._send("remove_items", {"timeline": timeline, "ids": extra})
+    _remove_tracks(
+        host,
+        timeline,
+        [["video", counts["video"] + n] for n in range(added["video"], 0, -1)]
+        + [["audio", counts["audio"] + n] for n in range(added["audio"], 0, -1)],
+    )
+    after = _read(host, timeline)
+    for item_id, clip in seq.clips.items():
+        now = after.clips.get(item_id)
+        if now is None or any(now[k] != clip[k] for k in ("startTicks", "endTicks", "inTicks")):
+            raise HostError(
+                f"Premiere changed {clip['name']} on {_label(clip['kind'], clip['index'])} while placing {name} again. "
+                "Check the sequence; its backup has it as it was"
+            )
+    exact = {
+        "startTicks": str(at),
+        "endTicks": str(end),
+        "inTicks": str(in_ticks),
+        "outTicks": str(in_ticks + length),
+    }
+    off = [
+        i for i in got.values() if i in after.clips and any(after.clips[i][k] != v for k, v in exact.items())
+    ]
+    # A frame or two off where it lands: its points are set exactly there, which passes no other clip.
+    if off and all(
+        abs(int(after.clips[i][k]) - int(v)) <= 2 * seq.timebase for i in off for k, v in exact.items()
+    ):
+        host._send("set_items", {"timeline": timeline, "items": [{"id": i, **exact} for i in off]})
+        after = _read(host, timeline)
+    if len(got) != len(parts) or any(
+        i not in after.clips or any(after.clips[i][k] != v for k, v in exact.items()) for i in got.values()
+    ):
+        raise HostError(
+            f"Premiere didn't place {name} again where asked; check the sequence, its backup has it as it was"
+        )
+    return got
+
+
+def _place_again(
+    host: Any, timeline: str, seq: Sequence, ids: list[str], delta: int, probe: Any
+) -> dict[str, str]:
+    """Places clips that are already lifted (read in `seq`) again, `delta` ticks along their own tracks, with
+    their switch, level, name and label, linked as before. Returns old id -> new id."""
+    clips = [seq.clip(i) for i in ids]
+    units: dict[tuple, list[dict[str, Any]]] = {}
+    for c in clips:
+        units.setdefault((c.get("mediaPath"), c["startTicks"], c["endTicks"], c["inTicks"]), []).append(c)
+    renamed: dict[str, str] = {}
+    for unit in units.values():
+        first = unit[0]
+        source = {
+            "path": first["mediaPath"],
+            "itemId": first.get("projectItemId"),
+            "name": first["name"],
+            "inTicks": first["inTicks"],
+            "length": int(first["endTicks"]) - int(first["startTicks"]),
+        }
+        parts = [
+            {
+                "id": c["id"],
+                "kind": c["kind"],
+                "index": c["index"],
+                "channel": seq.channel(c) if c["kind"] == "audio" else 1,
+            }
+            for c in unit
+        ]
+        renamed.update(_place_parts(host, timeline, source, int(first["startTicks"]) + delta, parts, probe))
+    now = _restore_settings(host, timeline, clips, renamed)
+    # Each clip linked again to what it was linked to: the others placed again, and partners that stayed.
+    groups: list[list[str]] = []
+    for c in clips:
+        group = [
+            renamed.get(i, i) for i in [c["id"], *c.get("linkedIds", [])] if i in renamed or i in now.clips
+        ]
+        if len(group) > 1 and set(group) not in [set(g) for g in groups]:
+            groups.append(group)
+    for group in groups:
+        host._send("link_items", {"timeline": timeline, "ids": group})
+    return renamed
+
+
+def _restore_settings(
+    host: Any, timeline: str, clips: list[dict[str, Any]], renamed: dict[str, str]
+) -> Sequence:
+    """Gives clips placed again (old -> new id) the switch, level, name and label the old ones had.
+    Returns the sequence as it is then."""
+    now = _read(host, timeline)
+    settings, labels = [], []
+    for c in clips:
+        new = now.clip(renamed[c["id"]])
+        item: dict[str, Any] = {"id": new["id"]}
+        if c.get("disabled"):
+            item["disabled"] = True
+        if c["kind"] == "audio" and c.get("level") is not None and c.get("level") != new.get("level"):
+            item["level"] = c["level"]
+        if c.get("name") and c["name"] != new.get("name"):
+            item["name"] = c["name"]
+        if len(item) > 1:
+            settings.append(item)
+        if isinstance(c.get("label"), int) and c["label"] != new.get("label"):
+            labels.append({"id": new["id"], "label": c["label"]})
+    if settings:
+        host._send("set_items", {"timeline": timeline, "items": settings})
+    if labels:
+        # A Premiere that can't set a clip's label colour from a script refuses; the clip is placed all the same.
+        try:
+            host._send("set_items", {"timeline": timeline, "items": labels})
+        except HostError:
+            pass
+    return now
 
 
 # ------------------------------------------------------------------------------- moving to another track
 #
 # Premiere's scripting moves a clip only along its track. To change track, the picture is placed again
-# from its project item on the new track (overwriteClip lays down its sound too, so that's done past the
-# sequence's end, where every track is free, and the sound removed), moved into place, and the old one
-# removed; its sound stays where it was, linked to the new picture. What a fresh placement wouldn't
-# have (effects, changed Motion or Opacity, keyframes, a speed change) would be lost, so such clips are
-# refused.
+# from its project item on the new track, where it goes (overwriteClip lays down its sound too, on tracks
+# free there, else scratch ones, and that sound is lifted again), and the old one removed; its sound
+# stays on its tracks, moved by the same amount, linked to the new picture. What a fresh placement
+# wouldn't have (effects, changed Motion or Opacity, keyframes, a speed change) would be lost, so such
+# clips are refused.
 
 
 def _past_end(seq: Sequence) -> int:
@@ -1031,40 +1319,28 @@ def _past_end(seq: Sequence) -> int:
 def _replace(
     host: Any,
     timeline: str,
-    seq: Sequence,
     clip: dict[str, Any],
     track: int,
     start: int,
-    channels: int,
+    probe: Any,
 ) -> str:
     """Places the picture of `clip`'s project item on video track `track` (1-based) from `start`, same
-    source range and switch, removes `clip`, and returns the new clip's id."""
-    length = int(clip["endTicks"]) - int(clip["startTicks"])
-    at = _past_end(seq)
-    plan = {
+    source range and switch, removes `clip`, and returns the new clip's id. It's placed where it goes,
+    never moved there, so it takes its place in the track's list (see "Premiere's clip order")."""
+    source = {
         "path": clip["mediaPath"],
         "itemId": clip.get("projectItemId"),
         "name": clip["name"],
-        "inSeconds": int(clip["inTicks"]) / TICKS_PER_SECOND,
-        "outSeconds": (int(clip["inTicks"]) + length) / TICKS_PER_SECOND,
-        "atTicks": at,
-        "endTicks": at + length,
-        "videoTrack": track,
-        "audioTrack": 1 if channels else -1,
-        "picture": True,
-        "sound": False,
-        "volumeDb": None,
+        "inTicks": clip["inTicks"],
+        "length": int(clip["endTicks"]) - int(clip["startTicks"]),
     }
-    placed = _place(host, timeline, plan, seq)
-    picture = [p for p in placed if p["type"] == "video"]
-    if len(picture) != 1:
-        host._send("remove_items", {"timeline": timeline, "ids": [p["id"] for p in placed]})
-        raise HostError(f"Premiere didn't place {clip['name']} on V{track}; nothing was changed")
-    new_id = picture[0]["id"]
-    host._send(
-        "move_items",
-        {"timeline": timeline, "ids": [new_id], "offsetTicks": str(start - at)},
-    )
+    try:
+        placed = _place_parts(
+            host, timeline, source, start, [{"id": clip["id"], "kind": "video", "index": track}], probe
+        )
+    except HostError as exc:
+        raise HostError(f"Premiere didn't place {clip['name']} on V{track}: {exc}") from exc
+    new_id = placed[clip["id"]]
     if clip.get("disabled"):
         host._send(
             "set_items",
@@ -1124,28 +1400,18 @@ def _retrack(
             raise HostError(
                 f"{_label(p['kind'], p['index'])} isn't free from {seconds(s0)} s to {seconds(e0)} s; VibeCut won't overwrite"
             )
-    channels = int((probe.audio(clip["mediaPath"]) or {}).get("channels") or 0)
-    if channels > len(seq.tracks["audio"]):
-        raise HostError(
-            f"Placing {clip['name']} again needs {channels} audio tracks; the sequence has {len(seq.tracks['audio'])}"
-        )
     new_tracks: list[tuple[str, int]] = [("video", track)] if track == count + 1 else []
     _add_tracks(host, timeline, len(new_tracks), 0)
-    seq = _read(host, timeline)
-    new_id = _replace(host, timeline, seq, clip, track, start, channels)
-    if delta and partners:
-        host._send(
-            "move_items",
-            {
-                "timeline": timeline,
-                "ids": [p["id"] for p in partners],
-                "offsetTicks": str(delta),
-            },
-        )
+    new_id = _replace(host, timeline, clip, track, start, probe)
+    # The sound moves along its tracks, placed again too if that would take it past other clips.
+    renamed = _move_groups(
+        host, timeline, _read(host, timeline), [([p["id"] for p in partners], delta)], probe
+    )
+    sound = [renamed.get(p["id"], p["id"]) for p in partners]
     if partners:
         host._send(
             "link_items",
-            {"timeline": timeline, "ids": [new_id, *[p["id"] for p in partners]]},
+            {"timeline": timeline, "ids": [new_id, *sound]},
         )
     after = _read(host, timeline)
     moved = after.clips.get(new_id)
@@ -1161,7 +1427,7 @@ def _retrack(
     items += [
         {
             "before": _placement(p, seq.fps),
-            "after": _placement(after.clip(p["id"]), seq.fps),
+            "after": _placement(after.clip(renamed.get(p["id"], p["id"])), seq.fps),
         }
         for p in partners
     ]
@@ -1183,7 +1449,7 @@ def _retrack(
             }
         ],
         "refused": [],
-        "renamed": {clip["id"]: new_id},
+        "renamed": {clip["id"]: new_id, **renamed},
         "addedTracks": [_label(k, i) for k, i in new_tracks],
     }
 
@@ -1195,9 +1461,10 @@ def _retrack_back(
     change: dict[str, Any],
     ids: dict[str, str],
     probe: Any,
-) -> str:
+) -> dict[str, str]:
     """Undoes a move to another track: the picture placed again on its old track and place, its sound
-    moved back. `ids` maps each item's `after` id to the clip there now. Returns the picture's new id."""
+    moved back. `ids` maps each item's `after` id to the clip there now. Returns the clips' current ids
+    -> their new ones (the picture's, and any sound placed again to keep its track's order)."""
     picture, *partners = change["items"]
     now = seq.clip(ids[picture["after"]["id"]])
     info = change["retracked"]
@@ -1206,30 +1473,47 @@ def _retrack_back(
         "projectItemId": info.get("projectItemId"),
         "mediaPath": now.get("mediaPath") or info.get("filePath"),
     }
-    channels = int((probe.audio(clip["mediaPath"]) or {}).get("channels") or 0)
-    if channels > len(seq.tracks["audio"]):
-        raise HostError(f"putting it back needs {channels} audio tracks")
     start = int(picture["before"]["ticks"]["startTicks"])
-    new_id = _replace(host, timeline, seq, clip, int(picture["before"]["track"][1]), start, channels)
+    new_id = _replace(host, timeline, clip, int(picture["before"]["track"][1]), start, probe)
     stayed = [ids[p["after"]["id"]] for p in partners]
     delta = start - int(picture["after"]["ticks"]["startTicks"])
-    if delta and stayed:
-        host._send(
-            "move_items",
-            {"timeline": timeline, "ids": stayed, "offsetTicks": str(delta)},
-        )
+    renamed = _move_groups(host, timeline, _read(host, timeline), [(stayed, delta)], probe)
     if stayed:
-        host._send("link_items", {"timeline": timeline, "ids": [new_id, *stayed]})
+        host._send(
+            "link_items", {"timeline": timeline, "ids": [new_id, *[renamed.get(i, i) for i in stayed]]}
+        )
     _remove_tracks(host, timeline, info.get("newTracks") or [])
-    return new_id
+    return {now["id"]: new_id, **renamed}
 
 
-def _move_groups(host: Any, timeline: str, seq: Sequence, moves: list[tuple[list[str], int]]) -> None:
-    """Moves each list of clips along its tracks by its own ticks. A move onto a clip still to move
-    would overlap them in Premiere for a moment, so one amount goes latest clip first (or earliest
-    first, moving back); different amounts (a swap) take each group past the end of the sequence
-    first, then to its place."""
+def _move_groups(
+    host: Any, timeline: str, seq: Sequence, moves: list[tuple[list[str], int]], probe: Any = None
+) -> dict[str, str]:
+    """Moves each list of clips along its tracks by its own ticks; returns old id -> new id for clips
+    placed again. A list with a clip that would end up out of its track's order (see "Premiere's clip
+    order") is lifted first and placed again at its destination once the rest have moved. A move onto a
+    clip still to move would overlap them in Premiere for a moment, so one amount goes latest clip first
+    (or earliest first, moving back); different amounts (a swap) take each group past the end of the
+    sequence first, then to its place."""
     moves = [(ids, delta) for ids, delta in moves if ids and delta]
+    if not moves:
+        return {}
+    misplaced = _misplaced(seq, {i: delta for ids, delta in moves for i in ids})
+    again = [(ids, delta) for ids, delta in moves if misplaced & set(ids)]
+    moves = [(ids, delta) for ids, delta in moves if not misplaced & set(ids)]
+    if again:
+        _refuse_unplaceable(host, timeline, [i for ids, _d in again for i in ids])
+        host._send("remove_items", {"timeline": timeline, "ids": [i for ids, _d in again for i in ids]})
+    _shift_groups(host, timeline, seq, moves)
+    renamed: dict[str, str] = {}
+    for ids, delta in again:
+        renamed.update(_place_again(host, timeline, seq, ids, delta, probe or Probe()))
+    _check_order(host, timeline, seq)
+    return renamed
+
+
+def _shift_groups(host: Any, timeline: str, seq: Sequence, moves: list[tuple[list[str], int]]) -> None:
+    """The moves that keep every track's order, by `TrackItem.move` (see `_move_groups`)."""
     if not moves:
         return
     if len({delta for _ids, delta in moves}) == 1:
@@ -1257,9 +1541,12 @@ def _move_groups(host: Any, timeline: str, seq: Sequence, moves: list[tuple[list
         host._send("move_items", {"timeline": timeline, "ids": ids, "offsetTicks": str(rest)})
 
 
-def _put(host: Any, timeline: str, now: Sequence, places: list[dict[str, Any]]) -> None:
+def _put(
+    host: Any, timeline: str, now: Sequence, places: list[dict[str, Any]], probe: Any = None
+) -> dict[str, str]:
     """Sets clips back to placements (same tracks): moves when only the place differs (each clip by
-    its own amount: a swap's two groups go back by opposite ones), else all four points."""
+    its own amount: a swap's two groups go back by opposite ones), else all four points. Returns old id
+    -> new id for clips placed again to keep their track's order."""
     same_shape = all(
         int(p["ticks"]["endTicks"]) - int(p["ticks"]["startTicks"])
         == int(now.clip(p["id"])["endTicks"]) - int(now.clip(p["id"])["startTicks"])
@@ -1271,15 +1558,16 @@ def _put(host: Any, timeline: str, now: Sequence, places: list[dict[str, Any]]) 
         delta = int(p["ticks"]["startTicks"]) - int(now.clip(p["id"])["startTicks"])
         by_delta.setdefault(delta, []).append(p["id"])
     if same_shape and any(by_delta):
-        _move_groups(host, timeline, now, [(ids, d) for d, ids in by_delta.items()])
-    else:
-        host._send(
-            "set_items",
-            {
-                "timeline": timeline,
-                "items": [{"id": p["id"], **p["ticks"]} for p in places],
-            },
-        )
+        return _move_groups(host, timeline, now, [(ids, d) for d, ids in by_delta.items()], probe)
+    host._send(
+        "set_items",
+        {
+            "timeline": timeline,
+            "items": [{"id": p["id"], **p["ticks"]} for p in places],
+        },
+    )
+    _check_order(host, timeline, now)
+    return {}
 
 
 # ------------------------------------------------------------------------------- reverting
@@ -1292,88 +1580,67 @@ def _put_back(
     ("reverted" | "taken" | "failed: why", old id -> new id).
 
     A placement always lays down the file's picture and every channel of its sound. When only some of
-    them were lifted (the sound under a picture that stayed, or one channel), it's made past the
-    sequence's end, where every track is free, the parts that stayed are removed, and the rest moved
-    along their tracks into their old places."""
+    them were lifted (the sound under a picture that stayed, or one channel), the rest goes on tracks
+    free there (else scratch ones) and is lifted again at once: the clips are placed where they were,
+    never moved there, so they take their places in the tracks' lists (see "Premiere's clip order")."""
     first = group[0]
     if first.get("speed"):
         return "failed: it had a speed change; the backup has it", {}
     path = first.get("filePath")
     if not path or not os.path.isfile(path):
         return "failed: its media file isn't there any more", {}
-    video = [g for g in group if g["track"][0] == "video"]
-    audio = [g for g in group if g["track"][0] == "audio"]
     start, end = int(first["startTicks"]), int(first["endTicks"])
-    in_ticks = int(first["inTicks"])
-    channels = int((probe.audio(path) or {}).get("channels") or 0)
-    has_video = probe.video(path) is not None
     if any(not seq.free(g["track"][0], g["track"][1], start, end) for g in group):
         return "taken", {}
-    v_track = video[0]["track"][1] if video else (1 if has_video else -1)
-    # A file's first channel goes on the track it's placed on, so a lifted right channel (A2) is placed
-    # from A1.
-    a_track = (
-        min(g["track"][1] - g.get("channel", 1) + 1 for g in audio) if audio else (1 if channels else -1)
-    )
-    if channels and (a_track < 1 or a_track + channels - 1 > len(seq.tracks["audio"])):
-        return (
-            f"failed: putting {first['name']} back needs {channels} audio tracks from A{max(a_track, 1)}",
-            {},
-        )
-    whole = (not has_video or bool(video)) and len(audio) == channels
-    at = start
-    if not whole:
-        last = max([int(seq.raw.get("endTicks") or 0)] + [int(c["endTicks"]) for c in seq.clips.values()])
-        at = -(-last // seq.timebase) * seq.timebase + seq.timebase
-    plan = {
-        "path": path,
-        "name": first["name"],
-        "inSeconds": in_ticks / TICKS_PER_SECOND,
-        "outSeconds": (in_ticks + end - start) / TICKS_PER_SECOND,
-        "atTicks": at,
-        "endTicks": at + end - start,
-        "videoTrack": v_track,
-        "audioTrack": a_track,
-        "picture": True,
-        "sound": True,
-        "volumeDb": None,
-    }
+    source = {"path": path, "name": first["name"], "inTicks": first["inTicks"], "length": end - start}
+    parts = [
+        {"id": g["itemId"], "kind": g["track"][0], "index": g["track"][1], "channel": g.get("channel", 1)}
+        for g in group
+    ]
+    # Channels of the recording that stayed (the left one, when only the right was lifted) are where the
+    # placement lays its other channels, so they're placed again with it.
+    lifted = {g["itemId"] for g in group}
+    siblings = [
+        c
+        for c in seq.clips.values()
+        if c["kind"] == "audio"
+        and c["id"] not in lifted
+        and c.get("mediaPath") == path
+        and (c["startTicks"], c["endTicks"], c["inTicks"])
+        == (first["startTicks"], first["endTicks"], first["inTicks"])
+    ]
     try:
-        placed = _place(host, timeline, plan, seq)
+        if siblings:
+            _refuse_unplaceable(host, timeline, [c["id"] for c in siblings])
+            host._send("remove_items", {"timeline": timeline, "ids": [c["id"] for c in siblings]})
+            parts += [
+                {"id": c["id"], "kind": "audio", "index": c["index"], "channel": seq.channel(c)}
+                for c in siblings
+            ]
+        restored = _place_parts(host, timeline, source, start, parts, probe)
     except HostError as exc:
         return f"failed: {exc}", {}
-    # Only the tracks that were lifted are kept.
-    wanted = {(g["track"][0], g["track"][1]): g for g in group}
-    restored: dict[str, str] = {}
-    extra = []
+    if siblings:
+        _restore_settings(host, timeline, siblings, restored)
     settings = []
-    for p in placed:
-        record = wanted.get((p["type"], p["track"] + 1))
-        if record is None:
-            extra.append(p["id"])
-            continue
-        restored[record["itemId"]] = p["id"]
-        item: dict[str, Any] = {"id": p["id"]}
+    for record in group:
+        item: dict[str, Any] = {"id": restored[record["itemId"]]}
         if not record.get("enabled", True):
             item["disabled"] = True
         if record.get("volumeDb") is not None and record["volumeDb"] != 0:
             item["level"] = gain(record["volumeDb"])
         if len(item) > 1:
             settings.append(item)
-    if extra:
-        host._send("remove_items", {"timeline": timeline, "ids": extra})
-    if at != start and restored:
-        host._send(
-            "move_items",
-            {
-                "timeline": timeline,
-                "ids": list(restored.values()),
-                "offsetTicks": str(start - at),
-            },
-        )
     if settings:
         host._send("set_items", {"timeline": timeline, "items": settings})
-    stayed = list(dict.fromkeys(i for g in group for i in g.get("linkedIds", []) if i in seq.clips))
+    stayed = list(
+        dict.fromkeys(
+            i
+            for g in [*group, *siblings]
+            for i in (g.get("linkedIds") or [])
+            if i in seq.clips and i not in restored
+        )
+    )
     if stayed and restored:
         host._send("link_items", {"timeline": timeline, "ids": [*restored.values(), *stayed]})
     return "reverted", restored
@@ -1572,19 +1839,25 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
             if change.get("retracked"):
                 after_ids = {i["after"]["id"]: current(i["after"]["id"]) for i in items}
                 try:
-                    new_id = _retrack_back(host, timeline, seq, change, after_ids, probe)
+                    restored.update(_retrack_back(host, timeline, seq, change, after_ids, probe))
                 except HostError as exc:
                     failed.append({"name": label, "reason": str(exc)})
                     continue
-                restored[after_ids[items[0]["after"]["id"]]] = new_id
                 reverted.append({"kind": kind, "name": label})
                 continue
-            _put(
-                host,
-                timeline,
-                seq,
-                [{**i["before"], "id": current(i["after"]["id"])} for i in items],
-            )
+            try:
+                restored.update(
+                    _put(
+                        host,
+                        timeline,
+                        seq,
+                        [{**i["before"], "id": current(i["after"]["id"])} for i in items],
+                        probe,
+                    )
+                )
+            except HostError as exc:
+                failed.append({"name": label, "reason": str(exc)})
+                continue
             reverted.append({"kind": kind, "name": label})
         else:
             item_id = current(change.get("itemId"))

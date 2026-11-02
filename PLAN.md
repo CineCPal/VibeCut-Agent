@@ -2828,6 +2828,48 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Still to check live:** reinstall with `npm run install-app -- --orchestrated` plus the model variables, then ask a Claude (subscription) chat to sync a camera with its recorder file.
 
+## Premiere's clip order (2026-11-02)
+
+**Why (the user, 2026-11-02):** after an orchestrated chat cut a 90-second piece on Sequence 02, Premiere drew Oli's clips as missing but played them, and drew Bernice's but didn't play them. Closing and reopening the project didn't help.
+
+**Cause (found in the saved `.prproj` and reproduced live on scratch copies, Premiere 26.5.2):**
+- Premiere keeps each track's clips in a list it expects in time order, and draws and plays the sequence by walking it.
+- A placement goes into the list in its place. Nothing else changes a clip's place in it: `TrackItem.move`, new `start`/`end`, and a zero move all keep it where it was. Only a copy of the sequence (`clone`) sorts it.
+- The chat's last edit moved Bernice from 756 s to 0 s, past Oli. Every track was then saved as `[Oli 35.5, Bernice 0, Grady 65.8]`.
+- Each bridge path that moved clips passed other clips at some point:
+  - `reshape_clip` moves;
+  - swaps in `_move_groups`, which park groups past the end;
+  - `_replace` (a picture to another track), which placed past the end and moved left;
+  - `_put_back`, the revert of a delete, which did the same when only part of a file was lifted. That's how the first try's rollback lost Oli's WAV.
+- The 2026-10-09 notes in `host.jsx` (`vcMoveItems`) and `premiere_native.py` ("Premiere's timeline lost them") were most likely this same bug.
+- **Also found:** `reshape_clip` checked every linked clip against the anchor's file length, so a recorder longer than its camera was refused ("OliU.WAV's file doesn't reach that far (666.666 s long)"; the WAV is 859 s). Each clip is now checked against its own file.
+
+**Decided (the user):** fixed for both execution modes. CLAUDE.md asks for no behaviour change in `nle/` under direct mode; the user chose to fix the shared bridge code anyway, since direct-mode edits broke sequences the same way.
+
+**The fix (`premiere_edit.py`, "Premiere's clip order"):**
+- **Only where clips end up matters.** `_misplaced` takes each track's list with the moves applied. The clips outside its heaviest time-ordered run, where clips that stay put outweigh every move, would be out of order. A track already out of order is left as it is.
+- **`_move_groups`**, which every move goes through now (reshape, `_put` and so revert, retrack partners, split and speed undo): a group with a misplaced clip is lifted first, the rest move as before, then the group is placed again at its destination (`_place_again`). That keeps its range, on/off switch, level, name, label and links, and its ids change (`renamed` / `restoredIds`).
+- **`_place_parts`** places part of a file. The half nobody wants goes on tracks free there, else scratch tracks that are removed again. The same recording's other channels are placed with it (a single right channel put back with its left). It never moves a clip.
+- **Refused up front** when placing again would lose something: a speed change, effects or changed Motion/Opacity, fades or keyframes, a transition at an edge, or no media file. The message says to move it in Premiere or use a draft.
+- **A microsecond nudge** (`NUDGE_SECONDS`): Premiere floors the seconds it's sent, so 21.021 s (630 frames at 29.97) landed on frame 629 and out points a frame short. Any frame or two still off is set exactly where the clip landed.
+- **Safety net, `_check_order`:** after any move, a track newly out of order raises "Premiere's clip order on ... broke".
+- The panel is unchanged (no Update panel needed).
+
+**Checked live (Premiere 26.5.2, scratch copies of "Sequence 02 (fixed)", deleted after):**
+- Bernice's camera and recorder moved from 0 s to 100 s, past Oli and Grady, through `reshape_clip`. Placed again with new ids, last in every list, with the same source points (20.988 s, 92.192 s), linked, the camera sound still off. Revert put them back at 0 s, first in every list.
+- Without the nudge, a placed range came out a frame short. With it, ranges were exact for two MP4s and a WAV.
+
+**Repairing a sequence already out of order:** copy it (`clone_sequence`). Sequence 02 was copied to "Sequence 02 (fixed)", in order, with the same clips, links and switches. Sequence 02 itself was left for the user to compare.
+
+**Tests (`tests/nle/vibecut_premiere/test_premiere_edit.py`):**
+- The fake now keeps Premiere's list order: placements insert in time order, moves and points don't reorder, and reads report the list's own order. Every test using its fixture ends by asserting every track is in order. That caught the right-channel revert and the move to another track.
+- New tests: a synced camera and recorder moved past another clip and reverted; refusals for effects and fades; each clip's own file length; a swap; the safety net; `_misplaced` leaving old disorder alone.
+- pytest 1316, 2 skipped. vitest 867. ruff, mypy.
+
+**Still to check live:** an orchestrated chat that reorders clips on a real sequence, then Revert from the app.
+
+**Not done:** `add_clips` and the native rebuild still use `place_clip_exact` without the nudge. Their frame-early correction covers sound-only files, and nothing was seen wrong with them here.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -3493,3 +3535,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Phase 22 live checks from the terminal.** A real `ingest-index` and the real MCP shim, both with telemetry on, streamed live through the gateway. Fixed: a trace's root now finishes with its real time (`TraceEmitter.finish`, at shim exit and ingest end), and `telemetry-gateway` honours `port: 0`. The in-app turn and a look in a browser are still owed.
 - **2026-11-02 (Claude): Sync in orchestrated mode.** The three sync tools now go through to the app in orchestrated chats, which had no way to sync audio and video; see "Sync in orchestrated mode" above.
 - **2026-11-02 (Claude): Phase 22, a trace's root finishes in the app too.** Claude Code ends the shim with a signal, which skipped the finish; an orchestrated shim now finishes its trace on SIGTERM, SIGHUP and SIGINT. See "In the app" under Phase 22.
+- **2026-11-02 (Claude): Premiere's clip order.** A scripted move past another clip left Premiere's track list out of time order, so its timeline drew and played the wrong clips (Sequence 02). Every move now places such clips again at their destination, unwanted halves on free or scratch tracks; `reshape_clip` checks each clip against its own file. Both modes, the user's call. See "Premiere's clip order" above.
