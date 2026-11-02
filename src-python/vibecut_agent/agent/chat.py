@@ -91,15 +91,28 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
         from vibecut_agent.agent import claude_code_chat
 
         setup = request.get("claudeCode")
+        # Phase 21: with EXECUTION_MODE=orchestrated, the subscription's Claude edits through the
+        # orchestrator too. Its MCP shim runs the tool bus (mcp_server.py), and it gets the same
+        # orchestrated-editing instructions as Claude through the API.
+        orchestrated = _orchestrated()
+        if orchestrated and isinstance(setup, dict):
+            setup = {**setup, "orchestrated": True}
         # Phase 11f: the next turn's Claude Code is started as soon as this one ends (and at a warm
         # start), so the user's next message skips Claude Code's start-up.
         launcher = claude_code_chat.Launcher()
+
+        def subscription_instruction(text: str) -> str:
+            if not orchestrated:
+                return text
+            from vibecut_agent.orchestrator.supervisor import ORCHESTRATED_INSTRUCTION
+
+            return f"{text}\n\n{ORCHESTRATED_INSTRUCTION}" if text else ORCHESTRATED_INSTRUCTION
 
         def subscription_turn(**turn: Any) -> dict[str, Any]:
             outcome = claude_code_chat.run_chat_turn(
                 setup,
                 turn["model"],
-                turn["system_instruction"],
+                subscription_instruction(turn["system_instruction"]),
                 turn["history"],
                 turn["user_message"],
                 turn["emit"],
@@ -114,7 +127,13 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
 
         def prepare_subscription_turn(history: list[Any]) -> None:
             claude_code_chat.prepare_turn(
-                launcher, setup, model, system_instruction, history, max_steps, request.get("effort")
+                launcher,
+                setup,
+                model,
+                subscription_instruction(system_instruction),
+                history,
+                max_steps,
+                request.get("effort"),
             )
 
         prepare_next = prepare_subscription_turn
@@ -251,6 +270,13 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
 
 def _nothing() -> None:
     pass
+
+
+def _orchestrated() -> bool:
+    """Whether EXECUTION_MODE=orchestrated (config.py), for the providers chat.py routes itself."""
+    from vibecut_agent.config import ExecutionMode, OrchestratorConfig
+
+    return OrchestratorConfig.from_env().execution_mode is ExecutionMode.ORCHESTRATED
 
 
 def _converse(

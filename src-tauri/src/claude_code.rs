@@ -12,7 +12,7 @@
 //! Both are saved as `claude-code.json` in the app's config folder and injected into a `chat` request
 //! as `claudeCode` by `sidecar::prepare_request`; anything the UI sent under that name is dropped.
 
-use crate::mcp_bridge::{app_shim_launch, ShimLaunch};
+use crate::mcp_bridge::{app_shim_launch, app_shim_launch_with, ShimLaunch, ORCHESTRATED_SHIM_EXTRAS};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::Read;
@@ -110,7 +110,9 @@ pub fn setup_for(app: &AppHandle, job_id: &str) -> Result<Value, String> {
         "Claude Code isn't installed where VibeCut Agent looks. Install it, or choose the claude program in Settings → Claude subscription.",
     )?;
     let saved = saved(app);
-    Ok(setup(&program, saved.config_dir.as_deref(), job_id, &work_dir(app)?, &app_shim_launch(app)))
+    // Phase 21: in orchestrated mode the chat's shim runs the orchestrator's tool bus (mcp_server.py).
+    let shim = if crate::sidecar::orchestrated() { app_shim_launch_with(app, &ORCHESTRATED_SHIM_EXTRAS) } else { app_shim_launch(app) };
+    Ok(setup(&program, saved.config_dir.as_deref(), job_id, &work_dir(app)?, &shim))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

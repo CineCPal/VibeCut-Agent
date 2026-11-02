@@ -516,12 +516,21 @@ fn execution_mode() -> Option<String> {
     std::env::var("VIBECUT_EXECUTION_MODE").ok().or_else(|| std::env::var("EXECUTION_MODE").ok())
 }
 
+fn is_orchestrated(mode: Option<&str>) -> bool {
+    mode.map(|m| m.trim().eq_ignore_ascii_case("orchestrated")) == Some(true)
+}
+
+/// Whether runs are in orchestrated mode (Phase 21): claude_code.rs gives the chat's MCP shim the extras.
+pub fn orchestrated() -> bool {
+    is_orchestrated(execution_mode().as_deref())
+}
+
 /// Phase 21: what the orchestrated path adds to `extras_for`. A Claude chat in orchestrated mode runs the
 /// tool bus (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the chat's Whisper (mlx-whisper:
 /// `transcribe`); `orchestrator-health` asks the same workers. Nothing in direct mode, or for another
 /// provider.
 pub fn orchestrated_extras(command: &str, request: &Value, mode: Option<&str>) -> Vec<&'static str> {
-    let orchestrated = mode.map(|m| m.trim().eq_ignore_ascii_case("orchestrated")) == Some(true);
+    let orchestrated = is_orchestrated(mode);
     let claude = request.get("provider").and_then(Value::as_str) == Some("claude");
     match command {
         "chat" if orchestrated && claude => vec!["orchestrator", "transcribe"],

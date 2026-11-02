@@ -205,3 +205,34 @@ def test_a_direct_chat_sends_claudes_calls_to_the_app_as_they_are(monkeypatch, m
     assert client.requests[0]["system"][0]["text"] == "s"
     assert not [e for e in capture.of_type("status") if e.get("phase") == "tool"]
     assert results_of(client.requests[1])["t1"] == ({"editId": "e1"}, False)
+
+
+@pytest.mark.parametrize("value,orchestrated", [("orchestrated", True), ("direct", False)])
+def test_the_subscriptions_claude_follows_execution_mode(monkeypatch, mode, value, orchestrated):
+    """Claude (subscription): its shim runs the tool bus (mcp_server.py), and its prompt says how to edit."""
+    from vibecut_agent.agent import claude_code_chat
+    from vibecut_agent.orchestrator.supervisor import ORCHESTRATED_INSTRUCTION
+
+    mode(value)
+    seen = {}
+
+    def fake_turn(setup, model, system_instruction, *args, **kwargs):
+        seen["turn"] = (setup, system_instruction)
+        return {"text": "ok", "history": [], "usage": None, "aborted": False, "outOfSteps": False}
+
+    def fake_prepare(launcher, setup, model, system_instruction, *args):
+        seen["prepared"] = (setup, system_instruction)
+
+    monkeypatch.setattr(claude_code_chat, "run_chat_turn", fake_turn)
+    monkeypatch.setattr(claude_code_chat, "prepare_turn", fake_prepare)
+    subscription = {**request(), "provider": "claude-code", "claudeCode": {"jobId": "job-1"}}
+    stdin = FakeStdin([json.dumps(subscription), json.dumps({"type": "end_session"})])
+    assert run_chat(monkeypatch, stdin, Capture()) == 0
+
+    for setup, instruction in (seen["turn"], seen["prepared"]):
+        if orchestrated:
+            assert setup == {"jobId": "job-1", "orchestrated": True}
+            assert instruction == f"s\n\n{ORCHESTRATED_INSTRUCTION}"
+        else:
+            assert setup == {"jobId": "job-1"}
+            assert instruction == "s"

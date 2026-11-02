@@ -13,6 +13,16 @@ gets the same snapshot, backup, edit log and Revert. There is no network port.
 The declarations arrive in Gemini's OpenAPI dialect, as the chat sidecar gets them, and are converted
 with the chat's own ``claude_schema.to_claude_tool``, so the two can't drift apart.
 
+In orchestrated mode (Phase 21; ``VIBECUT_MCP_ORCHESTRATED=1``, which claude_code_chat sets for the app's
+own Claude Code run when ``EXECUTION_MODE=orchestrated``), this process plays the part
+orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
+- it offers the six orchestration tools, and of the app's tools only the read-only ones;
+- it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
+  timeline and whose commit go to the app through the bridge as this chat's own calls;
+- it refuses any other call.
+The bus lives as long as this process, which is one Claude Code run: one turn. A validation token is
+good for the turn it was handed out in. Outside callers are never orchestrated.
+
 stdout is the MCP channel: nothing else may print there. Diagnostics go to stderr.
 """
 
@@ -39,6 +49,7 @@ SERVER_NAME = "vibecut"
 OUTSIDE = "outside"
 CALLER_ENV = "VIBECUT_MCP_CALLER"
 DIR_ENV = "VIBECUT_AGENT_MCP_DIR"
+ORCHESTRATED_ENV = "VIBECUT_MCP_ORCHESTRATED"
 
 # The app stamps agent-alive.json every second; older than this means it isn't running.
 HEARTBEAT_STALE_SECONDS = 5.0
@@ -89,6 +100,8 @@ LONG_TOOLS = frozenset(
         # Phase 16e: a folder of footage can take minutes to score.
         "analyze_broll_folder",
         "build_broll_selects_timeline",
+        # Phase 21: a validated OTIO delta's calls, one after another in the editor.
+        "commit_otio_delta",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0
@@ -264,19 +277,96 @@ def text_result(payload: Any, is_error: bool, images: Any = None) -> types.CallT
     return types.CallToolResult(content=content, is_error=is_error)
 
 
-def build_server(bridge: AppBridge) -> Server[Any]:
+class Orchestration:
+    """The orchestrated chat's side of this process (see the module docstring)."""
+
+    # Of the app's tools, the ones an orchestrated chat keeps: the read-only ones, and the editor context.
+    FORWARDED = frozenset({CONTEXT_TOOL_NAME})
+
+    def __init__(self, bridge: AppBridge, bus: Any = None) -> None:
+        from vibecut_agent.orchestrator.tool_bus import READ_ONLY_TOOLS
+
+        self.bridge = bridge
+        self._bus = bus
+        self.forwarded = self.FORWARDED | frozenset(READ_ONLY_TOOLS)
+
+    @property
+    def bus(self) -> Any:
+        if self._bus is None:
+            from vibecut_agent.config import OrchestratorConfig
+            from vibecut_agent.orchestrator.tool_bus import OrchestratorToolBus
+
+            self._bus = OrchestratorToolBus(OrchestratorConfig.from_env("orchestrated"))
+        return self._bus
+
+    def handles(self, name: str) -> bool:
+        from vibecut_agent.orchestrator.tool_bus import ORCHESTRATOR_TOOL_NAMES
+
+        return name in ORCHESTRATOR_TOOL_NAMES
+
+    def tools(self, app_tools: list[types.Tool]) -> list[types.Tool]:
+        from vibecut_agent.orchestrator.tool_bus import claude_tools
+
+        kept = [t for t in app_tools if t.name in self.forwarded]
+        for declaration in claude_tools():
+            converted = to_claude_tool(declaration)
+            kept.append(
+                types.Tool(
+                    name=str(converted["name"]),
+                    description=converted.get("description"),
+                    input_schema=converted["input_schema"],
+                )
+            )
+        return kept
+
+    def call_app(self, calls: list[tuple[str, dict[str, Any]]]) -> list[Any]:
+        """The bus's calls to the app, made from its worker thread through the bridge, in order. A call the
+        bridge couldn't make comes back as that call's `{"error"}`."""
+        results = []
+        for name, args in calls:
+            try:
+                reply = anyio.from_thread.run(
+                    self.bridge.ask_reply, "call_tool", timeout_for(name), name, args
+                )
+                results.append(reply.get("result"))
+            except BridgeError as exc:
+                results.append({"error": str(exc)})
+        return results
+
+    def dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        """Runs an orchestration tool on the bus; call from a worker thread."""
+        bus = self.bus
+        bus.call_app = self.call_app
+        return bus.dispatch(name, args)
+
+
+REFUSED_IN_ORCHESTRATED_MODE = (
+    "{name} isn't available here: edits go through propose_otio_delta and commit_otio_delta"
+)
+
+
+def build_server(bridge: AppBridge, orchestration: Orchestration | None = None) -> Server[Any]:
     async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
         try:
             result = await bridge.ask("list_tools", LIST_TIMEOUT_SECONDS)
         except BridgeError as exc:
             print(f"vibecut mcp: {exc}", file=sys.stderr)
             return types.ListToolsResult(tools=[FALLBACK_TOOL])
-        return types.ListToolsResult(tools=tools_from(result) or [FALLBACK_TOOL])
+        tools = tools_from(result)
+        if orchestration is not None:
+            tools = orchestration.tools(tools)
+        return types.ListToolsResult(tools=tools or [FALLBACK_TOOL])
 
     async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         name = params.name
         args = dict(params.arguments or {})
         timeout = timeout_for(name)
+        if orchestration is not None:
+            if orchestration.handles(name):
+                result = await anyio.to_thread.run_sync(orchestration.dispatch, name, args)
+                return text_result(result, is_error=isinstance(result, dict) and "error" in result)
+            if name not in orchestration.forwarded:
+                return text_result({"error": REFUSED_IN_ORCHESTRATED_MODE.format(name=name)}, is_error=True)
 
         async def on_wait(waited: float) -> None:
             try:
@@ -308,9 +398,15 @@ def caller_from_env() -> str:
     return caller
 
 
+def orchestrated_from_env(caller: str) -> bool:
+    """Only the app's own chat is orchestrated, and only when claude_code_chat said so."""
+    return caller != OUTSIDE and os.environ.get(ORCHESTRATED_ENV) == "1"
+
+
 def main() -> int:
-    bridge = AppBridge(bridge_dir(), caller_from_env())
-    server = build_server(bridge)
+    caller = caller_from_env()
+    bridge = AppBridge(bridge_dir(), caller)
+    server = build_server(bridge, Orchestration(bridge) if orchestrated_from_env(caller) else None)
 
     async def run() -> None:
         async with stdio_server() as (read_stream, write_stream):

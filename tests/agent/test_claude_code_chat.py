@@ -501,3 +501,27 @@ def test_preparing_without_a_setup_does_nothing() -> None:
     launcher = claude_code_chat.Launcher()
     claude_code_chat.prepare_turn(launcher, None, None, "s", [])
     assert launcher.warm_args is None
+
+
+def test_an_orchestrated_chats_shim_runs_the_tool_bus_with_the_orchestrator_settings(
+    fake: dict[str, Any],
+) -> None:
+    environ = {
+        "VIBECUT_EXECUTION_MODE": "orchestrated",
+        "VIBECUT_GEMMA_MODEL": "gemma3:4b",
+        "VIBECUT_INDEX_DIR": "/data/vector-index",
+        "VIBECUT_VLM_MODEL": "",
+        "ANTHROPIC_API_KEY": "sk-not-for-the-shim",
+    }
+    plain = claude_code_chat.mcp_config(fake["setup"], environ)["mcpServers"]["vibecut"]["env"]
+    assert plain == {"PYTHONPATH": "/r/src-python", "VIBECUT_MCP_CALLER": "job-7"}
+    orchestrated = {**fake["setup"], "orchestrated": True}
+    env = claude_code_chat.mcp_config(orchestrated, environ)["mcpServers"]["vibecut"]["env"]
+    assert env == {
+        "PYTHONPATH": "/r/src-python",
+        "VIBECUT_MCP_CALLER": "job-7",
+        "VIBECUT_MCP_ORCHESTRATED": "1",
+        "VIBECUT_EXECUTION_MODE": "orchestrated",
+        "VIBECUT_GEMMA_MODEL": "gemma3:4b",
+        "VIBECUT_INDEX_DIR": "/data/vector-index",
+    }
