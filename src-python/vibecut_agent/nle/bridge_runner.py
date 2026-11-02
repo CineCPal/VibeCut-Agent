@@ -20,8 +20,10 @@ edit functions the direct tools use (nle/edits.py), with the clip ids it names f
 
 A call that fails (HostError, Unreachable) or that the editor refuses in part stops the batch, and the
 changes made before it are undone with `revert_timeline_changes`, newest first, their ids followed the
-same way. The error raised says which call failed, why, and how the undo went; the backup has the
-timeline as it was either way. Unreachable stays Unreachable, so the watcher reports the lost editor."""
+same way. The error raised says which call failed, why, and how the undo went. When the undo was complete
+and the backup is the one this batch made, it's deleted (`discard`): the timeline is as it was, and a
+failed batch left a stray "(before VibeCut n)" behind (Phase 21's live checks). Otherwise the backup has
+the timeline as it was. Unreachable stays Unreachable, so the watcher reports the lost editor."""
 
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ from vibecut_agent.nle.errors import HostError, Unreachable
 from vibecut_agent.nle.premiere import TICKS_PER_SECOND, level_db
 
 Edit = Callable[[Any, dict[str, Any]], Any]
+Discard = Callable[[Any, dict[str, Any]], None]
 
 BATCH_COMMANDS = (
     "backup_timeline",
@@ -143,26 +146,42 @@ def _roll_back(
     changes: list[dict[str, Any]],
     renamed: Mapping[str, str],
     backup: str,
+    discard: Discard | None,
 ) -> str:
-    """Undoes `changes`; says how that went."""
+    """Undoes `changes`, deletes the backup when that was complete and `discard` is given (the batch made
+    the backup); says how that went."""
     keep = f'the backup "{backup}" has the timeline as it was'
     if not changes:
-        return f"Nothing had changed yet; {keep}."
+        done = "Nothing had changed yet"
+    else:
+        try:
+            result = edits["revert_timeline_changes"](
+                host, {"timeline": timeline, "changes": followed(changes, renamed), "backup": backup}
+            )
+        except (HostError, Unreachable) as e:
+            return f"Undoing the {len(changes)} change(s) before it failed too ({e}); {keep}."
+        left = [*result.get("changedSince", []), *result.get("failed", [])]
+        if left:
+            reasons = "; ".join(f"{c.get('name', '?')}: {c.get('reason', '?')}" for c in left[:5])
+            return f"{len(left)} of the {len(changes)} change(s) before it couldn't be undone ({reasons}); {keep}."
+        # Put back from the source without its effects: the backup still has them.
+        if result.get("lost"):
+            return f"The {len(changes)} change(s) before it were undone, {', '.join(result['lost'][:5])} without its effects; {keep}."
+        done = f"The {len(changes)} change(s) before it were undone"
+    if discard is None:
+        return f"{done}; {keep}."
     try:
-        result = edits["revert_timeline_changes"](
-            host, {"timeline": timeline, "changes": followed(changes, renamed), "backup": backup}
-        )
-    except (HostError, Unreachable) as e:
-        return f"Undoing the {len(changes)} change(s) before it failed too ({e}); {keep}."
-    left = [*result.get("changedSince", []), *result.get("failed", [])]
-    if not left:
-        return f"The {len(changes)} change(s) before it were undone; {keep}."
-    reasons = "; ".join(f"{c.get('name', '?')}: {c.get('reason', '?')}" for c in left[:5])
-    return f"{len(left)} of the {len(changes)} change(s) before it couldn't be undone ({reasons}); {keep}."
+        discard(host, {"timeline": timeline, "backup": backup})
+    except (HostError, Unreachable):
+        return f"{done}; {keep}."
+    return f"{done}, so the timeline is as it was and its backup \"{backup}\" was deleted."
 
 
-def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str, Edit]) -> dict[str, Any]:
-    """Runs the batch (see the module docstring) with `edits`, the editor's edit functions."""
+def execute_validated_batch(
+    host: Any, args: dict[str, Any], edits: Mapping[str, Edit], discard: Discard | None = None
+) -> dict[str, Any]:
+    """Runs the batch (see the module docstring) with `edits`, the editor's edit functions, and `discard`,
+    which deletes a backup this batch made once a failed batch is fully undone."""
     timeline = args.get("timeline")
     if not isinstance(timeline, str) or not timeline:
         raise HostError("timeline must name the timeline the batch is for")
@@ -177,7 +196,10 @@ def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str,
                 "Apply?), so nothing was changed. Read the timeline again and plan the edit on what it is now."
             )
     backup = args.get("backup")
-    if not isinstance(backup, str) or not backup:
+    if isinstance(backup, str) and backup:
+        # The app's backup for the request: earlier edits of the request may need it.
+        discard = None
+    else:
         backup = str(edits["backup_timeline"](host, {"timeline": timeline})["backup"])
     calls = [entry for entry in batch if entry["command"] != "backup_timeline"]
     changes: list[dict[str, Any]] = []
@@ -189,7 +211,7 @@ def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str,
         try:
             result = edits[command](host, {**remap(entry["args"], renamed), "timeline": timeline})
         except (HostError, Unreachable) as e:
-            note = _roll_back(host, edits, timeline, changes, renamed, backup)
+            note = _roll_back(host, edits, timeline, changes, renamed, backup, discard)
             raise type(e)(f"{where} failed: {e}. {note}") from None
         result = result if isinstance(result, dict) else {}
         made = list(result.get("changes") or [])
@@ -197,7 +219,7 @@ def execute_validated_batch(host: Any, args: dict[str, Any], edits: Mapping[str,
         renamed.update({str(k): str(v) for k, v in (result.get("renamed") or {}).items()})
         refused = result.get("refused") or []
         if refused:
-            note = _roll_back(host, edits, timeline, changes, renamed, backup)
+            note = _roll_back(host, edits, timeline, changes, renamed, backup, discard)
             reasons = "; ".join(
                 str(r.get("reason", r)) if isinstance(r, dict) else str(r) for r in refused[:5]
             )

@@ -238,6 +238,15 @@ def backup_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     return {"backup": host._send("backup_sequence", {"timeline": name, "name": wanted})["name"]}
 
 
+def discard_backup(host: Any, args: dict[str, Any]) -> None:
+    """{timeline, backup} -> deletes the backup a failed OTIO batch made and fully undid (bridge_runner.py).
+    Not an edit command: only "<timeline> (before VibeCut n)" is ever deleted."""
+    if not str(args["backup"]).startswith(f"{args['timeline']} (before VibeCut "):
+        raise HostError(f"{args['backup']!r} isn't a VibeCut backup of {args['timeline']!r}")
+    if host._send("delete_sequence", {"timeline": args["backup"]}).get("deleted") is not True:
+        raise HostError(f"Premiere didn't delete {args['backup']!r}")
+
+
 # ------------------------------------------------------------------------------- adding
 
 

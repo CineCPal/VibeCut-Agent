@@ -62,7 +62,7 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "export_stills": stills.premiere_export_stills,
         # Phase 21: a validated OTIO delta's calls, run as one transaction (bridge_runner.py).
         "execute_otio_batch": lambda host, args: bridge_runner.execute_validated_batch(
-            host, args, premiere_edits(imports)
+            host, args, premiere_edits(imports), discard=premiere_edit.discard_backup
         ),
     }
 
@@ -117,7 +117,7 @@ def resolve_edits() -> dict[str, Edit]:
         "export_stills": stills.resolve_export_stills,
         # Phase 21: a validated OTIO delta's calls, run as one transaction (bridge_runner.py).
         "execute_otio_batch": lambda host, args: bridge_runner.execute_validated_batch(
-            host, args, resolve_edits()
+            host, args, resolve_edits(), discard=resolve_edit.discard_backup
         ),
     }
 

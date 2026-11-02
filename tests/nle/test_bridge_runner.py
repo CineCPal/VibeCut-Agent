@@ -283,3 +283,72 @@ def test_a_premiere_duck_is_reported_in_db_too():
     ]
     # The record Revert uses is the editor's, untouched.
     assert reported["before"] == duck["before"] and reported["after"] == keys
+
+
+def test_a_failed_batch_fully_undone_deletes_the_backup_it_made():
+    # Seen live (Phase 21): a failed batch left its "(before VibeCut n)" behind though nothing had changed.
+    discarded = []
+
+    def discard(host, args):
+        discarded.append(args)
+
+    def go(editor, calls, **extra):
+        return bridge_runner.execute_validated_batch(
+            HOST, {"timeline": "Cut", "batch": calls, **extra}, editor.edits(), discard=discard
+        )
+
+    failing = batch(call(2, "delete_clips", itemIds=["c2"]), call(3, "reshape_clip", "op_002", itemId="c1"))
+    with pytest.raises(HostError) as raised:
+        go(Editor(reshape_clip=HostError("no room")), failing)
+    assert str(raised.value) == (
+        "Call 3 of 3 (reshape_clip, for op_002) failed: no room. The 1 change(s) before it were undone, so the "
+        'timeline is as it was and its backup "Cut (before VibeCut 1)" was deleted.'
+    )
+    assert discarded == [{"timeline": "Cut", "backup": "Cut (before VibeCut 1)"}]
+    with pytest.raises(HostError, match='Nothing had changed yet, so the timeline is as it was and its backup'):
+        go(Editor(delete_clips=HostError("There's no clip c9")), batch(call(2, "delete_clips", itemIds=["c9"])))
+    assert len(discarded) == 2
+
+    # Kept: a clip put back without its effects, an undo that left something, the app's own backup.
+    lost = Editor(
+        reshape_clip=HostError("no room"),
+        revert_timeline_changes=lambda args: {"reverted": [], "changedSince": [], "failed": [], "lost": ["b.mov"]},
+    )
+    with pytest.raises(HostError, match='b.mov without its effects; the backup "Cut \\(before VibeCut 1\\)" has'):
+        go(lost, failing)
+    with pytest.raises(HostError, match='the backup "Cut \\(before VibeCut 3\\)" has the timeline as it was'):
+        go(Editor(reshape_clip=HostError("no room")), failing, backup="Cut (before VibeCut 3)")
+    assert len(discarded) == 2
+
+    # A delete the editor refuses keeps the backup and says where it is.
+    def refuse(host, args):
+        raise HostError("Resolve didn't delete it")
+
+    with pytest.raises(HostError, match='were undone; the backup "Cut \\(before VibeCut 1\\)" has the timeline'):
+        bridge_runner.execute_validated_batch(
+            HOST, {"timeline": "Cut", "batch": failing}, Editor(reshape_clip=HostError("no room")).edits(), discard=refuse
+        )
+
+
+def test_only_a_vibecut_backup_of_the_timeline_is_ever_discarded():
+    from vibecut_agent.nle import premiere_edit
+
+    class Panel:
+        def __init__(self):
+            self.sent = []
+
+        def _send(self, command, args):
+            self.sent.append((command, args))
+            return {"deleted": True}
+
+    panel = Panel()
+    premiere_edit.discard_backup(panel, {"timeline": "Cut", "backup": "Cut (before VibeCut 2)"})
+    assert panel.sent == [("delete_sequence", {"timeline": "Cut (before VibeCut 2)"})]
+    with pytest.raises(HostError, match="isn't a VibeCut backup"):
+        premiere_edit.discard_backup(panel, {"timeline": "Cut", "backup": "Cut"})
+    assert len(panel.sent) == 1
+
+
+def test_both_editors_pass_their_discard_to_the_batch():
+    # premiere_edits / resolve_edits wire discard_backup in; it isn't an edit command the app can call.
+    assert "discard_backup" not in premiere_edits(None) and "discard_backup" not in resolve_edits()
