@@ -42,6 +42,8 @@ CACHE_SUFFIX = ".vlm-tags.json"
 CACHE_VERSION = 1
 KEYFRAME_FOLDER = "keyframes"
 ATTEMPTS = 2
+# The share of a whole-file analysis's progress the scene-cut scan fills (`analyze`).
+SCAN_SHARE = 0.3
 
 # What the model fills in for one frame: a shot's fields, less the ones this worker knows already.
 _KNOWN = ("shot_id", "source_range", "keyframe_timestamp_sec")
@@ -194,9 +196,22 @@ class VlmWorker:
             cached = self.cached(media_path, sample_strategy)
             if cached is not None:
                 return in_window(cached, start, end)
+        # The scene-cut scan decodes the whole range first (a 4K file took 12 s, silent, in Phase 21's
+        # live checks): it fills the first SCAN_SHARE of the progress, the shots the rest.
+        scanned = SCAN_SHARE if sample_strategy == "scene_cuts" and on_progress is not None else 0.0
+        on_scan = (
+            (lambda f: on_progress("scanning", f * SCAN_SHARE, f"Finding the shots ({round(f * 100)}%)"))
+            if scanned
+            else None
+        )
         try:
             keyframes = ffmpeg_ops.extract_keyframes_for_vlm(
-                media_path, self.keyframe_dir(media_path), start=start, end=end, strategy=sample_strategy
+                media_path,
+                self.keyframe_dir(media_path),
+                start=start,
+                end=end,
+                strategy=sample_strategy,
+                on_scan=on_scan,
             )
         except ffmpeg_ops.FfmpegOpError as e:
             raise VlmWorkerError(str(e)) from None
@@ -206,7 +221,9 @@ class VlmWorker:
         for index, keyframe in enumerate(keyframes):
             if on_progress is not None:
                 on_progress(
-                    "vision", index / len(keyframes), f"Looking at shot {index + 1} of {len(keyframes)}"
+                    "vision",
+                    scanned + (1 - scanned) * index / len(keyframes),
+                    f"Looking at shot {index + 1} of {len(keyframes)}",
                 )
             analysis = self._analyze_frame(keyframe["image_path"], focus)
             shots.append(

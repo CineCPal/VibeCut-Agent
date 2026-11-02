@@ -125,6 +125,19 @@ def test_keyframes_at_scene_cuts(film, tmp_path):
 
 
 @needs_ffmpeg
+def test_the_scene_cut_scan_reports_how_far_it_is(film, tmp_path):
+    # Seen live (Phase 21): a whole 4K file decoded for 12 s with no progress.
+    heard = []
+    extract_keyframes_for_vlm(str(film), tmp_path / "keys", width=160, on_scan=heard.append)
+    assert len(heard) >= 50
+    assert heard == sorted(heard) and 0 < heard[0] and heard[-1] == pytest.approx(1.0, abs=0.02)
+    # The other strategies don't scan.
+    heard.clear()
+    extract_keyframes_for_vlm(str(film), tmp_path / "keys", width=160, strategy="midpoint_only", on_scan=heard.append)
+    assert heard == []
+
+
+@needs_ffmpeg
 def test_keyframes_uniform_and_midpoint(film, tmp_path):
     uniform = extract_keyframes_for_vlm(
         str(film), tmp_path, strategy="uniform_2s", start=1.0, end=5.0, width=64

@@ -79,12 +79,20 @@ class Ingest:
         self.workers = (make_workers or default_workers)(config)
         self.steps = len(options["paths"]) * len(options["stages"])
         self.done = 0
-        self.began = time.monotonic()
+        # The ETA is paced by the steps that did work. Seen live (Phase 21): a reused transcript finished
+        # its step at once, and an ETA by steps done said 3 s with minutes to go. A cached transcript or
+        # analysis never reports progress, a missing file's steps take no time, and indexing is work.
+        self.worked = 0
+        self.work_seconds = 0.0
+        self.step_began = time.monotonic()
+        self.step_working = False
 
     def report(self, phase: str, within: float, detail: str) -> None:
-        done = self.done + min(1.0, max(0.0, within))
-        elapsed = time.monotonic() - self.began
-        eta = elapsed * (self.steps - done) / done if done > 0 else None
+        within = min(1.0, max(0.0, within))
+        done = self.done + within
+        spent = self.work_seconds + (time.monotonic() - self.step_began if self.step_working else 0.0)
+        worked = self.worked + (within if self.step_working else 0.0)
+        eta = spent * (self.steps - done) / worked if worked > 0 else None
         self.emitter.progress(
             done,
             self.steps,
@@ -92,6 +100,15 @@ class Ingest:
             detail=detail,
             etaSeconds=round(eta, 1) if eta is not None else None,
         )
+
+    def worker_report(self, name: str) -> Callable[[str, float, str], None]:
+        """A worker's on_progress: it reports only while it works, so the step counts toward the ETA."""
+
+        def report(phase: str, fraction: float, detail: str) -> None:
+            self.step_working = True
+            self.report(phase, fraction, f"{name}: {detail}")
+
+        return report
 
     def check(self) -> None:
         if self.cancel.is_set():
@@ -109,6 +126,8 @@ class Ingest:
             return entry
         for stage in self.options["stages"]:
             self.check()
+            self.step_began = time.monotonic()
+            self.step_working = stage == "index"
             try:
                 if stage == "transcribe":
                     self.report("transcribe", 0.0, f"Transcribing {name}")
@@ -118,7 +137,7 @@ class Ingest:
                         enable_diarization=self.options["diarize"],
                         hf_token=self.options["hf_token"],
                         use_cache=use_cache,
-                        on_progress=lambda phase, f, detail: self.report(phase, f, f"{name}: {detail}"),
+                        on_progress=self.worker_report(name),
                     )
                     entry["segments"] = len(transcript["segments"])
                 elif stage == "vision":
@@ -127,7 +146,7 @@ class Ingest:
                         path,
                         sample_strategy=self.options["strategy"],
                         use_cache=use_cache,
-                        on_progress=lambda phase, f, detail: self.report(phase, f, f"{name}: {detail}"),
+                        on_progress=self.worker_report(name),
                     )
                     entry["shots"] = len(shots["shots"])
                 else:
@@ -143,6 +162,10 @@ class Ingest:
                         entry["indexed"] += store.index_shots(shots)
             except Exception as e:  # noqa: BLE001 - one stage failing is recorded on its file; the run goes on
                 entry["errors"].append(f"{stage}: {e}")
+            if self.step_working:
+                self.worked += 1
+                self.work_seconds += time.monotonic() - self.step_began
+            self.step_working = False
             self.done += 1
         return entry
 

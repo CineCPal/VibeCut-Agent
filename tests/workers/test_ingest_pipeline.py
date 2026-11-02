@@ -176,3 +176,32 @@ def test_registered():
         and options["stages"] == ["transcribe", "index"]
         and options["hf_token"] is None
     )
+
+
+def test_the_eta_is_paced_by_the_steps_that_did_work(recorder, tmp_path, monkeypatch):
+    # Seen live (Phase 21): a reused transcript finished its step at once, and the ETA said 3 s with
+    # minutes to go. A cached step doesn't report progress, so it doesn't set the pace.
+    clock = [0.0]
+    monkeypatch.setattr(ingest_pipeline.time, "monotonic", lambda: clock[0])
+    paths = []
+    for name in ("cached.mov", "slow.mov", "next.mov"):
+        (tmp_path / name).write_bytes(b"")
+        paths.append(str(tmp_path / name))
+
+    class Paced(Whisper):
+        def transcribe(self, path, **options):
+            if path.endswith("cached.mov"):
+                clock[0] += 0.01
+                return {"path": path, "segments": []}
+            clock[0] += 5
+            options["on_progress"]("transcribe", 0.5, "half way")
+            clock[0] += 5
+            return {"path": path, "segments": [{}]}
+
+    workers = {"whisper": Paced(), "vlm": Vlm(), "vector": Store()}
+    assert run({"paths": paths, "stages": ["transcribe"]}, recorder, workers) == 0
+    progress = [e for e in recorder.events if e["type"] == "progress"]
+    # Before any work, no guess; half way through slow.mov, 10 s a file with 1.5 files to go.
+    assert [e["etaSeconds"] for e in progress if e["detail"].startswith("Transcribing")][:2] == [None, None]
+    half = next(e for e in progress if e["detail"] == "slow.mov: half way")
+    assert half["etaSeconds"] == 15.0

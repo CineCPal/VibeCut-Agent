@@ -18,10 +18,10 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from vibecut_agent.broll import ffprobe_util
 from vibecut_agent.core.timecode_math import (
@@ -216,10 +216,27 @@ def detect_silences(
     return found
 
 
+def _counted(frames: Any, total: float | None, on_scan: Callable[[float], None] | None) -> Any:
+    """The frames, calling `on_scan` with the share read about every 1% (none when the length is unknown)."""
+    if on_scan is None or not total or total <= 0:
+        yield from frames
+        return
+    every = max(1, int(total) // 100)
+    for count, frame in enumerate(frames, 1):
+        if count % every == 0:
+            on_scan(min(1.0, count / total))
+        yield frame
+
+
 def _scan_cuts(
-    path: str, start: float, end: float | None, sensitivity: str
+    path: str,
+    start: float,
+    end: float | None,
+    sensitivity: str,
+    on_scan: Callable[[float], None] | None = None,
 ) -> tuple[float, list[tuple[int, float]], int, int]:
-    """(rate, cuts as (frame in the file, score), the window's first frame, frames read)."""
+    """(rate, cuts as (frame in the file, score), the window's first frame, frames read). `on_scan` hears
+    the share of the window read: decoding a whole 4K file takes a while (Phase 21's live checks)."""
     _check_file(path)
     _check_window(start, end)
     if sensitivity not in shots.THRESHOLDS:
@@ -233,7 +250,8 @@ def _scan_cuts(
     process, frames = shots._frames(path, start, None if end is None else end - start)
     message = ""
     try:
-        cuts, count = shots.find_cuts(frames, fps, sensitivity)
+        total = (stop - start) * fps if stop is not None else None
+        cuts, count = shots.find_cuts(_counted(frames, total, on_scan), fps, sensitivity)
         process.wait(timeout=FFMPEG_TIMEOUT_S)
         if count == 0 and process.stderr:
             message = process.stderr.read().decode(errors="ignore").strip()[-300:]
@@ -270,11 +288,16 @@ def detect_scene_cuts(
 
 
 def _shot_bounds(
-    path: str, start: float, end: float | None, strategy: SampleStrategy, sensitivity: str
+    path: str,
+    start: float,
+    end: float | None,
+    strategy: SampleStrategy,
+    sensitivity: str,
+    on_scan: Callable[[float], None] | None = None,
 ) -> tuple[float, list[tuple[int, int]]]:
     """(rate, each shot's [first, last) frames) for a sampling strategy."""
     if strategy == "scene_cuts":
-        rate, cuts, first, count = _scan_cuts(path, start, end, sensitivity)
+        rate, cuts, first, count = _scan_cuts(path, start, end, sensitivity, on_scan)
         edges = [first, *(frame for frame, _ in cuts), first + count]
         return rate, [(a, b) for a, b in itertools.pairwise(edges) if b > a]
     _check_file(path)
@@ -303,15 +326,16 @@ def extract_keyframes_for_vlm(
     strategy: SampleStrategy = "scene_cuts",
     sensitivity: str = "normal",
     width: int = KEYFRAME_WIDTH,
+    on_scan: Callable[[float], None] | None = None,
 ) -> list[Keyframe]:
     """One JPEG per shot, `width` pixels wide, from the shot's middle frame, written to `out_dir` as
     `<file stem>_<frame>.jpg` (an existing one is reused). Shots come from `strategy`: the scene cuts,
-    every UNIFORM_SECONDS, or the whole range as one."""
+    every UNIFORM_SECONDS, or the whole range as one. `on_scan` hears how far the scene-cut scan is."""
     if strategy not in SAMPLE_STRATEGIES:
         raise FfmpegOpError(f"strategy must be one of {', '.join(SAMPLE_STRATEGIES)}")
     if width < 16:
         raise FfmpegOpError("width must be 16 pixels or more")
-    rate, bounds = _shot_bounds(path, start, end, strategy, sensitivity)
+    rate, bounds = _shot_bounds(path, start, end, strategy, sensitivity, on_scan)
     if len(bounds) > MAX_KEYFRAMES:
         raise FfmpegOpError(f"{len(bounds)} shots is over {MAX_KEYFRAMES} keyframes; give a shorter range")
     folder = Path(out_dir)
