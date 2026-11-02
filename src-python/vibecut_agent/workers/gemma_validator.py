@@ -31,9 +31,11 @@ from vibecut_agent.broll import ffprobe_util
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.orchestrator.otio_delta import (
     Diagnostic,
+    MediaChannels,
     MediaDuration,
     NleCommand,
     compile_to_nle_commands,
+    probe_channels,
     timeline_hash,
 )
 from vibecut_agent.orchestrator.schemas import (
@@ -146,6 +148,7 @@ class GemmaValidator:
         breaker: CircuitBreaker | None = None,
         key: bytes | None = None,
         media_duration: MediaDuration = ffprobe_util.probe_duration_seconds,
+        media_channels: MediaChannels = probe_channels,
     ) -> None:
         self.config = config
         self.model = config.gemma_model
@@ -153,6 +156,7 @@ class GemmaValidator:
         self.breaker = breaker or CircuitBreaker("The local validator model")
         self._key = key or secrets.token_bytes(32)
         self.media_duration = media_duration
+        self.media_channels = media_channels
 
     def health(self) -> WorkerHealth:
         available, detail = self.client.has_model(self.model)
@@ -181,7 +185,7 @@ class GemmaValidator:
         """The `vibecut.gemma.validator.v1` result for a delta planned on `snapshot` (a HostTimeline).
         Raises SchemaError for a delta that doesn't match its schema."""
         validate(delta, OTIO_DELTA_ID)
-        batch, diagnostics = compile_to_nle_commands(delta, snapshot, self.media_duration)
+        batch, diagnostics = compile_to_nle_commands(delta, snapshot, self.media_duration, self.media_channels)
         snapshot_hash = timeline_hash(snapshot)
         expected = delta.get("expected_timeline_hash")
         if expected and expected != snapshot_hash:

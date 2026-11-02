@@ -914,3 +914,38 @@ def test_a_locked_track_is_refused_before_apply(media, snapshot):
     # The tracks that aren't locked take the edit as before.
     _, diagnostics = run(delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 2, clip_id="m1", audio_params={"gain_db": -6})), locking(snapshot, "V1"))
     assert diagnostics == []
+
+
+def test_premiere_stereo_needs_the_tracks_after_the_one_named(media, snapshot):
+    # Seen live (Phase 21): a stereo clip on the last audio track validated on Premiere, then add_clips
+    # refused it after Apply (it fills a track per channel, in a row, and adds none for a named track).
+    def place(index, host="premiere", channels=2, snap=snapshot):
+        return compile_to_nle_commands(
+            delta(
+                op(
+                    "op_001",
+                    "OVERWRITE_CLIP",
+                    "Audio",
+                    index,
+                    media_reference=ref(media["music.wav"]),
+                    source_range=tr(0, 25),
+                    timeline_range=tr(600, 25),
+                ),
+                host=host,
+            ),
+            snap,
+            lambda path: 60.0,
+            lambda path: channels,
+        )
+
+    _, diagnostics = place(2)
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    assert "music.wav's sound needs 2 free audio track(s) in a row" in diagnostics[0]["message"]
+    assert "A3 isn't there (it has A1-A2)" in diagnostics[0]["message"]
+    # A1 has A2 after it, free at 24 s; mono fits on the last track; Resolve takes it either way.
+    assert place(1)[1] == []
+    assert place(2, channels=1)[1] == []
+    assert place(2, host="resolve")[1] == []
+    # The track after it busy, or locked, is refused too.
+    _, diagnostics = place(1, snap=locking(snapshot, "A2"))
+    assert "A2 isn't free" in diagnostics[0]["message"]

@@ -472,7 +472,9 @@ class OrchestratorToolBus:
         # The delta_id is Claude's text: only a plain file name is made of it.
         name = re.sub(r"[^A-Za-z0-9_-]", "_", delta["delta_id"])[:120]
         try:
-            timeline = apply_delta_to_otio(delta, snapshot, self.worker("validator").media_duration)
+            timeline = apply_delta_to_otio(
+                delta, snapshot, self.worker("validator").media_duration, self.worker("validator").media_channels
+            )
             return str(write_otio(timeline, self.otio_dir, name))
         except ImportError:
             return None

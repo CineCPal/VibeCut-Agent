@@ -22,7 +22,8 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
 - UNKNOWN_CLIP_ID: no such clip on the timeline (or not on that kind of track, or with no source media).
 - SOURCE_OUT_OF_BOUNDS: past the media's ends or its `available_range`, a cut point outside the clip, or a
   value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve, a
-  Premiere track the timeline doesn't have, a locked track).
+  Premiere track the timeline doesn't have, a locked track, Premiere sound with more channels than the tracks
+  from the one named).
 - TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
@@ -46,6 +47,12 @@ from vibecut_agent.core.timecode_math import exact_rate, rational_to_fraction, s
 
 Severity = Literal["ERROR", "WARNING"]
 MediaDuration = Callable[[str], float | None]
+MediaChannels = Callable[[str], int | None]
+
+
+def probe_channels(path: str) -> int | None:
+    """How many audio channels the file has (None when unknown or none)."""
+    return (ffprobe_util.probe_audio_format(path) or {}).get("channels")
 
 # What the bridges take (nle/premiere_effects.py, premiere_edit.py).
 MIN_LEVEL_DB, MAX_LEVEL_DB = -100.0, 30.0
@@ -140,7 +147,11 @@ class _Clip:
 
 class _Compiler:
     def __init__(
-        self, delta: dict[str, Any], snapshot: dict[str, Any], media_duration: MediaDuration
+        self,
+        delta: dict[str, Any],
+        snapshot: dict[str, Any],
+        media_duration: MediaDuration,
+        media_channels: MediaChannels = probe_channels,
     ) -> None:
         self.delta = delta
         self.host: str = delta["target_host"]
@@ -148,6 +159,7 @@ class _Compiler:
         self.rate: float = delta["timeline_fps"]
         self.frames = exact_rate(self.rate)
         self.media_duration = media_duration
+        self.media_channels = media_channels
         self._durations: dict[str, float | None] = {}
         self.commands: list[NleCommand] = []
         self.diagnostics: list[Diagnostic] = []
@@ -396,6 +408,29 @@ class _Compiler:
         )
         return False
 
+    def _channels_fit(self, track: tuple[str, int], first: int, last: int, path: str, op_id: str) -> bool:
+        """False (flagged) for Premiere sound that needs more tracks than there are from the one named: its
+        add_clips fills one audio track per channel, in a row, and adds none for a track it's told to use
+        (premiere_edit._plan_place). Seen live: a stereo clip on the last audio track validated, then was
+        refused after Apply."""
+        if self.host != "premiere" or track[0] != "audio":
+            return True
+        channels = self.media_channels(path) or 1
+        for extra in range(track[1] + 1, track[1] + channels):
+            here = ("audio", extra)
+            if extra <= self.track_count["audio"] and here not in self.locked and not self._collisions(here, first, last, set()):
+                continue
+            self._error(
+                "SOURCE_OUT_OF_BOUNDS",
+                op_id,
+                f"{os.path.basename(path)}'s sound needs {channels} free audio track(s) in a row from "
+                f"{self._seconds(first)} s to {self._seconds(last)} s starting at A{track[1]}, and A{extra} "
+                + ("isn't free" if extra <= self.track_count["audio"] else f"isn't there (it has A1-A{self.track_count['audio']})"),
+                f"Start its sound on an audio track with {channels - 1} free track(s) after it, or ask the user to add tracks in Premiere",
+            )
+            return False
+        return True
+
     # Operations.
 
     def place(self, op: dict[str, Any], op_id: str) -> None:
@@ -437,6 +472,8 @@ class _Compiler:
             return
         track = self._track(op)
         if not self._track_exists(track, op_id) or not self._track_unlocked(track, op_id):
+            return
+        if not self._channels_fit(track, first, last, path, op_id):
             return
         group = op.get("link_group_id")
         partner = self.link_groups.get(group) if group else None
@@ -950,10 +987,11 @@ def compile_to_nle_commands(
     delta: dict[str, Any],
     snapshot: dict[str, Any],
     media_duration: MediaDuration = ffprobe_util.probe_duration_seconds,
+    media_channels: MediaChannels = probe_channels,
 ) -> tuple[list[NleCommand], list[Diagnostic]]:
     """(the bridge calls, the diagnostics) for a schema-valid delta on this timeline snapshot. The calls are
     only usable when no diagnostic is an ERROR."""
-    compiler = _Compiler(delta, snapshot, media_duration)
+    compiler = _Compiler(delta, snapshot, media_duration, media_channels)
     compiler.run(snapshot)
     return compiler.commands, compiler.diagnostics
 
@@ -971,6 +1009,7 @@ def apply_delta_to_otio(
     delta: dict[str, Any],
     snapshot: dict[str, Any],
     media_duration: MediaDuration = ffprobe_util.probe_duration_seconds,
+    media_channels: MediaChannels = probe_channels,
 ) -> Any:
     """The timeline as the delta leaves it, as an `opentimelineio.schema.Timeline`: the same replay as
     `compile_to_nle_commands`, its result laid out as OTIO tracks (gaps between clips, transitions on the
@@ -979,7 +1018,7 @@ def apply_delta_to_otio(
     delta set. Raises DeltaRejected for a delta with errors. Needs the `orchestrator` extra."""
     import opentimelineio as otio
 
-    compiler = _Compiler(delta, snapshot, media_duration)
+    compiler = _Compiler(delta, snapshot, media_duration, media_channels)
     compiler.run(snapshot)
     if any(d["severity"] == "ERROR" for d in compiler.diagnostics):
         raise DeltaRejected(compiler.diagnostics)
