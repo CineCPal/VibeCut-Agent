@@ -929,6 +929,11 @@ VIBECUT_WHISPER_CPP_BIN=/opt/homebrew/bin/whisper-cli
 # Local Dense Vector Store ("sqlite-vec" | "lancedb") & Embedding Model
 VIBECUT_VECTOR_BACKEND=sqlite-vec
 VIBECUT_EMBED_MODEL=BAAI/bge-m3
+# How long Ollama keeps the embedding model loaded after a call ("30m", seconds, -1 for ever; empty: Ollama's default)
+VIBECUT_EMBED_KEEP_ALIVE=30m
+
+# Set by the app (src-tauri/src/sidecar.rs, mcp_bridge.rs): its data folder; each edit's .otio goes to <it>/otio_deltas
+# VIBECUT_APP_DATA_DIR=~/Library/Application Support/com.cj.vibecutagent
 ```
 
 ### 4.2 Rust Sidecar Environment Passthrough (`src-tauri/src/sidecar.rs`)
