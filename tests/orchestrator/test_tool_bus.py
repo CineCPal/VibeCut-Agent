@@ -372,3 +372,15 @@ def test_the_snapshot_is_of_the_connected_timeline(config, tmp_path, snapshot):
     result = bus.dispatch("propose_otio_delta", {"delta": other})
     assert result["valid"] is False
     assert result["diagnostics"][0]["code"] == "STALE_TIMELINE_HASH"
+
+
+def test_the_otio_goes_to_the_apps_data_folder(monkeypatch, tmp_path):
+    # Seen live (Phase 21): the .otio went to "~/Library/Application Support/VibeCut Agent/otio_deltas",
+    # not the app's data folder (named for its bundle id, which the app passes in; sidecar.rs).
+    from vibecut_agent.orchestrator.tool_bus import default_otio_dir
+
+    monkeypatch.setenv("VIBECUT_INDEX_DIR", str(tmp_path / "index" / "vector-index"))
+    monkeypatch.setenv("VIBECUT_APP_DATA_DIR", str(tmp_path / "com.cj.vibecutagent"))
+    assert default_otio_dir(OrchestratorConfig.from_env("orchestrated")) == tmp_path / "com.cj.vibecutagent" / "otio_deltas"
+    monkeypatch.delenv("VIBECUT_APP_DATA_DIR")
+    assert default_otio_dir(OrchestratorConfig.from_env("orchestrated")) == tmp_path / "index" / "otio_deltas"

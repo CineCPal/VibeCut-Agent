@@ -386,7 +386,10 @@ pub fn app_shim_launch(app: &AppHandle) -> ShimLaunch {
 
 pub fn app_shim_launch_with(app: &AppHandle, extras: &[&str]) -> ShimLaunch {
     let bridge_override = std::env::var_os("VIBECUT_AGENT_MCP_DIR").map(PathBuf::from);
-    shim_launch_with(&uv_binary(), &python_root(app), uv_environment(app).as_deref(), bridge_override.as_deref(), extras)
+    let mut launch = shim_launch_with(&uv_binary(), &python_root(app), uv_environment(app).as_deref(), bridge_override.as_deref(), extras);
+    // The app's own chat (Phase 21 follow-up): the orchestrator saves its .otio files in the app's data folder.
+    launch.env.extend(crate::sidecar::app_data_env(app));
+    launch
 }
 
 #[derive(serde::Serialize)]

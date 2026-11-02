@@ -501,6 +501,16 @@ pub fn bytecode_env(environment: Option<&Path>) -> (String, String) {
     }
 }
 
+/// Phase 21 follow-up: the app's data folder, where the orchestrator saves each edit's `.otio`
+/// (`<appDataDir>/otio_deltas`, tool_bus.py). Python can't work it out: it's named for the bundle id.
+pub fn app_data_env(app: &AppHandle) -> Option<(String, String)> {
+    app_data_env_for(app.path().app_data_dir().ok())
+}
+
+pub fn app_data_env_for(dir: Option<PathBuf>) -> Option<(String, String)> {
+    dir.map(|dir| ("VIBECUT_APP_DATA_DIR".to_string(), dir.to_string_lossy().into_owned()))
+}
+
 /// Phase 21 (ORCHESTRATOR_SPEC.md §4.2): the host's `EXECUTION_MODE` reaches the sidecar as
 /// `VIBECUT_EXECUTION_MODE` (`config.py`), since only `VIBECUT_*` names pass `passes_to_child`. A
 /// `VIBECUT_EXECUTION_MODE` already set passes as it is and wins, as it does in `OrchestratorConfig`.
@@ -816,7 +826,8 @@ pub fn start_session(app: &AppHandle) {
         publish_session(app, &session, generation, SessionStatus::stopped(Some(message)));
         return;
     }
-    let launch = Launch::for_command(&root, uv_environment(app).as_deref(), "session", &[]);
+    let mut launch = Launch::for_command(&root, uv_environment(app).as_deref(), "session", &[]);
+    launch.envs.extend(app_data_env(app));
     let job = Arc::new(SidecarJob::default());
     if let Err(message) = jobs.insert(SESSION_JOB_ID, &job) {
         publish_session(app, &session, generation, SessionStatus::stopped(Some(message)));
@@ -909,7 +920,8 @@ pub async fn sidecar_start(
     let root = python_root(&app);
     let mut extras = extras_for(spec.name, &request);
     extras.extend(orchestrated_extras(spec.name, &request, execution_mode().as_deref()));
-    let launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras);
+    let mut launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras);
+    launch.envs.extend(app_data_env(&app));
 
     let job = Arc::new(SidecarJob::default());
     jobs.insert(&job_id, &job)?;
@@ -1096,6 +1108,17 @@ mod tests {
         assert_eq!(execution_mode_env(None, Some("  ".into())), None);
         assert!(passes_to_child("VIBECUT_EXECUTION_MODE"));
         assert!(!passes_to_child("EXECUTION_MODE"));
+    }
+
+    #[test]
+    fn the_app_data_folder_reaches_the_sidecar() {
+        let dir = PathBuf::from("/Users/u/Library/Application Support/com.cj.vibecutagent");
+        assert_eq!(
+            app_data_env_for(Some(dir)),
+            Some(("VIBECUT_APP_DATA_DIR".into(), "/Users/u/Library/Application Support/com.cj.vibecutagent".into()))
+        );
+        assert_eq!(app_data_env_for(None), None);
+        assert!(passes_to_child("VIBECUT_APP_DATA_DIR"));
     }
 
     #[test]

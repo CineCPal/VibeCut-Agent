@@ -254,6 +254,13 @@ def _snapshot_from(status: Any, clips: Any) -> dict[str, Any]:
     }
 
 
+def default_otio_dir(config: OrchestratorConfig) -> Path:
+    """`<appDataDir>/otio_deltas`: the app passes its data folder as VIBECUT_APP_DATA_DIR (sidecar.rs,
+    mcp_bridge.rs). Run without it (an outside MCP client, a terminal), next to the vector index."""
+    app_data = os.environ.get("VIBECUT_APP_DATA_DIR", "").strip()
+    return Path(app_data) / "otio_deltas" if app_data else Path(config.index_dir).parent / "otio_deltas"
+
+
 class OrchestratorToolBus:
     def __init__(
         self,
@@ -270,7 +277,7 @@ class OrchestratorToolBus:
         self._builders = workers or default_workers(config)
         self._workers: dict[str, Any] = {}
         self.measure_loudness = measure_loudness
-        self.otio_dir = Path(otio_dir) if otio_dir else Path(config.index_dir).parent / "otio_deltas"
+        self.otio_dir = Path(otio_dir) if otio_dir else default_otio_dir(config)
         self.hf_token = hf_token
         self.proposals: dict[str, Proposal] = {}
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
