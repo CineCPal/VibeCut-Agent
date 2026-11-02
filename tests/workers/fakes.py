@@ -48,6 +48,7 @@ class Client:
         self.models = models
         self.prompts: list[tuple[str, str, list[str]]] = []
         self.keep_alive: list[Any] = []
+        self.think: list[Any] = []
 
     def chat_json(
         self,
@@ -58,9 +59,11 @@ class Client:
         images: Any = (),
         system: Any = None,
         keep_alive: Any = None,
+        think: Any = None,
     ) -> Any:
         self.prompts.append((model, prompt, [str(i) for i in images]))
         self.keep_alive.append(keep_alive)
+        self.think.append(think)
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, Exception):
             raise answer

@@ -301,7 +301,7 @@ class VlmWorker:
             try:
                 with self.breaker.guard(), self.lock:
                     answer = self.client.chat_json(
-                        model, asked, ANALYSIS_SCHEMA, images=[image], keep_alive=KEEP_ALIVE
+                        model, asked, ANALYSIS_SCHEMA, images=[image], keep_alive=KEEP_ALIVE, think=False
                     )
             except LocalLlmError as e:
                 raise VlmWorkerError(str(e)) from None

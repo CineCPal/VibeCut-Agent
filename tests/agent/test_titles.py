@@ -151,6 +151,15 @@ def test_the_local_gemma_names_the_chat_and_no_cloud_model_is_asked(monkeypatch,
     assert client.keep_alive == [titles.LOCAL_KEEP_ALIVE]
 
 
+def test_the_local_prompt_has_no_list_to_copy_and_shows_examples(local) -> None:
+    client = local(Client([{"title": "Hook"}], models=("gemma3:4b",)))
+    titles.local_title("x")
+    assert "past chats" not in titles.LOCAL_SYSTEM.lower() and "Examples:" in titles.LOCAL_SYSTEM
+    assert client.prompts[0][1] == "x"
+    assert not titles.copies_the_prompt("Grady Dining Hall Marks")
+    assert not titles.copies_the_prompt("Chapel Talk Instagram Cut")
+
+
 def test_an_older_gemma_tag_stands_in(local) -> None:
     local(Client([{"title": "Hook"}], models=("gemma3:4b-it",)))
     assert titles.local_title("x") == ("Hook", "gemma3:4b-it")
@@ -165,6 +174,11 @@ def test_no_local_model_a_busy_gpu_or_a_bad_answer_falls_to_the_cloud(monkeypatc
 
     local(Client([{"title": "  "}], models=("gemma3:4b",)))
     assert titles.local_title("x") is None
+
+    # Seen live: Gemma named the chat after the list it was for.
+    for copied in ("Past Chats - Dining Hall Project", "Past Chats", "Chat about the cut", "Conversation"):
+        local(Client([{"title": copied}], models=("gemma3:4b",)))
+        assert titles.local_title("x") is None, copied
 
     client = local(Client([{"title": "Hook"}], models=("gemma3:4b",)))
     with base.GpuLock(tmp_path):

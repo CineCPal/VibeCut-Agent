@@ -166,28 +166,33 @@ def test_the_configured_model_or_the_first_alias_the_server_has():
     """Model migration v2: a machine with only an older tag pulled still runs the worker."""
     tags = {"models": [{"name": "qwen2.5vl:7b"}, {"name": "gemma3:4b-it"}, {"name": "bge-m3:latest"}]}
     client = LocalLlmClient("http://local", session=Session({"/api/tags": Response(200, tags)}))
-    assert client.resolve_available_model("qwen3-vl:8b") == "qwen2.5vl:7b"
+    assert client.resolve_available_model("qwen3-vl:8b-instruct") == "qwen2.5vl:7b"
     assert client.resolve_available_model("gemma3:4b") == "gemma3:4b-it"
     assert client.resolve_available_model("bge-m3") == "bge-m3", "an untagged name is its :latest"
     # Nothing to stand in: the configured name, so the call's own error names it.
     assert client.resolve_available_model("llava:13b") == "llava:13b"
-    available, detail = client.has_model("qwen3-vl:8b")
-    assert available and detail == "qwen2.5vl:7b is ready on http://local (in place of qwen3-vl:8b)"
+    available, detail = client.has_model("qwen3-vl:8b-instruct")
+    assert available and detail == "qwen2.5vl:7b is ready on http://local (in place of qwen3-vl:8b-instruct)"
+    # The reasoning qwen3-vl:8b never stands in: it took two minutes a shot (seen live, 2026-11-02).
+    assert (
+        all("qwen3-vl:8b" not in aliases for aliases in MODEL_ALIASES.values())
+        and "qwen3-vl:8b" not in MODEL_ALIASES
+    )
     # An embedding model is never stood in for: an index is bound to the model that built it.
     assert "bge-m3" not in MODEL_ALIASES and "nomic-embed-text" not in MODEL_ALIASES
     down = LocalLlmClient("http://local", session=Session({}))
-    assert down.resolve_available_model("qwen3-vl:8b") == "qwen3-vl:8b"
+    assert down.resolve_available_model("qwen3-vl:8b-instruct") == "qwen3-vl:8b-instruct"
 
 
 def test_chat_json_keeps_the_model_loaded_when_asked_and_takes_image_bytes():
     session = Session({"/api/chat": lambda body: ollama_chat({"ok": True})})
     client = LocalLlmClient("http://local", session=session)
-    client.chat_json("m", "hi", {}, images=[b"\xff\xd8raw"], keep_alive="10m")
+    client.chat_json("m", "hi", {}, images=[b"\xff\xd8raw"], keep_alive="10m", think=False)
     body = session.calls[-1][1]
-    assert body["keep_alive"] == "10m"
+    assert body["keep_alive"] == "10m" and body["think"] is False
     assert body["messages"][0]["images"] == [base64.b64encode(b"\xff\xd8raw").decode()]
     client.chat_json("m", "hi", {})
-    assert "keep_alive" not in session.calls[-1][1]
+    assert "keep_alive" not in session.calls[-1][1] and "think" not in session.calls[-1][1]
 
 
 def test_client_falls_back_to_openai_routes():

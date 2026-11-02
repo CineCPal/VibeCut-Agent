@@ -33,7 +33,7 @@ def test_direct_by_default_with_the_spec_defaults():
     assert config.execution_mode is ExecutionMode.DIRECT
     assert config.local_llm_base_url == "http://127.0.0.1:11434"
     assert config.gemma_model == "gemma3:4b"
-    assert config.vlm_model == "qwen3-vl:8b"
+    assert config.vlm_model == "qwen3-vl:8b-instruct"
     assert config.whisper_backend == "mlx-whisper"
     assert config.whisper_model == "mlx-community/whisper-large-v3-turbo"
     assert config.whisper_cpp_bin == "/opt/homebrew/bin/whisper-cli"

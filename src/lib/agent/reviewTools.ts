@@ -441,7 +441,7 @@ export interface CriticAnswer {
   framesSent: number;
   /** Which model reviewed ("Gemini Flash", or the chat's). */
   by?: string;
-  /** The model the sidecar says reviewed (e.g. "qwen3-vl:8b"), when it says. */
+  /** The model the sidecar says reviewed (e.g. "qwen3-vl:8b-instruct"), when it says. */
   reviewer?: string;
   /** Why the local VLM, asked for, didn't review (the cloud reviewer did). */
   localFallback?: string;

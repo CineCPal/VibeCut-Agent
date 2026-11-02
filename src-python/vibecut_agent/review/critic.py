@@ -290,6 +290,7 @@ def local_review(frames: list[tuple[dict[str, Any], bytes]], parts: list[dict[st
                 to_json_schema(RESPONSE_SCHEMA),
                 images=[jpeg for _frame, jpeg in frames],
                 system=SYSTEM_INSTRUCTION,
+                think=False,
             )
     except GpuLockTimeout:
         raise CriticError(f"the GPU was busy with another job for {LOCAL_LOCK_SECONDS:g} s") from None

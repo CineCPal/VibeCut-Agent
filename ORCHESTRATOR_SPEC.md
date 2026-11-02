@@ -3,7 +3,7 @@
 **Target Repository:** `/Users/cj/Developer/Personal/VibeCut Agent`  
 **Baseline Architecture:** Tauri v2 (`src-tauri/src/lib.rs`) + React 19 (`src/App.tsx`) + Python 3.13 Sidecar (`src-python/vibecut_agent/headless.py`) + NLE Watchers (`src-python/vibecut_agent/nle/watch.py`) + Premiere CEP Bridge (`src-premiere-panel/bridge.js`, `src-premiere-panel/host.jsx`).
 
-> **Amended by model migration v2 (`docs/specs/model-migration-plan.md`; PLAN.md, "Model migration v2", 2026-11-02).** The Anthropic API path (`agent/claude_chat.py`, `claude_client.py`, `provider: "claude"`) and Antigravity were removed. **Only Claude orchestrates**, through the user's Claude Code subscription (`claude_code_chat.py` + `mcp_server.py`), with `ORCHESTRATED_INSTRUCTION`; a Gemini chat edits directly in either mode (the user's call). The in-process supervisor below is kept but not routed to; its turn loop is now `gemini_chat.run_chat_turn`. `transcribe_and_align.model_tier` gained `"large-v3-turbo"` (now its default), and the local defaults are `qwen3-vl:8b`, `gemma3:4b` and `mlx-community/whisper-large-v3-turbo`; the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`. Where this document still names `claude_chat.py`, read `gemini_chat.py`. All schema ids are unchanged.
+> **Amended by model migration v2 (`docs/specs/model-migration-plan.md`; PLAN.md, "Model migration v2", 2026-11-02).** The Anthropic API path (`agent/claude_chat.py`, `claude_client.py`, `provider: "claude"`) and Antigravity were removed. **Only Claude orchestrates**, through the user's Claude Code subscription (`claude_code_chat.py` + `mcp_server.py`), with `ORCHESTRATED_INSTRUCTION`; a Gemini chat edits directly in either mode (the user's call). The in-process supervisor below is kept but not routed to; its turn loop is now `gemini_chat.run_chat_turn`. `transcribe_and_align.model_tier` gained `"large-v3-turbo"` (now its default), and the local defaults are `qwen3-vl:8b-instruct`, `gemma3:4b` and `mlx-community/whisper-large-v3-turbo`; the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`. Where this document still names `claude_chat.py`, read `gemini_chat.py`. All schema ids are unchanged.
 
 ---
 
@@ -921,7 +921,7 @@ VIBECUT_EXECUTION_MODE=direct
 # Local LLM / VLM Runtime (Ollama or llama.cpp OpenAI-compatible server)
 VIBECUT_LOCAL_LLM_BASE_URL=http://127.0.0.1:11434
 VIBECUT_GEMMA_MODEL=gemma3:4b
-VIBECUT_VLM_MODEL=qwen3-vl:8b
+VIBECUT_VLM_MODEL=qwen3-vl:8b-instruct
 # The OTIO delta validator: "deterministic" (default; otio_delta's own checks) | "llm" (adds Gemma's review)
 VIBECUT_VALIDATOR_MODE=deterministic
 
@@ -996,7 +996,7 @@ class OrchestratorConfig:
             execution_mode=mode,
             local_llm_base_url=os.environ.get("VIBECUT_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434"),
             gemma_model=os.environ.get("VIBECUT_GEMMA_MODEL", "gemma3:4b"),
-            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen3-vl:8b"),
+            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen3-vl:8b-instruct"),
             whisper_backend=os.environ.get("VIBECUT_WHISPER_BACKEND", "mlx-whisper"),
             whisper_model=os.environ.get("VIBECUT_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"),
             whisper_cpp_bin=os.environ.get("VIBECUT_WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),

@@ -147,7 +147,7 @@ export function AgentModelSection() {
       <p className="mt-1 text-[11px] text-cool-grey">
         Looks at stills either side of every cut when the agent reviews an edit. Gemini Flash is the cheapest and keeps reviews off your Claude plan limits,
         but sends the stills and what is said to Google. Local keeps them on this Mac: it needs the local model server with Qwen3-VL (ollama pull
-        qwen3-vl:8b), and reviews less sharply; when it isn&rsquo;t there, or the GPU is busy with an ingest, Gemini Flash or the agent&rsquo;s model reviews
+        qwen3-vl:8b-instruct), and reviews less sharply; when it isn&rsquo;t there, or the GPU is busy with an ingest, Gemini Flash or the agent&rsquo;s model reviews
         instead and the review says so.
       </p>
     </Section>

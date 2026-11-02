@@ -85,6 +85,7 @@ def test_each_shot_goes_as_a_contact_strip_with_the_model_kept_loaded(config, fi
     assert all("three frames side by side, left to right" in prompt for _, prompt, _ in client.prompts)
     assert all("PAN_LEFT" in prompt and "RACK_FOCUS" not in prompt for _, prompt, _ in client.prompts)
     assert client.keep_alive == [vlm_worker.KEEP_ALIVE] * 3
+    assert client.think == [False] * 3, "a reasoning model is asked not to: it took two minutes a shot"
 
 
 def test_an_older_qwen_stands_in_and_its_analysis_is_cached_as_its_own(config, film):
@@ -94,8 +95,8 @@ def test_an_older_qwen_stands_in_and_its_analysis_is_cached_as_its_own(config, f
     assert {model for model, _, _ in client.prompts} == {"qwen2.5vl:7b"}
     assert result["vlm_model_id"] == "qwen2.5vl:7b"
     assert worker.cached(str(film)) == result
-    # Once qwen3-vl:8b is pulled, the old model's analysis no longer fits.
-    client.models = ("qwen2.5vl:7b", "qwen3-vl:8b")
+    # Once qwen3-vl:8b-instruct is pulled, the old model's analysis no longer fits.
+    client.models = ("qwen2.5vl:7b", "qwen3-vl:8b-instruct")
     assert worker.cached(str(film)) is None
 
 

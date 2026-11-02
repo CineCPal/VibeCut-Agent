@@ -236,14 +236,14 @@ def local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
 
 
 def test_the_local_vlm_reviews_the_stills_when_asked(local: Any) -> None:
-    client = local(Client([ANSWER], models=("qwen3-vl:8b",)))
+    client = local(Client([ANSWER], models=("qwen3-vl:8b-instruct",)))
     code, events = run(request(local=True))
     assert code == 0, events
     result = next(e for e in events if e["type"] == "result")
-    assert result["reviewer"] == "qwen3-vl:8b" and "localFallback" not in result
+    assert result["reviewer"] == "qwen3-vl:8b-instruct" and "localFallback" not in result
     assert [f["time"] for f in result["findings"]] == [4.21, 9.0]
     model, prompt, images = client.prompts[0]
-    assert model == "qwen3-vl:8b" and len(images) == 2
+    assert model == "qwen3-vl:8b-instruct" and len(images) == 2
     # Each caption names its image by number, since the images follow the text as one list.
     assert "Image 1: shot 1, first frame — timeline 10.00s" in prompt
     assert "Image 2: shot 2, first frame — timeline 11.00s" in prompt
@@ -260,8 +260,8 @@ def test_an_older_qwen_stands_in(local: Any) -> None:
     ("client", "says"),
     [
         (Client([ANSWER], models=()), "missing"),
-        (Client([base.LocalLlmError("server down")], models=("qwen3-vl:8b",)), "server down"),
-        (Client(["not an object"], models=("qwen3-vl:8b",)), "not a JSON object"),
+        (Client([base.LocalLlmError("server down")], models=("qwen3-vl:8b-instruct",)), "server down"),
+        (Client(["not an object"], models=("qwen3-vl:8b-instruct",)), "not a JSON object"),
     ],
 )
 def test_when_the_local_vlm_cant_review_the_cloud_does_and_says_why(
@@ -278,7 +278,7 @@ def test_when_the_local_vlm_cant_review_the_cloud_does_and_says_why(
 def test_a_busy_gpu_hands_the_review_to_the_cloud(
     local: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    client = local(Client([ANSWER], models=("qwen3-vl:8b",)))
+    client = local(Client([ANSWER], models=("qwen3-vl:8b-instruct",)))
     monkeypatch.setattr(critic, "LOCAL_LOCK_SECONDS", 0.2)
     with base.GpuLock(tmp_path):
         code, events = run(request(local=True))

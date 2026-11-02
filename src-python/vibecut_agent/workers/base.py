@@ -199,11 +199,13 @@ Dialect = Literal["ollama", "openai"]
 # Other tags for the same job, in order, for a machine that has pulled one of them and not the configured
 # one (model migration v2, PLAN.md D3/D14): the VLM and the validator's Gemma. Each list stays within what
 # the worker's prompt and schema were written for. Embedding models have none: an index is bound to the
-# model that built it (vector_store.py), so a missing one is pulled, never stood in for.
+# model that built it (vector_store.py), so a missing one is pulled, never stood in for. `qwen3-vl:8b` is
+# in none: seen live (2026-11-02, Ollama 0.32.5), that tag reasons before it answers (about 2,600 tokens,
+# two minutes a shot) and, with thinking off, puts its answer where the worker doesn't read it.
 MODEL_ALIASES: dict[str, tuple[str, ...]] = {
-    "qwen3-vl:8b": ("qwen2.5vl:7b", "qwen2.5-vl:7b-instruct"),
-    "qwen2.5vl:7b": ("qwen2.5-vl:7b-instruct", "qwen3-vl:8b"),
-    "qwen2.5-vl:7b-instruct": ("qwen2.5vl:7b", "qwen3-vl:8b"),
+    "qwen3-vl:8b-instruct": ("qwen2.5vl:7b", "qwen2.5-vl:7b-instruct"),
+    "qwen2.5vl:7b": ("qwen2.5-vl:7b-instruct", "qwen3-vl:8b-instruct"),
+    "qwen2.5-vl:7b-instruct": ("qwen2.5vl:7b", "qwen3-vl:8b-instruct"),
     "gemma3:4b": ("gemma3:4b-it-qat", "gemma3:4b-it"),
     "gemma3:4b-it": ("gemma3:4b", "gemma3:4b-it-qat"),
 }
@@ -264,10 +266,12 @@ class LocalLlmClient:
         images: Sequence[str | os.PathLike[str] | bytes] = (),
         system: str | None = None,
         keep_alive: str | int | None = None,
+        think: bool | None = None,
     ) -> dict[str, Any]:
         """The model's answer to `prompt` (with `images`, small JPEGs: paths, or the bytes themselves), as
         a JSON object fitting `schema`. `keep_alive` (Ollama's, as for `embed`) keeps the model loaded
-        between the calls of a batch."""
+        between the calls of a batch. `think` is Ollama's: False asks a model that reasons first not to
+        (a model that doesn't reason takes it as it is)."""
         encoded = [
             base64.b64encode(image if isinstance(image, bytes) else Path(image).read_bytes()).decode("ascii")
             for image in images
@@ -291,6 +295,8 @@ class LocalLlmClient:
         }
         if keep_alive is not None:
             ollama["keep_alive"] = keep_alive
+        if think is not None:
+            ollama["think"] = think
         dialect, answer = self._request(
             ("/api/chat", ollama),
             (

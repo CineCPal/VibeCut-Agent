@@ -55,7 +55,7 @@ class OrchestratorConfig:
             execution_mode=mode,
             local_llm_base_url=os.environ.get("VIBECUT_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434"),
             gemma_model=os.environ.get("VIBECUT_GEMMA_MODEL", "gemma3:4b"),
-            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen3-vl:8b"),
+            vlm_model=os.environ.get("VIBECUT_VLM_MODEL", "qwen3-vl:8b-instruct"),
             whisper_backend=os.environ.get("VIBECUT_WHISPER_BACKEND", "mlx-whisper"),
             whisper_model=os.environ.get("VIBECUT_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"),
             whisper_cpp_bin=os.environ.get("VIBECUT_WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),

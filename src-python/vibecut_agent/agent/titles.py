@@ -54,6 +54,23 @@ SYSTEM = (
     "would choose: specific (the project, the clips, the task), plain, no quotes, no trailing full stop, "
     "no emoji, and not starting with 'Chat' or 'Conversation'. Write it in the language the editor used."
 )
+# The local Gemma's own prompt. Seen live (2026-11-02, gemma3:4b): given SYSTEM, it named 2 of 5 chats
+# "Past Chats…", from the "list of past chats" in it. Without that phrase and with two examples, 6 of 6
+# were specific. A title that still names the list goes to the cloud (`copies_the_prompt`).
+LOCAL_SYSTEM = (
+    "Name this video-editing conversation in 2 to 6 words, saying what the editor asked for: the task and "
+    "what it is about (people, clips, project). Plain words, no quotes, no full stop. Use the editor's "
+    "language.\n"
+    "Examples:\n"
+    "- 'Trim the pauses out of Ana's answers' -> Trim Ana's Pauses\n"
+    "- 'Ajoute des sous-titres au montage' -> Sous-titres du montage"
+)
+_PROMPT_WORDS = re.compile(r"\bpast chats?\b|^(chat|conversation)s?\b", re.IGNORECASE)
+
+
+def copies_the_prompt(title: str) -> bool:
+    """Whether a title names the list it is for, or the chat itself, rather than what was asked."""
+    return bool(_PROMPT_WORDS.search(title))
 
 
 def clean_title(raw: Any) -> str:
@@ -77,7 +94,8 @@ def user_text(request_text: str, reply: str) -> str:
 
 def local_title(text: str) -> tuple[str, str] | None:
     """(title, model) from the local Gemma, or None when it can't give one now: no server, no model, the
-    GPU taken by another job (an ingest, a transcription), or an unusable answer. Never raises."""
+    GPU taken by another job (an ingest, a transcription), or an unusable answer (empty, or one that copies
+    the prompt). Never raises."""
     from vibecut_agent.config import OrchestratorConfig
     from vibecut_agent.workers.base import GpuLock, GpuLockTimeout, LocalLlmClient, LocalLlmError
 
@@ -89,12 +107,12 @@ def local_title(text: str) -> tuple[str, str] | None:
             return None
         with GpuLock.for_config(config, timeout=0):
             answer = client.chat_json(
-                model, text, LOCAL_TITLE_SCHEMA, system=SYSTEM, keep_alive=LOCAL_KEEP_ALIVE
+                model, text, LOCAL_TITLE_SCHEMA, system=LOCAL_SYSTEM, keep_alive=LOCAL_KEEP_ALIVE
             )
     except (LocalLlmError, GpuLockTimeout, OSError):
         return None
     title = clean_title(answer.get("title"))
-    return (title, model) if title else None
+    return (title, model) if title and not copies_the_prompt(title) else None
 
 
 def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None) -> int:

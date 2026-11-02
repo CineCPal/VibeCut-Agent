@@ -2621,7 +2621,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - Chat: `gemini` = Gemini 3.8 Flash (`gemini-3.8-flash`), `gemini-pro` = Gemini 3.1 Pro (`gemini-3.1-pro-preview`), and Claude Opus and Sonnet 5.5 (subscription). Settings → Agent model has one "Gemini thinking" level (low, medium, high), sent as `effort`.
 - Story Editor: the story on Gemini runs on the chat's tier (Flash by default, Pro when the chat is on Gemini Pro; the user's call, 2026-11-02, over the spec's Pro default), thinking high, 180 s timeout; the first pass is Flash at low, or Sonnet at low effort. The critic is Flash at medium unless "Same model as the agent" names another.
 - Chat titles: the local Gemma first (below), else Flash at low or Sonnet at low effort, never Opus or Pro.
-- Local: `qwen3-vl:8b`, `gemma3:4b`, `mlx-community/whisper-large-v3-turbo` (also the Transcribe tab's new default); the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`.
+- Local: `qwen3-vl:8b-instruct`, `gemma3:4b`, `mlx-community/whisper-large-v3-turbo` (also the Transcribe tab's new default); the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`.
 
 **Local sub-agents:**
 - `workers/base.py`: `MODEL_ALIASES` and `LocalLlmClient.resolve_available_model` (the configured model, or the first alias `/api/tags` lists); `has_model` accepts an alias and says so; `chat_json` takes `keep_alive` and image bytes.
@@ -2638,7 +2638,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 **Spec decisions (decided 2026-11-02; no Gemini review):**
 - **D1 Gemini models:** Gemini 3.8 Flash and Gemini 3.1 Pro, not the spec's 2.5 pair. Google serves 2.5 only to projects that used it before (a new project gets a 404) and points new work at 3.8 Flash. Gemini 3 takes `thinkingConfig.thinkingLevel`, not `thinkingBudget`: `gemini_client.thinking_level`. The Pro tier takes only low and high, so medium is high there.
 - **D2 Fallback:** a 404 for the model is tried once on the next one down (Pro → Flash → `gemini-flash-latest`), in the chat, the Story Editor, the titler and the critic, and announced in a `status` line, so Pro never quietly becomes Flash.
-- **D3 VLM:** `qwen3-vl:8b` (the user's prompt), not the spec's `qwen2.5vl:7b`; the alias list falls back to `qwen2.5vl:7b` and `qwen2.5-vl:7b-instruct`. Qwen3-VL needs Ollama 0.12.7 or later.
+- **D3 VLM:** `qwen3-vl:8b-instruct`, not the spec's `qwen2.5vl:7b`; the alias list falls back to `qwen2.5vl:7b` and `qwen2.5-vl:7b-instruct`, and every VLM call sends `think: false`. It was `qwen3-vl:8b` (the user's prompt) until the live checks below showed that tag reasons first; the user chose the instruct build. Qwen3-VL needs Ollama 0.12.7 or later.
 - **D4 Tier name:** `large-v3-turbo` (the spec's), not "turbo" (the prompt's). The `transcribe_and_align` schema's default is now `large-v3-turbo` too, since an omitted tier means the configured model.
 - **D5 Gemini's orchestration tools (not used: Gemini doesn't orchestrate):** the unrouted supervisor sends them as `parametersJsonSchema` (`tool_bus.gemini_tools`), not `parameters`. The bus's schemas use `additionalProperties`, `const`, `pattern` and `$defs`, which Gemini's OpenAPI-subset `parameters` refuses. The app's own tools keep `parameters`.
 - **D6:** the GPU lock is `GpuLock.for_config` (the spec's `vector_index_dir` doesn't exist).
@@ -2671,11 +2671,15 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 **Still to check live:**
 1. A Gemini 3.8 Flash and a Gemini 3.1 Pro chat with a real key, and the Pro → Flash notice on a key without Pro.
 2. With `EXECUTION_MODE=orchestrated`, a Gemini chat edits directly (its own tools, no OTIO delta), and a Claude (subscription) chat through the orchestrator.
-3. `ollama pull qwen3-vl:8b`, then an ingest: the strips' camera movement, and Ollama keeping one model loaded per stage (`ollama ps`).
-4. A turbo transcription (mlx), and its word timings against medium's.
-5. A chat title while an ingest holds the GPU (should come from the cloud at once), and one with the GPU free (from Gemma).
+3. ~~Ingest with Qwen3-VL~~, 4. ~~turbo transcription~~, 5. ~~chat titles~~: checked from the terminal 2026-11-02 (below).
 6. The Local critic, with and without Qwen3-VL pulled.
 7. Reinstall the app: `npm run install-app -- --orchestrated`, with any model variables set. It copies `VIBECUT_WHISPER_MODEL` and `VIBECUT_VALIDATOR_MODE` too now.
+
+**Checked live from the terminal (2026-11-02, Claude; Ollama 0.32.5; Bernice and Grady, 7.4 and 6.4 min of 4K, symlinked into a scratch folder so no cache landed beside the originals; a scratch index on `nomic-embed-text`, as `bge-m3` isn't pulled here):**
+- **Stage-major ingest: passed.** Both transcripts, then both analyses, then both indexings (905 s in all, 91 s of it the turbo model's first download). `ollama ps`: the VLM loaded once and stayed through both files; the embedder loaded only for the index stage.
+- **`qwen3-vl:8b`: failed, fixed.** That tag reasons before answering: 118-123 s and about 2,600 tokens a shot, so Bernice's call passed the client's 120 s timeout. With `think: false` it answered in 7.4 s, but Ollama put the JSON in `thinking` and left `content` empty. `qwen3-vl:8b-instruct` (pulled, the user's choice): 8.5-9.3 s a shot warm, 19-28 s cold, no reasoning, labels like "MCU, STATIC, 85: a young woman in a white blouse sits on a light-colored chair… against a backdrop of greenery". Now the default, with `think: false` sent on every VLM call (Ollama takes it from models that don't reason too: checked on `qwen2.5vl:7b`, `gemma3:4b`). An ingest rerun on it: both files, no errors. `qwen2.5vl:7b`, the fallback: 7.6 s a shot warm, sensible labels, and it read the strip's order ("hands clasped and then moving apart"). Each interview is one shot (no cuts), so camera movement was STATIC throughout; a moving shot is still to try.
+- **Whisper turbo: passed, with a note.** Grady's 6.4 min in about 80 s; every word timed and in order. Against July's transcript (no word timings, model not recorded): 92% of words agree, and turbo keeps more off-camera talk ("Big breath, big smile"). But it dropped a false start ("…the biggest reasons I chose, one of the biggest reasons to choose…" became only the second half), missed the first slate, and spelled names worse (Diwali as "Duali", BAC as "Biak"). For cutting on stumbles, medium or large-v3 may still be the better tier.
+- **Chat titles: passed after a fix.** `chat-title` answered from Gemma with no cloud call (6.0 s cold, 0.9 s warm), and with the GPU held it gave up in 0.01 s. But 2 of 5 titles were "Past Chats…", from the prompt's "list of past chats". The local titler now has its own prompt with two examples (`LOCAL_SYSTEM`), and a title that still names the list or starts "Chat"/"Conversation" goes to the cloud: 5 of 5 then specific ("Grady Dining Hall Marks", "Chapel Talk Instagram Cut"). A French request still gets an English title.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):

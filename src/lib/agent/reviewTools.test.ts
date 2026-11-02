@@ -256,13 +256,13 @@ describe("review_edit", () => {
     const done = jobs.runJob.getMockImplementation();
     jobs.runJob.mockImplementation(async (command: string, ...rest: unknown[]) => {
       const answer = await (done as (...a: unknown[]) => Promise<{ status: string; result: Record<string, unknown> }>)(command, ...rest);
-      return command === "critique" ? { ...answer, result: { ...answer.result, reviewer: "qwen3-vl:8b" } } : answer;
+      return command === "critique" ? { ...answer, result: { ...answer.result, reviewer: "qwen3-vl:8b-instruct" } } : answer;
     });
     const out = await runTool(executorsFor(context), "review_edit", {});
     const request = jobs.runJob.mock.calls.find((c) => c[0] === "critique")?.[2] as { provider: string; model?: string; local?: boolean };
     // Gemini Flash stands by in case the local VLM can't review.
     expect(request).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash", local: true });
-    expect(out.summary).toMatch(/from the critic \(qwen3-vl:8b, 6 stills\)/);
+    expect(out.summary).toMatch(/from the critic \(qwen3-vl:8b-instruct, 6 stills\)/);
     expect(out.summary).not.toMatch(/no Gemini key/);
   });
 
@@ -273,11 +273,11 @@ describe("review_edit", () => {
     jobs.runJob.mockImplementation(async (command: string, ...rest: unknown[]) => {
       const answer = await (done as (...a: unknown[]) => Promise<{ status: string; result: Record<string, unknown> }>)(command, ...rest);
       if (command !== "critique") return answer;
-      return { ...answer, result: { ...answer.result, reviewer: "gemini-3.8-flash", localFallback: "The local VLM couldn't review: qwen3-vl:8b isn't on http://127.0.0.1:11434" } };
+      return { ...answer, result: { ...answer.result, reviewer: "gemini-3.8-flash", localFallback: "The local VLM couldn't review: qwen3-vl:8b-instruct isn't on http://127.0.0.1:11434" } };
     });
     const out = await runTool(executorsFor(context), "review_edit", {});
     expect(out.summary).toMatch(/from the critic \(gemini-3\.8-flash, 6 stills\)/);
-    expect(out.summary).toMatch(/The local VLM couldn't review: qwen3-vl:8b isn't on/);
+    expect(out.summary).toMatch(/The local VLM couldn't review: qwen3-vl:8b-instruct isn't on/);
   });
 
   it("keeps the automatic check when the critic fails, saying why", async () => {
