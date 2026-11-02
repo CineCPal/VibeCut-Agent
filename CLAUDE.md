@@ -47,3 +47,22 @@ If you do architecture-adjacent work — adding a new module, changing an IPC bo
 - Update `PLAN.md` with the new boundaries or state recovery schemas.
 - Note any new external API integrations in `PLAN.md` and the About modal.
 - Leave a discoverable change note so future sessions aren't working from stale docs.
+
+---
+
+## Tactical Implementation Constraints (Orchestrator + Local Sub-Agent Pipeline)
+
+You operate strictly as the **Tactical Implementation Engineer** executing Gemini's Technical Specification (`ORCHESTRATOR_SPEC.md` and `PLAN.md` Phase 21). You must enforce these rigid boundary constraints:
+
+1. **No Architectural Re-Planning or Schema Drift:**
+   - Do NOT alter module paths, class names, or JSON Schema definitions (`vibecut.otio.delta.v1`, `vibecut.whisper.v2`, `vibecut.vlm.v1`, `vibecut.vector.v1`, `vibecut.gemma.validator.v1`) specified in `ORCHESTRATOR_SPEC.md` and `src-python/vibecut_agent/orchestrator/schemas.py`.
+   - Do NOT collapse local worker boundaries back into prompt-stuffed monolithic LLM calls.
+
+2. **Zero Regression on `EXECUTION_MODE=direct`:**
+   - Never delete, rename, or change the behavior of existing modules in `src-python/vibecut_agent/nle/`, `src-python/vibecut_agent/agent/claude_chat.py`, or `src/lib/agent/tools.ts` when `EXECUTION_MODE=direct`.
+   - All existing `pytest` (`uv run pytest tests/`) and `vitest` (`npm run test:run`) suites must pass at the end of every implementation phase.
+
+3. **Strict Hardware & Memory Discipline:**
+   - All local worker calls (`whisper_worker`, `vlm_worker`, `vector_store`) must acquire the GPU/Metal concurrency lock in `src-python/vibecut_agent/workers/base.py`.
+   - Never read full media files into Python memory (`bytes` or `np.ndarray`); always stream via `ffmpeg` pipes in `src-python/vibecut_agent/core/ffmpeg_ops.py`.
+

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ipc = vi.hoisted(() => ({ nleCall: vi.fn() }));
 vi.mock("../ipc", () => ipc);
 
-import { describeTimelineChange, edit, editLogContext, followed, revertLastRequest, revertTimelineEdits, type EditContext } from "./edits";
+import { describeTimelineChange, edit, editLogContext, followed, revertLastRequest, revertTimelineEdits, untoldUserReverts, type EditContext } from "./edits";
 import { lastEditStep, useEditLogStore } from "../../store/useEditLogStore";
 import type { TimelineChange } from "../../types/edits";
 import type { HostTimeline } from "../../types/timeline";
@@ -142,6 +142,29 @@ describe("direct edits", () => {
       backup: "Main (before VibeCut 1)",
     });
     expect(useEditLogStore.getState().entries[0].reverted).toBeTruthy();
+  });
+
+  it("tells the chat once of a revert made with the Revert button, and not of the agent's own", async () => {
+    useEditLogStore.getState().hydrate({
+      version: 1,
+      entries: [
+        { id: "e7", step: "m1", stepText: "duck it", at: 1, host: "premiere", timeline: "Main", tool: "duck_clip", summary: "Ducked Oli", backup: "B", changes: [] },
+        { id: "e8", step: "m2", stepText: "cut it", at: 2, host: "premiere", timeline: "Main", tool: "delete_clips", summary: "Removed 1 clip", backup: "B", changes: [] },
+      ],
+      backups: {},
+      restoredIds: { premiere: {}, resolve: {} },
+    });
+    editor({ revert_timeline_changes: { reverted: [], changedSince: [], failed: [], lost: [], restoredIds: {} } });
+    await revertTimelineEdits(["e7"]);
+    expect(untoldUserReverts()).toEqual([]);
+    expect(editLogContext()).not.toContain("Revert button");
+    await revertLastRequest({ byUser: true });
+    expect(untoldUserReverts().map((e) => e.id)).toEqual(["e8"]);
+    expect(editLogContext()).toContain(
+      "\nThe user reverted these with the app's Revert button since your last message: e8 Removed 1 clip. The timeline below is as it is now; trust it over your memory of those edits.",
+    );
+    useEditLogStore.getState().markRevertsTold(["e8"]);
+    expect(editLogContext()).not.toContain("Revert button");
   });
 
   it("describes each kind of change", () => {

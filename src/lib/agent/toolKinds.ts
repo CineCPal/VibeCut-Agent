@@ -79,6 +79,8 @@ export const CHANGING_TOOLS = new Set([
   "set_clip_color",
   "match_clip_color",
   "balance_clip_color",
+  // Phase 21: an orchestrated chat's validated OTIO delta, sent to the editor (orchestratorTools.ts).
+  "commit_otio_delta",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -211,6 +213,7 @@ const VERB: Record<string, string> = {
   set_clip_labels: "Change the colour of",
   set_clip_metadata: "Change the logged notes of",
   rename_clips: "Rename project clips",
+  commit_otio_delta: "Apply the planned edit",
 };
 
 /** Clip names for ids, from the timeline last read (or, for a short pool id like "p3", the project's
@@ -235,6 +238,11 @@ const listed = (items: string[], max = 3) =>
 export function describeChange(name: string, args: unknown): string {
   const verb = VERB[name] ?? name;
   const a = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {};
+  // Phase 21: the orchestrator's own summary of the delta, and how many editor calls it makes.
+  if (name === "commit_otio_delta" && typeof a.commitSummary === "string") {
+    const calls = Array.isArray(a.batch) ? a.batch.filter((c) => (c as { command?: unknown })?.command !== "backup_timeline").length : 0;
+    return `${verb}: ${a.commitSummary} (${calls} ${calls === 1 ? "change" : "changes"} on ${typeof a.timeline === "string" ? a.timeline : "the timeline"})`;
+  }
   const strings = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
   const ids = [...strings(a.clipIds), ...(typeof a.clipId === "string" ? [a.clipId] : [])];
   const count = (key: string) => (Array.isArray(a[key]) ? (a[key] as unknown[]).length : 0);

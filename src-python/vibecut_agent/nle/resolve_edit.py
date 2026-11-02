@@ -123,6 +123,16 @@ def backup_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     return {"backup": copy.GetName()}
 
 
+def discard_backup(host: Any, args: dict[str, Any]) -> None:
+    """{timeline, backup} -> deletes the backup a failed OTIO batch made and fully undid (bridge_runner.py).
+    Not an edit command: only "<timeline> (before VibeCut n)" is ever deleted."""
+    if not str(args["backup"]).startswith(f"{args['timeline']} (before VibeCut "):
+        raise HostError(f"{args['backup']!r} isn't a VibeCut backup of {args['timeline']!r}")
+    project, backup = host._timeline({"timeline": args["backup"]})
+    if not project.GetMediaPool().DeleteTimelines([backup]):
+        raise HostError(f"Resolve didn't delete {args['backup']!r}")
+
+
 # ------------------------------------------------------------------------------- adding
 
 

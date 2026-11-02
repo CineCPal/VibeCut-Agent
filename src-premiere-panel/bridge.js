@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.16.0";
+const PANEL_VERSION = "0.17.0";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 // At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).
@@ -60,6 +60,8 @@ const COMMANDS = {
   // Direct edits (Phase 4b), as VibeCut's panel names them.
   backup_sequence: "vcBackupSequence",
   place_clip: "vcPlaceClip",
+  // The Phase 21 follow-up: how many audio clips a file lays down (premiere_edit.audio_tracks_from).
+  audio_clips: "vcAudioClips",
   remove_items: "vcRemoveItems",
   nest_range: "vcNestRange",
   set_items: "vcSetItems",

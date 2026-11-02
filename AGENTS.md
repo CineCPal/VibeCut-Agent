@@ -145,3 +145,26 @@ Every app must ship an accessible "About This App" modal or configuration panel:
 
 ## 10. Code Style & Output Standards
 - **No Truncations:** Write complete, copy-pasteable files. Do not use placeholder comments (`// ... rest of implementation`).
+
+---
+
+## 11. Agentic Video Pipeline Architecture & Data Contracts
+
+VibeCut Agent supports a dual-mode execution topology controlled by `EXECUTION_MODE` (`VIBECUT_EXECUTION_MODE`). See `ORCHESTRATOR_SPEC.md` for full schemas and module contracts:
+
+1. **`EXECUTION_MODE=direct` (Legacy Baseline):**
+   - Single-agent tool loop (`src-python/vibecut_agent/agent/claude_chat.py` and `src/lib/agent/tools.ts`) where the LLM directly invokes granular NLE bridge commands. This path is frozen against breaking changes.
+
+2. **`EXECUTION_MODE=orchestrated` (Supervisor + Heterogeneous Local Sub-Agents):**
+   - **Supervising Editor (`src-python/vibecut_agent/orchestrator/supervisor.py`):** Claude handles natural language dialogue, narrative pacing, story structure, high-level edit planning, and declarative OpenTimelineIO (`OtioDeltaPayload`) generation.
+   - **Local Sub-Agent Workers (`src-python/vibecut_agent/workers/`):**
+     - `whisper_worker.py`: Local Whisper (`mlx-whisper`, `faster-whisper`, or `whisper.cpp`) producing word-level rational timecode JSON (`vibecut.whisper.v2`).
+     - `vlm_worker.py`: Local Vision-Language Model (`Qwen2.5-VL` or `Gemma-3-Vision` via local Ollama/llama.cpp HTTP) tagging keyframes with `shot_scale`, `camera_movement`, `lighting`, and `composition` (`vibecut.vlm.v1`).
+     - `vector_store.py`: Local dense vector retrieval (`BAAI/bge-m3` or `nomic-embed-text-v1.5` backed by `sqlite-vec` or `LanceDB`) with Reciprocal Rank Fusion across transcripts, VLM tags, and SigLIP 2 embeddings (`vibecut.vector.v1`).
+     - `gemma_validator.py`: Local Gemma (`gemma3:4b-it` / `gemma2:9b-instruct` via Ollama/llama.cpp) performing fast JSON schema validation, timeline collision checks, and translating `OtioDeltaPayload` operations into deterministic NLE bridge batches (`vibecut.gemma.validator.v1`).
+   - **Deterministic Media Core (`src-python/vibecut_agent/core/`):**
+     - `timecode_math.py`: Frame-accurate `RationalTime` and `TimeRange` arithmetic. Floating-point seconds without a bound frame `rate` are prohibited in `OtioDeltaPayload`.
+     - `ffmpeg_ops.py`: Streaming subprocess wrappers (`silencedetect`, scene cuts, proxy keyframe extraction).
+   - **NLE Bridges (`src-python/vibecut_agent/nle/bridge_runner.py`):**
+     - Executes validated batches against DaVinci Resolve (`ResolveAdapter`) and Adobe Premiere Pro (`PremiereAdapter`) wrapped in an atomic `backup_timeline` / `revert_timeline_changes` transaction.
+

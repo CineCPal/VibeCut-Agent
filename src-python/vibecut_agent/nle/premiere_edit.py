@@ -16,9 +16,11 @@ log, Revert and the agent's tools (src/lib/connect/timelineEdits.ts) work unchan
 Every decision is made here, on a read of the sequence, before the panel's small steps run
 (src-premiere-panel/host.jsx). What Premiere 26.5.2 does (checked live on a scratch sequence):
 - `Sequence.overwriteClip(item, time, videoTrack, audioTrack)` places the project item's In/Out range
-  with its sound on that audio track and one more track per further channel (a stereo file fills A1
-  and A2), all linked. It overwrites whatever is there, so free space on every one of those tracks is
-  checked first. It can't add tracks; Premiere's unsupported QE layer can (phase 4f: `add_tracks` and
+  with its sound as the audio clips its channel mapping makes, from that audio track on, all linked.
+  How many is the project item's to say (`audio_clips`, its `getAudioChannelMapping().audioClipsNumber`):
+  a stereo WAV, a stereo .mov and a .mov with two mono streams each laid one clip on one track (checked
+  live, Phase 18e and the Phase 21 follow-up), and a file set to mono channels lays one per channel.
+  It overwrites whatever is there, so free space on every one of those tracks is checked first. It can't add tracks; Premiere's unsupported QE layer can (phase 4f: `add_tracks` and
   `remove_tracks` in the panel), so a clip with no free track gets new ones at the end, removed again
   by Revert while they're the last and empty. Without QE, the old refusal stands.
 - A clip's `start`, `end`, `inPoint` and `outPoint` are set independently: setting `start` alone
@@ -36,6 +38,7 @@ from __future__ import annotations
 import math
 import os
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +50,7 @@ from vibecut_agent.nle.premiere import (
     level_db,
     seconds,
 )
-from vibecut_agent.nle.premiere_support import BIN_NAME, Probe, unique_name
+from vibecut_agent.nle.premiere_support import BIN_NAME, Probe, estimated_audio_tracks, unique_name
 
 MAX_ITEMS_PER_CALL = 200
 MIN_DB, MAX_DB = -100.0, 30.0
@@ -238,10 +241,52 @@ def backup_timeline(host: Any, args: dict[str, Any]) -> dict[str, Any]:
     return {"backup": host._send("backup_sequence", {"timeline": name, "name": wanted})["name"]}
 
 
+def discard_backup(host: Any, args: dict[str, Any]) -> None:
+    """{timeline, backup} -> deletes the backup a failed OTIO batch made and fully undid (bridge_runner.py).
+    Not an edit command: only "<timeline> (before VibeCut n)" is ever deleted."""
+    if not str(args["backup"]).startswith(f"{args['timeline']} (before VibeCut "):
+        raise HostError(f"{args['backup']!r} isn't a VibeCut backup of {args['timeline']!r}")
+    if host._send("delete_sequence", {"timeline": args["backup"]}).get("deleted") is not True:
+        raise HostError(f"Premiere didn't delete {args['backup']!r}")
+
+
 # ------------------------------------------------------------------------------- adding
 
 
-def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, where: str) -> dict[str, Any]:
+AudioTracks = Callable[[str, str | None, int], int]
+
+
+def _estimate(path: str, item_id: str | None, channels: int) -> int:
+    return estimated_audio_tracks(channels)
+
+
+def audio_tracks_from(host: Any) -> AudioTracks:
+    """How many audio tracks the file's project item fills, asked of Premiere (importing it into the bin
+    if the project hasn't got it, as placing it would); estimated when the panel can't say (before 0.17)."""
+
+    def ask(path: str, item_id: str | None, channels: int) -> int:
+        try:
+            answer = host._send(
+                "audio_clips", {"path": path, "bin": BIN_NAME, **({"itemId": item_id} if item_id else {})}
+            )
+        except HostError:
+            return estimated_audio_tracks(channels)
+        clips = answer.get("clips") if isinstance(answer, dict) else None
+        if isinstance(clips, int) and not isinstance(clips, bool) and clips >= 1:
+            return clips
+        return estimated_audio_tracks(channels)
+
+    return ask
+
+
+def _plan_place(
+    seq: Sequence,
+    spec: dict[str, Any],
+    probe: Any,
+    extra: list,
+    where: str,
+    audio_tracks: AudioTracks = _estimate,
+) -> dict[str, Any]:
     """Where one clip goes: checked against the sequence and the clips placed before it in the call. A
     clip with no free track gets new ones at the end (added before anything is placed)."""
     item_id = spec.get("itemId")
@@ -262,6 +307,8 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
     channels = int(audio.get("channels") or 0)
     picture = spec.get("picture", has_video) is not False and has_video
     sound = spec.get("sound", channels > 0) is not False and channels > 0
+    # The audio tracks its sound fills, from the one it's placed on (the module docstring).
+    tracks = audio_tracks(path, item_id, channels) if channels else 0
     if not picture and not sound:
         raise HostError(
             f"{where}: nothing to place (the file has no {'picture' if not has_video else 'sound'})"
@@ -303,7 +350,7 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
             (
                 i
                 for i in options
-                if all(seq.free("audio", i + c, at, end, extra=extra) for c in range(channels))
+                if all(seq.free("audio", i + c, at, end, extra=extra) for c in range(tracks))
             ),
             -1,
         )
@@ -313,11 +360,11 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
             audio_track = total + 1
             while audio_track > 1 and seq.free("audio", audio_track - 1, at, end, extra=extra):
                 audio_track -= 1
-            first_new = _new_track(seq, "audio", channels - (total - audio_track + 1))
-            new_tracks.extend(["audio", i] for i in range(first_new, audio_track + channels))
+            first_new = _new_track(seq, "audio", tracks - (total - audio_track + 1))
+            new_tracks.extend(["audio", i] for i in range(first_new, audio_track + tracks))
         if audio_track < 0:
             raise HostError(
-                f"{where}: {name}'s sound needs {channels} free audio track(s) in a row from {seconds(at)} s to {seconds(end)} s"
+                f"{where}: {name}'s sound needs {tracks} free audio track(s) in a row from {seconds(at)} s to {seconds(end)} s"
                 f"{' starting at A' + str(wanted) if wanted is not None else ''}. VibeCut won't overwrite: "
                 + (
                     "leave audioTrack out and VibeCut picks a free track (adding one if needed), or use a draft"
@@ -328,7 +375,7 @@ def _plan_place(seq: Sequence, spec: dict[str, Any], probe: Any, extra: list, wh
     # Only the parts that stay hold their tracks for the clips after it: the rest is removed again
     # before the next clip is placed (_place), so a picture-only camera leaves A1 for its mic.
     occupied = ([("video", video_track, at, end)] if picture else []) + [
-        ("audio", audio_track + c, at, end) for c in range(channels if sound else 0)
+        ("audio", audio_track + c, at, end) for c in range(tracks if sound else 0)
     ]
     extra.extend(occupied)
     volume = spec.get("volumeDb")
@@ -446,8 +493,9 @@ def add_clips(host: Any, args: dict[str, Any], probe: Any = None) -> dict[str, A
     seq = _read(host, timeline)
     extra: list = []
     # Every clip is checked before any is placed, so a bad one leaves the sequence unchanged.
+    tracks = audio_tracks_from(host)
     plans = [
-        _plan_place(seq, c if isinstance(c, dict) else {}, probe, extra, f"clips[{i}]")
+        _plan_place(seq, c if isinstance(c, dict) else {}, probe, extra, f"clips[{i}]", tracks)
         for i, c in enumerate(clips)
     ]
     # New tracks first, all at once: if Premiere can't add them, nothing has been placed.

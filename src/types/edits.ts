@@ -73,7 +73,8 @@ export interface EditEntry {
   /** A change to the project's bins and clips instead of a timeline (Phase 12e): what it replaced, for
    * `revert_pool_changes`. Its `changes` is empty and `backup` "". */
   pool?: { changes: PoolChange[]; createdBins: string[] };
-  reverted?: { at: number; changedSince: number; failed: number; lost: string[] };
+  /** `byUser`: with the chat's Revert button, not the agent's tool; `told`: a chat message has said so since. */
+  reverted?: { at: number; changedSince: number; failed: number; lost: string[]; byUser?: boolean; told?: boolean };
   /** Made before this launch (loaded from the saved log, Phase 8a): its clips may have changed since. */
   fromEarlierRun?: boolean;
 }

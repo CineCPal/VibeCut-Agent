@@ -94,11 +94,32 @@ def check_setup(setup: Any) -> dict[str, Any]:
     return setup
 
 
-def mcp_config(setup: dict[str, Any]) -> dict[str, Any]:
-    """The one MCP server Claude Code gets: VibeCut's shim, tagged with this chat's job."""
+# Phase 21: what an orchestrated chat's shim needs to run the tool bus (config.py's settings). Claude Code
+# may start the shim with little of its own environment, so they're given to it here.
+ORCHESTRATOR_ENV = (
+    "VIBECUT_EXECUTION_MODE",
+    "VIBECUT_LOCAL_LLM_BASE_URL",
+    "VIBECUT_GEMMA_MODEL",
+    "VIBECUT_VLM_MODEL",
+    "VIBECUT_WHISPER_BACKEND",
+    "VIBECUT_WHISPER_MODEL",
+    "VIBECUT_WHISPER_CPP_BIN",
+    "VIBECUT_VECTOR_BACKEND",
+    "VIBECUT_EMBED_MODEL",
+    "VIBECUT_INDEX_DIR",
+)
+
+
+def mcp_config(setup: dict[str, Any], environ: dict[str, str] | None = None) -> dict[str, Any]:
+    """The one MCP server Claude Code gets: VibeCut's shim, tagged with this chat's job. An orchestrated
+    chat's shim (`setup["orchestrated"]`, set by chat.py) runs the orchestrator's tool bus (mcp_server.py)."""
     mcp = setup["mcp"]
     env = {str(k): str(v) for k, v in (mcp.get("env") or [])}
     env["VIBECUT_MCP_CALLER"] = setup["jobId"]
+    if setup.get("orchestrated") is True:
+        source = os.environ if environ is None else environ
+        env["VIBECUT_MCP_ORCHESTRATED"] = "1"
+        env.update({name: source[name] for name in ORCHESTRATOR_ENV if source.get(name)})
     return {
         "mcpServers": {
             SERVER_NAME: {"command": mcp["program"], "args": [str(a) for a in mcp["args"]], "env": env}

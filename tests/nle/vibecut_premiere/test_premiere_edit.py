@@ -20,7 +20,8 @@ class FakePremiere:
     """One sequence ("Main", 25 fps) with V1, V2 and A1-A3, answering the panel's commands."""
 
     def __init__(self, media: dict[str, dict]) -> None:
-        self.media = media  # path -> {"channels": n, "video": bool}
+        # path -> {"channels": n, "video": bool, "clips"?: the audio clips Premiere lays (default: channels)}
+        self.media = media
         self.ids = (f"n{i}" for i in itertools.count(1))
         self.video = [[], []]
         self.audio = [[], [], []]
@@ -124,6 +125,12 @@ class FakePremiere:
         self.sequences.append(a["name"])
         return {"name": a["name"]}
 
+    def audio_clips(self, a):
+        if "itemId" in a:
+            assert a["itemId"] == "pi-" + a["path"].rsplit("/", 1)[-1].replace(".", "-")
+        media = self.media[a["path"]]
+        return {"clips": media.get("clips", media["channels"])}
+
     def place_clip(self, a):
         if "itemId" in a:
             assert a["itemId"] == "pi-" + a["path"].rsplit("/", 1)[-1].replace(".", "-")
@@ -135,7 +142,7 @@ class FakePremiere:
         length = round((src_out - src_in) * T)
         placed = []
         targets = ([("video", a["videoTrack"])] if media["video"] else []) + [
-            ("audio", a["audioTrack"] + c) for c in range(media["channels"])
+            ("audio", a["audioTrack"] + c) for c in range(media.get("clips", media["channels"]))
         ]
         for kind, index in targets:
             tracks = self.video if kind == "video" else self.audio
@@ -567,6 +574,47 @@ def test_a_picture_only_clip_leaves_its_sound_tracks_for_the_next_clip(setup):
         ],
     )
     assert [c["tracks"] for c in result["changes"]] == [["V2"], ["A1"]]
+
+
+def test_a_stereo_file_premiere_lays_as_one_clip_takes_one_track(setup, tmp_path):
+    # Seen live (the Phase 21 follow-up's checks, Premiere 26.5.2): a stereo WAV laid one stereo clip on
+    # A3 and left A4 alone, so a stereo file on the last audio track was refused for no reason.
+    host, premiere, _ = setup
+    tone = str(tmp_path / "tone.wav")
+    open(tone, "wb").close()
+    premiere.media[tone] = {"channels": 2, "video": False, "clips": 1}
+    result = call(
+        host, "add_clips", clips=[{"path": tone, "sourceIn": 0, "sourceOut": 1, "at": 10, "audioTrack": 3}]
+    )
+    assert [c["tracks"] for c in result["changes"]] == [["A3"]] and result["addedTracks"] == []
+    # Set to mono channels, it lays a clip per channel, and A3 has no track after it.
+    premiere.media[tone]["clips"] = 2
+    with pytest.raises(HostError, match="needs 2 free audio track\\(s\\) in a row .* starting at A3"):
+        call(
+            host,
+            "add_clips",
+            clips=[{"path": tone, "sourceIn": 0, "sourceOut": 1, "at": 20, "audioTrack": 3}],
+        )
+
+
+def test_a_panel_that_cant_say_leaves_the_estimate(setup, tmp_path, monkeypatch):
+    # A panel before 0.17 doesn't know audio_clips: a mono or stereo file is taken as one track.
+    from vibecut_agent.nle.premiere_edit import estimated_audio_tracks
+
+    host, premiere, _ = setup
+
+    def unknown(a):
+        raise HostError("Unknown command: audio_clips")
+
+    monkeypatch.setattr(premiere, "audio_clips", unknown)
+    tone = str(tmp_path / "tone.wav")
+    open(tone, "wb").close()
+    premiere.media[tone] = {"channels": 2, "video": False, "clips": 1}
+    result = call(
+        host, "add_clips", clips=[{"path": tone, "sourceIn": 0, "sourceOut": 1, "at": 10, "audioTrack": 3}]
+    )
+    assert [c["tracks"] for c in result["changes"]] == [["A3"]]
+    assert [estimated_audio_tracks(n) for n in (0, 1, 2, 4)] == [0, 1, 1, 4]
 
 
 def test_delete_with_linked_then_revert_puts_the_group_back_linked(setup):

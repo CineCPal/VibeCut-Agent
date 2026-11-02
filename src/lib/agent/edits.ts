@@ -26,9 +26,21 @@ export interface EditContext {
 export const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 const trackLabel = (type: string, index: number) => `${type === "video" ? "V" : "A"}${index}`;
 
+const backupKey = (ctx: EditContext) => `${ctx.step}|${ctx.host}|${ctx.timeline}`;
+
+/** This request's backup, if an edit has made one (Phase 21: a commit lets the editor make it). */
+export function knownBackup(ctx: EditContext): string | undefined {
+  return useEditLogStore.getState().backups[backupKey(ctx)];
+}
+
+/** Records the backup the editor made for this request, for its later edits to reuse. */
+export function rememberBackup(ctx: EditContext, backup: string): void {
+  useEditLogStore.getState().setBackup(backupKey(ctx), backup);
+}
+
 /** The backup for this request: made before its first direct edit, then reused. */
-async function ensureBackup(ctx: EditContext): Promise<string> {
-  const key = `${ctx.step}|${ctx.host}|${ctx.timeline}`;
+export async function ensureBackup(ctx: EditContext): Promise<string> {
+  const key = backupKey(ctx);
   const known = useEditLogStore.getState().backups[key];
   if (known) return known;
   const { backup } = await nleCall<{ backup: string }>(ctx.host, "backup_timeline", { timeline: ctx.timeline });
@@ -54,7 +66,7 @@ function namedIds(args: Record<string, unknown>): string[] {
 
 /** Refuses an edit of a clip, or of a clip linked to it, on a locked track (VibeCut's 8a.0 probe:
  * Premiere's scripting edits a locked track anyway; Resolve refuses without saying why). */
-function refuseLocked(ctx: EditContext, timeline: HostTimeline, args: Record<string, unknown>): void {
+export function refuseLocked(ctx: EditContext, timeline: HostTimeline, args: Record<string, unknown>): void {
   const where = new Map<string, { type: string; index: number; locked: boolean }>();
   const linked = new Map<string, string[]>();
   for (const track of timeline.tracks) {
@@ -157,7 +169,8 @@ interface PoolRevertResult {
 
 /** Reverts logged edits, newest first, one entry at a time. Entries already reverted are skipped.
  * A project (pool) entry goes back through `revert_pool_changes` (Phase 12e). */
-export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutcome> {
+export async function revertTimelineEdits(entryIds: string[], options: { byUser?: boolean } = {}): Promise<ToolOutcome> {
+  const by = options.byUser ? { byUser: true } : {};
   const entries = useEditLogStore
     .getState()
     .entries.filter((e) => entryIds.includes(e.id) && !e.reverted)
@@ -169,7 +182,7 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
     if (entry.pool) {
       // A change to the project's bins and clips (Phase 12e): the editor puts back each `before`.
       const back = await nleCall<PoolRevertResult>(entry.host, "revert_pool_changes", { changes: entry.pool.changes, createdBins: entry.pool.createdBins });
-      useEditLogStore.getState().markReverted(entry.id, { at: Date.now(), changedSince: back.changedSince.length, failed: back.failed.length, lost: [] });
+      useEditLogStore.getState().markReverted(entry.id, { at: Date.now(), changedSince: back.changedSince.length, failed: back.failed.length, lost: [], ...by });
       pool.reverted += back.reverted.length;
       pool.binsRemoved.push(...back.binsRemoved);
       pool.binsKept.push(...back.binsKept);
@@ -188,6 +201,7 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
       changedSince: result.changedSince.length,
       failed: result.failed.length,
       lost: result.lost,
+      ...by,
     });
     totals.reverted += result.reverted.length;
     totals.changedSince.push(...result.changedSince);
@@ -222,9 +236,9 @@ export async function revertTimelineEdits(entryIds: string[]): Promise<ToolOutco
   return { summary: parts.join("; "), result: { ...totals, lost, backups, ...(pool.reverted ? { pool } : {}) } };
 }
 
-/** Reverts every edit of the latest request that has unreverted ones (the chat's Revert button). */
-export async function revertLastRequest(): Promise<ToolOutcome> {
-  return revertTimelineEdits(lastEditStep());
+/** Reverts every edit of the latest request that has unreverted ones (the chat's Revert button, `byUser`). */
+export async function revertLastRequest(options: { byUser?: boolean } = {}): Promise<ToolOutcome> {
+  return revertTimelineEdits(lastEditStep(), options);
 }
 
 /** A clip's scale and position (Phase 16f) as the chat says it: "120% at (96, -54)", or its keys. */
@@ -365,7 +379,16 @@ export function editLogContext(entries: EditEntry[] = useEditLogStore.getState()
   const recent = live.slice(-5).map((e) => `${e.id} ${e.summary}`);
   // After a restart the saved log carries on (Phase 8a): Revert still works on those, by id.
   const when = entries.some((e) => e.fromEarlierRun) ? "this session and before the app last restarted" : "this session";
-  return `Your direct timeline edits ${when}: ${entries.length} (${live.length} not reverted)${recent.length ? `; latest: ${recent.join(" | ")}` : ""}`;
+  const line = `Your direct timeline edits ${when}: ${entries.length} (${live.length} not reverted)${recent.length ? `; latest: ${recent.join(" | ")}` : ""}`;
+  // Seen live (Phase 21, check 7): the chat wasn't told of the user's Revert and trusted its memory of the edit.
+  const undone = untoldUserReverts(entries).map((e) => `${e.id} ${e.summary}`);
+  if (!undone.length) return line;
+  return `${line}\nThe user reverted these with the app's Revert button since your last message: ${undone.join(" | ")}. The timeline below is as it is now; trust it over your memory of those edits.`;
+}
+
+/** The entries the user reverted with the Revert button that no chat message has mentioned yet. */
+export function untoldUserReverts(entries: EditEntry[] = useEditLogStore.getState().entries): EditEntry[] {
+  return entries.filter((e) => e.reverted?.byUser && !e.reverted.told);
 }
 
 /** The most get_edit_log returns, newest kept. */

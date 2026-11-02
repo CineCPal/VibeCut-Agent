@@ -4,12 +4,15 @@ from vibecut_agent import __version__, health, session
 from vibecut_agent.headless import dispatch
 
 
-def test_health_reports_versions(recorder):
+def test_health_reports_versions(recorder, monkeypatch):
+    monkeypatch.delenv("VIBECUT_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("EXECUTION_MODE", raising=False)
     assert health.run(recorder.emitter, io.StringIO("{}")) == 0
     [event] = recorder.events
     assert event["type"] == "result"
     assert event["version"] == __version__
     assert event["python"].count(".") == 2
+    assert event["executionMode"] == "direct"
 
 
 def test_session_answers_until_end_session(recorder):

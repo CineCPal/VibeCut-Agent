@@ -309,3 +309,138 @@ def test_a_tools_images_reach_claude_code_as_image_content(folder: Path) -> None
         "aGVsbG8=",
         "image/jpeg",
     )
+
+
+# ------------------------------------------------------------------------------ orchestrated (Phase 21)
+
+
+ORCHESTRATED_DECLARATIONS = [
+    *DECLARATIONS,
+    {
+        "name": "list_timelines",
+        "description": "Timelines.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "list_timeline_clips",
+        "description": "Clips.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "get_editor_context",
+        "description": "Context.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {"name": "get_instructions", "description": "Rules.", "parameters": {"type": "OBJECT", "properties": {}}},
+]
+
+
+def orchestrated_app(folder: Path, timeline_app: Any) -> FakeApp:
+    """A fake app whose tools are the orchestrator test app's (tests/orchestrator/app.py)."""
+
+    def answer(request: dict[str, Any]) -> dict[str, Any]:
+        if request["kind"] == "list_tools":
+            return {"ok": True, "result": {"tools": ORCHESTRATED_DECLARATIONS}}
+        return {"ok": True, "result": timeline_app.answer(request["name"], request["args"])}
+
+    return FakeApp(folder, answer)
+
+
+@pytest.fixture
+def timeline(tmp_path: Path) -> Any:
+    from tests.orchestrator.app import App
+    from tests.orchestrator.timeline import make_media, make_snapshot
+
+    return App(make_snapshot(make_media(tmp_path)))
+
+
+@pytest.fixture
+def orchestration(folder: Path, tmp_path: Path) -> Any:
+    from tests.orchestrator.app import make_bus
+    from vibecut_agent.config import OrchestratorConfig
+
+    bus = make_bus(OrchestratorConfig.from_env("orchestrated"), tmp_path)
+    return mcp_server.Orchestration(AppBridge(folder, "job-1"), bus)
+
+
+def test_an_orchestrated_chat_sees_the_orchestration_tools_and_only_the_reads(
+    folder: Path, timeline: Any, orchestration: Any
+) -> None:
+    from vibecut_agent.orchestrator.tool_bus import ORCHESTRATOR_TOOL_NAMES
+
+    fake = orchestrated_app(folder, timeline)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                return await client.list_tools()
+
+        names = [t.name for t in run(go).tools]
+    finally:
+        fake.stop()
+    # Of the app's tools, add_markers (an edit) and get_instructions (the direct-mode rules) are left out.
+    assert names == [
+        "list_markers",
+        "list_timelines",
+        "list_timeline_clips",
+        "get_editor_context",
+        *ORCHESTRATOR_TOOL_NAMES,
+    ]
+
+
+def test_an_orchestrated_chat_edits_only_through_a_validated_delta(
+    folder: Path, timeline: Any, orchestration: Any
+) -> None:
+    from tests.orchestrator.timeline import delta, op
+
+    fake = orchestrated_app(folder, timeline)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                refused = await client.call_tool("add_markers", {"markers": [{"time": 1.0}]})
+                read = await client.call_tool("list_markers", {})
+                proposal = await client.call_tool(
+                    "propose_otio_delta", {"delta": delta(op("op_001", "DELETE_CLIP", clip_id="c2"))}
+                )
+                token = json.loads(proposal.content[0].text)["validation_token"]
+                commit = await client.call_tool(
+                    "commit_otio_delta", {"validation_token": token, "commit_summary": "Drop the second shot"}
+                )
+                bad = await client.call_tool("propose_otio_delta", {"delta": {"operations": []}})
+                return refused, read, proposal, commit, bad
+
+        refused, read, proposal, commit, bad = run(go)
+    finally:
+        fake.stop()
+    assert refused.is_error is True
+    assert "edits go through propose_otio_delta" in json.loads(refused.content[0].text)["error"]
+    assert read.is_error is False
+    assert json.loads(read.content[0].text) == {"markers": []}
+    assert json.loads(proposal.content[0].text)["valid"] is True
+    assert json.loads(commit.content[0].text) == {"committed": True}
+    assert bad.is_error is True
+    # The app saw the read, the bus's two timeline reads for each of propose and commit, and the commit,
+    # all as this chat's calls; never add_markers.
+    calls = [(r["caller"], r["name"]) for r in fake.seen if r["kind"] == "call_tool"]
+    assert calls == [
+        ("job-1", "list_markers"),
+        ("job-1", "list_timelines"),
+        ("job-1", "list_timeline_clips"),
+        ("job-1", "list_timelines"),
+        ("job-1", "list_timeline_clips"),
+        ("job-1", "commit_otio_delta"),
+    ]
+    sent = next(r for r in fake.seen if r.get("name") == "commit_otio_delta")["args"]
+    assert [c["command"] for c in sent["batch"]] == ["backup_timeline", "delete_clips"]
+    assert mcp_server.timeout_for("commit_otio_delta") == mcp_server.LONG_TIMEOUT_SECONDS
+
+
+def test_only_the_apps_own_chat_is_orchestrated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(mcp_server.ORCHESTRATED_ENV, "1")
+    assert mcp_server.orchestrated_from_env("job-1") is True
+    assert mcp_server.orchestrated_from_env(mcp_server.OUTSIDE) is False
+    monkeypatch.delenv(mcp_server.ORCHESTRATED_ENV)
+    assert mcp_server.orchestrated_from_env("job-1") is False

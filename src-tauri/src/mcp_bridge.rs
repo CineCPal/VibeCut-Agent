@@ -303,6 +303,21 @@ pub struct ShimLaunch {
 }
 
 pub fn shim_launch(uv: &Path, root: &Path, environment: Option<&Path>, bridge_override: Option<&Path>) -> ShimLaunch {
+    shim_launch_with(uv, root, environment, bridge_override, &["mcp"])
+}
+
+/// Phase 21: the shim for the app's own Claude Code chat in orchestrated mode, which runs the
+/// orchestrator's tool bus (vibecut_agent/mcp_server.py) and so needs its extras too. Outside callers keep
+/// `shim_launch`.
+pub const ORCHESTRATED_SHIM_EXTRAS: [&str; 3] = ["mcp", "orchestrator", "transcribe"];
+
+pub fn shim_launch_with(
+    uv: &Path,
+    root: &Path,
+    environment: Option<&Path>,
+    bridge_override: Option<&Path>,
+    extras: &[&str],
+) -> ShimLaunch {
     let mut env = vec![
         ("PYTHONPATH".to_string(), root.join("src-python").to_string_lossy().into_owned()),
         crate::sidecar::bytecode_env(environment),
@@ -313,7 +328,7 @@ pub fn shim_launch(uv: &Path, root: &Path, environment: Option<&Path>, bridge_ov
     if let Some(folder) = bridge_override {
         env.push(("VIBECUT_AGENT_MCP_DIR".into(), folder.to_string_lossy().into_owned()));
     }
-    ShimLaunch { program: uv.to_string_lossy().into_owned(), args: build_args(root, "mcp", &["mcp"]), env }
+    ShimLaunch { program: uv.to_string_lossy().into_owned(), args: build_args(root, "mcp", extras), env }
 }
 
 /// One word for a POSIX shell: left bare when it's plainly safe, else single-quoted.
@@ -366,8 +381,15 @@ pub fn remote_command(launch: &ShimLaunch) -> String {
 }
 
 pub fn app_shim_launch(app: &AppHandle) -> ShimLaunch {
+    app_shim_launch_with(app, &["mcp"])
+}
+
+pub fn app_shim_launch_with(app: &AppHandle, extras: &[&str]) -> ShimLaunch {
     let bridge_override = std::env::var_os("VIBECUT_AGENT_MCP_DIR").map(PathBuf::from);
-    shim_launch(&uv_binary(), &python_root(app), uv_environment(app).as_deref(), bridge_override.as_deref())
+    let mut launch = shim_launch_with(&uv_binary(), &python_root(app), uv_environment(app).as_deref(), bridge_override.as_deref(), extras);
+    // The app's own chat (Phase 21 follow-up): the orchestrator saves its .otio files in the app's data folder.
+    launch.env.extend(crate::sidecar::app_data_env(app));
+    launch
 }
 
 #[derive(serde::Serialize)]
@@ -533,6 +555,18 @@ mod tests {
         assert!(line.contains(" vibecut -- /opt/homebrew/bin/uv run --locked"));
         assert!(line.contains("'/Applications/VibeCut Agent.app/Contents/Resources/python'"));
         assert!(line.contains("'UV_PROJECT_ENVIRONMENT=/Users/me/Library/Application Support/com.cj.vibecutagent/python-env'"));
+    }
+
+    #[test]
+    fn an_orchestrated_chats_shim_gets_the_orchestrator_extras() {
+        let uv = Path::new("/opt/homebrew/bin/uv");
+        let launch = shim_launch_with(uv, Path::new("/r"), None, None, &ORCHESTRATED_SHIM_EXTRAS);
+        for extra in ORCHESTRATED_SHIM_EXTRAS {
+            assert!(launch.args.windows(2).any(|w| w == ["--extra", extra]), "{extra}");
+        }
+        assert_eq!(launch.args.last().map(String::as_str), Some("mcp"));
+        let plain = shim_launch(uv, Path::new("/r"), None, None);
+        assert!(!plain.args.contains(&"orchestrator".to_string()), "outside callers aren't orchestrated");
     }
 
     #[test]

@@ -86,6 +86,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "chat-title", interactive: false, managed: false },
     // The vision critic's notes on a cut, with the chat's model (Phase 14b).
     CommandSpec { name: "critique", interactive: false, managed: false },
+    // Phase 21: media transcribed, looked at and indexed for the orchestrated chat (vibecut_agent/workers).
+    CommandSpec { name: "ingest-index", interactive: false, managed: false },
+    // Phase 21: the execution mode and the local workers' health, for the About modal.
+    CommandSpec { name: "orchestrator-health", interactive: false, managed: false },
     CommandSpec { name: "session", interactive: true, managed: true },
     // The editor watchers (nle.rs), kept running by Rust.
     CommandSpec { name: "premiere-watch", interactive: true, managed: true },
@@ -187,7 +191,8 @@ pub fn passes_to_child(name: &str) -> bool {
 /// `broll-match` always embeds text and frames with SigLIP 2; `broll-analyze` only when the request
 /// turns content-aware scoring on (and never for a `catalog` read, which decodes nothing);
 /// `broll-spyglass` embeds the query with SigLIP 2 / CLIP, except for a `catalog` listing; `transcribe`
-/// needs mlx-whisper, and pyannote only when it labels speakers (`diarize`).
+/// needs mlx-whisper, and pyannote only when it labels speakers (`diarize`); `ingest-index` (Phase 21) needs
+/// the `orchestrator` extra and mlx-whisper, and pyannote the same way.
 pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
     let flag = |key: &str| request.get(key).and_then(Value::as_bool) == Some(true);
     match command {
@@ -196,6 +201,8 @@ pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
         "transcribe" if flag("diarize") => vec!["transcribe", "diarize"],
         "transcribe" => vec!["transcribe"],
         "broll-analyze" if flag("enableEnergy") && !flag("catalog") => vec!["energy"],
+        "ingest-index" if flag("diarize") => vec!["orchestrator", "transcribe", "diarize"],
+        "ingest-index" => vec!["orchestrator", "transcribe"],
         _ => Vec::new(),
     }
 }
@@ -494,6 +501,54 @@ pub fn bytecode_env(environment: Option<&Path>) -> (String, String) {
     }
 }
 
+/// Phase 21 follow-up: the app's data folder, where the orchestrator saves each edit's `.otio`
+/// (`<appDataDir>/otio_deltas`, tool_bus.py). Python can't work it out: it's named for the bundle id.
+pub fn app_data_env(app: &AppHandle) -> Option<(String, String)> {
+    app_data_env_for(app.path().app_data_dir().ok())
+}
+
+pub fn app_data_env_for(dir: Option<PathBuf>) -> Option<(String, String)> {
+    dir.map(|dir| ("VIBECUT_APP_DATA_DIR".to_string(), dir.to_string_lossy().into_owned()))
+}
+
+/// Phase 21 (ORCHESTRATOR_SPEC.md §4.2): the host's `EXECUTION_MODE` reaches the sidecar as
+/// `VIBECUT_EXECUTION_MODE` (`config.py`), since only `VIBECUT_*` names pass `passes_to_child`. A
+/// `VIBECUT_EXECUTION_MODE` already set passes as it is and wins, as it does in `OrchestratorConfig`.
+pub fn execution_mode_env(vibecut: Option<String>, plain: Option<String>) -> Option<(String, String)> {
+    match (vibecut, plain) {
+        (None, Some(mode)) if !mode.trim().is_empty() => Some(("VIBECUT_EXECUTION_MODE".into(), mode)),
+        _ => None,
+    }
+}
+
+/// The execution mode a run will see: `VIBECUT_EXECUTION_MODE`, else `EXECUTION_MODE` (as `config.py` reads them).
+fn execution_mode() -> Option<String> {
+    std::env::var("VIBECUT_EXECUTION_MODE").ok().or_else(|| std::env::var("EXECUTION_MODE").ok())
+}
+
+fn is_orchestrated(mode: Option<&str>) -> bool {
+    mode.map(|m| m.trim().eq_ignore_ascii_case("orchestrated")) == Some(true)
+}
+
+/// Whether runs are in orchestrated mode (Phase 21): claude_code.rs gives the chat's MCP shim the extras.
+pub fn orchestrated() -> bool {
+    is_orchestrated(execution_mode().as_deref())
+}
+
+/// Phase 21: what the orchestrated path adds to `extras_for`. A Claude chat in orchestrated mode runs the
+/// tool bus (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the chat's Whisper (mlx-whisper:
+/// `transcribe`); `orchestrator-health` asks the same workers. Nothing in direct mode, or for another
+/// provider.
+pub fn orchestrated_extras(command: &str, request: &Value, mode: Option<&str>) -> Vec<&'static str> {
+    let orchestrated = is_orchestrated(mode);
+    let claude = request.get("provider").and_then(Value::as_str) == Some("claude");
+    match command {
+        "chat" if orchestrated && claude => vec!["orchestrator", "transcribe"],
+        "orchestrator-health" if orchestrated => vec!["orchestrator", "transcribe"],
+        _ => Vec::new(),
+    }
+}
+
 /// The program, arguments and environment for one run, kept separate from spawning for tests.
 pub struct Launch {
     pub program: PathBuf,
@@ -513,6 +568,10 @@ impl Launch {
         envs.push(("PYTHONUNBUFFERED".into(), "1".into()));
         envs.push(("PYTHONIOENCODING".into(), "utf-8".into()));
         envs.push(bytecode_env(environment));
+        envs.extend(execution_mode_env(
+            std::env::var("VIBECUT_EXECUTION_MODE").ok(),
+            std::env::var("EXECUTION_MODE").ok(),
+        ));
         envs
     }
 
@@ -767,7 +826,8 @@ pub fn start_session(app: &AppHandle) {
         publish_session(app, &session, generation, SessionStatus::stopped(Some(message)));
         return;
     }
-    let launch = Launch::for_command(&root, uv_environment(app).as_deref(), "session", &[]);
+    let mut launch = Launch::for_command(&root, uv_environment(app).as_deref(), "session", &[]);
+    launch.envs.extend(app_data_env(app));
     let job = Arc::new(SidecarJob::default());
     if let Err(message) = jobs.insert(SESSION_JOB_ID, &job) {
         publish_session(app, &session, generation, SessionStatus::stopped(Some(message)));
@@ -842,7 +902,7 @@ pub async fn sidecar_start(
         // The Story Editor's first pass over long footage may be set to Gemini (Phase 7e).
         set_extraction_key(&mut request, gemini_key.as_deref());
     }
-    if spec.name == "transcribe" {
+    if matches!(spec.name, "transcribe" | "ingest-index") {
         // The Hugging Face token goes only to a run that labels speakers, and only from here.
         let wants = request.get("diarize").and_then(Value::as_bool) == Some(true);
         let token = if wants {
@@ -858,7 +918,10 @@ pub async fn sidecar_start(
         set_index_path(&mut request, &index);
     }
     let root = python_root(&app);
-    let launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras_for(spec.name, &request));
+    let mut extras = extras_for(spec.name, &request);
+    extras.extend(orchestrated_extras(spec.name, &request, execution_mode().as_deref()));
+    let mut launch = Launch::for_command(&root, uv_environment(&app).as_deref(), spec.name, &extras);
+    launch.envs.extend(app_data_env(&app));
 
     let job = Arc::new(SidecarJob::default());
     jobs.insert(&job_id, &job)?;
@@ -1010,6 +1073,52 @@ mod tests {
         assert_eq!(env("PYTHONDONTWRITEBYTECODE"), None);
         assert_eq!(env("GEMINI_API_KEY"), None);
         assert_eq!(launch.cwd, PathBuf::from("/r"));
+    }
+
+    #[test]
+    fn ingest_index_runs_with_the_orchestrator_extra() {
+        assert!(find_command("ingest-index").is_ok());
+        assert_eq!(extras_for("ingest-index", &json!({"paths": ["/a.mov"]})), ["orchestrator", "transcribe"]);
+        assert_eq!(extras_for("ingest-index", &json!({"diarize": true})), ["orchestrator", "transcribe", "diarize"]);
+        assert!(!needs_llm_key("ingest-index"));
+    }
+
+    #[test]
+    fn an_orchestrated_claude_chat_runs_with_the_orchestrator_extra() {
+        let claude = json!({"provider": "claude"});
+        assert_eq!(orchestrated_extras("chat", &claude, Some("orchestrated")), ["orchestrator", "transcribe"]);
+        assert_eq!(orchestrated_extras("chat", &claude, Some(" Orchestrated ")), ["orchestrator", "transcribe"]);
+        assert!(orchestrated_extras("chat", &claude, Some("direct")).is_empty());
+        assert!(orchestrated_extras("chat", &claude, None).is_empty());
+        assert!(orchestrated_extras("chat", &json!({"provider": "gemini"}), Some("orchestrated")).is_empty());
+        assert!(orchestrated_extras("chat", &json!({"provider": "claude-code"}), Some("orchestrated")).is_empty());
+        assert!(find_command("orchestrator-health").is_ok());
+        assert_eq!(orchestrated_extras("orchestrator-health", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"]);
+        assert!(orchestrated_extras("orchestrator-health", &json!({}), None).is_empty());
+        assert!(!needs_llm_key("orchestrator-health"));
+    }
+
+    #[test]
+    fn execution_mode_reaches_the_sidecar_under_its_vibecut_name() {
+        let mapped = execution_mode_env(None, Some("orchestrated".into()));
+        assert_eq!(mapped, Some(("VIBECUT_EXECUTION_MODE".into(), "orchestrated".into())));
+        // An explicit VIBECUT_EXECUTION_MODE already passes through the allow-list, and wins.
+        assert_eq!(execution_mode_env(Some("direct".into()), Some("orchestrated".into())), None);
+        assert_eq!(execution_mode_env(None, None), None);
+        assert_eq!(execution_mode_env(None, Some("  ".into())), None);
+        assert!(passes_to_child("VIBECUT_EXECUTION_MODE"));
+        assert!(!passes_to_child("EXECUTION_MODE"));
+    }
+
+    #[test]
+    fn the_app_data_folder_reaches_the_sidecar() {
+        let dir = PathBuf::from("/Users/u/Library/Application Support/com.cj.vibecutagent");
+        assert_eq!(
+            app_data_env_for(Some(dir)),
+            Some(("VIBECUT_APP_DATA_DIR".into(), "/Users/u/Library/Application Support/com.cj.vibecutagent".into()))
+        );
+        assert_eq!(app_data_env_for(None), None);
+        assert!(passes_to_child("VIBECUT_APP_DATA_DIR"));
     }
 
     #[test]

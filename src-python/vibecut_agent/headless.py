@@ -158,6 +158,21 @@ def critique(emitter: Emitter, stdin: TextIO) -> int:
     return critic.main(stdin, emitter)
 
 
+def ingest_index(emitter: Emitter, stdin: TextIO) -> int:
+    """Phase 21: media files transcribed, looked at and indexed for the orchestrated chat (the
+    `orchestrator` extra)."""
+    from vibecut_agent.workers import ingest_pipeline
+
+    return ingest_pipeline.main(stdin, emitter)
+
+
+def orchestrator_health(emitter: Emitter, stdin: TextIO) -> int:
+    """Phase 21: the execution mode, and the local workers' health in orchestrated mode (the About modal)."""
+    from vibecut_agent.workers import health_report
+
+    return health_report.main(stdin, emitter)
+
+
 def premiere_watch(emitter: Emitter, stdin: TextIO) -> int:
     from vibecut_agent.nle.watch import PremiereAdapter, watch
 
@@ -196,6 +211,8 @@ COMMANDS: dict[str, Command] = {
     "assemble": assemble,
     "chat-title": chat_title,
     "critique": critique,
+    "ingest-index": ingest_index,
+    "orchestrator-health": orchestrator_health,
     "premiere-watch": premiere_watch,
     "resolve-watch": resolve_watch,
 }
