@@ -26,9 +26,21 @@ export interface EditContext {
 export const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 const trackLabel = (type: string, index: number) => `${type === "video" ? "V" : "A"}${index}`;
 
+const backupKey = (ctx: EditContext) => `${ctx.step}|${ctx.host}|${ctx.timeline}`;
+
+/** This request's backup, if an edit has made one (Phase 21: a commit lets the editor make it). */
+export function knownBackup(ctx: EditContext): string | undefined {
+  return useEditLogStore.getState().backups[backupKey(ctx)];
+}
+
+/** Records the backup the editor made for this request, for its later edits to reuse. */
+export function rememberBackup(ctx: EditContext, backup: string): void {
+  useEditLogStore.getState().setBackup(backupKey(ctx), backup);
+}
+
 /** The backup for this request: made before its first direct edit, then reused. */
 export async function ensureBackup(ctx: EditContext): Promise<string> {
-  const key = `${ctx.step}|${ctx.host}|${ctx.timeline}`;
+  const key = backupKey(ctx);
   const known = useEditLogStore.getState().backups[key];
   if (known) return known;
   const { backup } = await nleCall<{ backup: string }>(ctx.host, "backup_timeline", { timeline: ctx.timeline });

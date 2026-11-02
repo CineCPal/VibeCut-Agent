@@ -3,7 +3,8 @@
  * EXECUTION_MODE=orchestrated, Claude's tools run in the chat sidecar (orchestrator/tool_bus.py); the one
  * that reaches the app is `commit_otio_delta`, once the sidecar has checked the delta, its token and the
  * timeline. It carries the validated bridge calls, which run in the editor as one transaction
- * (`execute_otio_batch`, nle/bridge_runner.py): after this request's backup, undone together if one fails.
+ * (`execute_otio_batch`, nle/bridge_runner.py): the editor first checks the timeline is still as it was
+ * validated, then backs it up (or reuses this request's backup), and undoes the calls together if one fails.
  * Like any direct edit it is refused while a draft is open, waits for Apply when edits are reviewed
  * (toolKinds.ts), and is logged as one edit, so Revert takes the whole delta back.
  */
@@ -13,7 +14,7 @@ import type { EditResult } from "../../types/edits";
 import { NLE_LABELS, type NleHost } from "../../types/nle";
 import type { ExecutedCall, NleBatchCommand, OtioCommitArgs } from "../../types/orchestrator";
 import type { Args, Executor } from "./args";
-import { count, ensureBackup, HOST_SHORT, readTimeline, refuseLocked, TIMELINE_NOUN, type EditContext } from "./edits";
+import { count, HOST_SHORT, knownBackup, readTimeline, refuseLocked, rememberBackup, TIMELINE_NOUN, type EditContext } from "./edits";
 
 /** What `execute_otio_batch` answers. */
 interface BatchResult extends EditResult {
@@ -65,14 +66,17 @@ export function orchestratorExecutors(ctx: EditContext): Record<string, Executor
       }
       const view = await readTimeline(ctx);
       for (const call of commit.batch) refuseLocked(ctx, view, call.args);
-      const backup = await ensureBackup(ctx);
-      // The editor checks the timeline is still as it was validated (it may have changed while this waited for Apply).
+      // The editor checks the timeline is still as it was validated (it may have changed while this waited for
+      // Apply), and only then makes the request's backup, unless an earlier edit of this request made one.
+      const earlier = knownBackup(ctx);
       const result = await nleCall<BatchResult>(ctx.host, "execute_otio_batch", {
         timeline: ctx.timeline,
-        backup,
+        ...(earlier ? { backup: earlier } : {}),
         batch: commit.batch,
         ...(commit.expectedTimelineHash ? { expectedTimelineHash: commit.expectedTimelineHash } : {}),
       });
+      const backup = result.backup;
+      if (!earlier) rememberBackup(ctx, backup);
       if (result.renamed && Object.keys(result.renamed).length) useEditLogStore.getState().addRestoredIds(ctx.host, result.renamed);
       const summary = result.changes.length
         ? `${commit.commitSummary} (${count(result.changes.length, "change")} in ${HOST_SHORT[ctx.host]}, ${count(result.executed.length, "call")})`

@@ -75,7 +75,6 @@ describe("commit_otio_delta", () => {
   it("runs the validated calls after the request's backup and logs them as one edit", async () => {
     editor({
       read_timeline: view(),
-      backup_timeline: { backup: "Cut (before VibeCut 1)" },
       execute_otio_batch: {
         backup: "Cut (before VibeCut 1)",
         changes: [deleted],
@@ -85,12 +84,14 @@ describe("commit_otio_delta", () => {
       },
     });
     const outcome = await run(commit());
+    // The editor makes the backup, after its stale check; the app remembers it for the request.
     expect(ipc.nleCall).toHaveBeenCalledWith("resolve", "execute_otio_batch", {
       timeline: "Cut",
-      backup: "Cut (before VibeCut 1)",
       batch: BATCH,
       expectedTimelineHash: "a".repeat(64),
     });
+    expect(ipc.nleCall.mock.calls.map((c) => c[1])).toEqual(["read_timeline", "execute_otio_batch"]);
+    expect(useEditLogStore.getState().backups["m1|resolve|Cut"]).toBe("Cut (before VibeCut 1)");
     expect(outcome.summary).toBe('Drop the second shot (1 change in Resolve, 1 call) (backup: "Cut (before VibeCut 1)")');
     expect(outcome.result).toEqual({
       committed: true,
@@ -114,6 +115,7 @@ describe("commit_otio_delta", () => {
     });
     const outcome = await run(commit());
     expect(ipc.nleCall.mock.calls.map((c) => c[1])).toEqual(["read_timeline", "execute_otio_batch"]);
+    expect(ipc.nleCall.mock.calls[1][2]).toMatchObject({ backup: "Cut (before VibeCut 4)" });
     expect(outcome.summary).toBe('Drop the second shot: nothing needed changing (backup: "Cut (before VibeCut 4)")');
     expect(useEditLogStore.getState().entries).toEqual([]);
   });
@@ -128,9 +130,13 @@ describe("commit_otio_delta", () => {
 
   it("passes on the editor's failure, which says what was undone", async () => {
     const failure = new Error('Call 2 of 2 (delete_clips, for op_001) failed: no clip c2. Nothing had changed yet; the backup "Cut (before VibeCut 1)" has the timeline as it was.');
-    editor({ read_timeline: view(), backup_timeline: { backup: "Cut (before VibeCut 1)" }, execute_otio_batch: failure });
+    editor({ read_timeline: view(), execute_otio_batch: failure });
     await expect(run(commit())).rejects.toThrow("Nothing had changed yet");
     expect(useEditLogStore.getState().entries).toEqual([]);
+    // A stale timeline is refused in the editor before any backup is made.
+    editor({ read_timeline: view(), execute_otio_batch: new Error("STALE_TIMELINE_HASH: Cut changed after the edit was checked") });
+    await expect(run(commit())).rejects.toThrow("STALE_TIMELINE_HASH");
+    expect(ipc.nleCall.mock.calls.some((c) => c[1] === "backup_timeline")).toBe(false);
   });
 
   it("checks its arguments", () => {

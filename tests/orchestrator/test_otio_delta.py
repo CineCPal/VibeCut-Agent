@@ -654,3 +654,16 @@ def test_a_trimmed_clips_linked_sound_must_have_room_too(snapshot):
     )
     assert diagnostics == []
     assert calls(commands)[-1:] == [("reshape_clip", {"itemId": "c1", "sourceOut": 15.0})]
+
+
+def test_the_hash_is_the_same_however_the_numbers_were_written(snapshot):
+    # Seen live: the app's reading came through JavaScript, whose JSON writes 0.0 as 0 and 25.0 as 25.
+    as_floats = copy.deepcopy(snapshot)
+    as_floats["fps"] = 25.0
+    for track in as_floats["tracks"]:
+        track["index"] = float(track["index"])
+        for clip in track["clips"]:
+            for key in ("start", "end", "sourceIn", "sourceOut"):
+                clip[key] = float(clip[key])
+    assert timeline_hash(as_floats) == timeline_hash(snapshot)
+    assert timeline_hash({**snapshot, "fps": 24}) != timeline_hash(snapshot)

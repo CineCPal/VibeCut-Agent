@@ -70,20 +70,28 @@ class NleCommand(TypedDict):
     args: dict[str, Any]
 
 
+def _number(value: Any) -> Any:
+    """A number as one form whoever wrote it: JavaScript's JSON writes 0.0 as 0, Python's as 0.0."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return round(float(value), 6)
+    return value
+
+
 def timeline_hash(snapshot: dict[str, Any]) -> str:
     """SHA-256 of the timeline's edit-relevant state: its name, rate and every clip's id, place and
-    source, track by track. Playhead, selection and markers don't change it."""
+    source, track by track. Playhead, selection and markers don't change it. Numbers are hashed in one
+    form, so the app's reading (through JavaScript) and the editor's own (Python) hash the same."""
     tracks = []
     for track in snapshot.get("tracks", []):
         clips = [
             {
-                key: clip.get(key)
+                key: _number(clip.get(key))
                 for key in ("id", "start", "end", "sourceIn", "sourceOut", "filePath", "enabled")
             }
             for clip in track.get("clips", [])
         ]
-        tracks.append({"type": track.get("type"), "index": track.get("index"), "clips": clips})
-    canonical = {"timeline": snapshot.get("timeline"), "fps": snapshot.get("fps"), "tracks": tracks}
+        tracks.append({"type": track.get("type"), "index": _number(track.get("index")), "clips": clips})
+    canonical = {"timeline": snapshot.get("timeline"), "fps": _number(snapshot.get("fps")), "tracks": tracks}
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

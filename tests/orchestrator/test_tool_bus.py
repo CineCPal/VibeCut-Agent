@@ -355,3 +355,20 @@ def test_the_bus_hashes_the_apps_timeline_as_the_editor_hashes_its_own(snapshot)
     app = App(snapshot)
     status, clips = app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True})
     assert timeline_hash(tool_bus._snapshot_from(status, clips)) == timeline_hash(snapshot)
+
+
+def test_the_snapshot_is_of_the_connected_timeline(config, tmp_path, snapshot):
+    app = App(snapshot)
+    status = app.answer("list_timelines", {})
+    clips = app.answer("list_timeline_clips", {"detail": True})
+    assert tool_bus._snapshot_from(status, clips)["timeline"] == "Cut"
+    nothing_connected = {"project": "P", "timelines": [{"name": "Cut", "openInEditor": True}]}
+    with pytest.raises(tool_bus.ToolBusError, match="no timeline is connected"):
+        tool_bus._snapshot_from(nothing_connected, clips)
+    # A delta for another timeline than the connected one is refused (compile_to_nle_commands' check).
+    bus = make_bus(config, tmp_path, app)
+    other = delta(op("op_001", "DELETE_CLIP", clip_id="c2"))
+    other["target_timeline"] = "Other"
+    result = bus.dispatch("propose_otio_delta", {"delta": other})
+    assert result["valid"] is False
+    assert result["diagnostics"][0]["code"] == "STALE_TIMELINE_HASH"

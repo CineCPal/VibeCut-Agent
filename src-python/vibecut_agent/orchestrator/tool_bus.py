@@ -211,6 +211,17 @@ def fit(result: Any, limit: int = MAX_RESULT_CHARS) -> Any:
     return slim
 
 
+def _connected_timeline(status: dict[str, Any]) -> str:
+    """The timeline every app tool works on (`connected`, the one `list_timeline_clips` read), from
+    `list_timelines` (src/lib/agent/projectTools.ts: `{project, timelines: [{name, connected?,
+    openInEditor?, ...}]}`)."""
+    timelines = status.get("timelines")
+    for entry in timelines if isinstance(timelines, list) else []:
+        if isinstance(entry, dict) and entry.get("connected") is True and isinstance(entry.get("name"), str):
+            return str(entry["name"])
+    raise ToolBusError("Couldn't read the timeline: no timeline is connected in the editor")
+
+
 def _snapshot_from(status: Any, clips: Any) -> dict[str, Any]:
     """A HostTimeline (as compile_to_nle_commands reads it) from `list_timelines` and
     `list_timeline_clips {detail: true}` results."""
@@ -235,7 +246,7 @@ def _snapshot_from(status: Any, clips: Any) -> dict[str, Any]:
         )
     return {
         "project": status.get("project"),
-        "timeline": status.get("open"),
+        "timeline": _connected_timeline(status),
         "fps": clips.get("fps"),
         "duration": clips.get("duration"),
         "tracks": tracks,

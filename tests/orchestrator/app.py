@@ -25,10 +25,13 @@ class App:
         if name in self.fail:
             return {"error": self.fail[name]}
         if name == "list_timelines":
+            # As src/lib/agent/projectTools.ts answers it (it overrides tools.ts's older shape).
             return {
                 "project": self.snapshot["project"],
-                "timelines": [self.snapshot["timeline"]],
-                "open": self.snapshot["timeline"],
+                "timelines": [
+                    {"name": self.snapshot["timeline"], "connected": True, "openInEditor": True},
+                    {"name": f"{self.snapshot['timeline']} (before VibeCut 1)", "backup": True},
+                ],
             }
         if name == "list_timeline_clips":
             assert args == {"detail": True}
