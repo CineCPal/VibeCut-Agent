@@ -21,7 +21,8 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
 - MISSING_MEDIA_FILE: no media reference, or its file isn't there.
 - UNKNOWN_CLIP_ID: no such clip on the timeline (or not on that kind of track, or with no source media).
 - SOURCE_OUT_OF_BOUNDS: past the media's ends or its `available_range`, a cut point outside the clip, or a
-  value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve).
+  value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve, a
+  Premiere track the timeline doesn't have).
 - TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
@@ -104,6 +105,15 @@ def micro(seconds: Fraction) -> float:
     return math.ceil(seconds * 1_000_000) / 1_000_000
 
 
+def past(seconds: Fraction) -> float:
+    """A clip's source in point for add_clips: just after the frame's exact time, by up to a microsecond.
+    Premiere's add_clips works out the out point itself, as the in point plus the clip's frames, sends both
+    to the nanosecond and takes each to the frame at or before it. From an in point exactly on a frame the
+    out can land a hair before its frame (seen live: in 375.6753 s, frame 11259 at 29.97, gave an out of
+    380.646933333 s for frame 11408, so the clip came out a frame short); from just after it, it can't."""
+    return math.floor(seconds * 1_000_000 + 1) / 1_000_000
+
+
 def media_path_of(target_url: str) -> str:
     """The plain path of a `file:///` URL (percent-encoded or not)."""
     return unquote(urlparse(target_url).path)
@@ -146,6 +156,8 @@ class _Compiler:
         # (clip id, transition spec as given, total seconds) for each APPLY_TRANSITION that compiles.
         self.transitions: list[tuple[str, dict[str, Any], Fraction]] = []
         self.track_names: dict[tuple[str, int], str] = {}
+        # How many tracks of each kind the timeline has: Premiere adds one only where it picks the track itself.
+        self.track_count: dict[str, int] = {"video": 0, "audio": 0}
         # The latest delete_clips call, and the clips linked to what it removes (see `delete`).
         self._last_delete: NleCommand | None = None
         self._last_delete_links: set[str] = set()
@@ -156,6 +168,7 @@ class _Compiler:
             if kind not in ("video", "audio"):
                 continue
             key = (kind, int(track["index"]))
+            self.track_count[kind] = max(self.track_count[kind], key[1])
             if track.get("name"):
                 self.track_names[key] = str(track["name"])
             for clip in track.get("clips", []):
@@ -345,6 +358,22 @@ class _Compiler:
         selector = op["track_Selector"]
         return selector["kind"].lower(), int(selector["index"])
 
+    def _track_exists(self, track: tuple[str, int], op_id: str) -> bool:
+        """False (flagged) for a Premiere track the timeline doesn't have: its add_clips and reshape_clip
+        refuse a track they're told to use that isn't there, and add tracks only for a clip given none."""
+        have = self.track_count[track[0]]
+        if self.host != "premiere" or track[1] <= have:
+            return True
+        label = "V" if track[0] == "video" else "A"
+        self._error(
+            "SOURCE_OUT_OF_BOUNDS",
+            op_id,
+            f"{self.timeline} has no {label}{track[1]} (it has {f'{label}1-{label}{have}' if have > 1 else f'{label}1' if have else 'none'}), "
+            "and Premiere adds a track only where it picks the track itself",
+            "Use a free track the timeline has, or ask the user to add the track in Premiere",
+        )
+        return False
+
     # Operations.
 
     def place(self, op: dict[str, Any], op_id: str) -> None:
@@ -385,6 +414,8 @@ class _Compiler:
             )
             return
         track = self._track(op)
+        if not self._track_exists(track, op_id):
+            return
         group = op.get("link_group_id")
         partner = self.link_groups.get(group) if group else None
         busy = self._collisions(track, first, last, set())
@@ -416,7 +447,7 @@ class _Compiler:
             _, clip = partner
             same = (
                 clip["path"] == path
-                and clip["sourceIn"] == micro(source[0])
+                and clip["sourceIn"] == past(source[0])
                 and clip["at"] == self._seconds(first)
                 and not clip.get(side)
             )
@@ -435,7 +466,7 @@ class _Compiler:
         else:
             clip = {
                 "path": path,
-                "sourceIn": micro(source[0]),
+                "sourceIn": past(source[0]),
                 "sourceOut": micro(source[1]),
                 "at": self._seconds(first),
                 track_arg: track[1],
@@ -646,6 +677,8 @@ class _Compiler:
                 f"Clip {clip.id} is on a {clip.track[0]} track, not {track[0]}",
                 "Move it to a track of its own kind",
             )
+            return
+        if not self._track_exists(track, op_id):
             return
         shift = span[0] - clip.first
         # Its linked partners move with it, on their own tracks.

@@ -34,6 +34,11 @@ def run(d, snapshot, duration=60.0):
     return compile_to_nle_commands(d, snapshot, lambda path: duration)
 
 
+def with_v2(snapshot):
+    """The snapshot with an empty V2, as Premiere lists one: Premiere places only on tracks it has."""
+    return {**snapshot, "tracks": [*snapshot["tracks"], {"type": "video", "index": 2, "clips": []}]}
+
+
 def codes(diagnostics):
     return [(d["severity"], d["code"], d["op_id"]) for d in diagnostics]
 
@@ -82,7 +87,7 @@ def test_linked_picture_and_sound_go_in_as_one_clip(media, snapshot):
                 "clips": [
                     {
                         "path": media["c d.mov"],
-                        "sourceIn": 1.0,
+                        "sourceIn": 1.000001,  # just past the frame (see `past`)
                         "sourceOut": 3.0,
                         "at": 8.0,
                         "videoTrack": 1,
@@ -230,6 +235,7 @@ def test_split_then_delete(snapshot):
 
 
 def test_move_takes_its_linked_sound(snapshot):
+    snapshot = with_v2(snapshot)
     commands, diagnostics = run(
         delta(op("op_001", "MOVE_CLIP", clip_id="c2", timeline_range=tr(250, 100))), snapshot
     )
@@ -481,6 +487,7 @@ def plain(value):
 
 def test_the_otio_is_the_timeline_as_the_delta_leaves_it(media, snapshot):
     otio = pytest.importorskip("opentimelineio")
+    snapshot = with_v2(snapshot)
     timeline = apply_delta_to_otio(edit(media), snapshot, lambda path: 60.0)
 
     assert timeline.name == "Cut"
@@ -560,6 +567,7 @@ def test_a_delta_with_errors_is_not_applied(snapshot):
 
 def test_write_otio_saves_it_whole(media, snapshot, tmp_path):
     otio = pytest.importorskip("opentimelineio")
+    snapshot = with_v2(snapshot)
     timeline = apply_delta_to_otio(edit(media), snapshot, lambda path: 60.0)
     path = write_otio(timeline, tmp_path / "otio_deltas", "delta_0001")
     assert path == tmp_path / "otio_deltas" / "delta_0001.otio"
@@ -774,3 +782,87 @@ def test_a_duck_needs_a_ramp(snapshot):
     for ramp in (0, 0.01, 2.5):
         args, diagnostics = duck_of(snapshot, duck_Floor_db=-12, fade_in_seconds=ramp)
         assert args is None and diagnostics == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+
+
+def test_premiere_places_and_moves_only_onto_tracks_it_has(media, snapshot):
+    # Seen live in Premiere: linked picture and sound for V4 and A5 of a sequence with V1-V3 and A1-A4
+    # validated, then add_clips refused after Apply (Premiere adds a track only where it picks one).
+    def place(host, video=2, audio=3):
+        return run(
+            delta(
+                *(
+                    op(
+                        f"op_00{i}",
+                        "OVERWRITE_CLIP",
+                        kind,
+                        index,
+                        link_group_id="L1",
+                        media_reference=ref(media["a.mov"]),
+                        source_range=tr(250, 50),
+                        timeline_range=tr(500, 50),
+                    )
+                    for i, (kind, index) in enumerate((("Video", video), ("Audio", audio)), 1)
+                ),
+                host=host,
+            ),
+            snapshot,
+        )
+
+    commands, diagnostics = place("premiere")
+    assert codes(diagnostics) == [
+        ("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001"),
+        ("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_002"),
+    ]
+    assert "Cut has no V2 (it has V1)" in diagnostics[0]["message"]
+    assert "Cut has no A3 (it has A1-A2)" in diagnostics[1]["message"]
+    assert [c["command"] for c in commands] == ["backup_timeline"]
+    # Resolve makes the tracks (check 6 there), and the tracks Premiere has are fine.
+    commands, diagnostics = place("resolve")
+    assert diagnostics == []
+    assert calls(commands)[1][1]["clips"][0] | {"path": None} == {
+        "path": None, "sourceIn": 10.000001, "sourceOut": 12.0, "at": 20.0,
+        "videoTrack": 2, "picture": True, "sound": True, "audioTrack": 3,
+    }  # fmt: skip
+    _, diagnostics = place("premiere", video=1, audio=2)
+    assert codes(diagnostics) == []
+    _, diagnostics = run(
+        delta(op("op_001", "MOVE_CLIP", index=2, clip_id="c1", timeline_range=tr(0, 100))), snapshot
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+
+
+def test_an_in_point_on_a_frame_is_sent_just_past_it_so_premieres_out_lands_too(media, snapshot):
+    # Seen live in Premiere: Grady's line, frames 11259-11408 at 29.97, was sent in at 375.6753 s (exactly
+    # frame 11259). add_clips worked out the out point as in + 149 frames, 380.646933333 s to the nanosecond:
+    # a hair before frame 11408, which Premiere took to 11407, so the clip came out 148 frames.
+    ntsc = {**snapshot, "fps": 29.97}
+    for track in ntsc["tracks"]:
+        track["clips"] = []
+    commands, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "OVERWRITE_CLIP",
+                media_reference=ref(media["a.mov"]),
+                source_range=tr(11259, 149, 29.97),
+                timeline_range=tr(599, 149, 29.97),
+            ),
+            fps=29.97,
+        ),
+        ntsc,
+        duration=600.0,
+    )
+    assert diagnostics == []
+    [clip] = commands[1]["args"]["clips"]
+    assert clip["sourceIn"] == 375.675301
+    # premiere_edit._plan_place and _clean_range: frames from the sent range, the out point from the in point.
+    ticks, timebase = 254016000000, 254016000000 * 1001 // 30000
+    frames = round((clip["sourceOut"] - clip["sourceIn"]) * ticks / timebase)
+    sent_in = round(clip["sourceIn"], 9)
+    sent_out = round(clip["sourceIn"] + frames * timebase / ticks, 9)
+    fps = Fraction(30000, 1001)
+    assert (frames, math.floor(Fraction(sent_in) * fps), math.floor(Fraction(sent_out) * fps)) == (
+        149,
+        11259,
+        11408,
+    )
