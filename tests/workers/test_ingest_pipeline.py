@@ -302,8 +302,10 @@ def test_an_ingest_is_traced_stage_by_stage(recorder, files):
         lambda config: workers,
         trace,
     )
+    envelopes: list = []
+    trace.bus.add_listener(envelopes.extend)
     ingest.run()
-    envelopes = trace.bus.flush()
+    trace.bus.flush()
     assert [validate_envelope(e) for e in envelopes if validate_envelope(e)] == []
     spawns = [e for e in envelopes if e["event_type"] == "SPAWN"]
     assert [e["subagent_type"] for e in spawns] == [
@@ -324,6 +326,7 @@ def test_an_ingest_is_traced_stage_by_stage(recorder, files):
     assert any(e["event_type"] == "BATCH_PROGRESS" for e in envelopes)
     assert envelopes[-1]["event_type"] == "COMPLETED"
     assert envelopes[-1]["payload"]["task_id"] == "task_root"
+    assert envelopes[-1]["payload"]["latency_ms"] > 0
 
 
 def test_an_ingest_without_telemetry_writes_no_trace(recorder, files, monkeypatch, tmp_path):

@@ -2769,7 +2769,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - Python:
   - `ruff check` and `ruff format --check` (packages/contracts, src-python, tests): clean.
   - `mypy packages/contracts/telemetry.py src-python/ tests/telemetry/`: clean.
-  - pytest: 1304 passed, 2 skipped (40 of them in `tests/telemetry`).
+  - pytest: 1305 passed, 2 skipped, after the live checks' fixes below (40 of them in `tests/telemetry`).
 - `cargo test`: 142 passed (new: `telemetry_reaches_the_shim_only_when_turned_on`, `the_telemetry_gateway_is_a_plain_command_with_no_extras`).
 - Root: ESLint and `tsc --noEmit` clean; vitest 867 passed (unchanged).
 - Visualizer: lint, `tsc --noEmit` and `build` clean; vitest 81 passed, in 13 files:
@@ -2789,10 +2789,23 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - `Origin: https://evil.example` got 403.
   - SIGTERM gave `done`.
 
-**To check live:**
-1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1` (dev build, or a reinstall with `--orchestrated` and the variable). Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with SPAWN, TOOL_INVOCATION and MUTATION events for propose and commit.
-2. An `ingest-index` run with telemetry on, watched live in the visualizer.
-3. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
+**Checked live from the terminal (2026-11-02, Claude):** scratch app-data and index folders throughout; the embedder `nomic-embed-text` (D14), the VLM `qwen3-vl:8b-instruct`; two 6 s clips with `say` speech over test patterns. The gateway ran as the real `telemetry-gateway` command, with an SSE client logging when each batch arrived.
+- **`ingest-index` with `VIBECUT_TELEMETRY=1`: passed.** A real run in its own process: Whisper turbo, Qwen3-VL and the index; 58 s, both files done.
+  - The gateway tailed the trace and streamed it while the run went on. Each stage's COMPLETED, the next SPAWN and the handoff reached the client within about 0.1 s of happening (at +6.8 s, +8.9 s, +37.9 s, +57.0 s and so on).
+  - 252 stdout progress events became 37 envelopes.
+  - All 37 are valid and contiguous. The snapshot had 7 tasks, each with its real model and upstream (vision waits on its file's transcript, the index on its vision), and the three edge kinds.
+- **The MCP shim (Claude's orchestrated path): passed.** The real `python -m vibecut_agent mcp` process (orchestrated, telemetry on, its bridge pointed at a scratch folder so the running app wasn't touched), driven over stdio:
+  - `semantic_asset_search` (2 hits), `transcribe_and_align` (from the cache) and `detect_media_boundaries`: each a COMPLETED task on its worker's bay.
+  - A bad search: FAILED `SCHEMA_VALIDATION_FAILED`.
+  - `propose_otio_delta` with no app: MUTATION_EMITTED PROPOSED, then FAILED `NLE_BRIDGE_TIMEOUT` ("VibeCut Agent isn't running").
+  - The `trc_mcp_livecheck1_*` trace streamed through the gateway as it happened.
+- **Found and fixed:**
+  - Neither trace's root task finished properly. The MCP root stayed SPAWNED (nothing marks the end of a Claude Code run), and the ingest root said 0 ms. `TraceEmitter.finish()` now completes the root with its real time and a tally ("5 tool calls, 2 failed"). The shim calls it when it exits (`mcp_server.main`) and the ingest when it ends. Checked again: 797 ms and 190 ms.
+  - `telemetry-gateway` ignored `{"port": 0}` (0 is falsy) and took 18765. Found when the gateway test ran while the live gateway held that port.
+
+**Still to check live:**
+1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
+2. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -3456,3 +3469,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - A stdlib telemetry bus and gateway (`src-python/vibecut_agent/telemetry/`, the `telemetry-gateway` command), opt-in with `VIBECUT_TELEMETRY=1`, and instrumented in the orchestrator's tool bus and `ingest-index` only. Direct mode is unchanged.
   - The shared contracts (`packages/contracts`) and the visualizer (`apps/visualizer`), wired in as npm workspaces.
   - Decisions V1-V15, what wasn't done, the verification and the live checks owed: "Phase 22" above.
+- **2026-11-02 (Claude): Phase 22 live checks from the terminal.** A real `ingest-index` and the real MCP shim, both with telemetry on, streamed live through the gateway. Fixed: a trace's root now finishes with its real time (`TraceEmitter.finish`, at shim exit and ingest end), and `telemetry-gateway` honours `port: 0`. The in-app turn and a look in a browser are still owed.

@@ -124,6 +124,10 @@ class TraceEmitter:
         self._count = 0
         # The tool call running now (task id, agent id, subagent), for the bus's mutation events.
         self.current_task: tuple[str, str, str] | None = None
+        self._root_agent = ROOT_AGENT_ID
+        self._root_began = time.perf_counter()
+        self._tasks_done = 0
+        self._tasks_failed = 0
 
     # Raw events.
 
@@ -184,6 +188,8 @@ class TraceEmitter:
         if self._root_spawned:
             return
         self._root_spawned = True
+        self._root_agent = agent_id
+        self._root_began = time.perf_counter()
         self.spawn(
             self.root_task_id,
             agent_id=agent_id,
@@ -348,6 +354,20 @@ class TraceEmitter:
             severity="MUTATION",
         )
 
+    def finish(self, summary: str | None = None) -> None:
+        """COMPLETED for the root, with the time since it was spawned (the end of the shim's run, or of an
+        ingest); then a flush. Nothing when the root was never spawned (no tool was called)."""
+        if not self._root_spawned:
+            return
+        self.completed(
+            self.root_task_id,
+            agent_id=self._root_agent,
+            subagent="MASTER_ORCHESTRATOR",
+            latency_ms=(time.perf_counter() - self._root_began) * 1000.0,
+            summary=summary or f"{self._tasks_done} tool calls, {self._tasks_failed} failed",
+        )
+        self.bus.flush()
+
     # One orchestration tool call as a task.
 
     def tool_call(self, name: str, args: Any, run: Callable[[], Any]) -> Any:
@@ -408,7 +428,9 @@ class TraceEmitter:
         finally:
             self.current_task = None
         latency_ms = (time.perf_counter() - began) * 1000.0
+        self._tasks_done += 1
         if isinstance(result, dict) and "error" in result:
+            self._tasks_failed += 1
             self.failed(
                 task_id,
                 agent_id=agent_id,

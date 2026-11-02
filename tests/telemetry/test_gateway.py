@@ -475,7 +475,8 @@ def test_the_command_is_registered_and_reads_its_options(
         19999,
         tmp_path / "telemetry",
     )
-    assert options_from({"port": 0, "telemetryDir": str(tmp_path / "x")})["folder"] == tmp_path / "x"
+    chosen = options_from({"port": 0, "telemetryDir": str(tmp_path / "x")})
+    assert (chosen["port"], chosen["folder"]) == (0, tmp_path / "x")
 
 
 def test_the_command_serves_until_stopped(tmp_path: Path) -> None:

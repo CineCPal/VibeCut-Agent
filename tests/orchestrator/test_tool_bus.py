@@ -483,3 +483,20 @@ def test_a_traced_result_is_the_same_result(config, tmp_path):
     traced(watched)
     args = {"query": "laughing", "modality": "dialogue"}
     assert watched.dispatch("semantic_asset_search", args) == plain.dispatch("semantic_asset_search", args)
+
+
+def test_finishing_the_trace_completes_its_root_with_a_tally(config, tmp_path):
+    bus = make_bus(config, tmp_path, vector=Worker({"hits": []}))
+    trace = traced(bus)
+    seen = []
+    trace.bus.add_listener(seen.extend)
+    trace.finish()
+    assert seen == []  # Nothing was called: no root to finish.
+    bus.dispatch("semantic_asset_search", {"query": "laughing", "modality": "dialogue"})
+    bus.dispatch("semantic_asset_search", {"query": "x"})
+    trace.finish()
+    root = [e for e in seen if e["payload"].get("task_id") == "task_root"]
+    assert [e["event_type"] for e in root] == ["SPAWN", "COMPLETED"]
+    done = root[-1]["payload"]
+    assert done["output_summary"] == "2 tool calls, 1 failed"
+    assert done["latency_ms"] > 0

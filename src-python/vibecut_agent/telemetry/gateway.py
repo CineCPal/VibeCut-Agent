@@ -902,7 +902,10 @@ def options_from(request: dict[str, Any]) -> dict[str, Any]:
     from vibecut_agent.protocol import RequestError
 
     bind = request.get("bind") or os.environ.get(BIND_ENV, "").strip() or DEFAULT_BIND
-    port = request.get("port") or os.environ.get(PORT_ENV, "").strip() or DEFAULT_PORT
+    # 0 is a port too (any free one), so only a missing value falls through.
+    port = request.get("port")
+    if port is None:
+        port = os.environ.get(PORT_ENV, "").strip() or DEFAULT_PORT
     try:
         port = int(port)
     except (TypeError, ValueError):

@@ -409,11 +409,18 @@ def orchestrated_from_env(caller: str) -> bool:
 def main() -> int:
     caller = caller_from_env()
     bridge = AppBridge(bridge_dir(), caller)
-    server = build_server(bridge, Orchestration(bridge) if orchestrated_from_env(caller) else None)
+    orchestration = Orchestration(bridge) if orchestrated_from_env(caller) else None
+    server = build_server(bridge, orchestration)
 
     async def run() -> None:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
-    anyio.run(run)
+    try:
+        anyio.run(run)
+    finally:
+        # Phase 22: the run is over (Claude Code closed the shim): its trace's root task is done.
+        telemetry = getattr(orchestration._bus, "telemetry", None) if orchestration is not None else None
+        if telemetry is not None:
+            telemetry.finish()
     return 0

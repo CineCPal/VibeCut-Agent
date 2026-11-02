@@ -303,13 +303,7 @@ class Ingest:
                 )
             raise
         if self.telemetry is not None:
-            self.telemetry.completed(
-                self.telemetry.root_task_id,
-                agent_id=INGEST_AGENT[0],
-                subagent=INGEST_AGENT[1],
-                latency_ms=0.0,
-                summary=f"{len(files)} files, {sum(f['indexed'] for f in files)} indexed",
-            )
+            self.telemetry.finish(f"{len(files)} files, {sum(f['indexed'] for f in files)} indexed")
         return files
 
     def _run(self) -> list[dict[str, Any]]:
