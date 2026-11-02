@@ -133,7 +133,9 @@ def test_the_scene_cut_scan_reports_how_far_it_is(film, tmp_path):
     assert heard == sorted(heard) and 0 < heard[0] and heard[-1] == pytest.approx(1.0, abs=0.02)
     # The other strategies don't scan.
     heard.clear()
-    extract_keyframes_for_vlm(str(film), tmp_path / "keys", width=160, strategy="midpoint_only", on_scan=heard.append)
+    extract_keyframes_for_vlm(
+        str(film), tmp_path / "keys", width=160, strategy="midpoint_only", on_scan=heard.append
+    )
     assert heard == []
 
 

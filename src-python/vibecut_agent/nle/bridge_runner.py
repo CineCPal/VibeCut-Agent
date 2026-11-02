@@ -174,7 +174,7 @@ def _roll_back(
         discard(host, {"timeline": timeline, "backup": backup})
     except (HostError, Unreachable):
         return f"{done}; {keep}."
-    return f"{done}, so the timeline is as it was and its backup \"{backup}\" was deleted."
+    return f'{done}, so the timeline is as it was and its backup "{backup}" was deleted.'
 
 
 def execute_validated_batch(

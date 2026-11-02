@@ -353,7 +353,10 @@ def test_the_bus_hashes_the_apps_timeline_as_the_editor_hashes_its_own(snapshot)
     """The bus reads the timeline through the app; the batch runner reads it in the editor. Both must hash
     the same, or every commit would be refused as stale."""
     app = App(snapshot)
-    status, clips = app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True, "includeLocked": True})
+    status, clips = (
+        app.answer("list_timelines", {}),
+        app.answer("list_timeline_clips", {"detail": True, "includeLocked": True}),
+    )
     assert timeline_hash(tool_bus._snapshot_from(status, clips)) == timeline_hash(snapshot)
 
 
@@ -381,6 +384,9 @@ def test_the_otio_goes_to_the_apps_data_folder(monkeypatch, tmp_path):
 
     monkeypatch.setenv("VIBECUT_INDEX_DIR", str(tmp_path / "index" / "vector-index"))
     monkeypatch.setenv("VIBECUT_APP_DATA_DIR", str(tmp_path / "com.cj.vibecutagent"))
-    assert default_otio_dir(OrchestratorConfig.from_env("orchestrated")) == tmp_path / "com.cj.vibecutagent" / "otio_deltas"
+    assert (
+        default_otio_dir(OrchestratorConfig.from_env("orchestrated"))
+        == tmp_path / "com.cj.vibecutagent" / "otio_deltas"
+    )
     monkeypatch.delenv("VIBECUT_APP_DATA_DIR")
     assert default_otio_dir(OrchestratorConfig.from_env("orchestrated")) == tmp_path / "index" / "otio_deltas"

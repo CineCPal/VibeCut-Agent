@@ -342,7 +342,9 @@ class OrchestratorToolBus:
         return report
 
     def read_timeline(self) -> dict[str, Any]:
-        status, clips = self.call_app([("list_timelines", {}), ("list_timeline_clips", {"detail": True, "includeLocked": True})])
+        status, clips = self.call_app(
+            [("list_timelines", {}), ("list_timeline_clips", {"detail": True, "includeLocked": True})]
+        )
         return _snapshot_from(status, clips)
 
     # The tools.
@@ -480,7 +482,10 @@ class OrchestratorToolBus:
         name = re.sub(r"[^A-Za-z0-9_-]", "_", delta["delta_id"])[:120]
         try:
             timeline = apply_delta_to_otio(
-                delta, snapshot, self.worker("validator").media_duration, self.worker("validator").media_channels
+                delta,
+                snapshot,
+                self.worker("validator").media_duration,
+                self.worker("validator").media_channels,
             )
             return str(write_otio(timeline, self.otio_dir, name))
         except ImportError:

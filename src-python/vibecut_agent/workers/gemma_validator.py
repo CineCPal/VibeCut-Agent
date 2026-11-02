@@ -85,7 +85,15 @@ CODE_OPS: dict[str, set[str]] = {
     "NEGATIVE_OR_ZERO_DURATION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP", "DUCK_REGION"},
     "TRACK_OVERLAP_COLLISION": _PLACE | {"TRIM_CLIP", "MOVE_CLIP", "INSERT_GAP"},
     "MISSING_MEDIA_FILE": _PLACE,
-    "UNKNOWN_CLIP_ID": {"TRIM_CLIP", "SPLIT_CLIP", "DELETE_CLIP", "MOVE_CLIP", "APPLY_TRANSITION", "SET_AUDIO_GAIN", "DUCK_REGION"},
+    "UNKNOWN_CLIP_ID": {
+        "TRIM_CLIP",
+        "SPLIT_CLIP",
+        "DELETE_CLIP",
+        "MOVE_CLIP",
+        "APPLY_TRANSITION",
+        "SET_AUDIO_GAIN",
+        "DUCK_REGION",
+    },
     "RATE_MISMATCH": _PLACE | {"TRIM_CLIP", "MOVE_CLIP"},
     "INVALID_TRANSITION_HANDLE": {"APPLY_TRANSITION"},
     # The timeline hash is the structural checks' alone.
@@ -185,7 +193,9 @@ class GemmaValidator:
         """The `vibecut.gemma.validator.v1` result for a delta planned on `snapshot` (a HostTimeline).
         Raises SchemaError for a delta that doesn't match its schema."""
         validate(delta, OTIO_DELTA_ID)
-        batch, diagnostics = compile_to_nle_commands(delta, snapshot, self.media_duration, self.media_channels)
+        batch, diagnostics = compile_to_nle_commands(
+            delta, snapshot, self.media_duration, self.media_channels
+        )
         snapshot_hash = timeline_hash(snapshot)
         expected = delta.get("expected_timeline_hash")
         if expected and expected != snapshot_hash:
@@ -223,7 +233,9 @@ class GemmaValidator:
     ) -> list[Diagnostic] | None:
         """Gemma's notes as WARNINGs, or None when it couldn't give any (not running, failing, or off-format)."""
         prompt = REVIEW_PROMPT % {
-            "codes": "\n".join(f"- {code}: {', '.join(sorted(ops))}" for code, ops in CODE_OPS.items() if ops),
+            "codes": "\n".join(
+                f"- {code}: {', '.join(sorted(ops))}" for code, ops in CODE_OPS.items() if ops
+            ),
             "delta": canonical(delta),
             "timeline": canonical(summarise_timeline(snapshot)),
             "findings": canonical(diagnostics) if diagnostics else "none",

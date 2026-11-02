@@ -54,6 +54,7 @@ def probe_channels(path: str) -> int | None:
     """How many audio channels the file has (None when unknown or none)."""
     return (ffprobe_util.probe_audio_format(path) or {}).get("channels")
 
+
 # What the bridges take (nle/premiere_effects.py, premiere_edit.py).
 MIN_LEVEL_DB, MAX_LEVEL_DB = -100.0, 30.0
 MIN_DUCK_DB, MAX_DUCK_DB = -40.0, -1.0
@@ -418,14 +419,22 @@ class _Compiler:
         channels = self.media_channels(path) or 1
         for extra in range(track[1] + 1, track[1] + channels):
             here = ("audio", extra)
-            if extra <= self.track_count["audio"] and here not in self.locked and not self._collisions(here, first, last, set()):
+            if (
+                extra <= self.track_count["audio"]
+                and here not in self.locked
+                and not self._collisions(here, first, last, set())
+            ):
                 continue
             self._error(
                 "SOURCE_OUT_OF_BOUNDS",
                 op_id,
                 f"{os.path.basename(path)}'s sound needs {channels} free audio track(s) in a row from "
                 f"{self._seconds(first)} s to {self._seconds(last)} s starting at A{track[1]}, and A{extra} "
-                + ("isn't free" if extra <= self.track_count["audio"] else f"isn't there (it has A1-A{self.track_count['audio']})"),
+                + (
+                    "isn't free"
+                    if extra <= self.track_count["audio"]
+                    else f"isn't there (it has A1-A{self.track_count['audio']})"
+                ),
                 f"Start its sound on an audio track with {channels - 1} free track(s) after it, or ask the user to add tracks in Premiere",
             )
             return False

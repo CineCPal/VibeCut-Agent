@@ -271,7 +271,13 @@ def test_a_premiere_duck_is_reported_in_db_too():
         {"ticks": str(TICKS_PER_SECOND * 3 // 10), "value": gain(-18)},
         {"ticks": str(TICKS_PER_SECOND * 15), "value": gain(-18)},
     ]
-    duck = {"kind": "duck", "itemId": "m1", "duckDb": -12, "before": {"keys": [], "value": gain(-6)}, "after": keys}
+    duck = {
+        "kind": "duck",
+        "itemId": "m1",
+        "duckDb": -12,
+        "before": {"keys": [], "value": gain(-6)},
+        "after": keys,
+    }
     editor = Editor(duck_clip={"changes": [duck], "refused": []})
     result = run(editor, batch(call(2, "duck_clip", itemId="m1", duckDb=-12)))
     reported = result["changes"][0]
@@ -305,16 +311,28 @@ def test_a_failed_batch_fully_undone_deletes_the_backup_it_made():
         'timeline is as it was and its backup "Cut (before VibeCut 1)" was deleted.'
     )
     assert discarded == [{"timeline": "Cut", "backup": "Cut (before VibeCut 1)"}]
-    with pytest.raises(HostError, match='Nothing had changed yet, so the timeline is as it was and its backup'):
-        go(Editor(delete_clips=HostError("There's no clip c9")), batch(call(2, "delete_clips", itemIds=["c9"])))
+    with pytest.raises(
+        HostError, match="Nothing had changed yet, so the timeline is as it was and its backup"
+    ):
+        go(
+            Editor(delete_clips=HostError("There's no clip c9")),
+            batch(call(2, "delete_clips", itemIds=["c9"])),
+        )
     assert len(discarded) == 2
 
     # Kept: a clip put back without its effects, an undo that left something, the app's own backup.
     lost = Editor(
         reshape_clip=HostError("no room"),
-        revert_timeline_changes=lambda args: {"reverted": [], "changedSince": [], "failed": [], "lost": ["b.mov"]},
+        revert_timeline_changes=lambda args: {
+            "reverted": [],
+            "changedSince": [],
+            "failed": [],
+            "lost": ["b.mov"],
+        },
     )
-    with pytest.raises(HostError, match='b.mov without its effects; the backup "Cut \\(before VibeCut 1\\)" has'):
+    with pytest.raises(
+        HostError, match='b.mov without its effects; the backup "Cut \\(before VibeCut 1\\)" has'
+    ):
         go(lost, failing)
     with pytest.raises(HostError, match='the backup "Cut \\(before VibeCut 3\\)" has the timeline as it was'):
         go(Editor(reshape_clip=HostError("no room")), failing, backup="Cut (before VibeCut 3)")
@@ -324,9 +342,14 @@ def test_a_failed_batch_fully_undone_deletes_the_backup_it_made():
     def refuse(host, args):
         raise HostError("Resolve didn't delete it")
 
-    with pytest.raises(HostError, match='were undone; the backup "Cut \\(before VibeCut 1\\)" has the timeline'):
+    with pytest.raises(
+        HostError, match='were undone; the backup "Cut \\(before VibeCut 1\\)" has the timeline'
+    ):
         bridge_runner.execute_validated_batch(
-            HOST, {"timeline": "Cut", "batch": failing}, Editor(reshape_clip=HostError("no room")).edits(), discard=refuse
+            HOST,
+            {"timeline": "Cut", "batch": failing},
+            Editor(reshape_clip=HostError("no room")).edits(),
+            discard=refuse,
         )
 
 

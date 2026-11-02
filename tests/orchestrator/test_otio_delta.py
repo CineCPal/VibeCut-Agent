@@ -885,7 +885,10 @@ def test_a_locked_track_is_refused_before_apply(media, snapshot):
     assert [c["command"] for c in commands] == ["backup_timeline"]
     # A clip linked to one on a locked track: the editor would change both.
     _, diagnostics = run(
-        delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 1, clip_id="a1", audio_params={"gain_db": -6}), host="resolve"),
+        delta(
+            op("op_001", "SET_AUDIO_GAIN", "Audio", 1, clip_id="a1", audio_params={"gain_db": -6}),
+            host="resolve",
+        ),
         locking(snapshot, "V1"),
     )
     assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
@@ -907,12 +910,17 @@ def test_a_locked_track_is_refused_before_apply(media, snapshot):
     )
     assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
     _, diagnostics = run(
-        delta(op("op_001", "MOVE_CLIP", "Audio", 2, clip_id="m1", timeline_range=tr(25, 500)), host="resolve"),
+        delta(
+            op("op_001", "MOVE_CLIP", "Audio", 2, clip_id="m1", timeline_range=tr(25, 500)), host="resolve"
+        ),
         locking(snapshot, "A2"),
     )
     assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
     # The tracks that aren't locked take the edit as before.
-    _, diagnostics = run(delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 2, clip_id="m1", audio_params={"gain_db": -6})), locking(snapshot, "V1"))
+    _, diagnostics = run(
+        delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 2, clip_id="m1", audio_params={"gain_db": -6})),
+        locking(snapshot, "V1"),
+    )
     assert diagnostics == []
 
 
