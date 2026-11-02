@@ -21,7 +21,7 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
 - MISSING_MEDIA_FILE: no media reference, or its file isn't there.
 - UNKNOWN_CLIP_ID: no such clip on the timeline (or not on that kind of track, or with no source media).
 - SOURCE_OUT_OF_BOUNDS: past the media's ends or its `available_range`, a cut point outside the clip, or a
-  value the editor doesn't take (a level, a duck depth, ducking in Resolve).
+  value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve).
 - TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
@@ -50,7 +50,7 @@ MediaDuration = Callable[[str], float | None]
 MIN_LEVEL_DB, MAX_LEVEL_DB = -100.0, 30.0
 MIN_DUCK_DB, MAX_DUCK_DB = -40.0, -1.0
 MIN_RAMP, MAX_RAMP = 0.05, 2.0
-DEFAULT_DUCK_DB, DEFAULT_RAMP = -12.0, 0.3
+DEFAULT_DUCK_DB, DEFAULT_RAMP = -12.0, 0.3  # a duck with no floor dips 12 dB below the clip
 BACKUP_OP_ID = "backup"
 
 
@@ -120,6 +120,8 @@ class _Clip:
     path: str | None
     linked: list[str] = field(default_factory=list)
     name: str | None = None
+    # Its level as the timeline was read (`volumeDb`; none read is 0 dB), which a duck's floor is below.
+    level_db: float = 0.0
     # What SET_AUDIO_GAIN and DUCK_REGION leave on it (levelDb, fadeIn, fadeOut, ducks), for the OTIO.
     effects: dict[str, Any] = field(default_factory=dict)
     # The op that made it, for a clip this delta places or splits off (it has no editor id yet).
@@ -167,6 +169,7 @@ class _Compiler:
                     path=clip.get("filePath"),
                     linked=[str(i) for i in clip.get("linkedIds") or []],
                     name=clip.get("name"),
+                    level_db=level if isinstance(level := clip.get("volumeDb"), (int, float)) else 0.0,
                 )
 
     # Helpers.
@@ -602,6 +605,7 @@ class _Compiler:
             clip.source_out,
             clip.path,
             name=clip.name,
+            level_db=clip.level_db,
             effects=dict(clip.effects),
             made_by=op_id,
         )
@@ -791,14 +795,18 @@ class _Compiler:
         if clip is None or span is None:
             return
         params = op.get("audio_params") or {}
-        depth = params.get("duck_Floor_db", DEFAULT_DUCK_DB)
+        # duck_Floor_db is the level the clip dips to; duck_clip takes the depth below the clip's level.
+        level = clip.effects.get("levelDb", clip.level_db)
+        floor = params.get("duck_Floor_db", level + DEFAULT_DUCK_DB)
+        depth = round(floor - level, 2)
         ramp = params.get("fade_in_seconds", DEFAULT_RAMP)
         if not MIN_DUCK_DB <= depth <= MAX_DUCK_DB:
             self._error(
                 "SOURCE_OUT_OF_BOUNDS",
                 op_id,
-                f"duck_Floor_db must be {MIN_DUCK_DB:g} to {MAX_DUCK_DB:g} dB here",
-                "Choose a depth in range",
+                f"duck_Floor_db is the level clip {clip.id} dips to; it is at {level:g} dB, so the floor must be "
+                f"{level + MIN_DUCK_DB:g} to {level + MAX_DUCK_DB:g} dB",
+                "Choose a floor in range",
             )
             return
         if not MIN_RAMP <= ramp <= MAX_RAMP:
@@ -822,7 +830,9 @@ class _Compiler:
         self._emit(
             op_id, "duck_clip", {"itemId": clip.id, "spans": spans, "duckDb": depth, "rampSeconds": ramp}
         )
-        clip.effects.setdefault("ducks", []).append({**spans[0], "duckDb": depth, "rampSeconds": ramp})
+        clip.effects.setdefault("ducks", []).append(
+            {**spans[0], "duckDb": depth, "floorDb": floor, "rampSeconds": ramp}
+        )
 
     def gap(self, op: dict[str, Any], op_id: str) -> None:
         self._error(

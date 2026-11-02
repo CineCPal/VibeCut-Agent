@@ -695,3 +695,82 @@ def test_frame_times_are_sent_rounded_up_so_premiere_lands_on_the_frame(media, s
     exact = Fraction(899 * 1001, 30000)
     assert 0 <= Fraction(clip["sourceIn"]) - exact < Fraction(1, 1_000_000)
     assert math.floor(Fraction(clip["sourceIn"]) * Fraction(30000, 1001)) == 899
+
+
+def duck_of(snapshot, **audio_params):
+    """The duck_clip args (or the diagnostics) for one DUCK_REGION on m1 over 1-4 s."""
+    commands, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "DUCK_REGION",
+                "Audio",
+                2,
+                clip_id="m1",
+                timeline_range=tr(25, 75),
+                audio_params=audio_params,
+            )
+        ),
+        snapshot,
+    )
+    return (commands[1]["args"] if len(commands) > 1 else None), codes(diagnostics)
+
+
+def test_a_ducks_floor_is_the_level_it_dips_to(snapshot):
+    # Seen live in Premiere: Claude read duck_Floor_db as the level to dip to (Oli, it believed, at -12 dB:
+    # floor -24) while the compiler sent it as the depth below the clip, which would have made -36 dB.
+    [music] = [c for t in snapshot["tracks"] for c in t["clips"] if c["id"] == "m1"]
+    assert duck_of(snapshot, duck_Floor_db=-24)[0]["duckDb"] == -24
+    music["volumeDb"] = -12
+    args, diagnostics = duck_of(snapshot, duck_Floor_db=-24, fade_in_seconds=0.3)
+    assert diagnostics == []
+    assert args["duckDb"] == -12 and args["rampSeconds"] == 0.3
+    assert duck_of(snapshot)[0]["duckDb"] == -12  # no floor: 12 dB below the clip
+    # A floor at or above the clip's level, or more than 40 dB below it, is refused, naming the range.
+    for floor in (-12, -6, -53):
+        args, diagnostics = duck_of(snapshot, duck_Floor_db=floor)
+        assert args is None and diagnostics == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    _, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "DUCK_REGION",
+                "Audio",
+                2,
+                clip_id="m1",
+                timeline_range=tr(25, 75),
+                audio_params={"duck_Floor_db": -6},
+            )
+        ),
+        snapshot,
+    )
+    assert "it is at -12 dB, so the floor must be -52 to -13 dB" in diagnostics[0]["message"]
+
+
+def test_a_ducks_floor_follows_a_level_set_earlier_in_the_delta(snapshot):
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "SET_AUDIO_GAIN", "Audio", 2, clip_id="m1", audio_params={"gain_db": -6}),
+            op(
+                "op_002",
+                "DUCK_REGION",
+                "Audio",
+                2,
+                clip_id="m1",
+                timeline_range=tr(25, 75),
+                audio_params={"duck_Floor_db": -18},
+            ),
+        ),
+        snapshot,
+    )
+    assert diagnostics == []
+    assert calls(commands)[2] == (
+        "duck_clip",
+        {"itemId": "m1", "spans": [{"start": 1.0, "end": 4.0}], "duckDb": -12, "rampSeconds": 0.3},
+    )
+
+
+def test_a_duck_needs_a_ramp(snapshot):
+    for ramp in (0, 0.01, 2.5):
+        args, diagnostics = duck_of(snapshot, duck_Floor_db=-12, fade_in_seconds=ramp)
+        assert args is None and diagnostics == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
