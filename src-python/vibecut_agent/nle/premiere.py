@@ -51,6 +51,8 @@ TIMEOUTS = {
     # Each placement can import its file and overwrites into a sequence that grows as it goes (a busy
     # Premiere took 2.5 minutes over one, 2026-10-14).
     "place_clip": 90.0,
+    # It can import the file too (the Phase 21 follow-up), as placing it would.
+    "audio_clips": 90.0,
     "set_items": 60.0,
     "add_tracks": 30.0,
     "remove_transitions": 60.0,

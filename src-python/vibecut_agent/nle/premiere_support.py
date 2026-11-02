@@ -15,6 +15,14 @@ def unique_name(wanted: str, taken: set[str]) -> str:
     return f"{wanted} {n}"
 
 
+def estimated_audio_tracks(channels: int) -> int:
+    """How many audio tracks a file's sound fills in Premiere when the project item can't be asked: one clip
+    for mono or stereo (checked live: a stereo WAV, a stereo .mov and a .mov with two mono streams each laid
+    one clip), and, not yet checked live, one per channel above that. premiere_edit.py asks the item when
+    it can; the orchestrator's validator (otio_delta.py) plans before anything is imported, so it estimates."""
+    return 0 if channels <= 0 else 1 if channels <= 2 else channels
+
+
 class Probe:
     """ffprobe, for a file's picture and sound (how many channels a placed clip fills). Tests pass a fake."""
 

@@ -661,6 +661,20 @@ function vcProjectClip(id, path) {
   return item;
 }
 
+// args: {path, itemId?, bin} (the Phase 21 follow-up). How many audio clips the file's project item lays
+// down when placed (its channel mapping), so premiere_edit.py checks the tracks it will really fill: a stereo
+// file can be one stereo clip or two mono ones. The item is the one placing it would use (itemId, else
+// found by its path or imported into the bin). `getAudioChannelMapping` is a property in some versions
+// and a method in others.
+function vcAudioClips(args) {
+  return vcAnswer(function (a) {
+    var item = a.itemId ? vcProjectClip(a.itemId, a.path) : vcProjectItemFor(a.path, a.bin);
+    var mapping = typeof item.getAudioChannelMapping === "function" ? item.getAudioChannelMapping() : item.getAudioChannelMapping;
+    var clips = mapping ? Number(mapping.audioClipsNumber) : NaN;
+    return { clips: isNaN(clips) ? null : clips };
+  }, args);
+}
+
 // args: {timeline, path, itemId?, inSeconds, outSeconds, atTicks, videoTrack, audioTrack, bin}.
 // Overwrites that range of the file (the project item itemId, else one found by its path or imported
 // into the bin) onto the 0-based tracks at atTicks (premiere_edit.py has made sure the place is free),

@@ -22,8 +22,8 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
 - UNKNOWN_CLIP_ID: no such clip on the timeline (or not on that kind of track, or with no source media).
 - SOURCE_OUT_OF_BOUNDS: past the media's ends or its `available_range`, a cut point outside the clip, or a
   value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve, a
-  Premiere track the timeline doesn't have, a locked track, Premiere sound with more channels than the tracks
-  from the one named).
+  Premiere track the timeline doesn't have, a locked track, Premiere sound that fills more tracks than there
+  are from the one named).
 - TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
@@ -44,6 +44,7 @@ from urllib.parse import unquote, urlparse
 
 from vibecut_agent.broll import ffprobe_util
 from vibecut_agent.core.timecode_math import exact_rate, rational_to_fraction, snap_rate
+from vibecut_agent.nle.premiere_support import estimated_audio_tracks
 
 Severity = Literal["ERROR", "WARNING"]
 MediaDuration = Callable[[str], float | None]
@@ -410,14 +411,15 @@ class _Compiler:
         return False
 
     def _channels_fit(self, track: tuple[str, int], first: int, last: int, path: str, op_id: str) -> bool:
-        """False (flagged) for Premiere sound that needs more tracks than there are from the one named: its
-        add_clips fills one audio track per channel, in a row, and adds none for a track it's told to use
-        (premiere_edit._plan_place). Seen live: a stereo clip on the last audio track validated, then was
-        refused after Apply."""
+        """False (flagged) for Premiere sound that fills more tracks than there are from the one named: its
+        add_clips lays the audio clips the file's project item makes, in a row, and adds no track for one
+        it's told to use (premiere_edit._plan_place). Before anything is imported, that's an estimate: one
+        track for mono or stereo (seen live: a stereo WAV laid one clip), one per channel above that."""
         if self.host != "premiere" or track[0] != "audio":
             return True
         channels = self.media_channels(path) or 1
-        for extra in range(track[1] + 1, track[1] + channels):
+        tracks = estimated_audio_tracks(channels)
+        for extra in range(track[1] + 1, track[1] + tracks):
             here = ("audio", extra)
             if (
                 extra <= self.track_count["audio"]
@@ -428,14 +430,14 @@ class _Compiler:
             self._error(
                 "SOURCE_OUT_OF_BOUNDS",
                 op_id,
-                f"{os.path.basename(path)}'s sound needs {channels} free audio track(s) in a row from "
+                f"{os.path.basename(path)}'s sound needs {tracks} free audio track(s) in a row from "
                 f"{self._seconds(first)} s to {self._seconds(last)} s starting at A{track[1]}, and A{extra} "
                 + (
                     "isn't free"
                     if extra <= self.track_count["audio"]
                     else f"isn't there (it has A1-A{self.track_count['audio']})"
                 ),
-                f"Start its sound on an audio track with {channels - 1} free track(s) after it, or ask the user to add tracks in Premiere",
+                f"Start its sound on an audio track with {tracks - 1} free track(s) after it, or ask the user to add tracks in Premiere",
             )
             return False
         return True

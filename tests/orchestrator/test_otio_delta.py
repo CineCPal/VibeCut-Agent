@@ -924,10 +924,11 @@ def test_a_locked_track_is_refused_before_apply(media, snapshot):
     assert diagnostics == []
 
 
-def test_premiere_stereo_needs_the_tracks_after_the_one_named(media, snapshot):
-    # Seen live (Phase 21): a stereo clip on the last audio track validated on Premiere, then add_clips
-    # refused it after Apply (it fills a track per channel, in a row, and adds none for a named track).
-    def place(index, host="premiere", channels=2, snap=snapshot):
+def test_premiere_sound_needs_the_tracks_it_fills_after_the_one_named(media, snapshot):
+    # Premiere's add_clips lays a file's audio clips in a row from the track named and adds no track there.
+    # Seen live (the Phase 21 follow-up's checks): a stereo WAV laid one stereo clip, so stereo takes one
+    # track; more channels than that are taken as one track each (not yet seen live).
+    def place(index, host="premiere", channels=4, snap=snapshot):
         return compile_to_nle_commands(
             delta(
                 op(
@@ -948,12 +949,12 @@ def test_premiere_stereo_needs_the_tracks_after_the_one_named(media, snapshot):
 
     _, diagnostics = place(2)
     assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
-    assert "music.wav's sound needs 2 free audio track(s) in a row" in diagnostics[0]["message"]
+    assert "music.wav's sound needs 4 free audio track(s) in a row" in diagnostics[0]["message"]
     assert "A3 isn't there (it has A1-A2)" in diagnostics[0]["message"]
-    # A1 has A2 after it, free at 24 s; mono fits on the last track; Resolve takes it either way.
-    assert place(1)[1] == []
+    # Stereo and mono fit on the last track; Resolve takes it either way.
+    assert place(2, channels=2)[1] == []
     assert place(2, channels=1)[1] == []
     assert place(2, host="resolve")[1] == []
-    # The track after it busy, or locked, is refused too.
+    # A track it would fill, busy or locked, is refused too.
     _, diagnostics = place(1, snap=locking(snapshot, "A2"))
     assert "A2 isn't free" in diagnostics[0]["message"]
