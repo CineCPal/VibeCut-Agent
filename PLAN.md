@@ -3259,5 +3259,9 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - Install panel 0.17.0 from the app and reopen it in Premiere.
     - Place the stereo `tone-gone.wav` on the last audio track, directly and orchestrated: one clip, no refusal.
     - Set a file to mono channels (Modify → Audio Channels) and place it on the last track: refused, needing 2 tracks.
-    - Re-run the ingest of a cached and an uncached 4K file: the ETA should be near the real time left.
+  - **ETA checked from the terminal (the same ingest, timed per event):** 199 s in all.
+    - Indexing read 2.7 s with 0.2 s left (85 s before).
+    - During Grady's scan it read high by a steady 40-50 s: 147 s with 101 s left at 50% (1.45x; it was 2-3x). That's the 20% kept for the shots, which took 8 s for Grady's one shot.
+    - It starts high (430 s at 1%, ffmpeg starting) and settles within about 20 s.
+    - Kept as is: the scan can't know how many shots will follow.
 
