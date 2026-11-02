@@ -22,7 +22,7 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
 - UNKNOWN_CLIP_ID: no such clip on the timeline (or not on that kind of track, or with no source media).
 - SOURCE_OUT_OF_BOUNDS: past the media's ends or its `available_range`, a cut point outside the clip, or a
   value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve, a
-  Premiere track the timeline doesn't have).
+  Premiere track the timeline doesn't have, a locked track).
 - TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
@@ -158,6 +158,8 @@ class _Compiler:
         self.track_names: dict[tuple[str, int], str] = {}
         # How many tracks of each kind the timeline has: Premiere adds one only where it picks the track itself.
         self.track_count: dict[str, int] = {"video": 0, "audio": 0}
+        # Locked tracks: both editors refuse an edit there at commit (nle/links.py), so it's refused here first.
+        self.locked: set[tuple[str, int]] = set()
         # The latest delete_clips call, and the clips linked to what it removes (see `delete`).
         self._last_delete: NleCommand | None = None
         self._last_delete_links: set[str] = set()
@@ -171,6 +173,8 @@ class _Compiler:
             self.track_count[kind] = max(self.track_count[kind], key[1])
             if track.get("name"):
                 self.track_names[key] = str(track["name"])
+            if track.get("locked") is True:
+                self.locked.add(key)
             for clip in track.get("clips", []):
                 self.clips[str(clip["id"])] = _Clip(
                     id=str(clip["id"]),
@@ -333,6 +337,10 @@ class _Compiler:
                 "Choose a clip on the right kind of track",
             )
             return None
+        # A clip, or a clip linked to it, on a locked track (as edits.ts's refuseLocked).
+        for each in [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]:
+            if not self._track_unlocked(each.track, op_id):
+                return None
         return clip
 
     def _collisions(self, track: tuple[str, int], first: int, last: int, ignore: set[str]) -> list[str]:
@@ -371,6 +379,20 @@ class _Compiler:
             f"{self.timeline} has no {label}{track[1]} (it has {f'{label}1-{label}{have}' if have > 1 else f'{label}1' if have else 'none'}), "
             "and Premiere adds a track only where it picks the track itself",
             "Use a free track the timeline has, or ask the user to add the track in Premiere",
+        )
+        return False
+
+    def _track_unlocked(self, track: tuple[str, int], op_id: str) -> bool:
+        """False (flagged) for a locked track."""
+        if track not in self.locked:
+            return True
+        label = "V" if track[0] == "video" else "A"
+        editor = "Premiere" if self.host == "premiere" else "Resolve"
+        self._error(
+            "SOURCE_OUT_OF_BOUNDS",
+            op_id,
+            f"{label}{track[1]} is locked in {editor}; unlock it first, or ask the user",
+            "Leave the locked track alone, or ask the user to unlock it",
         )
         return False
 
@@ -414,7 +436,7 @@ class _Compiler:
             )
             return
         track = self._track(op)
-        if not self._track_exists(track, op_id):
+        if not self._track_exists(track, op_id) or not self._track_unlocked(track, op_id):
             return
         group = op.get("link_group_id")
         partner = self.link_groups.get(group) if group else None
@@ -678,7 +700,7 @@ class _Compiler:
                 "Move it to a track of its own kind",
             )
             return
-        if not self._track_exists(track, op_id):
+        if not self._track_exists(track, op_id) or not self._track_unlocked(track, op_id):
             return
         shift = span[0] - clip.first
         # Its linked partners move with it, on their own tracks.

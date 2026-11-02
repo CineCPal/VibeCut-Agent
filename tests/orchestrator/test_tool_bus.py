@@ -353,14 +353,14 @@ def test_the_bus_hashes_the_apps_timeline_as_the_editor_hashes_its_own(snapshot)
     """The bus reads the timeline through the app; the batch runner reads it in the editor. Both must hash
     the same, or every commit would be refused as stale."""
     app = App(snapshot)
-    status, clips = app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True})
+    status, clips = app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True, "includeLocked": True})
     assert timeline_hash(tool_bus._snapshot_from(status, clips)) == timeline_hash(snapshot)
 
 
 def test_the_snapshot_is_of_the_connected_timeline(config, tmp_path, snapshot):
     app = App(snapshot)
     status = app.answer("list_timelines", {})
-    clips = app.answer("list_timeline_clips", {"detail": True})
+    clips = app.answer("list_timeline_clips", {"detail": True, "includeLocked": True})
     assert tool_bus._snapshot_from(status, clips)["timeline"] == "Cut"
     nothing_connected = {"project": "P", "timelines": [{"name": "Cut", "openInEditor": True}]}
     with pytest.raises(tool_bus.ToolBusError, match="no timeline is connected"):

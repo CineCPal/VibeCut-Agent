@@ -866,3 +866,51 @@ def test_an_in_point_on_a_frame_is_sent_just_past_it_so_premieres_out_lands_too(
         11259,
         11408,
     )
+
+
+def locking(snapshot, *labels):
+    """The snapshot with those tracks ("V1", "A2") locked, as the bus reads them (tool_bus._snapshot_from)."""
+    locked = copy.deepcopy(snapshot)
+    for track in locked["tracks"]:
+        if f"{track['type'][0].upper()}{track['index']}" in labels:
+            track["locked"] = True
+    return locked
+
+
+def test_a_locked_track_is_refused_before_apply(media, snapshot):
+    # Seen live (check 11, both editors): a deletion on a locked V1 validated and was refused only after Apply.
+    commands, diagnostics = run(delta(op("op_001", "DELETE_CLIP", clip_id="c1")), locking(snapshot, "V1"))
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    assert diagnostics[0]["message"] == "V1 is locked in Premiere; unlock it first, or ask the user"
+    assert [c["command"] for c in commands] == ["backup_timeline"]
+    # A clip linked to one on a locked track: the editor would change both.
+    _, diagnostics = run(
+        delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 1, clip_id="a1", audio_params={"gain_db": -6}), host="resolve"),
+        locking(snapshot, "V1"),
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    assert diagnostics[0]["message"].startswith("V1 is locked in Resolve")
+    # Placing onto a locked track, and moving onto one.
+    _, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "OVERWRITE_CLIP",
+                "Audio",
+                2,
+                media_reference=ref(media["music.wav"]),
+                source_range=tr(0, 25),
+                timeline_range=tr(600, 25),
+            )
+        ),
+        locking(snapshot, "A2"),
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    _, diagnostics = run(
+        delta(op("op_001", "MOVE_CLIP", "Audio", 2, clip_id="m1", timeline_range=tr(25, 500)), host="resolve"),
+        locking(snapshot, "A2"),
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+    # The tracks that aren't locked take the edit as before.
+    _, diagnostics = run(delta(op("op_001", "SET_AUDIO_GAIN", "Audio", 2, clip_id="m1", audio_params={"gain_db": -6})), locking(snapshot, "V1"))
+    assert diagnostics == []

@@ -115,7 +115,7 @@ def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, 
     committed = bridge_runner.execute_validated_batch(
         object(), {"timeline": "Cut", "batch": batch, "backup": "Cut (before VibeCut 1)"}, editor.edits()
     )
-    reads = [app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True})]
+    reads = [app.answer("list_timelines", {}), app.answer("list_timeline_clips", {"detail": True, "includeLocked": True})]
     client = install(
         monkeypatch,
         [

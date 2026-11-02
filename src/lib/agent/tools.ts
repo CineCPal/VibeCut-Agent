@@ -251,10 +251,13 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     list_timeline_clips: async (args) => {
       const timeline = await call<HostTimeline>("read_timeline");
       const detail = bool(args, "detail");
+      // Not in the tool's parameters: the orchestrator's bus reads locks for its validator (tool_bus.py).
+      const includeLocked = bool(args, "includeLocked");
       const tracks = timeline.tracks.map((t) => ({
         track: `${t.type === "video" ? "V" : t.type === "audio" ? "A" : "S"}${t.index}`,
         name: t.name,
         enabled: t.enabled,
+        ...(includeLocked ? { locked: t.locked === true } : {}),
         clips: t.clips.map((c) =>
           detail
             ? c

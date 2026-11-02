@@ -224,7 +224,7 @@ def _connected_timeline(status: dict[str, Any]) -> str:
 
 def _snapshot_from(status: Any, clips: Any) -> dict[str, Any]:
     """A HostTimeline (as compile_to_nle_commands reads it) from `list_timelines` and
-    `list_timeline_clips {detail: true}` results."""
+    `list_timeline_clips {detail: true, includeLocked: true}` results (locks for the validator; not hashed)."""
     for answer in (status, clips):
         if not isinstance(answer, dict):
             raise ToolBusError("Couldn't read the timeline: the editor gave no answer")
@@ -241,6 +241,7 @@ def _snapshot_from(status: Any, clips: Any) -> dict[str, Any]:
                 "type": kinds[label[:1]],
                 "index": int(label[1:]),
                 "name": track.get("name"),
+                "locked": track.get("locked") is True,
                 "clips": track.get("clips") or [],
             }
         )
@@ -334,7 +335,7 @@ class OrchestratorToolBus:
         return report
 
     def read_timeline(self) -> dict[str, Any]:
-        status, clips = self.call_app([("list_timelines", {}), ("list_timeline_clips", {"detail": True})])
+        status, clips = self.call_app([("list_timelines", {}), ("list_timeline_clips", {"detail": True, "includeLocked": True})])
         return _snapshot_from(status, clips)
 
     # The tools.

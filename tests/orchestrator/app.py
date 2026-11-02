@@ -34,7 +34,7 @@ class App:
                 ],
             }
         if name == "list_timeline_clips":
-            assert args == {"detail": True}
+            assert args == {"detail": True, "includeLocked": True}
             letters = {"video": "V", "audio": "A", "subtitle": "S"}
             return {
                 "fps": self.snapshot["fps"],
@@ -44,6 +44,7 @@ class App:
                         "track": f"{letters[t['type']]}{t['index']}",
                         "name": t.get("name", ""),
                         "enabled": True,
+                        "locked": t.get("locked", False),
                         "clips": copy.deepcopy(t["clips"]),
                     }
                     for t in self.snapshot["tracks"]

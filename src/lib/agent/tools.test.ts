@@ -165,6 +165,19 @@ describe("agent tools", () => {
     expect(full.tracks[0].clips[0]).toMatchObject({ filePath: "/a.mov" });
   });
 
+  it("lists track locks only for the orchestrator's validator", async () => {
+    ipc.nleCall.mockResolvedValue({
+      fps: 25,
+      duration: 3,
+      tracks: [{ type: "video", index: 1, name: "V", enabled: true, locked: true, clips: [] }],
+    });
+    const run = executorsFor({ host: "premiere", timeline: "Main", ...STEP });
+    const asToday = (await run.list_timeline_clips({ detail: true })).result as { tracks: object[] };
+    expect(asToday.tracks[0]).toEqual({ track: "V1", name: "V", enabled: true, clips: [] });
+    const forBus = (await run.list_timeline_clips({ detail: true, includeLocked: true })).result as { tracks: object[] };
+    expect(forBus.tracks[0]).toEqual({ track: "V1", name: "V", enabled: true, locked: true, clips: [] });
+  });
+
   it("lists timelines without needing one open", async () => {
     ipc.nleCall.mockResolvedValue({ project: "Doc", timelines: ["A", "B"], currentTimeline: null });
     const outcome = await executorsFor({ host: "premiere", timeline: null, ...STEP }).list_timelines({});
