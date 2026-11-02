@@ -4,8 +4,20 @@
 # pulling changes: it quits the installed copy, replaces it and opens the new one.
 #
 # A login shell, so npm, cargo and uv are on PATH as in a terminal. Run it as `npm run install-app`.
+#
+# `npm run install-app -- --orchestrated` makes the installed copy start in orchestrated mode (Phase 21)
+# however it's opened (Dock, Spotlight, at login): EXECUTION_MODE goes in its Info.plist's LSEnvironment,
+# with any VIBECUT_GEMMA_MODEL, VIBECUT_VLM_MODEL, VIBECUT_EMBED_MODEL and VIBECUT_LOCAL_LLM_BASE_URL set
+# when you run this. The code's default stays direct; installing again without the flag drops it.
 
 set -u
+ORCHESTRATED=0
+for arg in "$@"; do
+  case "$arg" in
+    --orchestrated) ORCHESTRATED=1 ;;
+    *) print -P "%F{red}Unknown option: $arg (only --orchestrated)%f" >&2; exit 1 ;;
+  esac
+done
 REPO="${0:A:h:h}"
 NAME="VibeCut Agent"
 APP="$HOME/Applications/$NAME.app"
@@ -55,6 +67,26 @@ say "Installing $APP"
 mkdir -p "$HOME/Applications"
 rm -rf "$APP"
 ditto "$BUILT" "$APP" || fail "Couldn't copy the app into ~/Applications"
+
+if (( ORCHESTRATED )); then
+  say "Setting it to start in orchestrated mode"
+  plist="$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$plist" >/dev/null 2>&1
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$plist" || fail "Couldn't edit $plist"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:EXECUTION_MODE string orchestrated" "$plist"
+  for name in VIBECUT_GEMMA_MODEL VIBECUT_VLM_MODEL VIBECUT_EMBED_MODEL VIBECUT_LOCAL_LLM_BASE_URL; do
+    if [[ -n "${(P)name:-}" ]]; then
+      /usr/libexec/PlistBuddy -c "Add :LSEnvironment:$name string ${(P)name}" "$plist"
+      print "  $name=${(P)name}"
+    fi
+  done
+  # Editing Info.plist breaks the signature: sign again with the same identity (or ad hoc), keeping the
+  # entitlements and hardened runtime, so the Keychain still knows the app.
+  codesign --force --sign "${identity:--}" --preserve-metadata=entitlements,requirements,flags,runtime "$APP" \
+    || fail "Couldn't sign the app again after setting its mode"
+  # LaunchServices caches Info.plist: register the new one, so the Dock and login launches see it.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
+fi
 touch "$APP"
 
 if pgrep -f "target/debug/vibecut-agent" >/dev/null; then
