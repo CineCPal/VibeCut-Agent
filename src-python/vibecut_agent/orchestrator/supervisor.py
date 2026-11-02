@@ -2,10 +2,13 @@
 API-key chat) as the supervising editor, with the local workers behind the tool bus. Claude through the
 user's subscription supervises through its MCP shim instead (mcp_server.py), with the same instruction.
 
+`ORCHESTRATED_INSTRUCTION` is what Claude (subscription) is told in orchestrated mode (agent/chat.py).
+
 `make_orchestrated_turn_runner(config)` returns a turn runner with `gemini_chat.run_chat_turn`'s
-signature, which `config.resolve_chat_turn_runner` hands agent/chat.py when `EXECUTION_MODE=orchestrated`
-and the provider is "gemini" (model migration v2; it was the Anthropic API's Claude until then). Each turn
-runs gemini_chat's own loop, unchanged, with three differences:
+signature. It ran the Anthropic API's Claude until model migration v2; it is not routed to now, since only
+Claude orchestrates (the user's call, 2026-11-02: `config.resolve_chat_turn_runner` gives Gemini its own
+loop in either mode), and is kept, with its tests, for a provider that may supervise in-process again.
+Each turn runs gemini_chat's own loop, unchanged, with three differences:
 
 - Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
   app's tools, only the ones that read (tool_bus.READ_ONLY_TOOLS); every edit goes through

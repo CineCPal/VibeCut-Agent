@@ -528,15 +528,13 @@ pub fn orchestrated() -> bool {
     is_orchestrated(execution_mode().as_deref())
 }
 
-/// Phase 21: what the orchestrated path adds to `extras_for`. A Gemini chat in orchestrated mode runs the
-/// tool bus in the chat's own process (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra) and the
-/// chat's Whisper (mlx-whisper: `transcribe`); `orchestrator-health` asks the same workers. Nothing in
-/// direct mode, or for Claude (subscription), whose MCP shim gets them instead (claude_code.rs).
-pub fn orchestrated_extras(command: &str, request: &Value, mode: Option<&str>) -> Vec<&'static str> {
+/// Phase 21: what the orchestrated path adds to `extras_for`: `orchestrator-health` asks the workers
+/// (jsonschema, sqlite-vec, OTIO: the `orchestrator` extra; mlx-whisper: `transcribe`). No chat gets them:
+/// only Claude (subscription) orchestrates, and its MCP shim is given them (claude_code.rs); Gemini edits
+/// directly in either mode. Nothing in direct mode.
+pub fn orchestrated_extras(command: &str, _request: &Value, mode: Option<&str>) -> Vec<&'static str> {
     let orchestrated = is_orchestrated(mode);
-    let gemini = request.get("provider").and_then(Value::as_str).unwrap_or("gemini") == "gemini";
     match command {
-        "chat" if orchestrated && gemini => vec!["orchestrator", "transcribe"],
         "orchestrator-health" if orchestrated => vec!["orchestrator", "transcribe"],
         _ => Vec::new(),
     }
@@ -1073,15 +1071,12 @@ mod tests {
     }
 
     #[test]
-    fn an_orchestrated_gemini_chat_runs_with_the_orchestrator_extra() {
-        let gemini = json!({"provider": "gemini"});
-        assert_eq!(orchestrated_extras("chat", &gemini, Some("orchestrated")), ["orchestrator", "transcribe"]);
-        assert_eq!(orchestrated_extras("chat", &gemini, Some(" Orchestrated ")), ["orchestrator", "transcribe"]);
-        assert_eq!(orchestrated_extras("chat", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"], "no provider is Gemini");
-        assert!(orchestrated_extras("chat", &gemini, Some("direct")).is_empty());
-        assert!(orchestrated_extras("chat", &gemini, None).is_empty());
-        // Claude (subscription) runs the bus in its MCP shim, which claude_code.rs gives the extras.
-        assert!(orchestrated_extras("chat", &json!({"provider": "claude-code"}), Some("orchestrated")).is_empty());
+    fn only_the_health_check_runs_with_the_orchestrator_extra() {
+        // Gemini edits directly in either mode; Claude (subscription) runs the bus in its MCP shim, which
+        // claude_code.rs gives the extras. So no chat process needs them.
+        for provider in [json!({"provider": "gemini"}), json!({}), json!({"provider": "claude-code"})] {
+            assert!(orchestrated_extras("chat", &provider, Some("orchestrated")).is_empty());
+        }
         assert!(find_command("orchestrator-health").is_ok());
         assert_eq!(orchestrated_extras("orchestrator-health", &json!({}), Some("orchestrated")), ["orchestrator", "transcribe"]);
         assert!(orchestrated_extras("orchestrator-health", &json!({}), None).is_empty());

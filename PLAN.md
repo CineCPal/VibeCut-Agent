@@ -2615,7 +2615,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 
 **Providers:** two remain. `"gemini"` is the Gemini API on the user's key; `"claude-code"` is Claude through the user's signed-in Claude Code (subscription, no key). The Anthropic API (`provider: "claude"`, `ANTHROPIC_API_KEY`, `claude_chat.py`, `claude_client.py`, the `anthropic` package) and Antigravity (`provider: "antigravity"`, `agy`, `antigravity.rs`, `antigravity_chat.py`, `antigravity_json.py`, `AntigravitySection`) are gone. Any other provider is refused in Rust (`prepare_request`: "Unknown AI provider") and in Python (`provider_of`). `to_claude_content` moved to `agent/claude_schema.py`.
 
-**Who orchestrates:** whichever chat model the user picks. Claude (subscription) is unchanged: its MCP shim runs the tool bus (`mcp_server.py`). Gemini is new: `orchestrator/supervisor.py` now runs `gemini_chat.run_chat_turn` (it ran the API's Claude), and `sidecar.rs`'s `orchestrated_extras` gives an orchestrated Gemini chat the `orchestrator` and `transcribe` extras.
+**Who orchestrates:** only Claude (subscription), unchanged: its MCP shim runs the tool bus (`mcp_server.py`). **Decision (the user, 2026-11-02): Gemini doesn't orchestrate.** A Gemini chat edits directly in either execution mode (`config.resolve_chat_turn_runner`), and `orchestrated_extras` gives no chat process the orchestrator extras. The in-process supervisor (`orchestrator/supervisor.py`), which the API's Claude ran, is kept with its tests and now loops on `gemini_chat.run_chat_turn`, but nothing routes to it. (The migration first had Gemini orchestrate through it; that was reverted the same day.)
 
 **Models:**
 - Chat: `gemini` = Gemini 3.8 Flash (`gemini-3.8-flash`), `gemini-pro` = Gemini 3.1 Pro (`gemini-3.1-pro-preview`), and Claude Opus and Sonnet 5.5 (subscription). Settings → Agent model has one "Gemini thinking" level (low, medium, high), sent as `effort`.
@@ -2640,7 +2640,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 - **D2 Fallback:** a 404 for the model is tried once on the next one down (Pro → Flash → `gemini-flash-latest`), in the chat, the Story Editor, the titler and the critic, and announced in a `status` line, so Pro never quietly becomes Flash.
 - **D3 VLM:** `qwen3-vl:8b` (the user's prompt), not the spec's `qwen2.5vl:7b`; the alias list falls back to `qwen2.5vl:7b` and `qwen2.5-vl:7b-instruct`. Qwen3-VL needs Ollama 0.12.7 or later.
 - **D4 Tier name:** `large-v3-turbo` (the spec's), not "turbo" (the prompt's). The `transcribe_and_align` schema's default is now `large-v3-turbo` too, since an omitted tier means the configured model.
-- **D5 Gemini's orchestration tools:** sent as `parametersJsonSchema` (`tool_bus.gemini_tools`), not `parameters`. The bus's schemas use `additionalProperties`, `const`, `pattern` and `$defs`, which Gemini's OpenAPI-subset `parameters` refuses. The app's own tools keep `parameters`.
+- **D5 Gemini's orchestration tools (not used: Gemini doesn't orchestrate):** the unrouted supervisor sends them as `parametersJsonSchema` (`tool_bus.gemini_tools`), not `parameters`. The bus's schemas use `additionalProperties`, `const`, `pattern` and `$defs`, which Gemini's OpenAPI-subset `parameters` refuses. The app's own tools keep `parameters`.
 - **D6:** the GPU lock is `GpuLock.for_config` (the spec's `vector_index_dir` doesn't exist).
 - **D7:** `gemini_json` is in `story/models.py` (no `gemini_json.py`).
 - **D8 Saved choices:** a persist migration (`useAgentStore`, version 1, `migrateAgentPrefs`) maps `claude-opus-5-5` → `claude-code-opus-5-5`, `claude-sonnet-5-5` → `claude-code-sonnet-5-5`, `antigravity-gemini-4-argon` → `gemini-pro`, `antigravity-gemini-3.8-flash` → `gemini`, anything else → `gemini`, and agy's effort → Gemini's thinking level. There was no `normalizeAiChoice`; rehydration skipped `setAiChoice`'s check.
@@ -2670,7 +2670,7 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
 
 **Still to check live:**
 1. A Gemini 3.8 Flash and a Gemini 3.1 Pro chat with a real key, and the Pro → Flash notice on a key without Pro.
-2. An orchestrated Gemini chat proposing and committing a delta: does Gemini accept `parametersJsonSchema` next to `parameters` in one request (D5)?
+2. With `EXECUTION_MODE=orchestrated`, a Gemini chat edits directly (its own tools, no OTIO delta), and a Claude (subscription) chat through the orchestrator.
 3. `ollama pull qwen3-vl:8b`, then an ingest: the strips' camera movement, and Ollama keeping one model loaded per stage (`ollama ps`).
 4. A turbo transcription (mlx), and its word timings against medium's.
 5. A chat title while an ingest holds the GPU (should come from the cloud at once), and one with the GPU free (from Gemma).
@@ -3332,6 +3332,6 @@ Later in Phase 19: nothing; Phase 20 is next on the roadmap.
     - It starts high (430 s at 1%, ffmpeg starting) and settles within about 20 s.
     - Kept as is: the scan can't know how many shots will follow.
 - **2026-11-02 (Claude): model migration v2.**
-  - The Anthropic API and Antigravity are removed: Gemini (API key) and Claude (subscription, Claude Code) remain, and either can orchestrate. Gemini's two tiers are 3.8 Flash and 3.1 Pro, with a thinking level and a 404 fallback that says so.
+  - The Anthropic API and Antigravity are removed: Gemini (API key) and Claude (subscription, Claude Code) remain, and only Claude orchestrates (Gemini edits directly in either mode, the user's call). Gemini's two tiers are 3.8 Flash and 3.1 Pro, with a thinking level and a 404 fallback that says so.
   - The local workers: Qwen3-VL on 3-frame contact strips, kept loaded; Gemma only with `VIBECUT_VALIDATOR_MODE=llm`; Whisper `large-v3-turbo` with a model cache; stage-major ingest; SigLIP under the GPU lock. Chat titles try the local Gemma first, and the critic can be set to Local.
   - Decisions D1-D18, what wasn't done, the verification and the live checks still owed: "Model migration v2" above.

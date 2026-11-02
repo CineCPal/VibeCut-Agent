@@ -56,7 +56,7 @@ function LocalAgentsSection() {
             health === undefined || health === null
               ? "Set by EXECUTION_MODE (direct or orchestrated) when the app starts"
               : orchestrated
-                ? `The chat's model (Gemini or Claude) plans each change as an OTIO delta, checked on this Mac before it reaches the editor · local models at ${health.localLlmBaseUrl} (Ollama or llama.cpp, on this Mac) · index in ${health.indexDir}`
+                ? `Claude (subscription) plans each change as an OTIO delta, checked on this Mac before it reaches the editor; a Gemini chat edits directly · local models at ${health.localLlmBaseUrl} (Ollama or llama.cpp, on this Mac) · index in ${health.indexDir}`
                 : "The chat's model calls the editor's tools itself (EXECUTION_MODE=direct); no local sub-agents run"
           }
         />

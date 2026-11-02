@@ -24,8 +24,8 @@ blocks for one ``{"type": "tool_result", "id", "result"}`` line per call, in any
 tools (src/lib/agent/). ``{"type": "abort_turn"}`` may arrive at any time (Stop). On "claude-code" no
 ``tool_calls`` are emitted: Claude Code calls the tools through the MCP bridge (Phase 7a) instead.
 
-With EXECUTION_MODE=orchestrated either provider edits through the orchestrator: Claude Code through its
-MCP shim (mcp_server.py), Gemini through orchestrator/supervisor.py (config.resolve_chat_turn_runner).
+With EXECUTION_MODE=orchestrated only Claude (subscription) edits through the orchestrator, through its MCP
+shim (mcp_server.py); Gemini calls the editor's tools itself in either mode (config.resolve_chat_turn_runner).
 
 While the model writes, ``reply_delta {text}`` carries the answer as it's written, ``reply_break`` ends text
 said before a tool call (it stays a message of its own), and ``reply_reset`` voids the text so far (a
@@ -88,8 +88,8 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
 
         setup = request.get("claudeCode")
         # Phase 21: with EXECUTION_MODE=orchestrated, the subscription's Claude edits through the
-        # orchestrator too. Its MCP shim runs the tool bus (mcp_server.py), and it gets the same
-        # orchestrated-editing instructions as Gemini's supervisor (orchestrator/supervisor.py).
+        # orchestrator too. Its MCP shim runs the tool bus (mcp_server.py), and it gets the orchestrated-editing
+        # instructions (orchestrator/supervisor.py).
         orchestrated = _orchestrated()
         if orchestrated and isinstance(setup, dict):
             setup = {**setup, "orchestrated": True}
@@ -139,8 +139,7 @@ def run_chat(request: dict[str, Any], emitter: Emitter, channel: Any) -> int:
     else:
         from vibecut_agent.config import OrchestratorConfig, resolve_chat_turn_runner
 
-        # Phase 21: Gemini's own loop (gemini_chat), unless EXECUTION_MODE=orchestrated puts it behind the
-        # orchestrator's supervisor (orchestrator/supervisor.py).
+        # Gemini's own loop (gemini_chat), in either execution mode: only Claude orchestrates.
         api_key = _provider_key(request, provider)
         run_chat_turn = resolve_chat_turn_runner(provider, OrchestratorConfig.from_env())
     model = request.get("model") or None

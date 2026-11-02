@@ -75,19 +75,15 @@ def resolve_chat_turn_runner(
     config: OrchestratorConfig,
 ) -> Callable[..., dict[str, Any]]:
     """Factory returning the Gemini API chat's turn runner for `agent/chat.py` ("claude-code" has its own,
-    there and in mcp_server.py).
+    there and in mcp_server.py): `gemini_chat.run_chat_turn`, untouched, in either execution mode.
 
-    - ExecutionMode.DIRECT: returns `gemini_chat.run_chat_turn` untouched.
-    - ExecutionMode.ORCHESTRATED: returns `orchestrator.supervisor.run_orchestrated_turn`, which intercepts
-      orchestrator tool calls in-process via `ToolBus` and delegates NLE commits back through the host channel.
+    Only Claude orchestrates (the user's call, 2026-11-02): with EXECUTION_MODE=orchestrated, Claude
+    (subscription) edits through its MCP shim's tool bus, and Gemini still calls the editor's tools itself.
+    `orchestrator.supervisor.make_orchestrated_turn_runner` (Gemini behind the tool bus, in-process) is
+    kept but not routed to. `config` is accepted so a future mode can choose differently.
     """
     if provider != "gemini":
         raise ValueError(f"Unknown chat provider: {provider!r}")
-
-    if config.execution_mode == ExecutionMode.ORCHESTRATED:
-        from vibecut_agent.orchestrator.supervisor import make_orchestrated_turn_runner
-
-        return make_orchestrated_turn_runner(config)
 
     from vibecut_agent.agent import gemini_chat
 

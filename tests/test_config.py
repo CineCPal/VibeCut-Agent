@@ -84,16 +84,10 @@ def test_worker_settings_come_from_the_environment(monkeypatch, tmp_path):
     assert config.vector_backend == "lancedb"
 
 
-def test_direct_mode_returns_geminis_own_turn_runner():
-    config = OrchestratorConfig.from_env("direct")
-    assert resolve_chat_turn_runner("gemini", config) is gemini_chat.run_chat_turn
-
-
-def test_orchestrated_mode_puts_gemini_behind_the_supervisor():
-    config = OrchestratorConfig.from_env("orchestrated")
-    runner = resolve_chat_turn_runner("gemini", config)
-    assert runner is not gemini_chat.run_chat_turn
-    assert runner.__name__ == "run_orchestrated_turn"
+@pytest.mark.parametrize("mode", ["direct", "orchestrated"])
+def test_gemini_gets_its_own_turn_runner_in_either_mode(mode):
+    """Only Claude (subscription) orchestrates (the user's call, 2026-11-02)."""
+    assert resolve_chat_turn_runner("gemini", OrchestratorConfig.from_env(mode)) is gemini_chat.run_chat_turn
 
 
 @pytest.mark.parametrize("provider", ["claude", "antigravity", "claude-code"])

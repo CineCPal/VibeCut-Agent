@@ -3,7 +3,7 @@
 **Target Repository:** `/Users/cj/Developer/Personal/VibeCut Agent`  
 **Baseline Architecture:** Tauri v2 (`src-tauri/src/lib.rs`) + React 19 (`src/App.tsx`) + Python 3.13 Sidecar (`src-python/vibecut_agent/headless.py`) + NLE Watchers (`src-python/vibecut_agent/nle/watch.py`) + Premiere CEP Bridge (`src-premiere-panel/bridge.js`, `src-premiere-panel/host.jsx`).
 
-> **Amended by model migration v2 (`docs/specs/model-migration-plan.md`; PLAN.md, "Model migration v2", 2026-11-02).** The Anthropic API path (`agent/claude_chat.py`, `claude_client.py`, `provider: "claude"`) and Antigravity were removed. The supervisor below now runs **`gemini_chat.run_chat_turn`** for `provider: "gemini"`; Claude supervises only through the user's Claude Code subscription (`claude_code_chat.py` + `mcp_server.py`), with the same `ORCHESTRATED_INSTRUCTION`. `transcribe_and_align.model_tier` gained `"large-v3-turbo"` (now its default), and the local defaults are `qwen3-vl:8b`, `gemma3:4b` and `mlx-community/whisper-large-v3-turbo`; the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`. Where this document still names `claude_chat.py`, read `gemini_chat.py`. All schema ids are unchanged.
+> **Amended by model migration v2 (`docs/specs/model-migration-plan.md`; PLAN.md, "Model migration v2", 2026-11-02).** The Anthropic API path (`agent/claude_chat.py`, `claude_client.py`, `provider: "claude"`) and Antigravity were removed. **Only Claude orchestrates**, through the user's Claude Code subscription (`claude_code_chat.py` + `mcp_server.py`), with `ORCHESTRATED_INSTRUCTION`; a Gemini chat edits directly in either mode (the user's call). The in-process supervisor below is kept but not routed to; its turn loop is now `gemini_chat.run_chat_turn`. `transcribe_and_align.model_tier` gained `"large-v3-turbo"` (now its default), and the local defaults are `qwen3-vl:8b`, `gemma3:4b` and `mlx-community/whisper-large-v3-turbo`; the validator is deterministic unless `VIBECUT_VALIDATOR_MODE=llm`. Where this document still names `claude_chat.py`, read `gemini_chat.py`. All schema ids are unchanged.
 
 ---
 
@@ -29,7 +29,7 @@
          | EXECUTION_MODE=direct           | EXECUTION_MODE=orchestrated       |
          v (Legacy Baseline Path)          v (New Decoupled Supervisor Path)   |
 +------------------------+    +================================================+=======================+
-| [claude_code_chat.py]  |    |         GEMINI OR CLAUDE (SUBSCRIPTION) SUPERVISING EDITOR             |
+| [claude_code_chat.py]  |    |            CLAUDE (SUBSCRIPTION) SUPERVISING EDITOR                    |
 | [gemini_chat.py]       |    |              (src-python/vibecut_agent/orchestrator/supervisor.py)     |
 | Emits raw low-level    |    |  - Interprets narrative intent, pacing, story structure, & rhythm      |
 | NLE tool_calls back    |    |  - Queries local semantic/vision/audio indexes via High-Level Tools    |

@@ -1,11 +1,12 @@
-"""Both execution modes end to end through agent/chat.py (ORCHESTRATOR_SPEC.md §5 Phase 5), with the
-Gemini API faked and the app's answers queued on stdin as the app would send them.
+"""Both execution modes (ORCHESTRATOR_SPEC.md §5 Phase 5), with the Gemini API faked and the app's answers
+queued as the app would send them.
 
-Orchestrated: Gemini proposes and commits a delta in one step; the bus reads the timeline through the app,
-validates and signs the delta, reads it again and forwards the validated calls, which the app runs through
-the editor's `execute_otio_batch` (nle/bridge_runner.py, here with the editor's edits faked). Direct: the
-same answer from Gemini reaches the app call for call, as before Phase 21. Claude (subscription) follows
-the mode through its own shim."""
+Only Claude (subscription) orchestrates (the user's call, 2026-11-02): it follows the mode through its own
+shim, and a Gemini chat sends its calls to the app as they are in either mode. The in-process supervisor is
+kept (orchestrator/supervisor.py), and checked here end to end on its own: the model proposes and commits a
+delta in one step; the bus reads the timeline through the app, validates and signs the delta, reads it again
+and forwards the validated calls, which the app runs through the editor's `execute_otio_batch`
+(nle/bridge_runner.py, here with the editor's edits faked)."""
 
 from __future__ import annotations
 
@@ -98,7 +99,9 @@ class Editor:
         return {name: run(name) for name in bridge_runner.BATCH_COMMANDS}
 
 
-def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, mode, snapshot, tmp_path):
+def test_the_supervisor_validates_commits_and_runs_the_delta(monkeypatch, mode, snapshot, tmp_path):
+    from vibecut_agent.orchestrator.supervisor import make_orchestrated_turn_runner
+
     mode("orchestrated")
     monkeypatch.setattr(gemma_validator.secrets, "token_bytes", lambda n: KEY)
     removal = delta(op("op_001", "DELETE_CLIP", clip_id="c2"))
@@ -131,28 +134,39 @@ def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, 
             message(text("Dropped the second shot.")),
         ],
     )
-    stdin = FakeStdin(
-        [
-            json.dumps(request()),
-            tool_result("orch_1", reads[0]),
-            tool_result("orch_2", reads[1]),
-            tool_result("orch_3", reads[0]),
-            tool_result("orch_4", reads[1]),
-            tool_result("orch_5", {"committed": True, "editId": "e1", **committed}),
-            json.dumps({"type": "end_session"}),
+    answers = [
+        json.loads(tool_result(call_id, result))
+        for call_id, result in [
+            ("orch_1", reads[0]),
+            ("orch_2", reads[1]),
+            ("orch_3", reads[0]),
+            ("orch_4", reads[1]),
+            ("orch_5", {"committed": True, "editId": "e1", **committed}),
         ]
+    ]
+    events: list[dict] = []
+    runner = make_orchestrated_turn_runner(OrchestratorConfig.from_env())
+    outcome = runner(
+        api_key="k",
+        model=None,
+        system_instruction="s",
+        tool_declarations=DECLARATIONS,
+        history=[],
+        user_message="drop the second shot",
+        emit=lambda event_type, **fields: events.append({"type": event_type, **fields}),
+        read_tool_result=lambda: answers.pop(0),
     )
-    capture = Capture()
 
-    assert run_chat(monkeypatch, stdin, capture) == 0
+    def of_type(event_type: str) -> list[dict]:
+        return [e for e in events if e["type"] == event_type]
 
-    calls = [[(c["id"], c["name"]) for c in e["calls"]] for e in capture.of_type("tool_calls")]
+    calls = [[(c["id"], c["name"]) for c in e["calls"]] for e in of_type("tool_calls")]
     assert calls == [
         [("orch_1", "list_timelines"), ("orch_2", "list_timeline_clips")],
         [("orch_3", "list_timelines"), ("orch_4", "list_timeline_clips")],
         [("orch_5", "commit_otio_delta")],
     ]
-    commit = capture.of_type("tool_calls")[2]["calls"][0]["args"]
+    commit = of_type("tool_calls")[2]["calls"][0]["args"]
     assert commit["validationToken"] == token
     assert commit["batch"] == batch
     assert (commit["host"], commit["timeline"], commit["commitSummary"]) == (
@@ -167,13 +181,16 @@ def test_an_orchestrated_chat_validates_commits_and_runs_the_delta(monkeypatch, 
     assert proposal["valid"] is True
     assert proposal["validator_model"] == "deterministic"
     assert commit_answer == ("commit_otio_delta", {"committed": True, "editId": "e1", **committed})
-    statuses = [e["detail"] for e in capture.of_type("status") if e.get("phase") == "tool"]
+    statuses = [e["detail"] for e in of_type("status") if e.get("phase") == "tool"]
     assert statuses == ["Checking the planned edit…", "Sending the edit to the editor…"]
-    assert capture.of_type("result")[0]["text"] == "Dropped the second shot."
+    assert outcome["text"] == "Dropped the second shot."
 
 
-def test_a_direct_chat_sends_geminis_calls_to_the_app_as_they_are(monkeypatch, mode, snapshot):
-    mode("direct")
+@pytest.mark.parametrize("value", ["direct", "orchestrated"])
+def test_a_gemini_chat_sends_its_calls_to_the_app_as_they_are_in_either_mode(
+    monkeypatch, mode, snapshot, value
+):
+    mode(value)
     removal = delta(op("op_001", "DELETE_CLIP", clip_id="c2"))
     fixed_ids(monkeypatch, "t1", "t2")
     client = install(

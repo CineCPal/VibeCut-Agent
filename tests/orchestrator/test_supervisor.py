@@ -1,6 +1,7 @@
-"""The orchestrated chat turn (orchestrator/supervisor.py): gemini_chat's loop, unchanged, with the
-orchestration tools run on the bus, the read-only ones sent to the app and the rest refused; and
-agent/chat.py choosing it by EXECUTION_MODE."""
+"""The in-process orchestrated turn (orchestrator/supervisor.py): gemini_chat's loop, unchanged, with the
+orchestration tools run on the bus, the read-only ones sent to the app and the rest refused. It is kept but
+not routed to: agent/chat.py gives Gemini its own loop in either mode, and only Claude (subscription)
+orchestrates, through its shim."""
 
 from __future__ import annotations
 
@@ -193,8 +194,10 @@ def chat_request():
     }
 
 
-@pytest.mark.parametrize("mode,orchestrated", [("orchestrated", True), ("direct", False), (None, False)])
-def test_the_chat_session_follows_execution_mode(monkeypatch, mode, orchestrated):
+@pytest.mark.parametrize("mode", ["orchestrated", "direct", None])
+def test_a_gemini_chat_session_edits_directly_in_any_mode(monkeypatch, mode):
+    """Only Claude (subscription) orchestrates (the user's call, 2026-11-02): Gemini keeps every tool and
+    its own instruction, and gets no orchestration tools."""
     monkeypatch.delenv("EXECUTION_MODE", raising=False)
     if mode is None:
         monkeypatch.delenv("VIBECUT_EXECUTION_MODE", raising=False)
@@ -207,13 +210,8 @@ def test_the_chat_session_follows_execution_mode(monkeypatch, mode, orchestrated
     assert run_chat(monkeypatch, stdin, capture) == 0
 
     assert capture.of_type("result")[0]["text"] == "Hi."
-    names = tool_names(client.requests[0])
-    if orchestrated:
-        assert names == ["list_timeline_clips", "list_markers", *ORCHESTRATOR_TOOL_NAMES]
-        assert ORCHESTRATED_INSTRUCTION in system_text(client.requests[0])
-    else:
-        assert names == ["list_timeline_clips", "split_at_playhead", "list_markers"]
-        assert system_text(client.requests[0]) == "s"
+    assert tool_names(client.requests[0]) == ["list_timeline_clips", "split_at_playhead", "list_markers"]
+    assert system_text(client.requests[0]) == "s"
 
 
 def test_claude_code_supervises_through_its_shim_not_this_loop(monkeypatch):
