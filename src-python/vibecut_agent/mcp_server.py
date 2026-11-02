@@ -16,7 +16,8 @@ with the chat's own ``claude_schema.to_claude_tool``, so the two can't drift apa
 In orchestrated mode (Phase 21; ``VIBECUT_MCP_ORCHESTRATED=1``, which claude_code_chat sets for the app's
 own Claude Code run when ``EXECUTION_MODE=orchestrated``), this process plays the part
 orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
-- it offers the six orchestration tools, and of the app's tools only the read-only ones;
+- it offers the six orchestration tools, and of the app's tools only the read-only ones and the three
+  sync tools (tool_bus.FORWARDED_TOOLS);
 - it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
   timeline and whose commit go to the app through the bridge as this chat's own calls;
 - it refuses any other call.
@@ -280,15 +281,15 @@ def text_result(payload: Any, is_error: bool, images: Any = None) -> types.CallT
 class Orchestration:
     """The orchestrated chat's side of this process (see the module docstring)."""
 
-    # Of the app's tools, the ones an orchestrated chat keeps: the read-only ones, and the editor context.
+    # Of the app's tools, the ones an orchestrated chat keeps: the read-only ones, sync, and the editor context.
     FORWARDED = frozenset({CONTEXT_TOOL_NAME})
 
     def __init__(self, bridge: AppBridge, bus: Any = None) -> None:
-        from vibecut_agent.orchestrator.tool_bus import READ_ONLY_TOOLS
+        from vibecut_agent.orchestrator.tool_bus import FORWARDED_TOOLS
 
         self.bridge = bridge
         self._bus = bus
-        self.forwarded = self.FORWARDED | frozenset(READ_ONLY_TOOLS)
+        self.forwarded = self.FORWARDED | frozenset(FORWARDED_TOOLS)
 
     @property
     def bus(self) -> Any:

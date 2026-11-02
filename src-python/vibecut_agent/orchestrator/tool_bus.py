@@ -70,6 +70,11 @@ READ_ONLY_TOOLS = (
     "get_playhead_time",
     "get_edit_log",
 )
+# The app's edits Claude keeps too: waveform sync needs the app's matcher (audiosync.rs), which no delta can
+# reach. Each is a direct edit with its own backup, edit-log entry and Revert (PLAN.md, "Sync in orchestrated
+# mode").
+SYNC_TOOLS = ("sync_and_place", "sync_clips", "slip_into_sync")
+FORWARDED_TOOLS = READ_ONLY_TOOLS + SYNC_TOOLS
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.
 MAX_RESULT_CHARS = 60_000

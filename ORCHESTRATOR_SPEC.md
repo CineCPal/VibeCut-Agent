@@ -221,7 +221,7 @@ Floating-point seconds alone are forbidden at the OTIO mutation boundary due to 
 
 ### 3.2 Claude Orchestrator Tool Call Schemas
 
-When `EXECUTION_MODE=orchestrated`, Claude receives six high-level orchestration tools (instead of 40+ granular NLE mutation tools) in addition to read-only timeline inspection tools (`list_timelines`, `list_timeline_clips`, `list_markers`, `get_playhead_time`, `get_edit_log`).
+When `EXECUTION_MODE=orchestrated`, Claude receives six high-level orchestration tools (instead of 40+ granular NLE mutation tools) in addition to read-only timeline inspection tools (`list_timelines`, `list_timeline_clips`, `list_markers`, `get_playhead_time`, `get_edit_log`). It also keeps the app's three sync tools (`sync_and_place`, `sync_clips`, `slip_into_sync`) as direct edits, because a delta can't find a sync offset (PLAN.md, "Sync in orchestrated mode", 2026-11-02).
 
 ```json
 {

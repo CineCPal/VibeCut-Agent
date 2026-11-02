@@ -2807,6 +2807,22 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
 2. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
 
+## Sync in orchestrated mode (2026-11-02)
+
+**Why (the user, 2026-11-02):** the installed app (orchestrated) told the user it couldn't sync audio and video. It was right: an orchestrated chat got the six orchestration tools and the five read-only ones, and none of them can find a sync offset. A delta can link picture and sound (`link_group_id`) but can't match waveforms; that needs the app's `audiosync.rs`.
+
+**Decided (Claude; no Gemini review, per the user's standing rule):** the three sync tools (`sync_and_place`, `sync_clips`, `slip_into_sync`) go through to the app in orchestrated mode, as direct edits. Each has its own backup, edit-log entry, Revert and review card, as in direct mode. They stay outside the delta because they need the app's matcher, and each is already one editorial step. Every other edit still goes through `propose_otio_delta` and `commit_otio_delta`.
+
+**Changes:**
+- `orchestrator/tool_bus.py`: `SYNC_TOOLS`, and `FORWARDED_TOOLS` (`READ_ONLY_TOOLS` + `SYNC_TOOLS`).
+- `mcp_server.py` (`Orchestration.forwarded`) and `orchestrator/supervisor.py` (`_Router`, the declarations) pass `FORWARDED_TOOLS` through. Before, they passed only `READ_ONLY_TOOLS`.
+- `ORCHESTRATED_INSTRUCTION` gets a paragraph on when to use each sync tool.
+- No schema, module path or direct-mode behaviour changed. The sync tools already had the 15-minute timeout (`LONG_TOOLS`).
+
+**Tests:** `test_an_orchestrated_chat_sees_the_orchestration_tools_the_reads_and_sync` and `test_an_orchestrated_chat_syncs_through_the_app` (`tests/test_mcp_server.py`). pytest (1306, 2 skipped), vitest (867), ruff, mypy.
+
+**Still to check live:** reinstall with `npm run install-app -- --orchestrated` plus the model variables, then ask a Claude (subscription) chat to sync a camera with its recorder file.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -3470,3 +3486,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - The shared contracts (`packages/contracts`) and the visualizer (`apps/visualizer`), wired in as npm workspaces.
   - Decisions V1-V15, what wasn't done, the verification and the live checks owed: "Phase 22" above.
 - **2026-11-02 (Claude): Phase 22 live checks from the terminal.** A real `ingest-index` and the real MCP shim, both with telemetry on, streamed live through the gateway. Fixed: a trace's root now finishes with its real time (`TraceEmitter.finish`, at shim exit and ingest end), and `telemetry-gateway` honours `port: 0`. The in-app turn and a look in a browser are still owed.
+- **2026-11-02 (Claude): Sync in orchestrated mode.** The three sync tools now go through to the app in orchestrated chats, which had no way to sync audio and video; see "Sync in orchestrated mode" above.

@@ -332,6 +332,7 @@ ORCHESTRATED_DECLARATIONS = [
         "parameters": {"type": "OBJECT", "properties": {}},
     },
     {"name": "get_instructions", "description": "Rules.", "parameters": {"type": "OBJECT", "properties": {}}},
+    {"name": "sync_clips", "description": "Sync.", "parameters": {"type": "OBJECT", "properties": {}}},
 ]
 
 
@@ -363,7 +364,7 @@ def orchestration(folder: Path, tmp_path: Path) -> Any:
     return mcp_server.Orchestration(AppBridge(folder, "job-1"), bus)
 
 
-def test_an_orchestrated_chat_sees_the_orchestration_tools_and_only_the_reads(
+def test_an_orchestrated_chat_sees_the_orchestration_tools_the_reads_and_sync(
     folder: Path, timeline: Any, orchestration: Any
 ) -> None:
     from vibecut_agent.orchestrator.tool_bus import ORCHESTRATOR_TOOL_NAMES
@@ -385,8 +386,34 @@ def test_an_orchestrated_chat_sees_the_orchestration_tools_and_only_the_reads(
         "list_timelines",
         "list_timeline_clips",
         "get_editor_context",
+        "sync_clips",
         *ORCHESTRATOR_TOOL_NAMES,
     ]
+
+
+def test_an_orchestrated_chat_syncs_through_the_app(folder: Path, orchestration: Any) -> None:
+    # A delta can't find a sync offset, so the sync tools go to the app as direct edits.
+    def answer(request: dict[str, Any]) -> dict[str, Any]:
+        if request["kind"] == "list_tools":
+            return {"ok": True, "result": {"tools": ORCHESTRATED_DECLARATIONS}}
+        return {"ok": True, "result": {"summary": "Matched 1 picture/sound pair(s) by waveform"}}
+
+    fake = FakeApp(folder, answer)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                return await client.call_tool("sync_clips", {"clipIds": ["v1"]})
+
+        result = run(go)
+    finally:
+        fake.stop()
+    assert result.is_error is False
+    assert json.loads(result.content[0].text) == {"summary": "Matched 1 picture/sound pair(s) by waveform"}
+    calls = [(r["caller"], r["name"], r["args"]) for r in fake.seen if r["kind"] == "call_tool"]
+    assert calls == [("job-1", "sync_clips", {"clipIds": ["v1"]})]
+    assert mcp_server.timeout_for("sync_clips") == mcp_server.LONG_TIMEOUT_SECONDS
 
 
 def test_an_orchestrated_chat_edits_only_through_a_validated_delta(

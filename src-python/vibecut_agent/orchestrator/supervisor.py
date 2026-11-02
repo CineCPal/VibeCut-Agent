@@ -11,12 +11,12 @@ loop in either mode), and is kept, with its tests, for a provider that may super
 Each turn runs gemini_chat's own loop, unchanged, with three differences:
 
 - Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
-  app's tools, only the ones that read (tool_bus.READ_ONLY_TOOLS); every edit goes through
-  `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
+  app's tools, only the ones that read and the three sync tools (tool_bus.FORWARDED_TOOLS); every other
+  edit goes through `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
   say how.
 - When Gemini calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
   orchestration calls run in this process on the bus (each announced with a `status` line, since the
-  app doesn't run them), the read-only calls go on to the app as one `tool_calls` event, and any other
+  app doesn't run them), the read-only and sync calls go on to the app as one `tool_calls` event, and any other
   call is answered with an error. gemini_chat then reads the bus's results first and the app's after,
   through the same `read_tool_result`, and answers them in the order Gemini made the calls.
 - The bus reaches the app itself (to read the timeline, and to commit) with `tool_calls` events of its
@@ -36,7 +36,7 @@ from vibecut_agent.agent import gemini_chat
 from vibecut_agent.agent.chat_steps import ChatError
 from vibecut_agent.config import OrchestratorConfig
 from vibecut_agent.orchestrator.tool_bus import (
-    READ_ONLY_TOOLS,
+    FORWARDED_TOOLS,
     STATUS,
     OrchestratorToolBus,
     gemini_tools,
@@ -62,6 +62,11 @@ editor's notes: weigh them, and say so when you go ahead anyway.
 log. A token is used once; if the timeline changed since, propose again.
 
 Keep each delta to one editorial idea, so each can be reverted on its own.
+
+Syncing a camera with a separately recorded sound file is the one edit outside the delta: a delta can link \
+picture and sound but can't find the offset between them. Use sync_and_place to place cameras with their \
+recordings, sync_clips for linked picture and sound already on the timeline, and slip_into_sync to put \
+linked sound back in sync. Each is its own edit, backed up and revertible.
 """
 
 TOOL_RESULT_ID_PREFIX = "orch_"
@@ -93,7 +98,7 @@ class _Router:
             if self.bus.handles(name):
                 self._emit("status", phase="tool", detail=STATUS[name])
                 result = self.bus.dispatch(name, call.get("args") or {})
-            elif name in READ_ONLY_TOOLS:
+            elif name in FORWARDED_TOOLS:
                 forwarded.append(call)
                 continue
             else:
@@ -147,7 +152,7 @@ def make_orchestrated_turn_runner(
         router = _Router(emit, read_tool_result, bus, ids)
         bus.call_app = router.call_app
         bus.status = router.status
-        reading = [d for d in tool_declarations if isinstance(d, dict) and d.get("name") in READ_ONLY_TOOLS]
+        reading = [d for d in tool_declarations if isinstance(d, dict) and d.get("name") in FORWARDED_TOOLS]
         instruction = (
             f"{system_instruction}\n\n{ORCHESTRATED_INSTRUCTION}"
             if system_instruction
