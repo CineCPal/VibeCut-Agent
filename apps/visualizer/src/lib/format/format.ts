@@ -46,6 +46,14 @@ export function formatCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** A count in a few characters, for a badge: 980, 12.3k, 1.2M. */
+export function formatShortCount(n: number): string {
+  const abs = Math.abs(n);
+  if (abs < 1000) return String(Math.round(n));
+  if (abs < 1_000_000) return `${(n / 1000).toFixed(abs < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(abs < 10_000_000 ? 1 : 0)}M`;
+}
+
 export function formatClock(ms: number): string {
   const d = new Date(ms);
   const pad = (v: number, w = 2) => String(v).padStart(w, "0");

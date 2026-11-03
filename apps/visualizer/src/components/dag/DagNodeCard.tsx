@@ -3,11 +3,15 @@
  * it runs), tokens, GPU-lock and artifact badges, and progress. Compact (`labelPx` > 0, when the DAG is
  * zoomed out): the avatar, the label at that size (about 13 px on screen) and the status as the card's
  * colour; the rest is in the inspector and the tooltip.
+ *
+ * The full card holds its contents in any engine (the app's WKWebView and Premiere's CEF lay out a flex
+ * <button> differently from Chrome): it clips, each row has the card's width so its text truncates, the
+ * badges get two rows at most, and token counts are short (1.2M→99k; the inspector has them in full).
  */
 import { memo } from "react";
 import { useNow } from "../../hooks/useTicker";
 import { SUBAGENT_SHORT } from "../../lib/studio/bays";
-import { avatarForStatus, formatCount, formatMs, isRunning, STATUS_COLOR } from "../../lib/format/format";
+import { avatarForStatus, formatCount, formatMs, formatShortCount, isRunning, STATUS_COLOR } from "../../lib/format/format";
 import type { DagNode } from "../../types/dag";
 import { AvatarBadge } from "../studio/AvatarBadge";
 
@@ -32,7 +36,7 @@ export const DagNodeCard = memo(function DagNodeCard({ node, selected, dimmed, h
   return (
     <button
       type="button"
-      className="absolute flex flex-col gap-1 rounded-md border bg-surface p-2 text-left font-sans text-xs transition-opacity"
+      className="absolute flex flex-col gap-1 overflow-hidden rounded-md border bg-surface p-2 text-left font-sans text-xs transition-opacity"
       style={{
         left: layout.x,
         top: layout.y,
@@ -74,16 +78,17 @@ export const DagNodeCard = memo(function DagNodeCard({ node, selected, dimmed, h
         </span>
       ) : (
         <>
-          <span className="flex items-center gap-2">
+          <span className="flex w-full min-w-0 shrink-0 items-center gap-2">
             <AvatarBadge subagent={node.subagent_type} state={avatarForStatus(node.status)} size={24} animate={running} />
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 flex-1 overflow-hidden">
               <span className="block truncate font-semibold text-[#e6edf3]">{node.task_label}</span>
               <span className="block truncate font-mono text-[10px] text-cool-grey">
                 {SUBAGENT_SHORT[node.subagent_type]} · {node.model_id || node.agent_id}
               </span>
             </span>
           </span>
-          <span className="flex flex-wrap items-center gap-1 font-mono text-[10px]">
+          {/* Two rows of badges at most (16 px each, 4 px apart); a third would leave the card. */}
+          <span className="flex max-h-9 w-full min-w-0 flex-wrap items-center gap-1 overflow-hidden font-mono text-[10px] leading-4">
             <span className="rounded px-1" style={{ color, border: `1px solid ${color}` }}>
               {node.status.replaceAll("_", " ")}
             </span>
@@ -91,8 +96,11 @@ export const DagNodeCard = memo(function DagNodeCard({ node, selected, dimmed, h
               {formatMs(latency)}
             </span>
             {tokens > 0 && (
-              <span className="rounded border border-border px-1 text-warm-grey" title="Tokens in → out">
-                {formatCount(node.metrics.input_tokens)}→{formatCount(node.metrics.output_tokens)}
+              <span
+                className="rounded border border-border px-1 text-warm-grey"
+                title={`Tokens in → out: ${formatCount(node.metrics.input_tokens)} → ${formatCount(node.metrics.output_tokens)}`}
+              >
+                {formatShortCount(node.metrics.input_tokens)}→{formatShortCount(node.metrics.output_tokens)}
               </span>
             )}
             {node.metrics.gpu_lock_held && (
