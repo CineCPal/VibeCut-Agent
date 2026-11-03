@@ -2932,7 +2932,11 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - New tests: a synced camera and recorder moved past another clip and reverted; refusals for effects and fades; each clip's own file length; a swap; the safety net; `_misplaced` leaving old disorder alone.
 - pytest 1316, 2 skipped. vitest 867. ruff, mypy.
 
-**Still to check live:** an orchestrated chat that reorders clips on a real sequence, then Revert from the app.
+**Checked live (2026-11-02): passed.**
+- On "Sequence 02 (live check)", a copy of "Sequence 02 (fixed)", the orchestrator's tool bus ran as the shim does, as an outside caller with telemetry on. It proposed a MOVE_CLIP delta taking Bernice's camera and recorder from 0 s to 89.89 s, past Oli and Grady. Gemma found no diagnostics.
+- The delta was committed through the app's `commit_otio_delta` as edit e488, with backup "Sequence 02 (live check) (before VibeCut 1)". Bernice was placed again, last in every track's list, linked, camera sound off, source points 20.988 s and 92.192 s.
+- The user checked it in Premiere, then reverted e488 from the app. Bernice came back to 0 s, first in every list, as she was. The app recorded her new ids (`restoredIds`).
+- A chat's own edits on Sequence 02 after the fix (e486, the sections back to back; e487, 14 B-roll shots on V2) left every track in order. e486's reorder also repaired the list order the original bug had left there.
 
 **Not done:** `add_clips` and the native rebuild still use `place_clip_exact` without the nudge. Their frame-early correction covers sound-only files, and nothing was seen wrong with them here.
 
@@ -3606,3 +3610,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): The visualizer's OTIO preview and log collapse** to their headers (title or T/L), remembered per browser. See "Collapsible docks" under Phase 22.
 - **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.
 - **2026-11-02 (Claude): Forwarded tools in the trace.** The shim traces the app tools it forwards (B-roll Library, bins, Analyzer, sync) for the visualizer; timeline reads stay untraced. See "Forwarded tools in the trace" under Phase 22.
+- **2026-11-02 (Claude): Premiere's clip order, live check passed.** An orchestrated reorder past two clips and its Revert from the app kept every track in order. See "Premiere's clip order".
