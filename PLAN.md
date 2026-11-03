@@ -2878,7 +2878,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - `nle.rs` `publish` now also writes `<appDataDir>/telemetry/nle_status.json` (`write_nle_status`: `{pid, premiere, resolve, updated_at}`, written to a temporary file and renamed) on every watcher state change.
   - The heartbeat (`bus.nle_connected`) reads it and trusts it only while that pid runs. With no file, a dead pid or a bad file, both are false, as before.
   - The top bar's Host and the About box already showed `nle_connected`.
-  - **Fixed 2026-11-03 (the user: "I do not see host anywhere"):** both read only the followed trace's last heartbeat, which arrives only while a run is active, so they showed "–" between runs and an old value on a finished trace. They now read the gateway's live health first (`nleConnected` in the store; health is polled every 2 s and its `host_metrics` is the same sample), then the heartbeat. The top bar's item is now "Editor: Premiere / Resolve / Premiere + Resolve / none". Test: `TopTelemetryBar.test.tsx`.
+  - **Fixed 2026-11-03 (the user: "I do not see host anywhere"):** both read only the followed trace's last heartbeat, which arrives only while a run is active, so they showed "–" between runs and an old value on a finished trace. They now read the gateway's live health first (`nleConnected` in the store; health is polled every 2 s and its `host_metrics` is the same sample), then the heartbeat. The top bar's item is now "Editor: Premiere / Resolve / Premiere + Resolve / none". Test: `TopTelemetryBar.test.tsx`. **Checked live (the user, 2026-11-03, after reinstalling `6230c6f`): passed**, "Editor: Premiere" with no run going.
 - **Tests:** `the_nle_status_file_says_which_editors_are_connected` (cargo), `test_the_editors_come_from_the_apps_status_file_while_the_app_runs`, `test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace`, `test_a_traced_contact_strip_streams_live_and_to_a_later_client` and `test_a_strip_id_outside_the_strips_folder_is_not_read`. pytest 1322 passed, 2 skipped; cargo 146; vitest 867 and visualizer 89; ruff, mypy, eslint and tsc clean. pytest failed one test once in three full runs and passed the other two; most likely a timing test, not identified.
 - **Checked (2026-11-02):**
   - **The real path, from the terminal:** a 2-shot test clip (testsrc2, then SMPTE bars), the traced tool bus, ffmpeg and Qwen3-VL (`qwen3-vl:8b-instruct`, Ollama). The COMPLETED (seq 5) named `trc_mcp_stripcheck_abc123_task_001_analyze`. The strip was the first shot's start, middle and end (0.58 s, 2.0 s, 3.4 s; 1536 x 288, 40 KB). A real `telemetry-gateway` on that folder sent it to a new WebSocket client after its welcome as 0x02, channel 0, seq 5.
@@ -2911,7 +2911,8 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - `src/lib/control.test.tsx` (5: Finder, Stop, playhead, a refusal, none without the app's gateway).
 - **Totals:** pytest 1323 passed, 2 skipped; cargo 147; vitest 868; visualizer 94; ruff, mypy, eslint and tsc clean.
 - **Checked from the terminal:** a real `telemetry-gateway` with `{"appControl": true}`, on port 18790 with a scratch journal. It reported `app_control: true`, forwarded Reveal, the playhead and Cancel as `control` lines, and refused Reveal of `/etc/hosts`.
-- **Still to check live (the user; the menu-bar menu can't be clicked from here):** in the installed app (reinstalled 2026-11-02 with these changes), Show in Finder opens Finder, Move playhead moves Resolve's or Premiere's playhead, and Stop run stops an orchestrated chat's turn.
+- **Checked live (the user, 2026-11-03): passed.** Show in Finder opens Finder on the task's file. Stop run in the Telemetry Studio stops the orchestrated chat's turn.
+- **Checked live (the user, 2026-11-03): passed.** Move playhead moved Premiere's playhead on the delta's sequence.
 
 **Claude's side of the turn (2026-11-02, building on):** the root task of a chat's trace shows Claude's thinking and reply as they stream, and its token counts.
 - **Why notes, not a second writer:** the trace is the MCP shim's (V4, one writer per trace), but Claude Code's stream is read by the chat process (`claude_code_chat._run_once`). Its final `result` (usage) arrives just as Claude Code ends the shim. The stream carries what's needed while the turn runs, though: `thinking_delta` and `text_delta` blocks, and `message_start`/`message_delta` usage.
@@ -2953,7 +2954,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - The analysis task's progress bar works.
   - A call cut off mid-run was marked cancelled/failed.
   - The first live run (before the fixes) had already shown the strip, the streamed reply and the root's totals (46,670 in, 601 out).
-- **Still to check live:** the root's tokens against the chat's own usage card in the app.
+- **Checked live (the user, 2026-11-03): passed.** The root's token totals match the chat's own usage card.
 
 ## Sync in orchestrated mode (2026-11-02)
 
