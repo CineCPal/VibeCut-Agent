@@ -3053,6 +3053,16 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Checked:** headless Chrome, the built panel bundle from a `file://` page at 420 x 720. In DAG mode, clicking a task opened the sheet with that task, the DAG visible above it.
 - **Still to check live (the user):** reinstall, Update panel (0.18.1), restart Premiere.
 
+**DAG cards hold their text (2026-11-03, the user: "the full-size DAG node task/description text overflows"; panel 0.18.2):**
+- **Cause:** the full card (208 x 96) didn't clip, and its badge row could wrap onto a third line: status, latency, tokens such as "1,234,567→98,765", GPU, artifacts and deltas. The app's WKWebView and Premiere's CEF also lay out a flex `<button>` differently from Chrome.
+- **Fixed (`DagNodeCard`):**
+  - The card clips.
+  - Each row takes the card's width, so its label and model truncate.
+  - The badges get two rows at most.
+  - Token counts read short (`formatShortCount`: 1.2M→99k), with the full counts in the tooltip and the inspector.
+- **Checked in headless Chrome:** a worst-case trace (long labels; running with MUTATION EMITTED, tokens, GPU, Δ and progress; completed with 1,234,567→98,765, ◆ and Δ) at 125%. With the cards' text forced wider (15 px, letter-spacing) everything stayed inside them. Not seen in WKWebView itself; the overflow the user saw was there.
+- **Tests:** `format.test.ts` (`formatShortCount`). Visualizer 115.
+
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
   - The app starts its gateway with `{"appControl": true}`. Only then does the gateway forward (202 `{ok, forwarded}`) and report `app_control: true` in its health. A gateway run from a terminal still answers 409, now saying it needs the app's.
@@ -3895,3 +3905,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-03 (Claude): Opening a big trace without a freeze.** The gateway pages a snapshot's replay (`offset`, `limit`, pinned with `at_seq`, worked out once per seq), and the visualizer loads it 2,500 events a frame, holding live events until it's in. Headless Chrome, 100k rows: worst frame 50–67 ms while loading, where it was one task. Open: an occasional 1.1 s long task at the visualizer's boot, with any trace. See "Opening a big trace without a freeze" under Phase 22.
 - **2026-11-03 (Claude): The Telemetry Studio in Premiere's panel (panel 0.18.0).** A third panel extension runs the visualizer docked in Premiere. It reaches the gateway with a per-run panel key from gateway.json, the only way a `file://` page's `Origin: null` gets in (V20). The app keeps its gateway running while the panel's heartbeat is fresh. The narrow layout stacks and shortens. Fixed on the way: the gateway let `Origin: null` in with no key, since a hostless origin counted as loopback. See "The Telemetry Studio in Premiere's panel" under Phase 22.
 - **2026-11-03 (Claude): The panel's inspector sheet, and About without the "?" (panel 0.18.1).** In the narrow layout, choosing a task opens the inspector as a sheet under the tab; the button reads "About". See "The panel's inspector sheet and the About label" under Phase 22.
+- **2026-11-03 (Claude): DAG cards hold their text (panel 0.18.2).** The full card clips, truncates per row, keeps two rows of badges and shortens token counts. See "DAG cards hold their text" under Phase 22.
