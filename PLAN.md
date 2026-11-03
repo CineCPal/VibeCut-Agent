@@ -2751,7 +2751,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **V7:** the snapshot carries both the spec's reduced `nodes`/`edges`/`otio_tracks`/`recent_logs` and `replay_events`, the trace compacted. The visualizer hydrates by reducing those itself, so its reducer is the UI's single source of truth.
 - **V8:** no PNG atlases ship. `ProceduralPixelAvatar` draws every sprite: 16x16, 8 states x 8 frames, into the §3.4 atlas layout. A `public/sprites/<role>_atlas.png` that loads wins.
 - **V9:** the OTIO dock is built from the deltas alone; there is no fetch of the timeline as it was.
-- **V10:** the embedded host modes only resolve the gateway URL. Wiring the visualizer into the Tauri window or the Premiere panel needs `ws://127.0.0.1:18765` in the app's CSP `connect-src`; not done.
+- **V10:** the embedded host modes only resolve the gateway URL. Wiring the visualizer into the Tauri window or the Premiere panel needs `ws://127.0.0.1:18765` in the app's CSP `connect-src`; not done. *(Both since done: the Telemetry Studio window, and Premiere's panel; see "The Telemetry Studio in Premiere's panel" below.)*
 - **V11:** Vite 8, Vitest 5 and TS 6 (the root's), not the spec's Vite 7, as in Phase 1.
 - **V12:** timing assertions take the best of 5 runs (1,000 emits < 2 ms; 10,000 events reconciled and reduced < 25 ms).
 - **V13:** a SPAWN for a task that failed recoverably is a retry: the lattice lets it go back to SPAWNED and clears the error. The spec's SPAWN payload has no `retry_attempt`.
@@ -2759,7 +2759,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **V15:** the mock source and the visualizer's tests replay the Python fixture (`mockTraceGenerator.ts` imports it `?raw`), not a second TypeScript scenario.
 
 **Not done here:**
-- No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).
+- ~~No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).~~ Both done (the Telemetry Studio window, and Premiere's panel).
 - ~~No producer sends scrub audio (0x03) yet.~~ Real waveforms (0x01) and scrub audio (0x03) now come from the gateway; see "Real audio in the OTIO dock" below. Contact strips (0x02) now stream from real shot analyses; see "Contact strips and the editors' status" below.
 - The supervisor (not routed to) isn't instrumented. ~~Nor are token counts or thought streams from Claude Code.~~ Claude's thinking, reply and tokens now reach the root task; see "Claude's side of the turn" below.
 - ~~`nle_connected` is always false in a real heartbeat.~~ Now from the app's watchers; see "Contact strips and the editors' status" below.
@@ -3000,6 +3000,47 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Before, the same work ran as one task. `JSON.parse` of the 73 MB alone takes 140 ms in that Chrome, before Zod and the reducer.
   - Opening takes a little longer than before (3.4 s against 2.3 s to "100,000/100,000"), in exchange for no freeze.
 - **Found, not fixed:** the visualizer's boot (module evaluation and the first render, before any snapshot request) is a long task of 100–350 ms, and in about one load in five it's 1.1 s, with or without a big trace (`trc_nothing` too). Part of the 1.2 s first measured under "The log at 100k rows" was this. A CPU profile places it in React's first render and module setup, but source maps of the minified build don't pin it down. Seen in headless Chrome only so far.
+
+**The Telemetry Studio in Premiere's panel (2026-11-03, the user's request: "telemetry studio inside premiere's panel"; panel 0.18.0):** V10's last part. A third extension in the panel bundle, "VibeCut Agent Telemetry Studio" (Window → Extensions), runs the visualizer's one-column layout docked in Premiere.
+- **Decided (Claude; no Gemini review):**
+  - **V20, the panel key.** A CEP page is a `file://` page: its requests carry `Origin: null` (its WebSocket, `file://` or `null`). A sandboxed iframe on any website sends the same, so that origin alone can't be trusted.
+    - Each gateway makes a random key per run and writes it, with its address and pid, to `<folder>/gateway.json` (0600, written to a temporary file and renamed; removed at stop if it's still its own).
+    - A `null` or `file://` origin is let in only with that key (`?token=` or `Bearer`). A preflight carries no key and gets only the CORS answer.
+    - The panel reads the file with CEP's Node `fs` (`--enable-nodejs --mixed-context`, as the B-roll panel does). A web page can't read it.
+    - Loopback pages and the Telemetry Studio window (`tauri://localhost`) are let in as before. The full `VIBECUT_TELEMETRY_TOKEN` mode is unchanged.
+  - **The gateway runs while the panel is open.** The panel stamps `telemetry/studio-panel-alive.json` every 2 s.
+    - The app checks it every 2 s (`visualizer::watch_studio_panel`, `gateway_need`). It starts its gateway when the stamp is fresh (6 s) and nothing listens on the port, and stops its own once neither the panel nor the window wants it.
+    - Closing the window no longer stops the gateway while the panel is open.
+  - **CEP 12 only (Premiere 25 and later).** The bundle targets es2020 and CSS for Chromium 99. Tailwind's `color-mix()` stays behind `@supports` with hex fallbacks, and no `oklch()` is left. It still uses `.at()` and `structuredClone` (Chromium 92 and 98), which CEP 11 (Premiere 22–24) lacks. CSXS stays 11 in the manifest for the other two extensions.
+- **Found and fixed (security, the gateway since Phase 22):** `Origin: null` was let in with no key at all. `is_loopback_host("")` is true (for a request with no Host header), and `urlsplit("null").netloc` is empty, so a sandboxed iframe on a website could read the telemetry. `is_loopback_origin` now holds that an origin with no host is never loopback. The new test failed on this before the fix.
+- **Pieces:**
+  - `apps/visualizer/src/cep.tsx` (the entry): reads gateway.json, stamps the heartbeat, and shows "Waiting for VibeCut Agent's telemetry gateway…" until there's one. It reloads when gateway.json appears, changes (a new key each run) or goes.
+  - `lib/host/cepPanel.ts`: `parseGatewayFile` (loopback http only), `panelLocation` (`?mode=embedded_cep&gateway=…&token=…` for `resolveHostAdapter`) and `aliveStamp`.
+  - `vite.cep.config.ts` builds one classic script into `src-premiere-panel/studio/dist/` (`npm run build:studio-panel`, part of `npm run build`).
+  - `src-premiere-panel/studio/index.html`; the manifest's `com.vibecutagent.connect.studio` (420 x 720, min 300 x 360); `PANEL_FILES` and tauri.conf.json resources.
+  - Panel 0.18.0 (manifest, bridge.js). Settings → Editors shows Update panel.
+- **The narrow layout** (below 640 px, so the app's window and a browser are unchanged):
+  - The view-mode buttons read Split / Studio / DAG, with the full names kept as their accessible labels.
+  - Split stacks the studio above the DAG.
+  - The log's agent-id column gives way to the summary.
+- **Tests:**
+  - pytest:
+    - `test_a_cep_page_needs_the_panel_key_from_gateway_json` (gateway.json's contents and 0600; `null` and `file://` refused without the key or with a wrong one, let in with it by query or Bearer; a preflight; the key doesn't let in a website; the WebSocket with and without it; the file removed at stop);
+    - `test_a_gateway_leaves_another_gateways_file_alone`.
+  - cargo `the_studio_panels_heartbeat_keeps_the_gateway_running` (the stamp, and `gateway_need`'s six cases); the panel test now expects 0.18.0 and the studio files.
+  - Visualizer `cepPanel.test.ts` (4).
+- **Totals:**
+  - pytest 1344 passed, 2 skipped; root vitest 868; visualizer 113; cargo 149.
+  - ruff, mypy, eslint and tsc clean.
+  - The one cargo build warning (`shim_launch` unused, mcp_bridge.rs) was there before.
+- **Checked in headless Chrome (2026-11-03, Claude):** the built panel bundle on a real `file://` page at 420 x 720, against a scratch `telemetry-gateway` on the 100k stress trace. A shim stood in for CEP's Node, serving the gateway's real gateway.json.
+  - Every request and the WebSocket went with `Origin: null` and the key, and were let in (200, 204 preflights, 101). "Live", 100,000/100,000, no page errors, no sideways scroll at 420 px.
+  - The Studio, Log and OTIO tabs were screenshotted before and after the narrow-layout fix. At 1440 px the full labels and side-by-side split are back.
+- **Still to check live (the user):**
+  - `npm run install-app -- --orchestrated` with `VIBECUT_TELEMETRY=1` and the model variables, then Settings → Editors → **Update panel** (0.18.0), then restart Premiere.
+  - Open Window → Extensions → VibeCut Agent Telemetry Studio. With the app running, it should go from the waiting line to "Live" within a few seconds, without the Telemetry Studio window open.
+  - Try Stop run, Move playhead and Show in Finder from the panel.
+  - Not seen in Premiere's own CEF yet: the CSS fallbacks, and CEP's real `Origin` header for its page.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
@@ -3841,3 +3882,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-03 (Claude): Real audio in the OTIO dock.** The gateway measures each delta's audio ops from their own media (VCTB 0x01, addressed by the delta's first seq and the op's index) and answers `SCRUB_REQUEST`s with 0.25 s of the sound under the playhead (0x03). Dragging the ruler plays it, with a Scrub audio toggle. See "Real audio in the OTIO dock" under Phase 22 (V16–V19).
 - **2026-11-03 (Claude): The log at 100k rows.** A 100k-row stress run (`telemetry/stress_emitter.py`) and a 100k test suite; two fixes (the log and packet sprites kept off Immer's per-write path: 100k rows live in 1.3 s instead of 9.9 s, flat per batch; no filtering pass with no filter on). Headless Chrome: 61 fps scrolling 100k rows, 60 fps live at 5,000 rows/s; open: a 1.2 s freeze opening a 73 MB snapshot. See "The log at 100k rows" under Phase 22.
 - **2026-11-03 (Claude): Opening a big trace without a freeze.** The gateway pages a snapshot's replay (`offset`, `limit`, pinned with `at_seq`, worked out once per seq), and the visualizer loads it 2,500 events a frame, holding live events until it's in. Headless Chrome, 100k rows: worst frame 50–67 ms while loading, where it was one task. Open: an occasional 1.1 s long task at the visualizer's boot, with any trace. See "Opening a big trace without a freeze" under Phase 22.
+- **2026-11-03 (Claude): The Telemetry Studio in Premiere's panel (panel 0.18.0).** A third panel extension runs the visualizer docked in Premiere. It reaches the gateway with a per-run panel key from gateway.json, the only way a `file://` page's `Origin: null` gets in (V20). The app keeps its gateway running while the panel's heartbeat is fresh. The narrow layout stacks and shortens. Fixed on the way: the gateway let `Origin: null` in with no key, since a hostless origin counted as loopback. See "The Telemetry Studio in Premiere's panel" under Phase 22.
