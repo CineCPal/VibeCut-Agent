@@ -2839,7 +2839,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **GPU lock:** `requires_gpu_lock` is now only for `worker.*` agents. The app's models don't take VibeCut's lock.
 - **Threads:** the emitter's counters are behind a lock, since the event loop and the bus's worker thread both make tasks.
 - **Test:** `test_an_orchestrated_chat_traces_the_app_tools_it_forwards_but_not_timeline_reads` checks a Library search, a timeline read and a failed sync against the contract. It fails without the shim change.
-- **Still to check live:** an orchestrated chat that searches the Library, with the visualizer open.
+- **Checked live (the user, 2026-11-02): passed.** An orchestrated chat's forwarded tools showed in the visualizer.
 
 **Collapsible docks (2026-11-02, the user's request):**
 - The OTIO Live Preview and the Terminal & Replay Log collapse to their header row. Click the title (`DockToggle`, a chevron with `aria-expanded`) or press T or L.
