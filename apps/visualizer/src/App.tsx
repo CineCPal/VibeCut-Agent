@@ -3,7 +3,8 @@
  * Pane B (the OTIO dock); Pane C (the inspector) on the right; Pane D (the terminal and replay log)
  * along the bottom. A narrow Premiere panel (embedded_cep) gets one column, with the inspector in a tab.
  *
- * Keys: 1/2/3 switch views, F fits the DAG, , and . step the replay, Esc deselects, ? opens About.
+ * Keys: 1/2/3 switch views, F fits the DAG, T and L collapse or open the OTIO preview and the log (each to
+ * its header, the space going to the panes above), , and . step the replay, Esc deselects, ? opens About.
  */
 import { useEffect, useState } from "react";
 import { AboutVisualizerModal } from "./components/header/AboutVisualizerModal";
@@ -23,6 +24,7 @@ function useHotkeys() {
   const setViewMode = useVisualizerStore((s) => s.setViewMode);
   const selectTask = useVisualizerStore((s) => s.selectTask);
   const setAboutOpen = useVisualizerStore((s) => s.setAboutOpen);
+  const toggleDock = useVisualizerStore((s) => s.toggleDock);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -32,11 +34,13 @@ function useHotkeys() {
       else if (e.key === "2") setViewMode("studio");
       else if (e.key === "3") setViewMode("dag");
       else if (e.key === "?") setAboutOpen(true);
+      else if (e.key === "t" || e.key === "T") toggleDock("otio");
+      else if (e.key === "l" || e.key === "L") toggleDock("log");
       else if (e.key === "Escape" && !useVisualizerStore.getState().aboutOpen) selectTask(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setViewMode, selectTask, setAboutOpen]);
+  }, [setViewMode, selectTask, setAboutOpen, toggleDock]);
 }
 
 function CompactLayout() {
@@ -59,8 +63,8 @@ function CompactLayout() {
       <div role="tabpanel" className="min-h-0 flex-1">
         {tab === "studio" && <WorkspaceViewport />}
         {tab === "inspector" && <AgentInspectorDrawer />}
-        {tab === "timeline" && <OtioTimelineDock />}
-        {tab === "log" && <TerminalReplayDock />}
+        {tab === "timeline" && <OtioTimelineDock collapsible={false} />}
+        {tab === "log" && <TerminalReplayDock collapsible={false} />}
       </div>
     </div>
   );
@@ -68,16 +72,17 @@ function CompactLayout() {
 
 export default function App({ adapter }: AppProps) {
   useHotkeys();
+  const collapsed = useVisualizerStore((s) => s.collapsedDocks);
   return (
     <div className="flex h-full min-h-0 flex-col bg-canvas text-[#e6edf3]">
       <TopTelemetryBar />
       {adapter.compact ? (
         <CompactLayout />
       ) : (
-        <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem] grid-rows-[minmax(0,1fr)_minmax(0,14rem)]">
+        <main className={`grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem] ${collapsed.log ? "grid-rows-[minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_minmax(0,14rem)]"}`}>
           {/* One column that can't grow with its content: the OTIO dock's wide timeline made it the dock's
               width (2026-11-02: 2094 px in a 1440 px window), pushing half the DAG and the inspector off-screen. */}
-          <div className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_minmax(0,13rem)] border-r border-border">
+          <div className={`grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] border-r border-border ${collapsed.otio ? "grid-rows-[minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_minmax(0,13rem)]"}`}>
             <div className="min-h-0 border-b border-border">
               <WorkspaceViewport />
             </div>

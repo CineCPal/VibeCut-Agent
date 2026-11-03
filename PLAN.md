@@ -2826,6 +2826,14 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Checked:** headless Chromium screenshots of today's real trace (91 events, 17 tasks) in the split layout at 1440 x 900, before and after.
 - **Tests:** layout wrapping, the row choice, even splits and the memo; compact cards when zoomed out; the store placing again for the pane and the replay projection. Visualizer vitest 86.
 
+**Collapsible docks (2026-11-02, the user's request):**
+- The OTIO Live Preview and the Terminal & Replay Log collapse to their header row. Click the title (`DockToggle`, a chevron with `aria-expanded`) or press T or L.
+- The row then sizes to the header (`auto`), and the panes above take the space. The DAG re-wraps for it.
+- A collapsed header keeps what's useful there: the OTIO header still shows the latest delta's stage and timeline, and the log header keeps its filters and replay scrubber. The OTIO rationale line hides with the tracks.
+- The choice is this viewer's convenience, kept in `localStorage` (`vibecut.visualizer.collapsedDocks`), with every read and write in `try`. Without storage, both docks start open and a toggle lasts until reload.
+- The narrow Premiere panel's tabs never collapse.
+- Checked with headless Chromium screenshots (both collapsed; OTIO only). Tests in `App.test.tsx`: by button and key, not while typing in the search box, remembered, blocked storage, and the narrow panel. Visualizer vitest 88.
+
 ## Sync in orchestrated mode (2026-11-02)
 
 **Why (the user, 2026-11-02):** the installed app (orchestrated) told the user it couldn't sync audio and video. It was right: an orchestrated chat got the six orchestration tools and the five read-only ones, and none of them can find a sync offset. A delta can link picture and sound (`link_group_id`) but can't match waveforms; that needs the app's `audiosync.rs`.
@@ -3551,3 +3559,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Phase 22, a trace's root finishes in the app too.** Claude Code ends the shim with a signal, which skipped the finish; an orchestrated shim now finishes its trace on SIGTERM, SIGHUP and SIGINT. See "In the app" under Phase 22.
 - **2026-11-02 (Claude): Premiere's clip order.** A scripted move past another clip left Premiere's track list out of time order, so its timeline drew and played the wrong clips (Sequence 02). Every move now places such clips again at their destination, unwanted halves on free or scratch tracks; `reshape_clip` checks each clip against its own file. Both modes, the user's call. See "Premiere's clip order" above.
 - **2026-11-02 (Claude): The visualizer's DAG fits large runs.** A tall rank wraps into columns shaped for the pane, cards go compact below 75% zoom, the zoom floor is 0.1x, and the split layout no longer grows to the OTIO dock's width. See "The DAG in large runs" under Phase 22.
+- **2026-11-02 (Claude): The visualizer's OTIO preview and log collapse** to their headers (title or T/L), remembered per browser. See "Collapsible docks" under Phase 22.

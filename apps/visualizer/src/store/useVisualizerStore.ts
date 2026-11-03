@@ -21,6 +21,28 @@ import { createTraceState, reduceEnvelopes, type TraceState } from "../lib/recon
 import type { ConnectionStatus } from "../lib/transport/wsClient";
 
 export type ViewMode = "split" | "studio" | "dag";
+/** The docks that collapse to their header: the OTIO preview and the terminal & replay log. */
+export type DockId = "otio" | "log";
+
+const DOCKS_KEY = "vibecut.visualizer.collapsedDocks";
+
+/** This viewer's collapsed docks, remembered in the browser; none when storage isn't there. */
+function loadCollapsed(): Record<DockId, boolean> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DOCKS_KEY) ?? "{}") as Partial<Record<DockId, unknown>>;
+    return { otio: saved.otio === true, log: saved.log === true };
+  } catch {
+    return { otio: false, log: false };
+  }
+}
+
+function saveCollapsed(collapsed: Record<DockId, boolean>): void {
+  try {
+    localStorage.setItem(DOCKS_KEY, JSON.stringify(collapsed));
+  } catch {
+    // Private window or blocked storage: the choice lasts until reload.
+  }
+}
 export type SeverityFilter = "ALL" | "DEBUG" | "INFO" | "MUTATION" | "WARN" | "ERROR";
 
 export interface HostHealth {
@@ -70,6 +92,8 @@ export interface VisualizerState {
   dagSize: { width: number; height: number };
   /** The DAG pane's size, which the layout is shaped for (0 x 0 until it's measured). */
   dagBox: { width: number; height: number };
+  /** Docks collapsed to their header (the wide layout only). */
+  collapsedDocks: Record<DockId, boolean>;
 
   applyBatch: (envelopes: readonly TelemetryEnvelope[], nowMs?: number) => void;
   hydrateSnapshot: (traceId: string, seq: number, events: readonly TelemetryEnvelope[]) => void;
@@ -87,6 +111,7 @@ export interface VisualizerState {
   addContactStrip: (seq: number, url: string) => void;
   setAboutOpen: (open: boolean) => void;
   setDagBox: (width: number, height: number) => void;
+  toggleDock: (dock: DockId) => void;
   prunePackets: (nowMs?: number) => void;
   reset: () => void;
 }
@@ -125,6 +150,7 @@ const initial = () => ({
   aboutOpen: false,
   dagSize: { width: 0, height: 0 },
   dagBox: { width: 0, height: 0 },
+  collapsedDocks: loadCollapsed(),
 });
 
 export const useVisualizerStore = create<VisualizerState>()(
@@ -257,6 +283,11 @@ export const useVisualizerStore = create<VisualizerState>()(
             if (placed) node.layout = { ...placed.layout };
           }
         }
+      }),
+    toggleDock: (dock) =>
+      set((s) => {
+        s.collapsedDocks[dock] = !s.collapsedDocks[dock];
+        saveCollapsed({ ...s.collapsedDocks });
       }),
     prunePackets: (nowMs = Date.now()) =>
       set((s) => {

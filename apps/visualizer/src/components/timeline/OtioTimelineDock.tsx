@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { buildTracks, timelineSeconds } from "../../lib/timeline/viewModel";
 import { rationalTime, toSmpte } from "../../lib/timecode/rationalTime";
 import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
+import { DockToggle } from "../workspace/DockToggle";
 import { secondsToFrame, TimecodeRuler } from "./TimecodeRuler";
 import { TrackRow } from "./TrackRow";
 
@@ -20,8 +21,9 @@ const STAGE_COLOR: Record<string, string> = {
   ROLLED_BACK: "#ff5252",
 };
 
-export function OtioTimelineDock() {
+export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean } = {}) {
   const view = useVisualizerStore(selectView);
+  const collapsed = useVisualizerStore((s) => collapsible && s.collapsedDocks.otio);
   const waveforms = useVisualizerStore((s) => s.waveforms);
   const hoverTask = useVisualizerStore((s) => s.hoverTask);
   const [zoom, setZoom] = useState(2);
@@ -43,8 +45,8 @@ export function OtioTimelineDock() {
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-canvas" aria-label="OTIO live preview">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border bg-surface px-3 py-1 font-mono text-[11px]">
-        <span className="font-sans font-semibold text-[#e6edf3]">OTIO Live Preview</span>
+      <div className={`flex flex-wrap items-center gap-3 bg-surface px-3 py-1 font-mono text-[11px] ${collapsed ? "" : "border-b border-border"}`}>
+        <DockToggle dock="otio" title="OTIO Live Preview" controls="otio-tracks" hotkey="T" collapsible={collapsible} />
         <span className="text-cool-grey">
           TC: <span className="text-[#e6edf3]" data-testid="playhead-tc">{playhead}</span> ({rate} fps)
         </span>
@@ -70,7 +72,7 @@ export function OtioTimelineDock() {
           </button>
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto" role="grid" aria-label="Timeline tracks">
+      <div id="otio-tracks" className="min-h-0 flex-1 overflow-auto" role="grid" aria-label="Timeline tracks" hidden={collapsed}>
         <div style={{ width: width + 96 }}>
           <div className="flex">
             <div className="sticky left-0 z-10 w-24 shrink-0 border-b border-r border-border bg-surface" />
@@ -90,7 +92,7 @@ export function OtioTimelineDock() {
           ))}
         </div>
       </div>
-      {latest && (
+      {latest && !collapsed && (
         <p className="truncate border-t border-border bg-surface px-3 py-0.5 text-[11px] text-warm-grey" title={latest.narrative_rationale}>
           {latest.narrative_rationale}
         </p>

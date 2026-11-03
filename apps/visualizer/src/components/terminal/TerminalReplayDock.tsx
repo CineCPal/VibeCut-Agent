@@ -13,6 +13,7 @@ import { formatClock } from "../../lib/format/format";
 import { summarize, taskOf } from "../../lib/format/summarize";
 import { SUBAGENT_SHORT } from "../../lib/studio/bays";
 import { useVisualizerStore } from "../../store/useVisualizerStore";
+import { DockToggle } from "../workspace/DockToggle";
 import { TimeTravelScrubber } from "./TimeTravelScrubber";
 
 export const ROW_PX = 24;
@@ -59,7 +60,8 @@ export function filterLogs(logs: readonly TelemetryEnvelope[], filter: LogFilter
   );
 }
 
-export function TerminalReplayDock() {
+export function TerminalReplayDock({ collapsible = true }: { collapsible?: boolean } = {}) {
+  const collapsed = useVisualizerStore((s) => collapsible && s.collapsedDocks.log);
   const logs = useVisualizerStore((s) => s.live.logs);
   const cursor = useVisualizerStore((s) => s.replayCursorSeqId);
   const selected = useVisualizerStore((s) => s.selectedTaskId);
@@ -101,8 +103,8 @@ export function TerminalReplayDock() {
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-canvas" aria-label="Terminal and replay log">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-1 text-[11px]">
-        <span className="font-semibold text-[#e6edf3]">Terminal &amp; Replay Log</span>
+      <div className={`flex flex-wrap items-center gap-2 bg-surface px-3 py-1 text-[11px] ${collapsed ? "" : "border-b border-border"}`}>
+        <DockToggle dock="log" title="Terminal & Replay Log" controls="telemetry-log" hotkey="L" collapsible={collapsible} />
         <div className="flex gap-0.5" role="group" aria-label="Severity filter">
           <button type="button" aria-pressed={all} className={`rounded border px-1.5 font-mono ${all ? "border-athletic-blue-light text-[#e6edf3]" : "border-border text-cool-grey"}`} onClick={() => setSeverities(new Set(all ? [] : LOG_SEVERITIES))}>
             ALL
@@ -155,6 +157,8 @@ export function TerminalReplayDock() {
       </div>
       <div
         ref={scrollRef}
+        id="telemetry-log"
+        hidden={collapsed}
         className="min-h-0 flex-1 overflow-y-auto font-mono text-[12px]"
         onScroll={(e) => {
           const el = e.currentTarget;

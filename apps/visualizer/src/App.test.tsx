@@ -27,6 +27,8 @@ function play(count?: number) {
 
 describe("App", () => {
   beforeEach(() => {
+    // The collapsed docks are remembered in the browser: start every test with both open.
+    localStorage.clear();
     useVisualizerStore.getState().reset();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     // jsdom has no layout: give the log's scroll box a height so the virtualizer renders rows.
@@ -131,12 +133,62 @@ describe("App", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("collapses the OTIO preview and the log to their headers, by their titles or T and L, and remembers it", () => {
+    render(<App adapter={adapter} />);
+    play();
+    const otio = screen.getByRole("button", { name: "OTIO Live Preview" });
+    const tracks = () => document.getElementById("otio-tracks") as HTMLElement;
+    const log = () => document.getElementById("telemetry-log") as HTMLElement;
+    expect(otio).toHaveAttribute("aria-expanded", "true");
+    expect(otio).toHaveAttribute("aria-controls", "otio-tracks");
+    fireEvent.click(otio);
+    expect(otio).toHaveAttribute("aria-expanded", "false");
+    expect(tracks()).not.toBeVisible();
+    // The header still says how the latest delta stands; its rationale goes with the tracks.
+    expect(screen.getByTestId("delta-stage")).toHaveTextContent("COMMITTED");
+    const rationale = useVisualizerStore.getState().live.mutations;
+    for (const m of Object.values(rationale)) expect(screen.queryByTitle(m.narrative_rationale)).toBeNull();
+    fireEvent.keyDown(window, { key: "l" });
+    expect(log()).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "Terminal & Replay Log" })).toHaveAttribute("aria-expanded", "false");
+    // The scrubber stays in the log's header.
+    expect(screen.getByRole("slider")).toBeVisible();
+    expect(JSON.parse(localStorage.getItem("vibecut.visualizer.collapsedDocks") ?? "{}")).toEqual({ otio: true, log: true });
+    expect(document.querySelector("main")?.className).toContain("grid-rows-[minmax(0,1fr)_auto]");
+    fireEvent.keyDown(window, { key: "T" });
+    expect(tracks()).toBeVisible();
+    // Typing in the log's search box doesn't toggle anything.
+    fireEvent.keyDown(screen.getByRole("searchbox"), { key: "t" });
+    expect(tracks()).toBeVisible();
+    // Opened again on the next visit as left.
+    act(() => useVisualizerStore.getState().reset());
+    expect(useVisualizerStore.getState().collapsedDocks).toEqual({ otio: false, log: true });
+  });
+
+  it("opens both docks when the browser won't store the choice", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    act(() => useVisualizerStore.getState().reset());
+    expect(useVisualizerStore.getState().collapsedDocks).toEqual({ otio: false, log: false });
+    render(<App adapter={adapter} />);
+    fireEvent.click(screen.getByRole("button", { name: "OTIO Live Preview" }));
+    expect(useVisualizerStore.getState().collapsedDocks.otio).toBe(true);
+  });
+
   it("lays out one column with tabs in a narrow Premiere panel", () => {
     const cep = resolveHostAdapter({ search: "?mode=embedded_cep&source=mock", hostname: "", host: "", protocol: "http:" });
     render(<App adapter={cep} />);
     play();
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Studio", "Inspector", "OTIO", "Log"]);
+    act(() => useVisualizerStore.setState({ collapsedDocks: { otio: true, log: true } }));
     fireEvent.click(screen.getByRole("tab", { name: "OTIO" }));
     expect(screen.getByRole("region", { name: "OTIO live preview" })).toBeInTheDocument();
+    // A tab's dock doesn't collapse: no toggle, and its tracks show.
+    expect(screen.queryByRole("button", { name: "OTIO Live Preview" })).toBeNull();
+    expect(document.getElementById("otio-tracks")).toBeVisible();
   });
 });
