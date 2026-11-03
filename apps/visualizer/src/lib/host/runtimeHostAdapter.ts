@@ -1,8 +1,9 @@
 /**
  * Where the gateway is, by host (visualizer-spec.md §5.3). Standalone (a browser on this Mac or an iPad
- * on the LAN) connects to the page's host on :18765. The embedded modes connect to 127.0.0.1:18765; wiring
- * them into Tauri's IPC and the Premiere panel is not done (PLAN.md, "Phase 22", V10: the app's CSP would
- * need ws://127.0.0.1:18765 in connect-src).
+ * on the LAN) connects to the page's host on :18765. The embedded modes connect to 127.0.0.1:18765. The
+ * app's Telemetry Studio window (src-tauri/src/visualizer.rs) is embedded_tauri on its own: its page is
+ * tauri://localhost, whose "localhost" could resolve to ::1 and miss a gateway on 127.0.0.1. Its CSP allows
+ * the gateway; the Premiere panel isn't wired.
  *
  * Query parameters: `?mode=standalone|embedded_tauri|embedded_cep`, `?gateway=http://host:port` (or
  * `proxy` for the dev server's same-origin proxy), `?token=` for a LAN gateway, `?trace=` to follow one
@@ -28,8 +29,9 @@ export interface RuntimeHostAdapter {
 export function resolveHostAdapter(location: Pick<Location, "search" | "hostname" | "host" | "protocol">): RuntimeHostAdapter {
   const params = new URLSearchParams(location.search);
   const modeParam = params.get("mode");
+  const inTauri = location.protocol === "tauri:" || location.hostname === "tauri.localhost";
   const mode: HostMode =
-    modeParam === "embedded_tauri" || modeParam === "embedded_cep" ? modeParam : "standalone";
+    modeParam === "embedded_tauri" || modeParam === "embedded_cep" ? modeParam : inTauri ? "embedded_tauri" : "standalone";
   const gateway = params.get("gateway");
   let httpBase: string;
   if (gateway === "proxy") {

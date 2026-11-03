@@ -8,6 +8,8 @@ const GATEWAY = "http://127.0.0.1:18765";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Relative asset paths: the app serves the built visualizer from dist/visualizer/ (src-tauri/src/visualizer.rs).
+  base: "./",
   server: {
     port: 5173,
     strictPort: false,

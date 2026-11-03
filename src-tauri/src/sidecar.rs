@@ -854,6 +854,52 @@ pub fn start_session(app: &AppHandle) {
     });
 }
 
+/// The telemetry gateway the Telemetry Studio window reads (visualizer.rs), run as a job of the app's own.
+pub const GATEWAY_JOB_ID: &str = "telemetry-gateway";
+
+/// Starts `telemetry-gateway` (127.0.0.1:18765, the app's telemetry folder) unless the app's is running
+/// already. Ok(true) when it was started now. It stops with `stop_gateway`, or when the app quits.
+pub fn start_gateway(app: &AppHandle) -> Result<bool, String> {
+    let jobs = app.state::<SidecarJobs>();
+    if jobs.get(GATEWAY_JOB_ID).is_some() {
+        return Ok(false);
+    }
+    let root = python_root(app);
+    if !package_dir(&root).join("__main__.py").is_file() {
+        return Err(format!("The agent sidecar is not installed at {}", package_dir(&root).display()));
+    }
+    let mut launch = Launch::for_command(&root, uv_environment(app).as_deref(), GATEWAY_JOB_ID, &[]);
+    launch.envs.extend(app_data_env(app));
+    let job = Arc::new(SidecarJob::default());
+    jobs.insert(GATEWAY_JOB_ID, &job)?;
+    let child = match start_child(&launch, &job) {
+        Ok(child) => child,
+        Err(message) => {
+            jobs.remove_if_same(GATEWAY_JOB_ID, &job);
+            return Err(message);
+        }
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Not interactive: the empty request is written and stdin closed, which is when the gateway starts.
+        let exit = pump(GATEWAY_JOB_ID, &job, child, &serde_json::json!({}), false, |event| {
+            emit_event(&app, GATEWAY_JOB_ID, GATEWAY_JOB_ID, event)
+        });
+        app.state::<SidecarJobs>().remove_if_same(GATEWAY_JOB_ID, &job);
+        let _ = app.emit(EXIT_EVENT, exit);
+    });
+    Ok(true)
+}
+
+/// Stops the gateway `start_gateway` started; one started elsewhere (a terminal) is left alone.
+pub fn stop_gateway(app: &AppHandle) {
+    let jobs = app.state::<SidecarJobs>();
+    if let Some(job) = jobs.get(GATEWAY_JOB_ID) {
+        jobs.remove_if_same(GATEWAY_JOB_ID, &job);
+        job.cancel();
+    }
+}
+
 // ------------------------------------------------------------------------------------ commands
 
 /// Starts a one-shot sidecar job. Returns once it is running; progress and the result arrive as

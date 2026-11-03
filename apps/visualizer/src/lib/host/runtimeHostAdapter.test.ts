@@ -31,4 +31,17 @@ describe("the host adapter", () => {
     expect(a.source).toBe("mock");
     expect(resolveHostAdapter(at("?gateway=proxy")).wsUrl).toBe("ws://studio.local:5173/ws/v1/telemetry");
   });
+
+  it("connects the app's Telemetry Studio window to loopback by itself, at full size", () => {
+    // tauri://localhost: its "localhost" could resolve to ::1 and miss a gateway on 127.0.0.1.
+    const tauri = resolveHostAdapter({ search: "", hostname: "localhost", host: "localhost", protocol: "tauri:" });
+    expect(tauri.mode).toBe("embedded_tauri");
+    expect(tauri.wsUrl).toBe("ws://127.0.0.1:18765/ws/v1/telemetry");
+    expect(tauri.compact).toBe(false);
+    expect(resolveHostAdapter({ search: "", hostname: "tauri.localhost", host: "tauri.localhost", protocol: "http:" }).mode).toBe(
+      "embedded_tauri",
+    );
+    // A browser page on this Mac stays standalone.
+    expect(resolveHostAdapter(at("", "localhost", "localhost:5173")).mode).toBe("standalone");
+  });
 });

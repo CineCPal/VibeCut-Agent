@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && vite build --config vite.panel.config.ts",
+    "build": "tsc && vite build && vite build --config vite.panel.config.ts && npm run build:visualizer",
+    "build:visualizer": "npm --prefix apps/visualizer run build -- --outDir ../../dist/visualizer --emptyOutDir",
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",

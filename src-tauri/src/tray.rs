@@ -15,6 +15,7 @@ pub const NAVIGATE_EVENT: &str = "navigate";
 const ID_CHAT: &str = "tray-chat";
 const ID_LIBRARY: &str = "tray-library";
 const ID_BROLL: &str = "tray-broll";
+const ID_VISUALIZER: &str = "tray-visualizer";
 const ID_SETTINGS: &str = "tray-settings";
 const ID_ABOUT: &str = "tray-about";
 const ID_QUIT: &str = "tray-quit";
@@ -88,6 +89,8 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     let chat = MenuItem::with_id(handle, ID_CHAT, "Open Agent Panel", true, None::<&str>)?;
     let library = MenuItem::with_id(handle, ID_LIBRARY, "Open B-Roll Library", true, None::<&str>)?;
     let broll = MenuItem::with_id(handle, ID_BROLL, "Open B-Roll Analyzer", true, None::<&str>)?;
+    // A window of its own (visualizer.rs), not a view of the main one.
+    let visualizer = MenuItem::with_id(handle, ID_VISUALIZER, "Open Telemetry Studio", true, None::<&str>)?;
     let settings = MenuItem::with_id(handle, ID_SETTINGS, "Settings…", true, None::<&str>)?;
     let about = MenuItem::with_id(handle, ID_ABOUT, "About This App", true, None::<&str>)?;
     let on_top = CheckMenuItem::with_id(handle, ID_ON_TOP, "Keep on Top of Editors", true, crate::window_mode::saved(handle), None::<&str>)?;
@@ -105,6 +108,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
             &chat,
             &library,
             &broll,
+            &visualizer,
             &mini,
             &PredefinedMenuItem::separator(handle)?,
             &on_top,
@@ -132,6 +136,10 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 // As for Keep on Top: the item has flipped itself; the window follows.
                 let on = !crate::mini_player::is_on(app);
                 let _ = crate::mini_player::set(app, on);
+            } else if id == ID_VISUALIZER {
+                if let Err(message) = crate::visualizer::open(app) {
+                    eprintln!("{message}");
+                }
             } else if let Some(view) = view_for_menu_id(id) {
                 open_view(app, view);
             }
@@ -158,6 +166,7 @@ mod tests {
         assert_eq!(view_for_menu_id(ID_ABOUT), Some(View::About));
         assert_eq!(view_for_menu_id(ID_QUIT), None);
         assert_eq!(view_for_menu_id(ID_MINI), None, "Mini Player switches the window, it opens no view");
+        assert_eq!(view_for_menu_id(ID_VISUALIZER), None, "Telemetry Studio is a window of its own");
         assert_eq!(view_for_menu_id("unknown"), None);
     }
 

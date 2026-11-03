@@ -2826,6 +2826,23 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Checked:** headless Chromium screenshots of today's real trace (91 events, 17 tasks) in the split layout at 1440 x 900, before and after.
 - **Tests:** layout wrapping, the row choice, even splits and the memo; compact cards when zoomed out; the store placing again for the pane and the replay projection. Visualizer vitest 86.
 
+**The Telemetry Studio window (2026-11-02, the user's request: "launched from the VibeCut Agent top menu as a separate panel; it doesn't need to stay on top"; "it needs to open outside a browser window"):**
+- **Menu:** "Open Telemetry Studio" in the menu-bar menu, after Open B-Roll Analyzer (`tray.rs`).
+- **The window (`src-tauri/src/visualizer.rs`):** its own native window, label `visualizer`, "VibeCut Telemetry Studio", 1440 x 900 (min 900 x 600). It's ordinary: not kept on top (window_mode.rs only touches `main`), and closing it closes it. A second click brings it to the front.
+- **The page:** the installed app loads the visualizer built into the bundle. `npm run build` ends with `build:visualizer`, which builds apps/visualizer into `dist/visualizer/` (Vite `base: "./"`). A dev build loads the visualizer's dev server, `http://localhost:5173/` (`npm --prefix apps/visualizer run dev`).
+- **The gateway:**
+  - Opening the window starts `telemetry-gateway` as an app job (`sidecar::start_gateway`, job id `telemetry-gateway`, with the app's data folder), unless something already listens on 127.0.0.1:18765, such as a terminal's.
+  - Closing the window (`WindowEvent::Destroyed`) stops the one the app started (`stop_gateway`); quitting stops all jobs.
+  - The visualizer reconnects by itself, so the window doesn't wait for the gateway.
+- **Connecting:**
+  - The app's CSP `connect-src` gains `http://127.0.0.1:18765 ws://127.0.0.1:18765`.
+  - The visualizer counts a `tauri:` page (or `tauri.localhost`) as `embedded_tauri`, so it reaches 127.0.0.1 rather than `localhost`, which could be ::1.
+  - The gateway's loopback check already accepts the origin `tauri://localhost`, whose host is `localhost`.
+  - The window has no IPC permissions (capabilities name only `main`), and needs none.
+- **Telemetry:** the window shows runs only while the app has `VIBECUT_TELEMETRY=1` (the installer writes it with `--orchestrated`).
+- **Tests:** `visualizer.rs` (the page per build, the loopback address), `tray.rs` (the new item opens no view), and the adapter's Tauri case. cargo 144, visualizer vitest 89, app vitest 867, tsc, eslint.
+- **Still to check live:** opening it from the menu-bar menu in the installed app. Clicking the status item through accessibility doesn't open its menu, so the user does this check.
+
 **Forwarded tools in the trace (2026-11-02):**
 - **Why:** the Library tools (`e41398b`) and the sync tools are the app's, forwarded by the shim; they never pass the bus, where tracing happens, so they didn't appear in the visualizer.
 - **The visualizer needed no change.** It's generic over the contract's roles and tool names.
@@ -3611,3 +3628,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.
 - **2026-11-02 (Claude): Forwarded tools in the trace.** The shim traces the app tools it forwards (B-roll Library, bins, Analyzer, sync) for the visualizer; timeline reads stay untraced. See "Forwarded tools in the trace" under Phase 22.
 - **2026-11-02 (Claude): Premiere's clip order, live check passed.** An orchestrated reorder past two clips and its Revert from the app kept every track in order. See "Premiere's clip order".
+- **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.

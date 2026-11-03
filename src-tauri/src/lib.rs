@@ -19,6 +19,7 @@ mod spyglass_archive;
 mod state;
 mod transcript;
 mod tray;
+mod visualizer;
 mod window_mode;
 
 use nle::Nle;
@@ -79,6 +80,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The Telemetry Studio window closes for good; the gateway started for it stops (visualizer.rs).
+            if window.label() == visualizer::VISUALIZER_WINDOW {
+                if let WindowEvent::Destroyed = event {
+                    visualizer::closed(window.app_handle());
+                }
+                return;
+            }
             if window.label() != tray::MAIN_WINDOW {
                 return;
             }
