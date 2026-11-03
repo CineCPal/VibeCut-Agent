@@ -525,3 +525,19 @@ def test_an_orchestrated_chats_shim_runs_the_tool_bus_with_the_orchestrator_sett
         "VIBECUT_GEMMA_MODEL": "gemma3:4b",
         "VIBECUT_INDEX_DIR": "/data/vector-index",
     }
+
+
+def test_an_orchestrated_turn_notes_claudes_side_for_the_trace_and_a_direct_one_doesnt(
+    fake: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 22: the shim's trace shows Claude's reply, thinking and tokens (telemetry/notes.py)."""
+    monkeypatch.setenv("VIBECUT_APP_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("VIBECUT_TELEMETRY", "1")
+    notes = tmp_path / "data" / "telemetry" / "notes" / "job-7.jsonl"
+    run(fake)
+    assert not notes.exists()
+    fake["setup"] = {**fake["setup"], "orchestrated": True}
+    outcome, _ = run(fake)
+    assert outcome["text"] == "Marked the hook."
+    noted = [json.loads(line) for line in notes.read_text("utf-8").splitlines()]
+    assert "".join(n.get("text", "") for n in noted) == "Let me look.Marked the hook."

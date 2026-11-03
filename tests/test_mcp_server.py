@@ -601,6 +601,10 @@ def test_an_orchestrated_shim_finishes_its_trace_however_it_ends(tmp_path: Path,
         mcp_server.ORCHESTRATED_ENV: "1",
         mcp_server.DIR_ENV: str(tmp_path / "mcp"),
     }
+    # The chat's notes (telemetry/notes.py): the last turn's are there before the shim starts.
+    notes = tmp_path / "telemetry" / "notes" / "job-1.jsonl"
+    notes.parent.mkdir(parents=True)
+    notes.write_text('{"thought": "the last turn"}\n')
     process = subprocess.Popen(
         [sys.executable, "-m", "vibecut_agent", "mcp"],
         stdin=subprocess.PIPE,
@@ -625,6 +629,10 @@ def test_an_orchestrated_shim_finishes_its_trace_however_it_ends(tmp_path: Path,
         ask({"id": 1, "method": "initialize", "params": hello})
         process.stdout.readline()
         ask({"method": "notifications/initialized"})
+        # This turn's, longer than the last turn's, as a new file (NotesWriter).
+        fresh = notes.with_name("fresh.jsonl")
+        fresh.write_text('{"thought": "Trim it"}\n{"usage": {"input": 9, "output": 4, "cached": 2}}\n')
+        os.replace(fresh, notes)
         # A bus call (no app is running, so it fails) spawns the trace's root.
         ask(
             {
@@ -645,3 +653,12 @@ def test_an_orchestrated_shim_finishes_its_trace_however_it_ends(tmp_path: Path,
     events = [json.loads(line) for f in (tmp_path / "telemetry").glob("*.jsonl") for line in f.open()]
     root = [e["event_type"] for e in events if e["agent_id"] == "orchestrator.supervisor"]
     assert root[0] == "SPAWN" and root[-1] == "COMPLETED" and root.count("COMPLETED") == 1
+    # Claude's side of this turn, not the last one's, is on the root.
+    thoughts = [e["payload"]["delta_text"] for e in events if e["event_type"] == "STREAM_CHUNK"]
+    assert thoughts == ["Trim it"]
+    done = next(
+        e["payload"]
+        for e in events
+        if e["event_type"] == "COMPLETED" and e["agent_id"] == "orchestrator.supervisor"
+    )
+    assert (done["input_tokens"], done["output_tokens"], done["cached_tokens"]) == (9, 4, 2)

@@ -290,12 +290,15 @@ class Orchestration:
     # Of the app's tools, the ones an orchestrated chat keeps: the read-only ones, sync, and the editor context.
     FORWARDED = frozenset({CONTEXT_TOOL_NAME})
 
-    def __init__(self, bridge: AppBridge, bus: Any = None) -> None:
+    def __init__(self, bridge: AppBridge, bus: Any = None, notes_start: tuple[int, int] = (0, 0)) -> None:
         from vibecut_agent.orchestrator.tool_bus import FORWARDED_TOOLS
 
         self.bridge = bridge
         self._bus = bus
         self.forwarded = self.FORWARDED | frozenset(FORWARDED_TOOLS)
+        # Phase 22: where this run's chat notes start (telemetry/notes.py), and their follower once traced.
+        self.notes_start = notes_start
+        self.notes: Any = None
 
     @property
     def bus(self) -> Any:
@@ -307,7 +310,19 @@ class Orchestration:
             self._bus = OrchestratorToolBus(OrchestratorConfig.from_env("orchestrated"))
             # Phase 22: this run's events go to <appDataDir>/telemetry when VIBECUT_TELEMETRY=1.
             self._bus.telemetry = for_process("mcp", self.bridge.caller)
+            if self._bus.telemetry is not None:
+                self.follow_notes(self._bus.telemetry)
         return self._bus
+
+    def follow_notes(self, telemetry: Any) -> None:
+        """Claude's thinking, reply and tokens, from the chat's notes, on the trace's root task."""
+        from vibecut_agent.telemetry.notes import NotesFollower, notes_path
+
+        folder = telemetry.bus.journal_dir
+        if folder is None:
+            return
+        self.notes = NotesFollower(notes_path(self.bridge.caller, folder), telemetry, self.notes_start)
+        self.notes.start()
 
     def handles(self, name: str) -> bool:
         from vibecut_agent.orchestrator.tool_bus import ORCHESTRATOR_TOOL_NAMES
@@ -440,7 +455,11 @@ END_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 def main() -> int:
     caller = caller_from_env()
     bridge = AppBridge(bridge_dir(), caller)
-    orchestration = Orchestration(bridge) if orchestrated_from_env(caller) else None
+    orchestration = None
+    if orchestrated_from_env(caller):
+        from vibecut_agent.telemetry.notes import start_position
+
+        orchestration = Orchestration(bridge, notes_start=start_position(caller))
     server = build_server(bridge, orchestration)
 
     async def run() -> None:
@@ -450,6 +469,8 @@ def main() -> int:
     def finish() -> None:
         # Phase 22: the run is over (Claude Code closed the shim): its trace's root task is done.
         telemetry = getattr(orchestration._bus, "telemetry", None) if orchestration is not None else None
+        if orchestration is not None and orchestration.notes is not None:
+            orchestration.notes.stop()
         if telemetry is not None:
             telemetry.finish()
 

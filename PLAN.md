@@ -2761,7 +2761,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 **Not done here:**
 - No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).
 - No producer sends scrub audio (0x03) yet. Contact strips (0x02) now stream from real shot analyses; see "Contact strips and the editors' status" below.
-- The supervisor (not routed to) isn't instrumented, and neither are token counts or thought streams from Claude Code. The tool bus only sees tool calls, so live MUTATION and lifecycle events come through but THOUGHT chunks only come from the mock.
+- The supervisor (not routed to) isn't instrumented. ~~Nor are token counts or thought streams from Claude Code.~~ Claude's thinking, reply and tokens now reach the root task; see "Claude's side of the turn" below.
 - ~~`nle_connected` is always false in a real heartbeat.~~ Now from the app's watchers; see "Contact strips and the editors' status" below.
 - Not seen in a real browser here: the built-in browser can't open a localhost server started from this shell. The canvas and layout are covered by jsdom tests (with no canvas context) and a production build, not by eye.
 
@@ -2908,6 +2908,28 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Totals:** pytest 1323 passed, 2 skipped; cargo 147; vitest 868; visualizer 94; ruff, mypy, eslint and tsc clean.
 - **Checked from the terminal:** a real `telemetry-gateway` with `{"appControl": true}`, on port 18790 with a scratch journal. It reported `app_control: true`, forwarded Reveal, the playhead and Cancel as `control` lines, and refused Reveal of `/etc/hosts`.
 - **Still to check live:** in the installed app, Show in Finder opens Finder, Move playhead moves Resolve's or Premiere's playhead, and Stop run stops an orchestrated chat's turn.
+
+**Claude's side of the turn (2026-11-02, building on):** the root task of a chat's trace shows Claude's thinking and reply as they stream, and its token counts.
+- **Why notes, not a second writer:** the trace is the MCP shim's (V4, one writer per trace), but Claude Code's stream is read by the chat process (`claude_code_chat._run_once`). Its final `result` (usage) arrives just as Claude Code ends the shim. The stream carries what's needed while the turn runs, though: `thinking_delta` and `text_delta` blocks, and `message_start`/`message_delta` usage.
+- **`telemetry/notes.py`:**
+  - **`NotesWriter.for_turn(setup)`** returns a writer only for an orchestrated chat with `VIBECUT_TELEMETRY=1`, else None, so direct mode is untouched. For each `stream_event` it writes one line to `<telemetry>/notes/<job>.jsonl`:
+    - `{"thought"}`, `{"text"}`;
+    - `{"usage": {input, output, cached}}`, the turn's running totals. A call's prompt is counted at `message_start` (input + cache creation + cache read), its output at `message_delta` (cumulative per call).
+  - **`NotesFollower`** runs in the shim on a 100 ms daemon thread once the trace exists (`Orchestration.follow_notes`). It turns the notes into the root's events: `STREAM_CHUNK` THOUGHT / ASSISTANT_TEXT (DEBUG, coalesced by the bus) with `accumulated_tokens`, and the totals on the root's COMPLETED (`TraceEmitter.root_tokens`; `completed(tokens=)`).
+  - The shim stops the follower before finishing the trace, which reads what's left first.
+- **Turn boundaries:** each turn's notes are a new file renamed over the last (`os.replace`). The shim notes the file's inode and size when it starts (`start_position`) and reads only past that, or from the start of a different file. So a warm shim (started ahead of its turn) never replays the last turn's notes, however long the new ones are.
+- **The root task:**
+  - `ensure_root` takes the emitter's lock, so the follower and a tool call can't both spawn it.
+  - It never spawns again after `finish()`.
+  - `root_chunk` spawns the root itself if notes arrive before the first tool call.
+  - A turn with no tool calls still makes no trace: the trace starts with the first orchestration tool call, as before. Earlier notes of that turn are read then.
+- **Decided (Claude; no Gemini review):** notes in a side file, so the shim stays the trace's one writer; the chat never touches the journal. The reply text goes on the THOUGHT pane's stream too (ASSISTANT_TEXT), which the reducer already appends.
+- **Tests:**
+  - `tests/telemetry/test_notes.py` (3: the writer's lines and totals, only orchestrated with telemetry, the follower on the root with a warm start and a partial line);
+  - the chat's `test_an_orchestrated_turn_notes_claudes_side_for_the_trace_and_a_direct_one_doesnt`;
+  - `test_an_orchestrated_shim_finishes_its_trace_however_it_ends`, now with the last turn's notes before the shim starts and a longer new file. Its first version caught the shrink-only bug that the inode check fixes.
+- **Totals:** pytest 1327 passed, 2 skipped; vitest 868; visualizer 94.
+- **Still to check live:** whether Claude Code 2.1's `--include-partial-messages` streams `thinking_delta` at the chat's effort levels (the reply's `text_delta` and the usage lines are certain), and the root's tokens against the chat's own usage card.
 
 ## Sync in orchestrated mode (2026-11-02)
 
@@ -3671,6 +3693,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.
 - **2026-11-02 (Claude): Forwarded tools in the trace.** The shim traces the app tools it forwards (B-roll Library, bins, Analyzer, sync) for the visualizer; timeline reads stay untraced. See "Forwarded tools in the trace" under Phase 22.
 - **2026-11-02 (Claude): Premiere's clip order, live check passed.** An orchestrated reorder past two clips and its Revert from the app kept every track in order. See "Premiere's clip order".
+- **2026-11-02 (Claude): Claude's side of the turn in the visualizer.** An orchestrated chat writes Claude's thinking, reply and token totals as notes (`telemetry/notes/<job>.jsonl`); the shim follows them onto its trace's root task (STREAM_CHUNK, and the root COMPLETED's tokens). See "Claude's side of the turn" under Phase 22.
 - **2026-11-02 (Claude): The app's actions from the visualizer.** Stop run, Show in Finder and Move playhead go from the visualizer through the app's gateway (checked, then a `control` event) to the app, which stops the chat's turn as its Stop button does, reveals the file, or moves the editor's playhead. See "The app's actions from the visualizer" under Phase 22.
 - **2026-11-02 (Claude): Contact strips and the editors' status in the visualizer.** A traced shot analysis streams its first contact strip (VCTB 0x02) through the gateway, and the heartbeat's `nle_connected` comes from the app's watchers via `telemetry/nle_status.json`. See "Contact strips and the editors' status" under Phase 22.
 - **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.

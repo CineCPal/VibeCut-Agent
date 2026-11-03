@@ -46,6 +46,7 @@ from vibecut_agent.agent.attachments import claude_blocks
 from vibecut_agent.agent.chat_steps import DEFAULT_MAX_STEPS, OUT_OF_STEPS_NOTICE, STOPPED_NOTICE, ChatError
 from vibecut_agent.agent.effort import resolve_effort
 from vibecut_agent.agent.streaming import ReplyStream
+from vibecut_agent.telemetry.notes import NotesWriter
 
 SERVER_NAME = "vibecut"
 ALLOWED_TOOLS = f"mcp__{SERVER_NAME}__*"
@@ -563,6 +564,8 @@ def _run_once(
     emit = stream.emit
     resuming = session is not None
     args = build_args(setup, resolved_model, system_instruction, max_iterations, session, effort)
+    # Phase 22: an orchestrated turn's thinking, reply and tokens, for the shim's trace (None in direct mode).
+    notes = NotesWriter.for_turn(setup)
     running = launcher.start(args, setup)
     process, lines, stderr_parts = running.process, running.lines, running.stderr_parts
     try:
@@ -625,6 +628,8 @@ def _run_once(
             delta = _text_delta(event)
             if delta and not aborted:
                 stream.text(delta)
+            if notes is not None:
+                notes.stream_event(event)
         elif kind == "assistant":
             content = (event.get("message") or {}).get("content")
             for block in content if isinstance(content, list) else []:
@@ -640,6 +645,8 @@ def _run_once(
             result = event
 
     stream.flush()
+    if notes is not None:
+        notes.close()
     try:
         process.wait(timeout=STOP_GRACE_SECONDS)
     except subprocess.TimeoutExpired:

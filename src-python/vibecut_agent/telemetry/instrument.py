@@ -143,6 +143,7 @@ class TraceEmitter:
         self.root_label = root_label
         self.root_task_id = "task_root"
         self._root_spawned = False
+        self._root_finished = False
         self._count = 0
         # The tool call running now (task id, agent id, subagent), for the bus's mutation events.
         self.current_task: tuple[str, str, str] | None = None
@@ -154,6 +155,8 @@ class TraceEmitter:
         self._lock = threading.Lock()
         # Contact strip ids by task, named in its VLM_SHOT_TAGS artifact (attach_strip).
         self._strips: dict[str, list[str]] = {}
+        # Claude's token totals for the turn, from the chat's notes (notes.py), for the root's COMPLETED.
+        self._root_tokens = {"input": 0, "output": 0, "cached": 0}
 
     # Raw events.
 
@@ -212,9 +215,11 @@ class TraceEmitter:
         )
 
     def ensure_root(self, model_id: str = "claude-code", agent_id: str = ROOT_AGENT_ID) -> None:
-        if self._root_spawned:
-            return
-        self._root_spawned = True
+        # The notes follower's thread (root_chunk) and a tool call may both get here first.
+        with self._lock:
+            if self._root_spawned or self._root_finished:
+                return
+            self._root_spawned = True
         self._root_agent = agent_id
         self._root_began = time.perf_counter()
         self.spawn(
@@ -236,16 +241,18 @@ class TraceEmitter:
         summary: str,
         artifacts: list[dict[str, Any]] | None = None,
         parent: str | None = None,
+        tokens: dict[str, int] | None = None,
     ) -> None:
+        counted = tokens or {}
         self.emit(
             "COMPLETED",
             {
                 "task_id": task_id,
                 "latency_ms": round(max(0.0, latency_ms), 3),
                 "ttfb_ms": None,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cached_tokens": 0,
+                "input_tokens": counted.get("input", 0),
+                "output_tokens": counted.get("output", 0),
+                "cached_tokens": counted.get("cached", 0),
                 "cost_usd": 0,
                 "peak_memory_mb": 0,
                 "output_summary": short(summary),
@@ -387,14 +394,40 @@ class TraceEmitter:
         if not self._root_spawned:
             return
         self._root_spawned = False
+        self._root_finished = True
         self.completed(
             self.root_task_id,
             agent_id=self._root_agent,
             subagent="MASTER_ORCHESTRATOR",
             latency_ms=(time.perf_counter() - self._root_began) * 1000.0,
             summary=summary or f"{self._tasks_done} tool calls, {self._tasks_failed} failed",
+            tokens=dict(self._root_tokens),
         )
         self.bus.flush()
+
+    # Claude's side of the turn, from the chat's notes (notes.NotesFollower).
+
+    def root_chunk(self, channel: str, text: str, accumulated_tokens: int) -> None:
+        """Claude's thinking (THOUGHT) or reply (ASSISTANT_TEXT) on the root task, while it runs."""
+        self.ensure_root()
+        if not self._root_spawned:
+            return
+        self.emit(
+            "STREAM_CHUNK",
+            {
+                "task_id": self.root_task_id,
+                "stream_channel": channel,
+                "delta_text": text,
+                "accumulated_tokens": max(0, accumulated_tokens),
+            },
+            agent_id=self._root_agent,
+            subagent="MASTER_ORCHESTRATOR",
+            severity="DEBUG",
+        )
+
+    def root_tokens(self, input: int, output: int, cached: int) -> None:
+        """The turn's token totals so far; the root's COMPLETED reports the last."""
+        self._root_tokens = {"input": input, "output": output, "cached": cached}
 
     # One orchestration tool call as a task.
 
