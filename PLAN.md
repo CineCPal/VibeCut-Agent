@@ -2760,7 +2760,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Not done here:**
 - No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).
-- No producer sends scrub audio (0x03) yet. Contact strips (0x02) now stream from real shot analyses; see "Contact strips and the editors' status" below.
+- ~~No producer sends scrub audio (0x03) yet.~~ Real waveforms (0x01) and scrub audio (0x03) now come from the gateway; see "Real audio in the OTIO dock" below. Contact strips (0x02) now stream from real shot analyses; see "Contact strips and the editors' status" below.
 - The supervisor (not routed to) isn't instrumented. ~~Nor are token counts or thought streams from Claude Code.~~ Claude's thinking, reply and tokens now reach the root task; see "Claude's side of the turn" below.
 - ~~`nle_connected` is always false in a real heartbeat.~~ Now from the app's watchers; see "Contact strips and the editors' status" below.
 - Not seen in a real browser here: the built-in browser can't open a localhost server started from this shell. The canvas and layout are covered by jsdom tests (with no canvas context) and a production build, not by eye.
@@ -2884,6 +2884,56 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - **The real path, from the terminal:** a 2-shot test clip (testsrc2, then SMPTE bars), the traced tool bus, ffmpeg and Qwen3-VL (`qwen3-vl:8b-instruct`, Ollama). The COMPLETED (seq 5) named `trc_mcp_stripcheck_abc123_task_001_analyze`. The strip was the first shot's start, middle and end (0.58 s, 2.0 s, 3.4 s; 1536 x 288, 40 KB). A real `telemetry-gateway` on that folder sent it to a new WebSocket client after its welcome as 0x02, channel 0, seq 5.
   - **The installed app (reinstalled with `--orchestrated` and the variables):** it wrote `telemetry/nle_status.json` with its own pid, both false with neither editor running.
 - **Checked live (2026-11-03):** an orchestrated chat's shot analysis in the installed app named its strip and the file was written (`trc_mcp_1f61928f…`); the editor status passed (see the fix below). The strip as shown in the inspector was a black panel with START/MID/END boxes (the user, 2026-11-03): the frame arrived, but the app's CSP had no `blob:` in `img-src`, so the Telemetry Studio window blocked the object URL the visualizer makes for it (a dev build loads the visualizer's dev server, which the app's CSP doesn't cover, so it never showed there). **Fixed:** `img-src` gains `blob:` (tauri.conf.json); test `the_apps_csp_lets_the_visualizer_reach_the_gateway_and_show_its_strips` (visualizer.rs) pins the gateway's connect-src and the strips' img-src. **Checked live (the user, 2026-11-03, after reinstalling `f0d581f`): passed**, the strip's three frames show in the inspector.
+
+**Real audio in the OTIO dock (2026-11-03, the user's pick of what to build next after the visualizer's live checks):** waveforms (VCTB 0x01) for real deltas, and scrub audio (0x03) under the playhead. Before this, only the mock run sent 0x01, and nothing sent or played 0x03.
+- **Decided (Claude; no Gemini review):**
+  - **V16:** the gateway makes the audio itself, with ffmpeg, from the op summaries' own `target_url` and `source_range` (`instrument.op_summaries`). No schema or event payload changed, and the shim's commit never waits on ffmpeg. It reads only a local file a trace's op named (`gateway.media_of`: an absolute path or a `file://` URL with no other host, that `is_file()`), the same trust Reveal has. The strips approach (files beside the journal) doesn't fit: scrub audio is asked for on demand.
+  - **V17:** a 0x01 frame's seq is the delta's **first** MUTATION_EMITTED seq (`MutationRecord.first_seq_id`), and its channel is the op's index in `operations`. One waveform per op, stable from PROPOSED to COMMITTED. 256 little-endian int16 (min, max) pairs, as in V14. The mock's music bed moved to the same address (seq of delta_004's PROPOSED, channel 3, the duck); it was channel 2 on the last COMMITTED.
+  - **V18:** 0x03 is pulled. The client sends `SCRUB_REQUEST {request_id, trace_id, delta_id, op_id, timeline_seconds}` on the WebSocket. The gateway answers that client alone, either with 0.25 s of 48 kHz mono s16le at `source_start + (t − timeline_start)` (seq and channel as V17), or with `SCRUB_UNAVAILABLE {request_id, reason}`. Pushing whole clips would be about 96 KB/s of sound per clip. Each client has one ffmpeg at a time, and a newer request replaces one not yet started.
+  - **V19:** no GPU lock. This is CPU decode, not a model worker. The sound streams through ffmpeg pipes in `core/ffmpeg_ops.py`, and no media file is read into Python.
+  - An op with no `source_range` (a duck over a clip already on the timeline, like the mock's) gets neither a waveform nor scrub audio: nothing says where in the file it is. Waveforms go only to audio-lane ops, the only lanes that draw them; scrubbing also plays a picture clip's sound when no audio lane has one under the playhead.
+- **Python:**
+  - `ffmpeg_ops.range_peaks(path, start_s, duration_s, buckets=256)`: ffmpeg decodes the range to 8 kHz mono s16le on a pipe, read in 64 KB chunks into a running min/max per bucket (stdlib `array`). It covers at most 15 min, with a 60 s timeout. A range past the file's end leaves zeros.
+  - `ffmpeg_ops.scrub_pcm(path, at_s, duration_s=0.25)`: up to 1 s at 48 kHz.
+  - `gateway.py`:
+    - `_send_peaks`, a store listener beside `_send_strips`, indexes each trace's deltas by their first MUTATION_EMITTED (`deltas`, the newest 64 traces) and measures each audio op's media as a gateway task (`asyncio.to_thread`, two at a time).
+    - The frames are kept (`peaks`) and sent again to a later client after the welcome, after its strips.
+    - `_on_message` takes `SCRUB_REQUEST` from a welcomed client, and `_answer_scrubs` answers one at a time through the client's queue.
+    - ffmpeg_ops is imported only when it's needed, so the gateway still starts on the stdlib.
+- **Contracts (`protocol.ts`):** `WsScrubRequestSchema`; `WsScrubUnavailableSchema` (in `WsServerMessageSchema`); the 0x01 and 0x03 comments give V17 and V18.
+- **Visualizer:**
+  - `lib/audio/scrubPlayer.ts` (new): one request in flight. A drag's newer positions wait, and only the newest goes next. A frame plays only when it answers the last request. 4 ms fades, and each snippet stops the one before. The AudioContext is made on the first drag, a gesture. An answer that hasn't come within 1 s is given up on.
+  - `wsClient.sendMessage` (only once welcomed); `onScrubUnavailable`.
+  - `binaryFrameParser.scrubSamples`.
+  - The store keys waveforms by `waveformKey(seq, channel)`, and holds `scrubber`, `scrubAudio` (remembered as `vibecut.visualizer.scrubAudio`, every read and write in `try`, on by default) and `scrubNotice`.
+  - `viewModel`: clips carry `op_index` and `first_seq_id`. `clipAt` picks the clip under the playhead: audio lanes first, then picture; rolled-back ops and ops without media or a source range don't count; the newest delta wins on a lane.
+  - The ruler drags (mousedown, then window mousemove until mouseup), not just clicks.
+  - The OTIO header has a "🔊 Scrub audio" toggle (`aria-pressed`; not shown with the mock source, which has no gateway) and a status line ("No sound under the playhead", or the gateway's reason).
+  - `TrackRow` draws the waveform on inserts, overwrites and trims on audio lanes, as well as ducks and gain.
+- **Tests:**
+  - pytest:
+    - `test_range_peaks_are_the_sound_of_the_range_in_256_buckets`;
+    - `…_past_the_end_leave_zeros`;
+    - `…_refuse_what_they_cant_measure`;
+    - `test_scrub_pcm_is_a_quarter_second_at_48_khz`;
+    - `test_a_deltas_audio_op_gets_its_waveform_live_and_later`;
+    - `test_a_scrub_request_gets_the_sound_under_the_playhead` (and the four refusals);
+    - `test_only_a_local_file_an_op_names_is_read`;
+    - the mock's new address in `test_control_pauses_runs_a_mock_and_refuses_what_it_cant_do`.
+  - Visualizer vitest:
+    - `scrubPlayer.test.ts` (3);
+    - the 0x03 parser;
+    - `sendMessage` and the refusals;
+    - store keying;
+    - `clipAt`;
+    - the waveform on an A1 insert by its first seq;
+    - a ruler drag scrubbing, the notice and the toggle.
+  - **Totals:** pytest 1336 passed, 2 skipped; root vitest 868; visualizer 103; ruff, mypy, eslint, tsc and the visualizer build clean. No Rust changed.
+- **Checked from the terminal (2026-11-03, Claude):** a real `telemetry-gateway` (port 18799, scratch folder) tailing a trace another process journaled: a traced delta over a `say` voice file (3.5 s) on A1.
+  - The 0x01 frame (channel 1, the first mutation's seq, peak 0.74) reached a WebSocket client 0.28 s after the journal was written.
+  - Five `SCRUB_REQUEST`s came back as 24,000-byte 0x03 frames in 59, 61, 65, 75 and 88 ms.
+  - A headless Chrome screenshot of the built visualizer against that gateway showed the waveform on the A1 insert, none on the V2 picture clip, and the toggle in the header.
+- **Still to check live (the user):** reinstall (`npm run install-app -- --orchestrated` with `VIBECUT_TELEMETRY=1` and the model variables), then, in the Telemetry Studio, drag the OTIO ruler over a committed audio delta from an orchestrated chat and listen. A chat's deltas name the editor's own media paths, so their files must be on this Mac.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
@@ -3722,3 +3772,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): The app's actions from the visualizer.** Stop run, Show in Finder and Move playhead go from the visualizer through the app's gateway (checked, then a `control` event) to the app, which stops the chat's turn as its Stop button does, reveals the file, or moves the editor's playhead. See "The app's actions from the visualizer" under Phase 22.
 - **2026-11-02 (Claude): Contact strips and the editors' status in the visualizer.** A traced shot analysis streams its first contact strip (VCTB 0x02) through the gateway, and the heartbeat's `nle_connected` comes from the app's watchers via `telemetry/nle_status.json`. See "Contact strips and the editors' status" under Phase 22.
 - **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.
+- **2026-11-03 (Claude): Real audio in the OTIO dock.** The gateway measures each delta's audio ops from their own media (VCTB 0x01, addressed by the delta's first seq and the op's index) and answers `SCRUB_REQUEST`s with 0.25 s of the sound under the playhead (0x03). Dragging the ruler plays it, with a Scrub audio toggle. See "Real audio in the OTIO dock" under Phase 22 (V16–V19).
