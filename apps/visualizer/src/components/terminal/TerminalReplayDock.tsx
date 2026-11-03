@@ -50,7 +50,11 @@ export function searchMatcher(search: string): { test: (text: string) => boolean
   return { test: (t) => t.toLowerCase().includes(needle), error: null };
 }
 
-export function filterLogs(logs: readonly TelemetryEnvelope[], filter: LogFilter, test: (text: string) => boolean): TelemetryEnvelope[] {
+/** The rows the filter keeps; with no filter on, `logs` itself, so a 100k-row log isn't walked each batch. */
+export function filterLogs(logs: readonly TelemetryEnvelope[], filter: LogFilter, test: (text: string) => boolean): readonly TelemetryEnvelope[] {
+  if (filter.severities.size === LOG_SEVERITIES.length && !filter.subagent && !filter.agent && !filter.search.trim()) {
+    return logs;
+  }
   return logs.filter(
     (e) =>
       filter.severities.has(e.severity) &&

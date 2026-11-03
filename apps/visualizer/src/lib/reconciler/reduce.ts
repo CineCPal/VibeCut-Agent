@@ -7,6 +7,12 @@
  * TOOL_EXECUTION} (2) < MUTATION_EMITTED (3) < {COMPLETED, FAILED} (4). A status applies only when its rank
  * is higher, or when both are rank 2 and its seq is newer. A late event can't undo a finished task. The
  * one way back is a retry: a SPAWN for a task that failed recoverably (PLAN.md, "Phase 22", V13).
+ *
+ * At 100,000 rows (PLAN.md, "The log at 100k rows"), two things are kept off Immer's per-write path:
+ * - The log is appended once per call as a new frozen array, which Immer neither drafts nor walks. Pushing
+ *   into a drafted 100k array made Immer copy and re-check it on every batch.
+ * - Packet sprites are capped once per call, not with a splice per event, which went through the draft's
+ *   proxy once per element.
  */
 import type {
   ResourceHeartbeatPayload,
@@ -57,6 +63,8 @@ export interface ReduceOptions {
   nowMs?: number;
   /** Keep each envelope in `logs` (the live view); off for projections, which read the live log. */
   keepLogs?: boolean;
+  /** Inside an Immer draft: `logs` as it was, not drafted, so appending never walks a 100k-row proxy. */
+  logsBefore?: readonly TelemetryEnvelope[];
 }
 
 export function createTraceState(traceId: string | null = null): TraceState {
@@ -165,11 +173,19 @@ function addEdge(
   return edge;
 }
 
+/** Capped to MAX_ACTIVE_PACKETS by `reduceEnvelopes`, once per batch. */
 function pushPacket(state: TraceState, packet: DataPacketSprite): void {
   state.activePackets.push(packet);
-  if (state.activePackets.length > MAX_ACTIVE_PACKETS) {
-    state.activePackets.splice(0, state.activePackets.length - MAX_ACTIVE_PACKETS);
-  }
+}
+
+/**
+ * `logs` with `envs` appended, frozen, keeping the newest MAX_LOGS once it passes 1.1 × MAX_LOGS. Pass the
+ * plain (not drafted) array: the store reads it from its current state.
+ */
+export function appendLogs(logs: readonly TelemetryEnvelope[], envs: readonly TelemetryEnvelope[]): TelemetryEnvelope[] {
+  let next = logs.concat(envs);
+  if (next.length > MAX_LOGS * 1.1) next = next.slice(next.length - MAX_LOGS);
+  return Object.freeze(next) as TelemetryEnvelope[];
 }
 
 function markStarted(node: DagNode, env: TelemetryEnvelope): void {
@@ -188,10 +204,6 @@ export function reduceEnvelope(state: TraceState, env: TelemetryEnvelope, option
   if (state.trace_id === null) state.trace_id = env.trace_id;
   state.event_count += 1;
   state.max_seq_id = Math.max(state.max_seq_id, env.seq_id);
-  if (options.keepLogs ?? true) {
-    state.logs.push(env);
-    if (state.logs.length > MAX_LOGS * 1.1) state.logs.splice(0, state.logs.length - MAX_LOGS);
-  }
 
   const bay = state.studioBays[env.subagent_type];
   if (p.kind !== "CONTEXT_HANDOFF" && p.kind !== "RESOURCE_HEARTBEAT") avatarOnEvent(bay, env);
@@ -367,9 +379,10 @@ export function reduceEnvelopes(
   options: ReduceOptions = {},
 ): void {
   for (const env of envs) reduceEnvelope(state, env, options);
+  if (options.keepLogs ?? true) state.logs = appendLogs(options.logsBefore ?? state.logs, envs);
   if (options.packets && state.activePackets.length) {
     const now = options.nowMs ?? Date.now();
-    const alive = state.activePackets.filter((pkt) => pkt.born_ms + pkt.duration_ms > now);
+    const alive = state.activePackets.filter((pkt) => pkt.born_ms + pkt.duration_ms > now).slice(-MAX_ACTIVE_PACKETS);
     if (alive.length !== state.activePackets.length) state.activePackets = alive;
   }
 }

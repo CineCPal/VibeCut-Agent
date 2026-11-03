@@ -13,6 +13,7 @@
  * live. Components read `selectView(state)`, which is the projection when there is one.
  */
 import type { TelemetryEnvelope } from "@vibecut/contracts";
+import { isDraft, original } from "immer";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import type { ScrubTarget } from "../lib/audio/scrubPlayer";
@@ -254,7 +255,9 @@ export const useVisualizerStore = create<VisualizerState>()(
         s.followedTraceId = followed;
         if (!mine.length) return;
         const before = s.live.topology_version;
-        reduceEnvelopes(s.live, mine, { packets: s.replayCursorSeqId === null, nowMs });
+        // The log as it was before this batch, not drafted (a trace just followed is a plain new state).
+        const logsBefore = isDraft(s.live) ? (original(s.live)?.logs ?? []) : s.live.logs;
+        reduceEnvelopes(s.live, mine, { packets: s.replayCursorSeqId === null, nowMs, logsBefore });
         if (s.live.topology_version !== before) s.dagSize = layOut(s.live, s.dagBox);
       }),
 
