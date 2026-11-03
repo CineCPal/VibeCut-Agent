@@ -3,7 +3,8 @@
  * on the LAN) connects to the page's host on :18765. The embedded modes connect to 127.0.0.1:18765. The
  * app's Telemetry Studio window (src-tauri/src/visualizer.rs) is embedded_tauri on its own: its page is
  * tauri://localhost, whose "localhost" could resolve to ::1 and miss a gateway on 127.0.0.1. Its CSP allows
- * the gateway; the Premiere panel isn't wired.
+ * the gateway. Premiere's docked panel (src/cep.tsx) is embedded_cep, given its gateway and the panel key from
+ * gateway.json through `cepPanel.panelLocation`, the same parameters a URL would carry.
  *
  * Query parameters: `?mode=standalone|embedded_tauri|embedded_cep`, `?gateway=http://host:port` (or
  * `proxy` for the dev server's same-origin proxy), `?token=` for a LAN gateway, `?trace=` to follow one

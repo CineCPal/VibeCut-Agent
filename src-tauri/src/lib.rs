@@ -77,6 +77,8 @@ pub fn run() {
             }
             // Old waveform envelopes of the audio sync (audiosync.rs) are cleared out now and then.
             audiosync::prune_in_background(app.handle());
+            // Premiere's Telemetry Studio panel: the gateway runs while it's open (visualizer.rs).
+            visualizer::watch_studio_panel(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

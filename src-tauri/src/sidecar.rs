@@ -898,6 +898,11 @@ pub fn start_gateway(app: &AppHandle) -> Result<bool, String> {
 }
 
 /// Stops the gateway `start_gateway` started; one started elsewhere (a terminal) is left alone.
+/// Whether the app's own gateway job is running.
+pub fn gateway_running(app: &AppHandle) -> bool {
+    app.state::<SidecarJobs>().get(GATEWAY_JOB_ID).is_some()
+}
+
 pub fn stop_gateway(app: &AppHandle) {
     let jobs = app.state::<SidecarJobs>();
     if let Some(job) = jobs.get(GATEWAY_JOB_ID) {

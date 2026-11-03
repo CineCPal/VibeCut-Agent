@@ -189,7 +189,8 @@ export function TerminalReplayDock({ collapsible = true }: { collapsible?: boole
                 <span className="w-[76px] shrink-0" style={{ color: SEVERITY_COLOR[env.severity] }}>
                   [{env.severity}]
                 </span>
-                <span className="w-44 shrink-0 truncate text-warm-grey">[{env.agent_id}]</span>
+                {/* The agent id gives way to the summary in a narrow panel; it's in the filter above too. */}
+                <span className="hidden w-44 shrink-0 truncate text-warm-grey sm:inline">[{env.agent_id}]</span>
                 <span className="truncate text-[#e6edf3]">{summarize(env)}</span>
               </button>
             );

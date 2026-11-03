@@ -5,10 +5,11 @@
 import { formatCount } from "../../lib/format/format";
 import { nleConnected, selectView, useVisualizerStore, type ViewMode } from "../../store/useVisualizerStore";
 
-const MODES: { mode: ViewMode; key: string; label: string }[] = [
-  { mode: "split", key: "1", label: "Split Studio+DAG" },
-  { mode: "studio", key: "2", label: "Virtual Studio" },
-  { mode: "dag", key: "3", label: "Execution DAG" },
+// `short` is shown narrower than 640 px (Premiere's docked panel), where the full labels take two rows.
+const MODES: { mode: ViewMode; key: string; label: string; short: string }[] = [
+  { mode: "split", key: "1", label: "Split Studio+DAG", short: "Split" },
+  { mode: "studio", key: "2", label: "Virtual Studio", short: "Studio" },
+  { mode: "dag", key: "3", label: "Execution DAG", short: "DAG" },
 ];
 
 const STATUS_DOT: Record<string, string> = {
@@ -92,7 +93,7 @@ export function TopTelemetryBar() {
         </span>
       )}
       <nav className="ml-auto flex items-center gap-1" aria-label="View mode">
-        {MODES.map(({ mode, key, label }) => (
+        {MODES.map(({ mode, key, label, short }) => (
           <button
             key={mode}
             type="button"
@@ -100,8 +101,12 @@ export function TopTelemetryBar() {
             className={`rounded border px-2 py-0.5 ${viewMode === mode ? "border-athletic-blue-light text-[#e6edf3]" : "border-border text-cool-grey hover:text-[#e6edf3]"}`}
             onClick={() => setViewMode(mode)}
             title={`${label} (${key})`}
+            aria-label={`${key}: ${label}`}
           >
-            {key}: {label}
+            <span className="sm:hidden">{short}</span>
+            <span className="hidden sm:inline">
+              {key}: {label}
+            </span>
           </button>
         ))}
         <button

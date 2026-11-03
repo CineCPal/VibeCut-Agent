@@ -23,6 +23,10 @@ pub const PANEL_FILES: &[&str] = &[
     "broll/index.html",
     "broll/dist/panel.js",
     "broll/dist/panel.css",
+    // The docked Telemetry Studio (Phase 22), built by `npm run build:studio-panel`.
+    "studio/index.html",
+    "studio/dist/studio.js",
+    "studio/dist/studio.css",
 ];
 /// CEP 11 is Premiere 22–24; CEP 12 is Premiere 25 and later.
 const CSXS_DOMAINS: &[&str] = &["com.adobe.CSXS.11", "com.adobe.CSXS.12"];
@@ -215,7 +219,7 @@ mod tests {
         for file in PANEL_FILES {
             assert!(source.join(file).is_file(), "{file} is missing");
         }
-        assert_eq!(bundle_version(&source).as_deref(), Some("0.17.0"));
+        assert_eq!(bundle_version(&source).as_deref(), Some("0.18.0"));
         let manifest = std::fs::read_to_string(source.join("CSXS/manifest.xml")).unwrap();
         assert!(manifest.contains("ExtensionBundleId=\"com.vibecutagent.connect\""));
         assert!(!manifest.contains("com.vibecut.connect\""));

@@ -396,6 +396,68 @@ def test_other_origins_and_hosts_are_refused_without_a_token(tmp_path: Path) -> 
     with_gateway(check, tmp_path)
 
 
+def test_a_cep_page_needs_the_panel_key_from_gateway_json(tmp_path: Path) -> None:
+    """V20: Premiere's panel is a file:// page (Origin null; file:// for its WebSocket). It gets in only
+    with the key gateway.json holds (this user's alone); without it, or with another, it's refused, as a
+    sandboxed iframe on a website would be. Stopping removes the file."""
+    journal(tmp_path)
+
+    async def check(gateway: Gateway) -> None:
+        path = tmp_path / "gateway.json"
+        info = json.loads(path.read_text("utf-8"))
+        assert info == {
+            "url": f"http://127.0.0.1:{gateway.port}",
+            "ws_url": f"ws://127.0.0.1:{gateway.port}/ws/v1/telemetry",
+            "panel_key": gateway.panel_key,
+            "pid": os.getpid(),
+        }
+        assert path.stat().st_mode & 0o777 == 0o600
+        key = info["panel_key"]
+        for origin in ("null", "file://"):
+            status, _, _ = await http(gateway.port, "GET", "/api/v1/traces", headers={"Origin": origin})
+            assert status == 403
+            status, _, _ = await http(
+                gateway.port, "GET", "/api/v1/traces?token=wrong", headers={"Origin": origin}
+            )
+            assert status == 403
+            status, headers, body = await http(
+                gateway.port, "GET", f"/api/v1/traces?token={key}", headers={"Origin": origin}
+            )
+            assert status == 200 and body["traces"] and headers["access-control-allow-origin"] == origin
+        status, _, _ = await http(
+            gateway.port,
+            "GET",
+            "/api/v1/health",
+            headers={"Origin": "null", "Authorization": f"Bearer {key}"},
+        )
+        assert status == 200
+        # A preflight carries no key and gets nothing but the CORS answer.
+        status, headers, _ = await http(gateway.port, "OPTIONS", "/api/v1/traces", headers={"Origin": "null"})
+        assert status == 204 and headers["access-control-allow-origin"] == "null"
+        # The key doesn't let in a website.
+        status, _, _ = await http(
+            gateway.port, "GET", f"/api/v1/traces?token={key}", headers={"Origin": "https://evil.example"}
+        )
+        assert status == 403
+        with pytest.raises(ConnectionRefusedError):
+            await WsClient.connect(gateway.port, origin="file://")
+        ws = await WsClient.connect(gateway.port, origin="file://", path=f"/ws/v1/telemetry?token={key}")
+        await ws.send_json(_hello())
+        assert (await ws.receive_json())["type"] == "SERVER_WELCOME"
+        await ws.close()
+
+    with_gateway(check, tmp_path)
+    assert not (tmp_path / "gateway.json").exists()
+
+
+def test_a_gateway_leaves_another_gateways_file_alone(tmp_path: Path) -> None:
+    async def check(gateway: Gateway) -> None:
+        (tmp_path / "gateway.json").write_text(json.dumps({"panel_key": "someone else's"}), "utf-8")
+
+    with_gateway(check, tmp_path)
+    assert json.loads((tmp_path / "gateway.json").read_text("utf-8"))["panel_key"] == "someone else's"
+
+
 def test_a_token_is_needed_when_there_is_one(tmp_path: Path) -> None:
     async def check(gateway: Gateway) -> None:
         status, _, _ = await http(gateway.port, "GET", "/api/v1/health")

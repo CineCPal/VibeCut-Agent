@@ -34,6 +34,12 @@ Endpoints:
   `{"appControl": true}`, sidecar.rs `start_gateway`) checks them and hands them on as a `control` event on
   stdout, which the app carries out (visualizer.rs); any other gateway answers 409.
 
+The Premiere panel (PLAN.md, "The Telemetry Studio in Premiere's panel", V20): a CEP page is a `file://`
+page, whose requests carry `Origin: null` (WebSocket: `file://`). That's also what a sandboxed iframe on
+any website sends, so such an origin is let in only with the panel key: a random key per run, written with
+the gateway's address to `<folder>/gateway.json`, readable by this user only. The panel reads it with
+CEP's Node `fs`; a web page can't. The key goes as `?token=` or `Bearer`.
+
 Security (V5): the gateway binds loopback by default. A non-loopback bind (VIBECUT_TELEMETRY_BIND, for an
 iPad on the studio LAN) is refused unless VIBECUT_TELEMETRY_TOKEN is set; with a token, every HTTP request
 must carry it (`Authorization: Bearer`, or `?token=` for EventSource and WebSocket) and so must the
@@ -52,6 +58,7 @@ import json
 import math
 import os
 import re
+import secrets
 import signal
 import struct
 import sys
@@ -83,6 +90,9 @@ MAX_EVENTS_PER_RESPONSE = 20_000
 CLIENT_QUEUE_SIZE = 512
 # A journal touched this recently is a live run.
 LIVE_SECONDS = 30.0
+# The file a gateway with a folder writes for the Premiere panel (V20), and the origins a CEP page sends.
+GATEWAY_FILE = "gateway.json"
+FILE_ORIGINS = frozenset({"null", "file://"})
 # A snapshot page's largest replay, and the snapshots kept for paging (by trace and seq).
 MAX_SNAPSHOT_PAGE = 20_000
 SNAPSHOTS_KEPT = 4
@@ -167,6 +177,13 @@ def is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(name).is_loopback
     except ValueError:
         return False
+
+
+def is_loopback_origin(origin: str) -> bool:
+    """An Origin header naming a loopback host. `null` and `file://` have no host: they're not loopback
+    (an empty Host header is, for a request without one, but no page's origin is empty)."""
+    netloc = urlsplit(origin).netloc
+    return bool(netloc) and is_loopback_host(host_of(netloc))
 
 
 def host_of(value: str) -> str:
@@ -590,6 +607,8 @@ class Gateway:
         self.port = port
         self.token = token or None
         self.store = TraceStore()
+        # V20: what a CEP page (Origin null or file://) must show; written to gateway.json at start.
+        self.panel_key = secrets.token_urlsafe(24)
         self.bus = bus or TelemetryBus(folder, heartbeat=True)
         self.tailer = JournalTailer(folder, self.store) if folder is not None else None
         self.tail_interval = tail_interval
@@ -630,8 +649,43 @@ class Gateway:
         sockets = self._server.sockets
         if sockets:
             self.port = int(sockets[0].getsockname()[1])
+        self._write_gateway_file()
+
+    def _write_gateway_file(self) -> None:
+        """`<folder>/gateway.json`: where this gateway is and the panel key (V20), this user's alone (0600),
+        written to a temporary file and renamed. Nothing without a folder."""
+        if self.folder is None:
+            return
+        body = json.dumps(
+            {
+                "url": self.url,
+                "ws_url": f"ws://{self.bind}:{self.port}/ws/v1/telemetry",
+                "panel_key": self.panel_key,
+                "pid": os.getpid(),
+            }
+        )
+        partial = self.folder / f".{GATEWAY_FILE}.{os.getpid()}"
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.replace(partial, self.folder / GATEWAY_FILE)
+        except OSError:
+            with contextlib.suppress(OSError):
+                partial.unlink()
+
+    def _remove_gateway_file(self) -> None:
+        """Removes gateway.json if it's still this gateway's (another may have started since)."""
+        if self.folder is None:
+            return
+        path = self.folder / GATEWAY_FILE
+        with contextlib.suppress(OSError, ValueError):
+            if json.loads(path.read_text("utf-8")).get("panel_key") == self.panel_key:
+                path.unlink()
 
     async def stop(self) -> None:
+        self._remove_gateway_file()
         if self._server is not None:
             self._server.close()
             # wait_closed waits for every connection: a WebSocket or SSE viewer would hold it open.
@@ -840,17 +894,25 @@ class Gateway:
         origin = request.headers.get("origin")
         if origin is None:
             return None
-        if self.token is not None or is_loopback_host(host_of(urlsplit(origin).netloc)):
+        if self.token is not None or is_loopback_origin(origin):
+            return origin
+        # A CEP page: `_check` has already refused it unless it showed the panel key.
+        if origin in FILE_ORIGINS:
             return origin
         return None
 
+    @staticmethod
+    def _given_token(request: Request) -> str:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return request.param("token") or ""
+
     def _check(self, request: Request) -> None:
-        """V5: a token when there is one; else only loopback hosts and origins."""
+        """V5: a token when there is one; else only loopback hosts and origins, and a CEP page's origin
+        with the panel key (V20)."""
         if self.token is not None:
-            given = request.param("token") or ""
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("bearer "):
-                given = auth[7:].strip()
+            given = self._given_token(request)
             # The WebSocket's token comes in its hello.
             exempt = request.method == "OPTIONS" or request.path == "/ws/v1/telemetry"
             if not exempt and not hmac.compare_digest(given.encode(), self.token.encode()):
@@ -859,7 +921,14 @@ class Gateway:
         if not is_loopback_host(host_of(request.headers.get("host", ""))):
             raise GatewayError(403, "Only this Mac may read its telemetry")
         origin = request.headers.get("origin")
-        if origin is not None and not is_loopback_host(host_of(urlsplit(origin).netloc)):
+        if origin is not None and not is_loopback_origin(origin):
+            if origin in FILE_ORIGINS:
+                # A preflight carries no key and gets no data; everything else needs it.
+                if request.method == "OPTIONS" or hmac.compare_digest(
+                    self._given_token(request).encode(), self.panel_key.encode()
+                ):
+                    return
+                raise GatewayError(403, "A page from a file needs the panel key in gateway.json")
             raise GatewayError(403, "Only pages served from this Mac may read its telemetry")
 
     async def _respond(

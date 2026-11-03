@@ -11,6 +11,11 @@
 //! the one the app started. The app's CSP lets its pages reach the gateway (tauri.conf.json, connect-src) and
 //! show the contact strips the gateway streams, which the visualizer turns into `blob:` URLs (img-src).
 //!
+//! Premiere's docked Telemetry Studio panel (src-premiere-panel/studio, PLAN.md "The Telemetry Studio in
+//! Premiere's panel") reads the same gateway, with the panel key from gateway.json. While it's open it stamps
+//! `<appData>/telemetry/studio-panel-alive.json` every 2 s; `watch_studio_panel` starts the gateway while
+//! that stamp is fresh and stops it once neither the panel nor this window wants it.
+//!
 //! The visualizer's app actions reach the app through the gateway the app started: it checks them and
 //! sends each back as a `control` event (gateway.py), which `on_control` carries out. Reveal shows the
 //! file in Finder; a playhead move goes to that editor's watcher (`set_playhead`); Cancel asks the main
@@ -19,7 +24,8 @@
 use crate::nle::Host;
 use serde_json::{json, Value};
 use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const VISUALIZER_WINDOW: &str = "visualizer";
@@ -27,6 +33,11 @@ pub const TITLE: &str = "VibeCut Telemetry Studio";
 /// Where the gateway listens (gateway.py's default; loopback only).
 pub const GATEWAY_ADDR: &str = "127.0.0.1:18765";
 const DEV_URL: &str = "http://localhost:5173/";
+/// The Premiere panel's heartbeat, beside the journals (cepPanel.ts `ALIVE_FILE`).
+pub const STUDIO_PANEL_ALIVE: &str = "studio-panel-alive.json";
+/// The panel stamps every 2 s; a stamp this old means it's closed (or Premiere quit).
+const STUDIO_PANEL_WITHIN_S: f64 = 6.0;
+const STUDIO_PANEL_POLL: Duration = Duration::from_secs(2);
 const BUNDLED_PAGE: &str = "visualizer/index.html";
 /// To the main window: stop the turn of the chat whose job the trace names (`{caller}`).
 pub const CANCEL_TURN_EVENT: &str = "visualizer-cancel-turn";
@@ -151,9 +162,71 @@ fn full_screen_behavior(
     behavior
 }
 
-/// The window has closed: stop the gateway the app started for it.
+/// The window has closed: stop the gateway the app started for it, unless Premiere's panel still reads it.
 pub fn closed(app: &AppHandle) {
-    crate::sidecar::stop_gateway(app);
+    if !studio_panel_alive_now(app) {
+        crate::sidecar::stop_gateway(app);
+    }
+}
+
+/// Whether the panel's heartbeat in `telemetry` was stamped (its `time`, in seconds) within
+/// `STUDIO_PANEL_WITHIN_S` of `now`.
+pub fn studio_panel_alive(telemetry: &Path, now: f64) -> bool {
+    let Ok(text) = std::fs::read_to_string(telemetry.join(STUDIO_PANEL_ALIVE)) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("time").and_then(Value::as_f64))
+        .is_some_and(|stamp| (now - stamp).abs() <= STUDIO_PANEL_WITHIN_S)
+}
+
+fn studio_panel_alive_now(app: &AppHandle) -> bool {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    app.path().app_data_dir().is_ok_and(|dir| studio_panel_alive(&dir.join("telemetry"), now))
+}
+
+/// What to do with the app's gateway, given who wants it. Start: the panel is open and nothing listens.
+/// Stop: neither the panel nor the window wants it, and it's the app's own.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GatewayNeed {
+    Start,
+    Stop,
+    Keep,
+}
+
+pub fn gateway_need(panel_alive: bool, window_open: bool, app_gateway_running: bool, listening: bool) -> GatewayNeed {
+    if panel_alive && !app_gateway_running && !listening {
+        GatewayNeed::Start
+    } else if !panel_alive && !window_open && app_gateway_running {
+        GatewayNeed::Stop
+    } else {
+        GatewayNeed::Keep
+    }
+}
+
+/// Checks the Premiere panel's heartbeat every 2 s for as long as the app runs (lib.rs `setup`).
+pub fn watch_studio_panel(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(STUDIO_PANEL_POLL);
+        let running = crate::sidecar::gateway_running(&app);
+        let need = gateway_need(
+            studio_panel_alive_now(&app),
+            app.get_webview_window(VISUALIZER_WINDOW).is_some(),
+            running,
+            !running && gateway_listening(),
+        );
+        match need {
+            GatewayNeed::Start => {
+                if let Err(message) = crate::sidecar::start_gateway(&app) {
+                    eprintln!("Telemetry Studio panel: the telemetry gateway didn't start: {message}");
+                }
+            }
+            GatewayNeed::Stop => crate::sidecar::stop_gateway(&app),
+            GatewayNeed::Keep => {}
+        }
+    });
 }
 
 #[cfg(test)]
@@ -219,6 +292,27 @@ mod tests {
         let made = full_screen_behavior(given);
         assert!(made.contains(B::FullScreenPrimary | B::Managed));
         assert!(!made.intersects(B::FullScreenAuxiliary | B::FullScreenNone | B::CanJoinAllSpaces));
+    }
+
+    #[test]
+    fn the_studio_panels_heartbeat_keeps_the_gateway_running() {
+        let dir = std::env::temp_dir().join(format!("vca-studio-panel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!studio_panel_alive(&dir, 1000.0));
+        std::fs::write(dir.join(STUDIO_PANEL_ALIVE), r#"{"time": 1000.5, "pid": 7}"#).unwrap();
+        assert!(studio_panel_alive(&dir, 1003.0));
+        assert!(!studio_panel_alive(&dir, 1010.0));
+        std::fs::write(dir.join(STUDIO_PANEL_ALIVE), "not json").unwrap();
+        assert!(!studio_panel_alive(&dir, 1000.0));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // (panel alive, window open, the app's gateway running, something else listening)
+        assert_eq!(gateway_need(true, false, false, false), GatewayNeed::Start);
+        assert_eq!(gateway_need(true, false, false, true), GatewayNeed::Keep, "a terminal's gateway serves it");
+        assert_eq!(gateway_need(true, false, true, false), GatewayNeed::Keep);
+        assert_eq!(gateway_need(false, true, true, false), GatewayNeed::Keep, "the window still reads it");
+        assert_eq!(gateway_need(false, false, true, false), GatewayNeed::Stop);
+        assert_eq!(gateway_need(false, false, false, true), GatewayNeed::Keep, "not the app's to stop");
     }
 
     #[test]

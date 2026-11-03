@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:cep": "vite build --config vite.cep.config.ts",
     "preview": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
