@@ -27,7 +27,7 @@ export interface StudioBayConfig {
   bay: number;
   subagent: SubagentType;
   title: string;
-  /** Logical anchor (the bay's centre) on the 1280x720 grid; §3.1's table. */
+  /** Logical anchor (the bay's centre) on the 1280x980 grid (§3.1, made taller)'s table. */
   x: number;
   y: number;
   w: number;

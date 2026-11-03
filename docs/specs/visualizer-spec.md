@@ -964,7 +964,7 @@ To prevent out-of-order packets (e.g., when a fast UDP/WebSocket frame or multip
 
 ### 3.1 Virtual Studio / Editing Bay Spatial Layout ("The Edit Suite")
 
-The **Virtual Studio** renders an interactive pixel-art post-production facility (`1280 × 720` logical coordinate grid, rendered with crisp integer scaling `image-rendering: pixelated` on a dark `#0D1117` floorplan with `#161B22` acoustic room bays and `#30363D` cable conduits).
+The **Virtual Studio** renders an interactive pixel-art post-production facility (`1280 × 980` logical coordinate grid — taller than the original `1280 × 720` so bays and text read at split-pane size — rendered with crisp integer scaling `image-rendering: pixelated` on a dark `#0D1117` floorplan with `#161B22` acoustic room bays and `#30363D` cable conduits).
 
 ```text
 +---------------------------------------------------------------------------------------------------+
@@ -1459,7 +1459,7 @@ npm --prefix apps/visualizer run test -- --run
 
 #### Output Deliverables
 1. **Virtual Studio Canvas & Sprite Engine (`apps/visualizer/src/components/studio/`):**
-   - `VirtualStudioCanvas.tsx`: Hardware-accelerated HTML5 Canvas 2D renderer drawing the 7 post-production bays (`1280 × 720` logical coordinate grid), workstation props, overhead HUD badges, and animated `DataPacketSprite` beams along chamfered conduits.
+   - `VirtualStudioCanvas.tsx`: Hardware-accelerated HTML5 Canvas 2D renderer drawing the 7 post-production bays (`1280 × 980` logical coordinate grid), workstation props, overhead HUD badges, and animated `DataPacketSprite` beams along chamfered conduits.
    - `ProceduralPixelAvatar.tsx`: Deterministic 16×16 pixel-art generator and offscreen `512×512` sprite atlas builder covering all 7 `SubagentType` roles × 8 FSM animation rows (`IDLE`, `LISTENING`, `PROCESSING_THINKING`, `READING_ASSET`, `WRITING_OTIO`, `RENDERING`, `BLOCKED_ERROR`, `SUCCESS_CELEBRATE`).
    - `AvatarBadge.tsx`: Reusable pixel-art avatar component with state halo for DAG nodes and inspector headers.
 2. **Interactive DAG Renderer (`apps/visualizer/src/components/dag/` & `src/lib/dag/layout.ts`):**

@@ -20,14 +20,20 @@ export function DockToggle({ dock, title, controls, hotkey, collapsible }: DockT
   return (
     <button
       type="button"
-      className="flex items-center gap-1 rounded font-sans font-semibold text-[#e6edf3] hover:text-white focus-visible:outline-2"
+      className="group flex items-center gap-2 rounded py-0.5 font-sans font-semibold text-[#e6edf3] hover:text-white focus-visible:outline-2"
       aria-expanded={!collapsed}
       aria-controls={controls}
       title={`${collapsed ? "Show" : "Hide"} the ${title} (${hotkey})`}
       onClick={() => toggleDock(dock)}
     >
-      <span aria-hidden="true" className="inline-block w-3 text-cool-grey transition-transform" style={{ transform: collapsed ? "rotate(-90deg)" : undefined }}>
-        ▾
+      <span
+        aria-hidden="true"
+        className="inline-flex h-6 w-6 items-center justify-center rounded border border-border bg-canvas text-cool-grey transition-transform group-hover:border-cool-grey group-hover:text-white"
+        style={{ transform: collapsed ? "rotate(-90deg)" : undefined }}
+      >
+        <svg viewBox="0 0 12 12" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2.5 4.5 6 8l3.5-3.5" />
+        </svg>
       </span>
       {title}
     </button>

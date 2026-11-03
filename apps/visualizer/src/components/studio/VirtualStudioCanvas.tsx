@@ -1,5 +1,5 @@
 /**
- * The virtual studio (visualizer-spec.md §3): seven bays on a 1280x720 logical grid, drawn on one Canvas
+ * The virtual studio (visualizer-spec.md §3): seven bays on a 1280x980 logical grid, drawn on one Canvas
  * 2D. It reads the store directly each frame, so a frame never waits on React. One requestAnimationFrame
  * loop draws the floor, the conduits, the bays, the avatars, the HUD badges and the packets, crisp with no
  * smoothing. With every bay idle and no packet in flight it drops to 6 FPS.
@@ -18,7 +18,9 @@ import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
 import { buildAtlas, CELL, FRAMES, spriteUrl } from "./ProceduralPixelAvatar";
 
 export const IDLE_FRAME_MS = 166;
-const AVATAR_SCALE = 1;
+const AVATAR_SCALE = 1.5;
+const TITLE_FONT = "700 24px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+const TITLE_LINE = 28;
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -49,17 +51,34 @@ function line(ctx: Ctx, path: readonly Point[]): void {
 }
 
 function pill(ctx: Ctx, x: number, y: number, text: string, color: string): void {
-  ctx.font = "600 11px 'Fira Code', 'JetBrains Mono', monospace";
-  const w = Math.ceil(ctx.measureText(text).width) + 12;
+  ctx.font = "600 20px 'Fira Code', 'JetBrains Mono', monospace";
+  const w = Math.ceil(ctx.measureText(text).width) + 20;
   ctx.fillStyle = "#0d1117";
-  ctx.fillRect(Math.round(x - w / 2), y - 9, w, 18);
+  ctx.fillRect(Math.round(x - w / 2), y - 17, w, 34);
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(Math.round(x - w / 2) + 0.5, y - 8.5, w - 1, 17);
+  ctx.lineWidth = 2;
+  ctx.strokeRect(Math.round(x - w / 2) + 1, y - 16, w - 2, 32);
   ctx.fillStyle = color;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x, y + 0.5);
+}
+
+/** Word-wraps `text` to lines no wider than `max` in the current font. */
+function wrap(ctx: Ctx, text: string, max: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    const next = current ? `${current} ${word}` : word;
+    if (current && ctx.measureText(next).width > max) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
 export function drawStudio(ctx: Ctx, view: TraceState, nowMs: number, selectedTaskId: string | null): void {
@@ -106,33 +125,35 @@ export function drawStudio(ctx: Ctx, view: TraceState, nowMs: number, selectedTa
     // The desk.
     ctx.fillStyle = bay.accent;
     ctx.globalAlpha = 0.35;
-    ctx.fillRect(left + 16, top + bay.h - 34, bay.w - 32, 10);
+    ctx.fillRect(left + 20, top + bay.h - 40, bay.w - 40, 14);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "#99928a";
-    ctx.font = "600 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    ctx.fillStyle = "#c9c2b8";
+    ctx.font = TITLE_FONT;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(`BAY ${bay.bay}: ${bay.title.toUpperCase()}`, left + 8, top + 7);
+    wrap(ctx, `BAY ${bay.bay}: ${bay.title.toUpperCase()}`, bay.w - 24).forEach((text, i) =>
+      ctx.fillText(text, left + 12, top + 22 + i * TITLE_LINE),
+    );
 
     // The avatar, standing at the desk.
     const frame = Math.floor(nowMs / (1000 / fps)) % FRAMES;
     const size = CELL * AVATAR_SCALE;
     const ax = Math.round(bay.x - size / 2);
-    const ay = Math.round(top + bay.h - size - 22);
+    const ay = Math.round(top + bay.h - size - 28);
     ctx.globalAlpha = 0.35;
     ctx.fillStyle = halo;
-    ctx.fillRect(ax - 3, ay + size - 6, size + 6, 6);
+    ctx.fillRect(ax - 4, ay + size - 8, size + 8, 8);
     ctx.globalAlpha = 1;
     const sheet = spriteSheet(bay.subagent) ?? buildAtlas(bay.subagent);
     if (sheet) {
       ctx.drawImage(sheet as CanvasImageSource, frame * CELL, row * CELL, CELL, CELL, ax, ay, size, size);
     }
-    pill(ctx, bay.x, top - 4, state.hud, halo);
+    pill(ctx, bay.x, top, state.hud, halo);
     if (state.progress !== null && avatar === "READING_ASSET") {
       ctx.fillStyle = "#30363d";
-      ctx.fillRect(left + 16, top + bay.h - 14, bay.w - 32, 4);
+      ctx.fillRect(left + 20, top + bay.h - 18, bay.w - 40, 6);
       ctx.fillStyle = "#38bdf8";
-      ctx.fillRect(left + 16, top + bay.h - 14, Math.round((bay.w - 32) * state.progress), 4);
+      ctx.fillRect(left + 20, top + bay.h - 18, Math.round((bay.w - 40) * state.progress), 6);
     }
   }
 
@@ -149,7 +170,7 @@ export function drawStudio(ctx: Ctx, view: TraceState, nowMs: number, selectedTa
     if (packet.label) {
       const p = pointAt(path, t);
       ctx.fillStyle = "#e6edf3";
-      ctx.font = "600 10px 'Fira Code', monospace";
+      ctx.font = "600 18px 'Fira Code', monospace";
       ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
       ctx.fillText(packet.label, Math.round(p.x + packet.w), Math.round(p.y - 4));
@@ -208,8 +229,14 @@ export function VirtualStudioCanvas({ className = "" }: VirtualStudioCanvasProps
 
   return (
     <div className={`relative h-full w-full overflow-hidden bg-canvas ${className}`}>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="relative w-full" style={{ aspectRatio: `${STUDIO_WIDTH} / ${STUDIO_HEIGHT}`, maxHeight: "100%" }}>
+      <div className="absolute inset-0 flex items-center justify-center" style={{ containerType: "size" }}>
+        <div
+          className="relative"
+          style={{
+            aspectRatio: `${STUDIO_WIDTH} / ${STUDIO_HEIGHT}`,
+            width: `min(100cqw, calc(100cqh * ${STUDIO_WIDTH} / ${STUDIO_HEIGHT}))`,
+          }}
+        >
           <canvas
             ref={canvasRef}
             className="pixelated absolute inset-0 h-full w-full"

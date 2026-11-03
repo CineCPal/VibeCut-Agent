@@ -6,7 +6,7 @@ import { avatarPixels } from "../../components/studio/ProceduralPixelAvatar";
 import { AVATAR_STATES } from "../../types/studio";
 
 describe("the studio's geometry", () => {
-  it("keeps every bay on the 1280x720 grid and finds them by point", () => {
+  it("keeps every bay on the studio grid and finds them by point", () => {
     for (const bay of BAYS) {
       expect(bay.x - bay.w / 2).toBeGreaterThanOrEqual(0);
       expect(bay.x + bay.w / 2).toBeLessThanOrEqual(STUDIO_WIDTH);
