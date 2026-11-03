@@ -2808,9 +2808,9 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Found and fixed:** no root task finished, though `6edeae1` meant to. Claude Code ends its MCP servers with a signal, and SIGTERM and SIGHUP killed the shim before its `finally`. A short run then journaled nothing at all. SIGINT hung, because asyncio waited on the thread reading stdin. Now an orchestrated shim (only) handles SIGTERM, SIGHUP and SIGINT (`END_SIGNALS`): it finishes the trace, then ends as the signal would have. `TraceEmitter.finish` does nothing a second time. Test: `test_an_orchestrated_shim_finishes_its_trace_however_it_ends` (stdin closed and the three signals; the signal cases fail without the fix).
 - A reinstall without `VIBECUT_TELEMETRY=1` cuts the app off from the visualizer: the installer writes only the variables it's given. Reinstall with it, as well as `--orchestrated` and the model variables.
 
-**Still to check live:**
-1. An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
-2. The visualizer by eye in a browser: studio animation, DAG pan/zoom/fit, OTIO lanes, inspector, log virtualization at 100k rows.
+**Still to check live** (status 2026-11-03):
+1. ~~An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`~~ Done: seen in the app since 2026-11-02 ("In the app" below), the COMMITTED included. The original note: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
+2. The visualizer by eye: studio animation, DAG pan/zoom/fit, OTIO lanes and the inspector have been used live in the Telemetry Studio window (2026-11-02 and 2026-11-03). Still not checked: log virtualization at 100k rows.
 
 **The DAG in large runs (2026-11-02, the user's report: "the DAG chart becomes too tall to fit the panel, everything becomes too small to see"):**
 - **Cause 1, one tall column.** In an orchestrated run every task is the supervisor's child, so all of them were rank 1 in one column. Today's 16-task run was 488 x 1956 px, which needs 17% zoom to fit a 900 x 400 pane, and the floor was 25%, so it overflowed as well as being unreadable.
@@ -2842,7 +2842,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Telemetry:** the window shows runs only while the app has `VIBECUT_TELEMETRY=1` (the installer writes it with `--orchestrated`).
 - **Full screen (the user's request):** the window goes full screen in a Space of its own (the green button, or Globe/Fn-F). An accessory app's windows don't get that by default, so `allow_full_screen` sets `FullScreenPrimary` and clears `FullScreenAuxiliary`, `FullScreenNone` and `CanJoinAllSpaces`. With Keep on Top on, the agent panel can still float over it.
 - **Tests:** `visualizer.rs` (the page per build, the loopback address), `tray.rs` (the new item opens no view), and the adapter's Tauri case. cargo 144, visualizer vitest 89, app vitest 867, tsc, eslint.
-- **Still to check live:** opening it from the menu-bar menu in the installed app. Clicking the status item through accessibility doesn't open its menu, so the user does this check.
+- **Checked live (the user, 2026-11-02 and 2026-11-03): passed.** Opened from the menu-bar menu in the installed app; it reopens after each reinstall.
 
 **Forwarded tools in the trace (2026-11-02):**
 - **Why:** the Library tools (`e41398b`) and the sync tools are the app's, forwarded by the shim; they never pass the bus, where tracing happens, so they didn't appear in the visualizer.
@@ -2883,7 +2883,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Checked (2026-11-02):**
   - **The real path, from the terminal:** a 2-shot test clip (testsrc2, then SMPTE bars), the traced tool bus, ffmpeg and Qwen3-VL (`qwen3-vl:8b-instruct`, Ollama). The COMPLETED (seq 5) named `trc_mcp_stripcheck_abc123_task_001_analyze`. The strip was the first shot's start, middle and end (0.58 s, 2.0 s, 3.4 s; 1536 x 288, 40 KB). A real `telemetry-gateway` on that folder sent it to a new WebSocket client after its welcome as 0x02, channel 0, seq 5.
   - **The installed app (reinstalled with `--orchestrated` and the variables):** it wrote `telemetry/nle_status.json` with its own pid, both false with neither editor running.
-- **Still to check live:** the strip in the Telemetry Studio's inspector after an orchestrated chat's shot analysis, and the top bar's Host with an editor open.
+- **Checked live (2026-11-03):** an orchestrated chat's shot analysis in the installed app named its strip and the file was written (`trc_mcp_1f61928f…`); the editor status passed (see the fix below). Not confirmed by eye: the strip as shown in the inspector.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
