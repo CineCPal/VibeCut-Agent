@@ -336,6 +336,17 @@ ORCHESTRATED_DECLARATIONS = [
     },
     {"name": "get_instructions", "description": "Rules.", "parameters": {"type": "OBJECT", "properties": {}}},
     {"name": "sync_clips", "description": "Sync.", "parameters": {"type": "OBJECT", "properties": {}}},
+    {"name": "find_broll", "description": "B-roll.", "parameters": {"type": "OBJECT", "properties": {}}},
+    {
+        "name": "analyze_broll_folder",
+        "description": "Score.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "build_broll_selects_timeline",
+        "description": "Selects.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
 ]
 
 
@@ -383,13 +394,16 @@ def test_an_orchestrated_chat_sees_the_orchestration_tools_the_reads_and_sync(
         names = [t.name for t in run(go).tools]
     finally:
         fake.stop()
-    # Of the app's tools, add_markers (an edit) and get_instructions (the direct-mode rules) are left out.
+    # Of the app's tools, add_markers and build_broll_selects_timeline (edits) and get_instructions (the
+    # direct-mode rules) are left out.
     assert names == [
         "list_markers",
         "list_timelines",
         "list_timeline_clips",
         "get_editor_context",
         "sync_clips",
+        "find_broll",
+        "analyze_broll_folder",
         *ORCHESTRATOR_TOOL_NAMES,
     ]
 
@@ -417,6 +431,33 @@ def test_an_orchestrated_chat_syncs_through_the_app(folder: Path, orchestration:
     calls = [(r["caller"], r["name"], r["args"]) for r in fake.seen if r["kind"] == "call_tool"]
     assert calls == [("job-1", "sync_clips", {"clipIds": ["v1"]})]
     assert mcp_server.timeout_for("sync_clips") == mcp_server.LONG_TIMEOUT_SECONDS
+
+
+def test_an_orchestrated_chat_searches_the_library_through_the_app(folder: Path, orchestration: Any) -> None:
+    # The vector index doesn't cover the B-roll Library, so find_broll goes to the app's Spyglass search.
+    match = {"path": "/Volumes/Archive/beach.mov", "start": 4.0, "end": 9.5, "status": "ok"}
+
+    def answer(request: dict[str, Any]) -> dict[str, Any]:
+        if request["kind"] == "list_tools":
+            return {"ok": True, "result": {"tools": ORCHESTRATED_DECLARATIONS}}
+        return {"ok": True, "result": {"matches": [match]}}
+
+    fake = FakeApp(folder, answer)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                return await client.call_tool("find_broll", {"query": "waves at sunset"})
+
+        result = run(go)
+    finally:
+        fake.stop()
+    assert result.is_error is False
+    assert json.loads(result.content[0].text) == {"matches": [match]}
+    calls = [(r["caller"], r["name"], r["args"]) for r in fake.seen if r["kind"] == "call_tool"]
+    assert calls == [("job-1", "find_broll", {"query": "waves at sunset"})]
+    assert mcp_server.timeout_for("find_broll") == mcp_server.LONG_TIMEOUT_SECONDS
 
 
 def test_an_orchestrated_chat_edits_only_through_a_validated_delta(

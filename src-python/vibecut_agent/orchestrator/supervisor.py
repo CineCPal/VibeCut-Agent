@@ -11,7 +11,8 @@ loop in either mode), and is kept, with its tests, for a provider that may super
 Each turn runs gemini_chat's own loop, unchanged, with three differences:
 
 - Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
-  app's tools, only the ones that read and the three sync tools (tool_bus.FORWARDED_TOOLS); every other
+  app's tools, only the ones that read, the B-roll Analyzer and the three sync tools
+  (tool_bus.FORWARDED_TOOLS); every other
   edit goes through `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
   say how.
 - When Gemini calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
@@ -48,9 +49,13 @@ ORCHESTRATED_INSTRUCTION = """\
 You are working as the supervising editor, with local workers that index and check the media. You don't \
 edit the timeline with individual tools here; every change is one declarative OTIO delta:
 
-1. Find material with semantic_asset_search (dialogue, visual or hybrid). For one file's words or shots, \
-use transcribe_and_align or analyze_shot_visuals; for frame-accurate cut points (silences, hard cuts, \
-loudness), detect_media_boundaries.
+1. Find material with semantic_asset_search (dialogue, visual or hybrid), which covers the media the local \
+workers have indexed. The user's B-roll Library is Spyglass's index of their archive: search it with \
+find_broll (list_spyglass_folders and describe_spyglass_folder show its folders). The project's own bins: \
+search_media_pool and list_media_pool. A folder of footage Spyglass hasn't indexed: analyze_broll_folder \
+scores its clips and picks each one's best segments. For one file's words or shots, use transcribe_and_align \
+or analyze_shot_visuals; for frame-accurate cut points (silences, hard cuts, loudness), \
+detect_media_boundaries.
 2. Read the timeline (list_timeline_clips with detail=true) for its clip ids, rate and free space.
 3. Write the change as a vibecut.otio.delta.v1 delta and send it with propose_otio_delta. Times are \
 RationalTime at the timeline's own rate: timeline ranges on whole frames, source ranges in the source's \
@@ -62,6 +67,13 @@ editor's notes: weigh them, and say so when you go ahead anyway.
 log. A token is used once; if the timeline changed since, propose again.
 
 Keep each delta to one editorial idea, so each can be reverted on its own.
+
+B-roll from the Library: each find_broll match is one shot, start to end seconds in its file. Use only status \
+"ok" matches and prefer higher technical scores. Check a shortlisted shot with analyze_shot_visuals over that \
+range (custom_prompt_focus from the brief) to confirm it fits and choose its best seconds, and use \
+detect_media_boundaries when it needs a clean in or out point. Place it in the delta with media_reference \
+target_url "file://" plus the match's path and a source range of the chosen seconds times the timeline's \
+rate, not with add_clips.
 
 Syncing a camera with a separately recorded sound file is the one edit outside the delta: a delta can link \
 picture and sound but can't find the offset between them. Use sync_and_place to place cameras with their \

@@ -69,12 +69,22 @@ READ_ONLY_TOOLS = (
     "list_markers",
     "get_playhead_time",
     "get_edit_log",
+    # The B-roll Library (Spyglass's index) and the project's bins, which the vector index doesn't cover
+    # (PLAN.md, "Library search in orchestrated mode").
+    "find_broll",
+    "list_spyglass_folders",
+    "describe_spyglass_folder",
+    "list_media_pool",
+    "search_media_pool",
 )
+# The Analyze tab's scoring of a folder Spyglass hasn't indexed: it reads the footage and leaves the editor as
+# it was, but runs a job the tab shows.
+LIBRARY_TOOLS = ("analyze_broll_folder",)
 # The app's edits Claude keeps too: waveform sync needs the app's matcher (audiosync.rs), which no delta can
 # reach. Each is a direct edit with its own backup, edit-log entry and Revert (PLAN.md, "Sync in orchestrated
 # mode").
 SYNC_TOOLS = ("sync_and_place", "sync_clips", "slip_into_sync")
-FORWARDED_TOOLS = READ_ONLY_TOOLS + SYNC_TOOLS
+FORWARDED_TOOLS = READ_ONLY_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.
 MAX_RESULT_CHARS = 60_000

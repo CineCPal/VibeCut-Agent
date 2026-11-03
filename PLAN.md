@@ -2850,6 +2850,35 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Still to check live:** reinstall with `npm run install-app -- --orchestrated` plus the model variables, then ask a Claude (subscription) chat to sync a camera with its recorder file.
 
+## Library search in orchestrated mode (2026-11-02)
+
+**Why (the user, 2026-11-02):** the installed app (orchestrated) said it had no tool to search the user's library, and that was true. `semantic_asset_search` reads only the orchestrator's own vector index, which holds only media the local workers have indexed. The B-roll Library's tools (`find_broll`, `list_spyglass_folders`, `describe_spyglass_folder`) and the media-pool reads weren't forwarded.
+
+**Decided (Claude; no Gemini review, per the user's standing rule):**
+- **Forwarded:** `find_broll`, `list_spyglass_folders`, `describe_spyglass_folder`, `list_media_pool`, `search_media_pool` and the B-roll Analyzer's `analyze_broll_folder` now go through to the app in orchestrated mode. None of them edits the editor, so every edit still goes through a delta.
+- **Not forwarded:** `build_broll_selects_timeline` (an edit) and `export_broll_selects` (an XML for another app).
+- **Not a sub-agent (the user asked):** the orchestrator's workers each turn raw media into something new. Spyglass has already cut the archive into shots, each with a caption, tags, technical and energy scores, and embeddings. Searching it is one ranked lookup, like `semantic_asset_search`, which is a tool. A library agent would add a model hop and a new schema for nothing. The search already takes the shared `GpuLock`, through `broll/vision_energy.py`. The Analyzer is a deterministic local job, like `detect_media_boundaries`.
+- **Which part of a shot (the user asked):** `ORCHESTRATED_INSTRUCTION` sets the order:
+  1. `find_broll`; use only `"ok"` matches and prefer higher technical scores. Each match is one shot, with its start and end seconds in the file.
+  2. `analyze_shot_visuals` over that range, with a focus from the brief, to confirm the shot and choose its best seconds.
+  3. `detect_media_boundaries` for a clean in or out point.
+  4. Place it in the delta, with `target_url` = `file://` + the path and the seconds × the timeline's rate (not `add_clips`, which `find_broll`'s own description names).
+
+**Changes:**
+- `orchestrator/tool_bus.py`:
+  - the five reads join `READ_ONLY_TOOLS`;
+  - a new `LIBRARY_TOOLS` holds `analyze_broll_folder`;
+  - `FORWARDED_TOOLS` is now `READ_ONLY_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS`.
+- `ORCHESTRATED_INSTRUCTION`: step 1 says what each search covers, and a new paragraph covers B-roll from the Library.
+- `mcp_server.py`: `find_broll` joins `LONG_TOOLS`. Its first search installs the content-aware packages and loads SigLIP 2, which can take longer than 120 s. In direct mode the only change is the longer wait.
+- No schema, module path or direct-mode tool behaviour changed.
+
+**Tests:** `test_an_orchestrated_chat_sees_the_orchestration_tools_the_reads_and_sync` (now also checks `find_broll` and `analyze_broll_folder` are offered and `build_broll_selects_timeline` isn't) and `test_an_orchestrated_chat_searches_the_library_through_the_app` (`tests/test_mcp_server.py`). pytest (1317, 2 skipped), vitest (867), ruff, mypy.
+
+**Known flake (not from this change):** `tests/test_mcp_server.py` fails about 1 run in 8 on an unmodified HEAD, in a different test each time; the failure says the app "isn't running". The likely cause is `FakeApp._beat`, which writes `agent-alive.json` without an atomic rename, so the bridge can read a half-written heartbeat.
+
+**Checked live (the user, 2026-11-02):** after a reinstall (`npm run install-app -- --orchestrated` with the model variables and `VIBECUT_TELEMETRY=1`), an orchestrated Claude (subscription) chat searched the B-roll Library, which it couldn't before.
+
 ## Premiere's clip order (2026-11-02)
 
 **Why (the user, 2026-11-02):** after an orchestrated chat cut a 90-second piece on Sequence 02, Premiere drew Oli's clips as missing but played them, and drew Bernice's but didn't play them. Closing and reopening the project didn't help.
@@ -3560,3 +3589,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Premiere's clip order.** A scripted move past another clip left Premiere's track list out of time order, so its timeline drew and played the wrong clips (Sequence 02). Every move now places such clips again at their destination, unwanted halves on free or scratch tracks; `reshape_clip` checks each clip against its own file. Both modes, the user's call. See "Premiere's clip order" above.
 - **2026-11-02 (Claude): The visualizer's DAG fits large runs.** A tall rank wraps into columns shaped for the pane, cards go compact below 75% zoom, the zoom floor is 0.1x, and the split layout no longer grows to the OTIO dock's width. See "The DAG in large runs" under Phase 22.
 - **2026-11-02 (Claude): The visualizer's OTIO preview and log collapse** to their headers (title or T/L), remembered per browser. See "Collapsible docks" under Phase 22.
+- **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.

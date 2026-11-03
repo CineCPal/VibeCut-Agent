@@ -16,8 +16,8 @@ with the chat's own ``claude_schema.to_claude_tool``, so the two can't drift apa
 In orchestrated mode (Phase 21; ``VIBECUT_MCP_ORCHESTRATED=1``, which claude_code_chat sets for the app's
 own Claude Code run when ``EXECUTION_MODE=orchestrated``), this process plays the part
 orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
-- it offers the six orchestration tools, and of the app's tools only the read-only ones and the three
-  sync tools (tool_bus.FORWARDED_TOOLS);
+- it offers the six orchestration tools, and of the app's tools only the read-only ones (the B-roll Library
+  and the media pool among them), the B-roll Analyzer and the three sync tools (tool_bus.FORWARDED_TOOLS);
 - it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
   timeline and whose commit go to the app through the bridge as this chat's own calls;
 - it refuses any other call.
@@ -101,6 +101,8 @@ LONG_TOOLS = frozenset(
         "export_clips",
         # Phase 16e: a folder of footage can take minutes to score.
         "analyze_broll_folder",
+        # The first search installs the content-aware packages and loads SigLIP 2.
+        "find_broll",
         "build_broll_selects_timeline",
         # Phase 21: a validated OTIO delta's calls, one after another in the editor.
         "commit_otio_delta",
