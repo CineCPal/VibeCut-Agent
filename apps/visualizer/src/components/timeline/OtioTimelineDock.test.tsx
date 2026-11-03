@@ -1,7 +1,7 @@
 import type { DeltaOpSummary, SupportedRate, TelemetryPayload } from "@vibecut/contracts";
-import { act, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
-import { buildTracks, duckEnvelopePath, timelineSeconds, trimDeltaFrames } from "../../lib/timeline/viewModel";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTracks, clipAt, duckEnvelopePath, timelineSeconds, trimDeltaFrames } from "../../lib/timeline/viewModel";
 import { useVisualizerStore } from "../../store/useVisualizerStore";
 import { env } from "../../test/envelopes";
 import { OtioTimelineDock } from "./OtioTimelineDock";
@@ -88,8 +88,88 @@ describe("the OTIO dock's lanes", () => {
   });
 });
 
+describe("the clip under the playhead", () => {
+  const media = { target_url: "file:///m/a.wav", source_range: tr(0, 48, 24) };
+  const at = (ops: DeltaOpSummary[], seconds: number, stage: MutationRecord["mutation_stage"] = "COMMITTED") => {
+    const records = record(ops, 24);
+    records.d.mutation_stage = stage;
+    return clipAt(buildTracks(records, 10), seconds);
+  };
+
+  it("takes an audio lane over picture, and only an op with media and a source range", () => {
+    const picture = op("op_v", "INSERT_CLIP", "Video", 1, 0, 48, 24, media);
+    const sound = op("op_a", "INSERT_CLIP", "Audio", 2, 24, 48, 24, media);
+    const bare = op("op_b", "DUCK_REGION", "Audio", 1, 0, 96, 24);
+    expect(at([picture, sound, bare], 0.5)?.op.op_id).toBe("op_v");
+    expect(at([picture, sound, bare], 1.5)?.op.op_id).toBe("op_a");
+    expect(at([picture, sound, bare], 1.5)?.op_index).toBe(1);
+    expect(at([picture, sound, bare], 3.5)).toBeNull();
+    expect(at([sound], 1.5, "ROLLED_BACK")).toBeNull();
+  });
+});
+
 describe("OtioTimelineDock", () => {
-  beforeEach(() => useVisualizerStore.getState().reset());
+  beforeEach(() => {
+    localStorage.clear();
+    useVisualizerStore.getState().reset();
+  });
+
+  const dialogue = () => [
+    op("op_v", "INSERT_CLIP", "Video", 2, 0, 50, 25, { target_url: "file:///m/drone.mov", source_range: tr(0, 50, 25) }),
+    op("op_a", "INSERT_CLIP", "Audio", 1, 250, 50, 25, { target_url: "file:///m/tone.wav", source_range: tr(25, 50, 25) }),
+  ];
+
+  it("draws the gateway's waveform on an inserted audio clip, by the delta's first seq and the op's index", () => {
+    render(<OtioTimelineDock />);
+    act(() => {
+      const store = useVisualizerStore.getState();
+      store.applyBatch([env(4, mutationPayload("PROPOSED", dialogue(), 25), { subagent: "PACING_CUTTER" })]);
+      store.applyBatch([env(6, mutationPayload("COMMITTED", dialogue(), 25), { subagent: "PACING_CUTTER" })]);
+      store.addWaveform(6, 1, [-0.5, 0.5]);
+    });
+    expect(screen.queryByTestId("waveform")).toBeNull();
+    act(() => useVisualizerStore.getState().addWaveform(4, 1, [-0.5, 0.5, -0.25, 0.25]));
+    const waveform = screen.getByTestId("waveform");
+    expect(waveform.closest('[data-op-type="INSERT_CLIP"]')?.closest('[role="row"]')).toHaveAttribute("aria-label", "A1 Dialog");
+  });
+
+  it("scrubs the sound under the playhead as the ruler is dragged, and not once turned off", () => {
+    const request = vi.fn();
+    render(<OtioTimelineDock />);
+    expect(screen.queryByRole("button", { name: /Scrub audio/ })).toBeNull();
+    act(() => {
+      const store = useVisualizerStore.getState();
+      store.setScrubber({ request });
+      store.applyBatch([env(4, mutationPayload("PROPOSED", dialogue(), 25), { subagent: "PACING_CUTTER" })]);
+    });
+    const ruler = screen.getByTestId("ruler");
+    // 20 px/s: 230 px is 11.5 s, 1.5 s into the A1 clip.
+    fireEvent.mouseDown(ruler, { clientX: 230, button: 0 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 236 }));
+      window.dispatchEvent(new MouseEvent("mouseup"));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 400 }));
+    });
+    expect(request.mock.calls.map(([t]) => [t.opId, t.timelineSeconds, t.seq, t.channel, t.deltaId])).toEqual([
+      ["op_a", 11.5, 4, 1, "delta_004"],
+      ["op_a", 11.8, 4, 1, "delta_004"],
+    ]);
+    expect(request.mock.calls[0][0].traceId).toBe(useVisualizerStore.getState().live.trace_id);
+
+    fireEvent.mouseDown(ruler, { clientX: 100, button: 0 });
+    act(() => void window.dispatchEvent(new MouseEvent("mouseup")));
+    expect(screen.getByTestId("scrub-notice")).toHaveTextContent("No sound under the playhead");
+
+    const toggle = screen.getByRole("button", { name: /Scrub audio/ });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(localStorage.getItem("vibecut.visualizer.scrubAudio")).toBe("off");
+    fireEvent.mouseDown(ruler, { clientX: 230, button: 0 });
+    act(() => void window.dispatchEvent(new MouseEvent("mouseup")));
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("playhead-tc")).toHaveTextContent("00:00:11:13");
+  });
 
   it("shows each mutation kind with its diff badge and the delta's stage", () => {
     const ops = [
@@ -125,7 +205,7 @@ describe("OtioTimelineDock", () => {
     render(<OtioTimelineDock />);
     act(() => {
       useVisualizerStore.getState().applyBatch([env(7, mutationPayload("COMMITTED", ops, 29.97), { subagent: "AUDIO_ENGINEER" })]);
-      useVisualizerStore.getState().addWaveform(7, [-0.5, 0.5, -0.25, 0.25]);
+      useVisualizerStore.getState().addWaveform(7, 0, [-0.5, 0.5, -0.25, 0.25]);
     });
     expect(screen.getByTestId("waveform")).toBeInTheDocument();
     expect(screen.getByTestId("playhead-tc")).toHaveTextContent("00:00:00;00");

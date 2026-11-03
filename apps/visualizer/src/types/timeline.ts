@@ -25,6 +25,9 @@ export interface ClipDiffViewModel {
   key: string;
   op: DeltaOpSummary;
   delta_id: string;
+  /** The op's index in its delta and the delta's first seq: where its waveform and scrub audio are (V17). */
+  op_index: number;
+  first_seq_id: number;
   stage: MutationStage;
   task_id: string;
   /** e.g. "CUTTER" for the attribution pill. */

@@ -15,6 +15,7 @@
 import type { TelemetryEnvelope } from "@vibecut/contracts";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+import type { ScrubTarget } from "../lib/audio/scrubPlayer";
 import { createLayoutMemo } from "../lib/dag/layout";
 import { ProjectionCache } from "../lib/reconciler/projection";
 import { createTraceState, reduceEnvelopes, type TraceState } from "../lib/reconciler/reduce";
@@ -42,6 +43,35 @@ function saveCollapsed(collapsed: Record<DockId, boolean>): void {
   } catch {
     // Private window or blocked storage: the choice lasts until reload.
   }
+}
+
+const SCRUB_KEY = "vibecut.visualizer.scrubAudio";
+
+/** Whether dragging the OTIO ruler plays the sound under it: on unless this viewer turned it off. */
+function loadScrubAudio(): boolean {
+  try {
+    return localStorage.getItem(SCRUB_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function saveScrubAudio(on: boolean): void {
+  try {
+    localStorage.setItem(SCRUB_KEY, on ? "on" : "off");
+  } catch {
+    // As above: lasts until reload.
+  }
+}
+
+/** A waveform's key: the delta's first MUTATION_EMITTED seq and the op's index (V17). */
+export function waveformKey(seq: number, channel: number): string {
+  return `${seq}:${channel}`;
+}
+
+/** The scrub player, as the store sees it (lib/audio/scrubPlayer.ts). */
+export interface Scrubber {
+  request: (target: ScrubTarget) => void;
 }
 export type SeverityFilter = "ALL" | "DEBUG" | "INFO" | "MUTATION" | "WARN" | "ERROR";
 
@@ -106,8 +136,14 @@ export interface VisualizerState {
   hostHealth: HostHealth | null;
   /** Posts a control action to the gateway; null with no gateway (the mock source). */
   sendControl: ControlSender | null;
-  /** VCTB 0x01 peaks by the seq they belong to, as numbers in [-1, 1]. */
-  waveforms: Record<number, number[]>;
+  /** VCTB 0x01 peaks by `waveformKey(seq, channel)`, as numbers in [-1, 1]. */
+  waveforms: Record<string, number[]>;
+  /** Plays the sound under the OTIO playhead; null with no gateway (the mock source). */
+  scrubber: Scrubber | null;
+  /** Whether dragging the ruler plays it (remembered in this browser). */
+  scrubAudio: boolean;
+  /** Why the last scrub had nothing to play; null once one plays. */
+  scrubNotice: string | null;
   /** VCTB 0x02 JPEG strips by seq, as object URLs. */
   contactStrips: Record<number, string>;
   aboutOpen: boolean;
@@ -131,7 +167,10 @@ export interface VisualizerState {
   setHostHealth: (health: HostHealth | null) => void;
   setControlSender: (sender: ControlSender | null) => void;
   setKnownTraces: (traces: KnownTrace[]) => void;
-  addWaveform: (seq: number, peaks: number[]) => void;
+  addWaveform: (seq: number, channel: number, peaks: number[]) => void;
+  setScrubber: (scrubber: Scrubber | null) => void;
+  toggleScrubAudio: () => void;
+  setScrubNotice: (notice: string | null) => void;
   addContactStrip: (seq: number, url: string) => void;
   setAboutOpen: (open: boolean) => void;
   setDagBox: (width: number, height: number) => void;
@@ -171,6 +210,9 @@ const initial = () => ({
   hostHealth: null,
   sendControl: null as ControlSender | null,
   waveforms: {},
+  scrubber: null as Scrubber | null,
+  scrubAudio: loadScrubAudio(),
+  scrubNotice: null as string | null,
   contactStrips: {},
   aboutOpen: false,
   dagSize: { width: 0, height: 0 },
@@ -288,7 +330,15 @@ export const useVisualizerStore = create<VisualizerState>()(
           if (!known || t.latest_seq_id >= known.latest_seq_id) s.knownTraces[t.trace_id] = t;
         }
       }),
-    addWaveform: (seq, peaks) => set((s) => void (s.waveforms[seq] = peaks)),
+    addWaveform: (seq, channel, peaks) => set((s) => void (s.waveforms[waveformKey(seq, channel)] = peaks)),
+    setScrubber: (scrubber) => set((s) => void (s.scrubber = scrubber)),
+    toggleScrubAudio: () =>
+      set((s) => {
+        s.scrubAudio = !s.scrubAudio;
+        s.scrubNotice = null;
+        saveScrubAudio(s.scrubAudio);
+      }),
+    setScrubNotice: (notice) => set((s) => void (s.scrubNotice = notice)),
     addContactStrip: (seq, url) =>
       set((s) => {
         const old = s.contactStrips[seq];

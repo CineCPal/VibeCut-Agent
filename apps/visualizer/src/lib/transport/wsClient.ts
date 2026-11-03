@@ -5,8 +5,8 @@
  * doubling to 5 s, ±20% jitter).
  *
  * Text frames are checked against the Zod contracts: an envelope that doesn't fit is counted and dropped,
- * never applied. Binary frames are VCTB (binaryFrameParser.ts). The socket and fetch are injectable, for
- * the tests.
+ * never applied. Binary frames are VCTB (binaryFrameParser.ts). `sendMessage` carries the viewer's own
+ * requests (scrub audio) once the server has welcomed it. The socket and fetch are injectable, for the tests.
  */
 import type { TelemetryEnvelope } from "@vibecut/contracts";
 import {
@@ -59,6 +59,8 @@ export interface WsClientOptions {
   onStatus?: (status: ConnectionStatus, detail?: string) => void;
   onWelcome?: (activeTraceId: string | null, currentSeq: number) => void;
   onLatency?: (rttMs: number) => void;
+  /** A SCRUB_UNAVAILABLE: the request it answers, and why. */
+  onScrubUnavailable?: (requestId: number | string | null, reason: string) => void;
   createSocket?: (url: string) => WebSocketLike;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -77,6 +79,7 @@ export class TelemetryWsClient {
   private retryTimer: unknown = null;
   private disconnectedAt: number | null = null;
   private traceId: string | null;
+  private welcomed = false;
   private readonly options: WsClientOptions;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -117,6 +120,17 @@ export class TelemetryWsClient {
     this.traceId = traceId;
     if (!this.stopped) {
       this.socket?.close(1000, "following another trace");
+    }
+  }
+
+  /** Sends a request of the viewer's own; false before the welcome or with no socket. */
+  sendMessage(message: object): boolean {
+    if (!this.socket || !this.welcomed) return false;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -177,6 +191,7 @@ export class TelemetryWsClient {
     }
     socket.binaryType = "arraybuffer";
     this.socket = socket;
+    this.welcomed = false;
     socket.onopen = () => {
       socket.send(
         JSON.stringify({
@@ -196,6 +211,7 @@ export class TelemetryWsClient {
     socket.onclose = () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.welcomed = false;
       this.clearTimers();
       if (this.disconnectedAt === null) this.disconnectedAt = this.now();
       if (!this.stopped) this.scheduleReconnect();
@@ -261,6 +277,7 @@ export class TelemetryWsClient {
       const reconnect = this.attempts > 0;
       this.attempts = 0;
       this.disconnectedAt = null;
+      this.welcomed = true;
       this.options.onStatus?.("open");
       this.options.onWelcome?.(message.active_trace_id, message.current_seq_id);
       this.schedulePing();
@@ -273,6 +290,8 @@ export class TelemetryWsClient {
       }
     } else if (message.type === "PONG") {
       this.options.onLatency?.(Math.max(0, this.now() - message.client_time_ms));
+    } else if (message.type === "SCRUB_UNAVAILABLE") {
+      this.options.onScrubUnavailable?.(message.request_id, message.reason);
     } else if (message.type === "ERROR") {
       this.stopped = true;
       this.options.onStatus?.("error", message.message);

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { completed, env, failed, handoff, planning, spawn, tool, waiting } from "../test/envelopes";
 import { mockTrace } from "../lib/reconciler/mockTraceGenerator";
-import { selectView, useVisualizerStore } from "./useVisualizerStore";
+import { selectView, useVisualizerStore, waveformKey } from "./useVisualizerStore";
 
 const store = () => useVisualizerStore.getState();
 
@@ -104,10 +104,11 @@ describe("useVisualizerStore", () => {
     expect(selectView(store())).toBe(store().live);
   });
 
-  it("keeps waveforms and contact strips by seq", () => {
-    store().addWaveform(12, [-1, 1]);
+  it("keeps waveforms by seq and op index, and contact strips by seq", () => {
+    store().addWaveform(12, 3, [-1, 1]);
     store().addContactStrip(5, "blob:a");
-    expect(store().waveforms[12]).toEqual([-1, 1]);
+    expect(store().waveforms[waveformKey(12, 3)]).toEqual([-1, 1]);
+    expect(store().waveforms[waveformKey(12, 0)]).toBeUndefined();
     expect(store().contactStrips[5]).toBe("blob:a");
   });
 });

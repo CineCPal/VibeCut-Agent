@@ -1,17 +1,18 @@
 /**
  * Wires the pieces together: the host adapter says where the gateway is, the socket hands envelopes to
  * the reconciler, and the reconciler hands a frame's worth to the store. Binary frames go to the store
- * as waveforms and contact strips. The health and trace list are polled every 2 s and 5 s for the top
- * bar and the About modal.
+ * as waveforms, contact strips and scrub audio (lib/audio/scrubPlayer.ts, which sends its requests on the
+ * same socket). The health and trace list are polled every 2 s and 5 s for the top bar and the About modal.
  *
  * With `?source=mock` there is no gateway: the built-in mock run plays through the same reconciler.
  */
 import { VctbFrameType } from "@vibecut/contracts";
 import { useVisualizerStore, type HostHealth, type KnownTrace } from "../store/useVisualizerStore";
+import { ScrubPlayer } from "./audio/scrubPlayer";
 import type { RuntimeHostAdapter } from "./host/runtimeHostAdapter";
 import { replayTimed } from "./reconciler/mockTraceGenerator";
 import { TelemetryReconciler } from "./reconciler/TelemetryReconciler";
-import { waveformPeaks, type VctbFrame } from "./transport/binaryFrameParser";
+import { scrubSamples, waveformPeaks, type VctbFrame } from "./transport/binaryFrameParser";
 import { TelemetryWsClient } from "./transport/wsClient";
 
 export const HEALTH_POLL_MS = 2000;
@@ -19,9 +20,11 @@ export const TRACES_POLL_MS = 5000;
 
 type Store = typeof useVisualizerStore;
 
-export function handleBinaryFrame(store: Store, frame: VctbFrame): void {
+export function handleBinaryFrame(store: Store, frame: VctbFrame, player?: ScrubPlayer | null): void {
   if (frame.frameType === VctbFrameType.AUDIO_WAVEFORM_PEAKS) {
-    store.getState().addWaveform(frame.seqId, waveformPeaks(frame));
+    store.getState().addWaveform(frame.seqId, frame.channel, waveformPeaks(frame));
+  } else if (frame.frameType === VctbFrameType.TIMELINE_SCRUB_AUDIO) {
+    player?.receive(frame.seqId, frame.channel, scrubSamples(frame));
   } else if (frame.frameType === VctbFrameType.VLM_CONTACT_STRIP_JPEG && typeof URL.createObjectURL === "function") {
     const blob = new Blob([frame.payload.slice()], { type: "image/jpeg" });
     store.getState().addContactStrip(frame.seqId, URL.createObjectURL(blob));
@@ -48,8 +51,9 @@ export function startTelemetry(adapter: RuntimeHostAdapter, store: Store = useVi
   }
 
   const headers: Record<string, string> = adapter.token ? { Authorization: `Bearer ${adapter.token}` } : {};
-  // Created below; the reconciler's gap fill goes through it.
+  // Created below; the reconciler's gap fill and the scrub player go through it.
   let client: TelemetryWsClient | null = null;
+  const player = new ScrubPlayer({ send: (message) => client?.sendMessage(message) ?? false });
   const reconciler = new TelemetryReconciler({
     onFlush: (envs) => state().applyBatch(envs),
     fetchGap: (traceId, from, to) =>
@@ -72,12 +76,19 @@ export function startTelemetry(adapter: RuntimeHostAdapter, store: Store = useVi
       reconciler.resetTrace(snapshot.trace_id, snapshot.snapshot_seq_id);
       state().hydrateSnapshot(snapshot.trace_id, snapshot.snapshot_seq_id, snapshot.replay_events);
     },
-    onBinary: (frame) => handleBinaryFrame(store, frame),
+    onBinary: (frame) => {
+      if (frame.frameType === VctbFrameType.TIMELINE_SCRUB_AUDIO) state().setScrubNotice(null);
+      handleBinaryFrame(store, frame, player);
+    },
+    onScrubUnavailable: (requestId, reason) => {
+      if (player.unavailable(requestId)) state().setScrubNotice(reason);
+    },
     onStatus: (status, detail) => state().setConnection({ status, detail: detail ?? null }),
     onLatency: (rtt) => state().setConnection({ latency_ms: rtt }),
   });
   state().setConnection({ url: adapter.wsUrl, source: "gateway" });
   client.connect();
+  state().setScrubber(player);
 
   state().setControlSender(async (traceId, action, params) => {
     const response = await fetch(`${adapter.httpBase}/api/v1/control/${encodeURIComponent(traceId)}`, {
@@ -135,6 +146,8 @@ export function startTelemetry(adapter: RuntimeHostAdapter, store: Store = useVi
     clearInterval(tracesTimer);
     clearInterval(pruneTimer);
     state().setControlSender(null);
+    state().setScrubber(null);
+    player.close();
     client?.close();
     reconciler.clear();
   };

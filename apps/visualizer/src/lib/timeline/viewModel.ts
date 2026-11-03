@@ -42,7 +42,7 @@ export function buildTracks(mutations: Record<string, MutationRecord>, pxPerSec:
   lane("Audio", 2);
   const ordered = Object.values(mutations).sort((a, b) => a.first_seq_id - b.first_seq_id);
   for (const mutation of ordered) {
-    for (const op of mutation.operations) {
+    mutation.operations.forEach((op, opIndex) => {
       const start = op.timeline_range.start_time;
       const x = toPixels(start, pxPerSec);
       const end = toPixels(rangeEnd(op.timeline_range), pxPerSec);
@@ -50,6 +50,8 @@ export function buildTracks(mutations: Record<string, MutationRecord>, pxPerSec:
         key: `${mutation.delta_id}:${op.op_id}`,
         op,
         delta_id: mutation.delta_id,
+        op_index: opIndex,
+        first_seq_id: mutation.first_seq_id,
         stage: mutation.mutation_stage,
         task_id: mutation.task_id,
         agent_short: SUBAGENT_SHORT[mutation.subagent as SubagentType] ?? mutation.subagent,
@@ -57,11 +59,32 @@ export function buildTracks(mutations: Record<string, MutationRecord>, pxPerSec:
         width: Math.max(MIN_CLIP_PX, end - x),
       };
       lane(op.track_kind, op.track_index).clips.push(clip);
-    }
+    });
   }
   return [...lanes.values()].sort((a, b) =>
     a.kind !== b.kind ? (a.kind === "Video" ? -1 : 1) : a.kind === "Video" ? b.index - a.index : a.index - b.index,
   );
+}
+
+/**
+ * The clip whose sound plays under the playhead at `seconds`. Only an op with media and a source range
+ * counts, and rolled-back ones don't. Audio lanes come first (A1, A2, …), then picture, top down. On a
+ * lane, the newest delta wins.
+ */
+export function clipAt(tracks: OtioTrackViewModel[], seconds: number): ClipDiffViewModel | null {
+  const ordered = [...tracks.filter((t) => t.kind === "Audio"), ...tracks.filter((t) => t.kind === "Video")];
+  for (const track of ordered) {
+    let found: ClipDiffViewModel | null = null;
+    for (const clip of track.clips) {
+      const { op } = clip;
+      if (clip.stage === "ROLLED_BACK" || !op.target_url || !op.source_range) continue;
+      const start = toSeconds(op.timeline_range.start_time);
+      if (seconds < start || seconds >= toSeconds(rangeEnd(op.timeline_range))) continue;
+      if (!found || clip.first_seq_id > found.first_seq_id) found = clip;
+    }
+    if (found) return found;
+  }
+  return null;
 }
 
 /** The end of the last op, in seconds (the ruler's length). */

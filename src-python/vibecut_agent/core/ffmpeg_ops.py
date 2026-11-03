@@ -13,11 +13,13 @@ or at the caller's `rate` for a file with no picture."""
 
 from __future__ import annotations
 
+import array
 import itertools
 import math
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterable
 from fractions import Fraction
@@ -430,3 +432,128 @@ def _grab_frames(path: str, times: list[Fraction], width: int, image: Path) -> N
         message = done.stderr.decode(errors="ignore").strip()[-300:]
         raise FfmpegOpError(message or f"ffmpeg wrote no frame at {float(times[0]):.3f} s")
     partial.replace(image)
+
+
+# Audio for the visualizer's OTIO dock (PLAN.md, "Phase 22", "Real audio in the OTIO dock"): a clip's
+# waveform (VCTB 0x01) and a scrub snippet under the playhead (VCTB 0x03). ffmpeg decodes the range to mono
+# 16-bit samples on a pipe; the peaks are kept per bucket as the pipe is read, so no more than one chunk of
+# sound is ever in Python, and a snippet is a quarter second.
+PEAKS_SAMPLE_RATE = 8000
+PEAKS_BUCKETS = 256
+MAX_PEAKS_SECONDS = 15 * 60
+SCRUB_SAMPLE_RATE = 48000
+SCRUB_SECONDS = 0.25
+AUDIO_TIMEOUT_S = 60.0
+_PIPE_CHUNK = 64 * 1024
+
+
+def _audio_pipe(path: str, start_s: float, duration_s: float, sample_rate: int) -> subprocess.Popen[bytes]:
+    command = ["ffmpeg", "-hide_banner", "-nostats", "-nostdin", "-v", "error"]
+    if start_s > 0:
+        command += ["-ss", f"{start_s:.6f}"]
+    command += ["-i", path, "-t", f"{duration_s:.6f}", "-map", "0:a:0", "-vn", "-sn"]
+    command += ["-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"]
+    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _read_samples(
+    process: subprocess.Popen[bytes], limit: int, on_chunk: Callable[[array.array[int]], None]
+) -> None:
+    """Hands `on_chunk` the pipe's samples (at most `limit`) a chunk at a time; FfmpegOpError when ffmpeg
+    fails or runs past AUDIO_TIMEOUT_S."""
+    assert process.stdout is not None and process.stderr is not None
+    deadline = time.monotonic() + AUDIO_TIMEOUT_S
+    left = limit
+    carry = b""
+    try:
+        while left > 0:
+            if time.monotonic() > deadline:
+                raise FfmpegOpError(f"ffmpeg took over {AUDIO_TIMEOUT_S:g} s reading the sound")
+            data = process.stdout.read(_PIPE_CHUNK)
+            if not data:
+                break
+            data = carry + data
+            whole = len(data) - len(data) % 2
+            carry = data[whole:]
+            samples = array.array("h")
+            samples.frombytes(data[:whole])
+            if sys.byteorder == "big":
+                samples.byteswap()
+            if len(samples) > left:
+                samples = samples[:left]
+            left -= len(samples)
+            if samples:
+                on_chunk(samples)
+        if left > 0:
+            code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            if code != 0:
+                message = process.stderr.read().decode(errors="ignore").strip()[-300:]
+                raise FfmpegOpError(message or "ffmpeg couldn't read the sound")
+    except subprocess.TimeoutExpired:
+        raise FfmpegOpError(f"ffmpeg took over {AUDIO_TIMEOUT_S:g} s reading the sound") from None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def range_peaks(path: str, start_s: float, duration_s: float, buckets: int = PEAKS_BUCKETS) -> bytes:
+    """The sound of `duration_s` seconds from `start_s`, as `buckets` (min, max) pairs of little-endian
+    int16 (V14), all channels mixed to mono. A range that runs past the file's end leaves its last buckets
+    at 0."""
+    _check_file(path)
+    _check_window(start_s, start_s + duration_s if duration_s > 0 else start_s)
+    if duration_s > MAX_PEAKS_SECONDS:
+        raise FfmpegOpError(f"A waveform covers at most {MAX_PEAKS_SECONDS // 60} minutes")
+    if not 1 <= buckets <= 4096:
+        raise FfmpegOpError("buckets must be 1 to 4096")
+    total = max(1, round(duration_s * PEAKS_SAMPLE_RATE))
+    mins = [0] * buckets
+    maxes = [0] * buckets
+    seen = [False] * buckets
+    position = 0
+
+    def take(samples: array.array[int]) -> None:
+        nonlocal position
+        index = 0
+        while index < len(samples):
+            bucket = min(buckets - 1, (position + index) * buckets // total)
+            # The first sample past this bucket.
+            edge = min(len(samples), -(-(bucket + 1) * total // buckets) - position)
+            edge = max(edge, index + 1)
+            part = samples[index:edge]
+            low, high = min(part), max(part)
+            if seen[bucket]:
+                mins[bucket] = min(mins[bucket], low)
+                maxes[bucket] = max(maxes[bucket], high)
+            else:
+                mins[bucket], maxes[bucket], seen[bucket] = low, high, True
+            index = edge
+        position += len(samples)
+
+    _read_samples(_audio_pipe(path, start_s, duration_s, PEAKS_SAMPLE_RATE), total, take)
+    pairs = array.array("h", [v for pair in zip(mins, maxes, strict=True) for v in pair])
+    if sys.byteorder == "big":
+        pairs.byteswap()
+    return pairs.tobytes()
+
+
+def scrub_pcm(path: str, at_s: float, duration_s: float = SCRUB_SECONDS) -> bytes:
+    """`duration_s` (at most 1 s) of the sound from `at_s`, as 48 kHz mono little-endian int16: the
+    snippet the OTIO dock plays under its playhead. Shorter, or empty, at the file's end."""
+    _check_file(path)
+    _check_window(at_s, None)
+    if not 0 < duration_s <= 1.0:
+        raise FfmpegOpError("A scrub snippet is up to 1 s")
+    chunks: list[bytes] = []
+
+    def take(samples: array.array[int]) -> None:
+        if sys.byteorder == "big":
+            samples.byteswap()
+        chunks.append(samples.tobytes())
+
+    limit = round(duration_s * SCRUB_SAMPLE_RATE)
+    _read_samples(_audio_pipe(path, at_s, duration_s, SCRUB_SAMPLE_RATE), limit, take)
+    return b"".join(chunks)

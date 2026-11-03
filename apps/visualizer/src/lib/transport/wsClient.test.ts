@@ -2,7 +2,7 @@ import type { TelemetryEnvelope } from "@vibecut/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env, planning } from "../../test/envelopes";
 import { packVctbFrame } from "./binaryFrameParser";
-import { TelemetryWsClient, type WebSocketLike } from "./wsClient";
+import { TelemetryWsClient, type WebSocketLike, type WsClientOptions } from "./wsClient";
 
 class FakeSocket implements WebSocketLike {
   binaryType = "blob";
@@ -40,7 +40,7 @@ const welcome = (seq: number, snapshot: boolean, trace = "trc_test") => ({
   heartbeat_interval_ms: 5000,
 });
 
-function setup(fetchImpl?: typeof fetch) {
+function setup(fetchImpl?: typeof fetch, extra: Partial<WsClientOptions> = {}) {
   const sockets: FakeSocket[] = [];
   const envelopes: TelemetryEnvelope[] = [];
   const statuses: string[] = [];
@@ -66,6 +66,7 @@ function setup(fetchImpl?: typeof fetch) {
     fetchImpl: fetchImpl ?? (async () => new Response("[]")),
     now: () => clock,
     random: () => 0.5,
+    ...extra,
   });
   return { client, sockets, envelopes, statuses, snapshots, frames, tick: (ms: number) => (clock += ms) };
 }
@@ -153,6 +154,22 @@ describe("TelemetryWsClient", () => {
     sockets[0].open();
     sockets[0].receive(packVctbFrame(1, 2, 42, new Uint8Array(4)));
     expect(frames).toHaveLength(1);
+  });
+
+  it("sends the viewer's requests only once welcomed, and hands on scrub refusals", () => {
+    const refusals: unknown[] = [];
+    const { client, sockets } = setup(undefined, { onScrubUnavailable: (id, reason) => refusals.push([id, reason]) });
+    expect(client.sendMessage({ type: "SCRUB_REQUEST" })).toBe(false);
+    client.connect();
+    sockets[0].open();
+    expect(client.sendMessage({ type: "SCRUB_REQUEST" })).toBe(false);
+    sockets[0].receive(welcome(0, false));
+    expect(client.sendMessage({ type: "SCRUB_REQUEST", request_id: 3 })).toBe(true);
+    expect(sockets[0].sent.at(-1)).toEqual({ type: "SCRUB_REQUEST", request_id: 3 });
+    sockets[0].receive({ type: "SCRUB_UNAVAILABLE", request_id: 3, reason: "The playhead isn't over this op" });
+    expect(refusals).toEqual([[3, "The playhead isn't over this op"]]);
+    sockets[0].close();
+    expect(client.sendMessage({ type: "SCRUB_REQUEST" })).toBe(false);
   });
 
   it("stops on a server error and when closed", () => {

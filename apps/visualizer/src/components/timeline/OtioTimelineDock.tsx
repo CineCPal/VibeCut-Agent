@@ -4,11 +4,15 @@
  * The header shows the playhead's timecode at the timeline's rate, and the latest delta and its stage. When
  * the app started the gateway, "Move playhead" moves the editor's playhead on that delta's timeline to the
  * preview's (lib/control.ts).
+ *
+ * Dragging the ruler scrubs: with "Scrub audio" on (the default, remembered per browser), the sound under
+ * the playhead comes from the gateway (lib/audio/scrubPlayer.ts). An audio lane wins over picture, and the
+ * newest delta wins on a lane. There's no gateway with the mock source, so no toggle there.
  */
 import type { SupportedRate } from "@vibecut/contracts";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAppControl } from "../../lib/control";
-import { buildTracks, timelineSeconds } from "../../lib/timeline/viewModel";
+import { buildTracks, clipAt, timelineSeconds } from "../../lib/timeline/viewModel";
 import { rationalTime, toSmpte } from "../../lib/timecode/rationalTime";
 import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
 import { DockToggle } from "../workspace/DockToggle";
@@ -29,6 +33,11 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
   const collapsed = useVisualizerStore((s) => collapsible && s.collapsedDocks.otio);
   const waveforms = useVisualizerStore((s) => s.waveforms);
   const hoverTask = useVisualizerStore((s) => s.hoverTask);
+  const scrubber = useVisualizerStore((s) => s.scrubber);
+  const scrubAudio = useVisualizerStore((s) => s.scrubAudio);
+  const scrubNotice = useVisualizerStore((s) => s.scrubNotice);
+  const toggleScrubAudio = useVisualizerStore((s) => s.toggleScrubAudio);
+  const setScrubNotice = useVisualizerStore((s) => s.setScrubNotice);
   const [zoom, setZoom] = useState(2);
   const [playheadSec, setPlayheadSec] = useState(0);
   const control = useAppControl();
@@ -39,13 +48,30 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
     () => Object.values(view.mutations).sort((a, b) => b.seq_id - a.seq_id)[0] ?? null,
     [view.mutations],
   );
-  const seqOfDelta = useMemo(
-    () => Object.fromEntries(Object.values(view.mutations).map((m) => [m.delta_id, m.seq_id])),
-    [view.mutations],
-  );
   const rate: SupportedRate = latest?.timeline_fps ?? 24;
   const width = Math.max(320, Math.ceil((seconds + 10) * pxPerSec));
   const playhead = toSmpte(rationalTime(secondsToFrame(playheadSec, rate), rate));
+  const traceId = view.trace_id;
+  const seek = useCallback(
+    (seconds: number) => {
+      setPlayheadSec(seconds);
+      if (!scrubAudio || !scrubber || !traceId) return;
+      const clip = clipAt(tracks, seconds);
+      if (!clip) {
+        setScrubNotice("No sound under the playhead");
+        return;
+      }
+      scrubber.request({
+        traceId,
+        deltaId: clip.delta_id,
+        opId: clip.op.op_id,
+        timelineSeconds: seconds,
+        seq: clip.first_seq_id,
+        channel: clip.op_index,
+      });
+    },
+    [scrubAudio, scrubber, traceId, tracks, setScrubNotice],
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-canvas" aria-label="OTIO live preview">
@@ -83,6 +109,22 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
           </button>
         )}
         {control.notice && <span className="font-sans text-cool-grey" role="status">{control.notice}</span>}
+        {scrubber && (
+          <button
+            type="button"
+            aria-pressed={scrubAudio}
+            className={`rounded border px-1.5 font-sans ${scrubAudio ? "border-athletic-blue-light text-[#e6edf3]" : "border-border text-cool-grey"} hover:text-white`}
+            title={scrubAudio ? "Dragging the ruler plays the sound under the playhead" : "Scrub audio is off"}
+            onClick={toggleScrubAudio}
+          >
+            {scrubAudio ? "🔊" : "🔇"} Scrub audio
+          </button>
+        )}
+        {scrubber && scrubAudio && scrubNotice && (
+          <span className="font-sans text-cool-grey" role="status" data-testid="scrub-notice">
+            {scrubNotice}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1">
           <button type="button" className="rounded border border-border px-1.5 text-cool-grey hover:text-white disabled:opacity-40" onClick={() => setZoom((z) => Math.max(0, z - 1))} disabled={zoom === 0} aria-label="Zoom out the timeline">
             −
@@ -97,7 +139,7 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
         <div style={{ width: width + 96 }}>
           <div className="flex">
             <div className="sticky left-0 z-10 w-24 shrink-0 border-b border-r border-border bg-surface" />
-            <TimecodeRuler seconds={seconds + 10} pxPerSec={pxPerSec} rate={rate} playheadSec={playheadSec} onSeek={setPlayheadSec} />
+            <TimecodeRuler seconds={seconds + 10} pxPerSec={pxPerSec} rate={rate} playheadSec={playheadSec} onSeek={seek} />
           </div>
           {tracks.map((track) => (
             <TrackRow
@@ -106,7 +148,6 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
               pxPerSec={pxPerSec}
               width={width}
               waveforms={waveforms}
-              seqOfDelta={seqOfDelta}
               freshDeltaId={latest?.mutation_stage === "PROPOSED" ? latest.delta_id : null}
               onHover={hoverTask}
             />

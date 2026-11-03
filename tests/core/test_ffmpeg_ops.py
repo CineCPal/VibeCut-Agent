@@ -219,3 +219,50 @@ def test_requests_are_checked(tmp_path):
         extract_keyframes_for_vlm(str(present), tmp_path, strategy="every_frame")  # type: ignore[arg-type]
     with pytest.raises(FfmpegOpError, match="noise_db"):
         detect_silences(str(present), noise_db=-5)
+
+
+def _pairs(data: bytes) -> list[tuple[int, int]]:
+    import array
+
+    values = array.array("h")
+    values.frombytes(data)
+    return list(zip(values[::2], values[1::2], strict=True))
+
+
+@needs_ffmpeg
+def test_range_peaks_are_the_sound_of_the_range_in_256_buckets(film):
+    """0 to 2 s of the film: the sine (ffmpeg's 1/8 amplitude) for the first second, then silence."""
+    pairs = _pairs(ffmpeg_ops.range_peaks(str(film), 0.0, 2.0))
+    assert len(pairs) == 256
+    loud = 0.125 * 32767
+    assert all(low < -0.8 * loud and high > 0.8 * loud for low, high in pairs[8:120])
+    assert all(abs(low) < 200 and abs(high) < 200 for low, high in pairs[136:250])
+    # From 1.0 s: the silence first, then the sine again at 2.5 s (bucket 192 of 0..2 s from 1.0 s).
+    later = _pairs(ffmpeg_ops.range_peaks(str(film), 1.0, 2.0, buckets=64))
+    assert len(later) == 64
+    assert max(high for _, high in later[4:44]) < 200
+    assert min(high for _, high in later[52:62]) > 0.8 * loud
+
+
+@needs_ffmpeg
+def test_range_peaks_past_the_end_leave_zeros(film):
+    pairs = _pairs(ffmpeg_ops.range_peaks(str(film), 5.0, 2.0, buckets=16))
+    assert pairs[2][1] > 0 and pairs[-1] == (0, 0)
+
+
+def test_range_peaks_refuse_what_they_cant_measure(tmp_path):
+    with pytest.raises(FfmpegOpError, match="isn't there"):
+        ffmpeg_ops.range_peaks(str(tmp_path / "gone.wav"), 0.0, 1.0)
+    (tmp_path / "x.wav").write_bytes(b"")
+    with pytest.raises(FfmpegOpError, match="at most 15 minutes"):
+        ffmpeg_ops.range_peaks(str(tmp_path / "x.wav"), 0.0, 16 * 60.0)
+    with pytest.raises(FfmpegOpError, match="up to 1 s"):
+        ffmpeg_ops.scrub_pcm(str(tmp_path / "x.wav"), 0.0, 2.0)
+
+
+@needs_ffmpeg
+def test_scrub_pcm_is_a_quarter_second_at_48_khz(film):
+    data = ffmpeg_ops.scrub_pcm(str(film), 0.5)
+    assert len(data) == 12_000 * 2
+    assert max(abs(low) for low, _ in _pairs(data)) > 0.8 * 0.125 * 32767
+    assert len(ffmpeg_ops.scrub_pcm(str(film), 5.9)) < 12_000 * 2

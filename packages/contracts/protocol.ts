@@ -69,12 +69,36 @@ export const WsServerErrorSchema = z.object({
 });
 export type WsServerError = z.infer<typeof WsServerErrorSchema>;
 
+/**
+ * 6. Client -> Server: the sound under the OTIO dock's playhead (PLAN.md, "Real audio in the OTIO dock",
+ * V18). The gateway answers this client alone with a 0x03 frame (seq = the delta's first MUTATION_EMITTED,
+ * channel = the op's index), or SCRUB_UNAVAILABLE. A newer request replaces one not yet answered.
+ */
+export const WsScrubRequestSchema = z.object({
+  type: z.literal("SCRUB_REQUEST"),
+  request_id: z.number().int().nonnegative(),
+  trace_id: z.string(),
+  delta_id: z.string(),
+  op_id: z.string(),
+  timeline_seconds: z.number().nonnegative(),
+});
+export type WsScrubRequest = z.infer<typeof WsScrubRequestSchema>;
+
+/** 7. Server -> Client: why a scrub request has nothing to play. */
+export const WsScrubUnavailableSchema = z.object({
+  type: z.literal("SCRUB_UNAVAILABLE"),
+  request_id: z.union([z.number(), z.string()]).nullable(),
+  reason: z.string(),
+});
+export type WsScrubUnavailable = z.infer<typeof WsScrubUnavailableSchema>;
+
 /** Any text frame the server sends. */
 export const WsServerMessageSchema = z.discriminatedUnion("type", [
   WsServerWelcomeSchema,
   WsPongSchema,
   WsTelemetryBatchSchema,
   WsServerErrorSchema,
+  WsScrubUnavailableSchema,
 ]);
 export type WsServerMessage = z.infer<typeof WsServerMessageSchema>;
 
@@ -127,11 +151,14 @@ export const VCTB_MAGIC = 0x56435442; // "VCTB"
 export const VCTB_HEADER_BYTES = 16;
 
 export const VctbFrameType = {
-  /** Int16 min/max peak pairs, 256 buckets per clip. */
+  /**
+   * Int16 min/max peak pairs (little-endian, V14), 256 buckets per clip. seq = the delta's first
+   * MUTATION_EMITTED, channel = the op's index in its operations (V17).
+   */
   AUDIO_WAVEFORM_PEAKS: 0x01,
   /** JPEG, 720x135, [START | MID | END]. */
   VLM_CONTACT_STRIP_JPEG: 0x02,
-  /** 48 kHz mono PCM/Opus scrub preview. */
+  /** 48 kHz mono PCM (s16le), 0.25 s under the playhead; addressed as the waveform (V18). */
   TIMELINE_SCRUB_AUDIO: 0x03,
 } as const;
 export type VctbFrameType = (typeof VctbFrameType)[keyof typeof VctbFrameType];

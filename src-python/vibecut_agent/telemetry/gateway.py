@@ -17,6 +17,11 @@ Endpoints:
   binary frames. A COMPLETED whose VLM_SHOT_TAGS artifact names contact strips gets each one as a 0x02
   frame tied to its seq id, read from `<folder>/strips/<id>.jpg` (instrument.TraceEmitter.attach_strip);
   a client that connects later gets its trace's strips after the welcome.
+  Each delta's audio-lane ops get their media's waveform (0x01; seq = the delta's first MUTATION_EMITTED,
+  channel = the op's index), measured here by ffmpeg from the op's own `target_url` and `source_range`, and
+  sent again to a later client. `SCRUB_REQUEST {request_id, trace_id, delta_id, op_id, timeline_seconds}`
+  answers that client alone with 0.25 s of the sound under the playhead (0x03, 48 kHz mono s16le, same
+  seq and channel), or `SCRUB_UNAVAILABLE {request_id, reason}`. Only media a trace's ops named is read.
 - `GET /sse/v1/telemetry?trace_id=`
 - `GET /api/v1/health`
 - `GET /api/v1/traces`
@@ -42,6 +47,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import signal
@@ -52,7 +58,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from vibecut_agent.telemetry.bus import Envelope, TelemetryBus, telemetry_dir, validate_envelope
 from vibecut_agent.telemetry.snapshot import snapshot
@@ -91,6 +97,11 @@ VCTB_HEADER = struct.Struct(">IBBHII")
 FRAME_AUDIO_PEAKS = 0x01
 FRAME_CONTACT_STRIP = 0x02
 FRAME_SCRUB_AUDIO = 0x03
+# The OTIO dock's audio (PLAN.md, "Real audio in the OTIO dock"): the traces and ops a gateway keeps
+# waveforms for, and how many ffmpeg runs at once.
+MAX_AUDIO_TRACES = 64
+MAX_PEAK_OPS = 32
+AUDIO_JOBS = 2
 
 OP_CONTINUATION, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
 
@@ -455,9 +466,66 @@ class Client:
     trace_id: str | None = None
     queue: asyncio.Queue[str | bytes] = field(default_factory=lambda: asyncio.Queue(CLIENT_QUEUE_SIZE))
     ready: bool = False
+    # The newest scrub request not yet answered, and the task answering them (one at a time, newest wins).
+    scrub_next: dict[str, Any] | None = None
+    scrub_worker: asyncio.Task[Any] | None = None
 
     def follows(self, trace_id: str) -> bool:
         return self.ready and (self.trace_id is None or self.trace_id == trace_id)
+
+
+# ------------------------------------------------------------------------------ the OTIO dock's audio
+
+
+def media_of(op: dict[str, Any]) -> str | None:
+    """The local file an op's `target_url` names (an absolute path or a `file://` URL), when it's there."""
+    url = op.get("target_url")
+    if not isinstance(url, str) or not url:
+        return None
+    if url.startswith("file://"):
+        parts = urlsplit(url)
+        if parts.netloc not in ("", "localhost"):
+            return None
+        url = unquote(parts.path)
+    if not os.path.isabs(url) or not os.path.isfile(url):
+        return None
+    return url
+
+
+def _seconds(value: Any) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    count, rate = value.get("value"), value.get("rate")
+    if not isinstance(count, int | float) or not isinstance(rate, int | float) or rate <= 0:
+        return None
+    return float(count) / float(rate)
+
+
+def op_span(op: dict[str, Any]) -> tuple[float, float, float] | None:
+    """(timeline start, duration, source start) in seconds; None without a source range, which an op
+    over a clip already on the timeline (a duck) may not have: then nothing says where in the file it is."""
+    timeline = op.get("timeline_range") or {}
+    source = op.get("source_range")
+    if not isinstance(timeline, dict) or not isinstance(source, dict):
+        return None
+    start = _seconds(timeline.get("start_time"))
+    duration = _seconds(timeline.get("duration"))
+    source_start = _seconds(source.get("start_time"))
+    if start is None or duration is None or source_start is None or duration <= 0 or source_start < 0:
+        return None
+    return start, duration, source_start
+
+
+def _range_peaks(path: str, start: float, duration: float) -> bytes:
+    from vibecut_agent.core import ffmpeg_ops  # imported here: the gateway starts on the stdlib alone
+
+    return ffmpeg_ops.range_peaks(path, start, min(duration, ffmpeg_ops.MAX_PEAKS_SECONDS))
+
+
+def _scrub_pcm(path: str, at: float) -> bytes:
+    from vibecut_agent.core import ffmpeg_ops
+
+    return ffmpeg_ops.scrub_pcm(path, at)
 
 
 # ------------------------------------------------------------------------------ the gateway
@@ -502,6 +570,12 @@ class Gateway:
         self.store.listeners.append(self._send_strips)
         # Each trace's contact strips as (seq id, strip id), sent again to a client that connects later.
         self.strips: dict[str, list[tuple[int, str]]] = {}
+        self.store.listeners.append(self._send_peaks)
+        # Each trace's deltas as delta id -> (first seq, op summaries), for waveforms and scrub requests,
+        # and the waveform frames made, sent again to a later client. Oldest trace dropped first.
+        self.deltas: dict[str, dict[str, tuple[int, list[Any]]]] = {}
+        self.peaks: dict[str, list[bytes]] = {}
+        self._audio_slots = asyncio.Semaphore(AUDIO_JOBS)
         self.bus.add_listener(lambda envelopes: self.store.add(envelopes))
         self.bus.active_workers = lambda: len(self.clients)
 
@@ -600,6 +674,109 @@ class Gateway:
                     frame = self._strip_frame(env["seq_id"], strip_id)
                     if frame is not None:
                         self.store.add_binary(trace_id, frame)
+
+    def _send_peaks(self, trace_id: str, events: list[Envelope]) -> None:
+        for env in events:
+            if env["event_type"] != "MUTATION_EMITTED":
+                continue
+            delta_id = str(env["payload"].get("delta_id", ""))
+            deltas = self.deltas.setdefault(trace_id, {})
+            if delta_id in deltas:
+                continue
+            ops = list(env["payload"].get("operations") or [])
+            deltas[delta_id] = (env["seq_id"], ops)
+            while len(self.deltas) > MAX_AUDIO_TRACES:
+                oldest = next(iter(self.deltas))
+                self.deltas.pop(oldest)
+                self.peaks.pop(oldest, None)
+            jobs = []
+            for index, op in enumerate(ops[:MAX_PEAK_OPS]):
+                if not isinstance(op, dict) or op.get("track_kind") != "Audio":
+                    continue
+                span, path = op_span(op), media_of(op)
+                if span is not None and path is not None:
+                    jobs.append((index, path, span[2], span[1]))
+            if jobs:
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    continue
+                self._spawn(self._make_peaks(trace_id, env["seq_id"], jobs))
+
+    async def _make_peaks(
+        self, trace_id: str, seq_id: int, jobs: list[tuple[int, str, float, float]]
+    ) -> None:
+        for index, path, start, duration in jobs:
+            async with self._audio_slots:
+                try:
+                    data = await asyncio.to_thread(_range_peaks, path, start, duration)
+                except Exception:  # noqa: BLE001, S112 - an unreadable file just has no waveform
+                    continue
+            self._add_peaks(trace_id, pack_binary_frame(FRAME_AUDIO_PEAKS, index, seq_id, data))
+
+    def _add_peaks(self, trace_id: str, frame: bytes) -> None:
+        if trace_id in self.deltas or trace_id in self.peaks:
+            self.peaks.setdefault(trace_id, []).append(frame)
+        self.store.add_binary(trace_id, frame)
+
+    def _scrub_target(self, client: Client, message: dict[str, Any]) -> tuple[str, float, int, int] | str:
+        """(file, source seconds, seq, channel) for a scrub request, or why there's nothing to play."""
+        trace_id = message.get("trace_id")
+        if not isinstance(trace_id, str) or not trace_id:
+            trace_id = client.trace_id or self.store.active_trace_id() or ""
+        delta = self.deltas.get(trace_id, {}).get(str(message.get("delta_id", "")))
+        if delta is None:
+            return "That delta isn't in this trace"
+        seq_id, ops = delta
+        index = next(
+            (
+                i
+                for i, op in enumerate(ops)
+                if isinstance(op, dict) and op.get("op_id") == message.get("op_id")
+            ),
+            None,
+        )
+        if index is None or index > 0xFF:
+            return "That op isn't in the delta"
+        at = message.get("timeline_seconds")
+        if not isinstance(at, int | float) or isinstance(at, bool) or not math.isfinite(at):
+            return "timeline_seconds must be a number"
+        span = op_span(ops[index])
+        if span is None:
+            return "This op has no source range"
+        start, duration, source_start = span
+        if not start <= at < start + duration:
+            return "The playhead isn't over this op"
+        path = media_of(ops[index])
+        if path is None:
+            return "Its media isn't a file on this Mac"
+        return path, source_start + (at - start), seq_id, index
+
+    async def _answer_scrubs(self, client: Client) -> None:
+        while client.scrub_next is not None:
+            message, client.scrub_next = client.scrub_next, None
+            target = self._scrub_target(client, message)
+            if not isinstance(target, str):
+                path, at, seq_id, channel = target
+                async with self._audio_slots:
+                    try:
+                        data = await asyncio.to_thread(_scrub_pcm, path, at)
+                    except Exception as exc:  # noqa: BLE001 - told to the viewer, not raised
+                        target = str(exc)[:200] or "ffmpeg couldn't read its sound"
+                if not isinstance(target, str):
+                    self._offer(client, pack_binary_frame(FRAME_SCRUB_AUDIO, channel, seq_id, data))
+                    continue
+            request_id = message.get("request_id")
+            self._offer(
+                client,
+                json.dumps(
+                    {
+                        "type": "SCRUB_UNAVAILABLE",
+                        "request_id": request_id if isinstance(request_id, int | str) else None,
+                        "reason": target,
+                    }
+                ),
+            )
 
     # Connections.
 
@@ -816,17 +993,19 @@ class Gateway:
 
         await mock_emitter.play(self.bus, trace_id, speed)
         await asyncio.sleep(self.bus.flush_interval * 2)
-        # The music bed's waveform for the OTIO dock (VCTB 0x01), tied to the commit.
-        committed = [
-            e["seq_id"]
-            for e in self.store.events(trace_id)
-            if e["event_type"] == "MUTATION_EMITTED" and e["payload"]["mutation_stage"] == "COMMITTED"
-        ]
-        if committed:
-            self.store.add_binary(
-                trace_id,
-                pack_binary_frame(FRAME_AUDIO_PEAKS, 2, committed[-1], mock_emitter.waveform_peaks()),
-            )
+        # The music bed's waveform for the OTIO dock (VCTB 0x01), addressed as a real one: the delta's
+        # first MUTATION_EMITTED, and the duck's index among its ops.
+        first = next((e for e in self.store.events(trace_id) if e["event_type"] == "MUTATION_EMITTED"), None)
+        if first is not None:
+            ops = first["payload"].get("operations") or []
+            duck = next((i for i, op in enumerate(ops) if op.get("op_type") == "DUCK_REGION"), None)
+            if duck is not None:
+                self._add_peaks(
+                    trace_id,
+                    pack_binary_frame(
+                        FRAME_AUDIO_PEAKS, duck, first["seq_id"], mock_emitter.waveform_peaks()
+                    ),
+                )
 
     async def _websocket(
         self, request: Request, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -917,7 +1096,14 @@ class Gateway:
                 frame = self._strip_frame(seq_id, strip_id)
                 if frame is not None:
                     await socket.send_bytes(frame)
+            for frame in list(self.peaks.get(trace_id or "", [])):
+                await socket.send_bytes(frame)
             client.ready = True
+        elif kind == "SCRUB_REQUEST":
+            if client.ready:
+                client.scrub_next = message
+                if client.scrub_worker is None or client.scrub_worker.done():
+                    client.scrub_worker = self._spawn(self._answer_scrubs(client))
         elif kind == "PING":
             trace_id = client.trace_id or self.store.active_trace_id()
             await socket.send_text(

@@ -31,11 +31,22 @@ export function TimecodeRuler({ seconds, pxPerSec, rate, playheadSec, onSeek }: 
     <div
       className="relative h-6 cursor-col-resize border-b border-border bg-surface"
       style={{ width }}
-      onClick={(e) => {
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        // A drag scrubs: the playhead follows the pointer until the button comes up, even off the ruler.
         const box = e.currentTarget.getBoundingClientRect();
-        onSeek(Math.max(0, (e.clientX - box.left) / pxPerSec));
+        const seek = (x: number) => onSeek(Math.max(0, (x - box.left) / pxPerSec));
+        seek(e.clientX);
+        const move = (m: MouseEvent) => seek(m.clientX);
+        const up = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
       }}
       aria-hidden="true"
+      data-testid="ruler"
     >
       {ticks.map((t) => (
         <span key={t} className="absolute top-0 h-full border-l border-border pl-1 font-mono text-[10px] leading-6 text-cool-grey" style={{ left: Math.round(t * pxPerSec) }}>

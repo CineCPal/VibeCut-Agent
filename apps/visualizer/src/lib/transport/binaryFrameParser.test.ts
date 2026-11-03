@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VctbFrameType } from "@vibecut/contracts";
-import { packVctbFrame, parseVctbFrame, VctbParseError, waveformPeaks } from "./binaryFrameParser";
+import { packVctbFrame, parseVctbFrame, scrubSamples, VctbParseError, waveformPeaks } from "./binaryFrameParser";
 
 describe("VCTB frames", () => {
   it("parse the 16-byte big-endian header without copying the payload", () => {
@@ -32,5 +32,12 @@ describe("VCTB frames", () => {
     expect(peaks[1]).toBe(1);
     expect(peaks[2]).toBeCloseTo(-0.5, 3);
     expect(waveformPeaks({ ...frame, frameType: 2 })).toEqual([]);
+  });
+
+  it("read scrub audio as little-endian int16 samples in [-1, 1)", () => {
+    const pcm = new Uint8Array(new Int16Array([-32768, 16384, 0, 32767]).buffer);
+    const frame = parseVctbFrame(packVctbFrame(VctbFrameType.TIMELINE_SCRUB_AUDIO, 1, 5, pcm));
+    expect(Array.from(scrubSamples(frame))).toEqual([-1, 0.5, 0, 32767 / 32768]);
+    expect(scrubSamples({ ...frame, frameType: VctbFrameType.AUDIO_WAVEFORM_PEAKS })).toHaveLength(0);
   });
 });

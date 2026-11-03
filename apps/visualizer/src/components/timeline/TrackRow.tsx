@@ -4,10 +4,13 @@
  * - Trims and splits get amber brackets with the frame delta, and a split a razor line.
  * - A delete is red cross-hatched; ripple is marked.
  * - A gap shows chevrons with its length in frames.
- * - A duck or gain change draws its dB envelope over the clip, and its waveform when one was streamed.
+ * - A duck or gain change draws its dB envelope over the clip.
+ * - An insert, overwrite or trim on an audio lane draws its waveform when the gateway measured one (VCTB
+ *   0x01, V17).
  * Every clip carries a pill naming its agent and op; hovering it lights the task in the DAG.
  */
 import { memo, type ReactNode } from "react";
+import { waveformKey } from "../../store/useVisualizerStore";
 import { duckEnvelopePath, DEFAULT_DUCK_DB, RAMP_SECONDS, trimDeltaFrames } from "../../lib/timeline/viewModel";
 import { frameDelta } from "../../lib/timecode/rationalTime";
 import type { ClipDiffViewModel, OtioTrackViewModel } from "../../types/timeline";
@@ -33,6 +36,14 @@ function Waveform({ peaks, width, height }: { peaks: number[]; width: number; he
   return <path d={d} stroke="#99928a" strokeWidth={1} opacity={0.6} data-testid="waveform" />;
 }
 
+function WaveformLayer({ peaks, width, height }: { peaks: number[]; width: number; height: number }) {
+  return (
+    <svg className="absolute inset-0" width={width} height={height} aria-hidden="true">
+      <Waveform peaks={peaks} width={width} height={height} />
+    </svg>
+  );
+}
+
 function Clip({ clip, pxPerSec, peaks, onHover, fresh }: { clip: ClipDiffViewModel; pxPerSec: number; peaks: number[] | null; onHover: (task: string | null) => void; fresh: boolean }) {
   const { op } = clip;
   const height = ROW_HEIGHT - 6;
@@ -45,12 +56,14 @@ function Clip({ clip, pxPerSec, peaks, onHover, fresh }: { clip: ClipDiffViewMod
   if (kind === "INSERT_CLIP" || kind === "OVERWRITE_CLIP") {
     border = "#00c853";
     background = "#0f2a1c";
+    if (peaks) overlay = <WaveformLayer peaks={peaks} width={clip.width} height={height} />;
   } else if (kind === "TRIM_CLIP" || kind === "SPLIT_CLIP") {
     border = "#ffb300";
     background = "#2a2310";
     const delta = trimDeltaFrames(op);
     overlay = (
       <>
+        {peaks && <WaveformLayer peaks={peaks} width={clip.width} height={height} />}
         <span className="absolute left-0 top-0 h-full w-1.5 border-y-2 border-l-2 border-warning" aria-hidden="true" />
         <span className="absolute right-0 top-0 h-full w-1.5 border-y-2 border-r-2 border-warning" aria-hidden="true" />
         {kind === "SPLIT_CLIP" && <span className="absolute left-0 top-0 h-full w-0.5 bg-loss" data-testid="razor" aria-hidden="true" />}
@@ -126,14 +139,12 @@ export interface TrackRowProps {
   track: OtioTrackViewModel;
   pxPerSec: number;
   width: number;
-  waveforms: Record<number, number[]>;
-  /** The delta's seq → its waveform's seq (the commit). */
-  seqOfDelta: Record<string, number>;
+  waveforms: Record<string, number[]>;
   freshDeltaId: string | null;
   onHover: (task: string | null) => void;
 }
 
-export const TrackRow = memo(function TrackRow({ track, pxPerSec, width, waveforms, seqOfDelta, freshDeltaId, onHover }: TrackRowProps) {
+export const TrackRow = memo(function TrackRow({ track, pxPerSec, width, waveforms, freshDeltaId, onHover }: TrackRowProps) {
   return (
     <div className="flex border-b border-border" style={{ height: ROW_HEIGHT }} role="row" aria-label={`${track.label} ${track.title}`}>
       <div className="sticky left-0 z-10 flex w-24 shrink-0 items-center gap-1 border-r border-border bg-surface px-2 font-mono text-[11px]" role="rowheader">
@@ -146,7 +157,7 @@ export const TrackRow = memo(function TrackRow({ track, pxPerSec, width, wavefor
             key={clip.key}
             clip={clip}
             pxPerSec={pxPerSec}
-            peaks={track.kind === "Audio" ? (waveforms[seqOfDelta[clip.delta_id]] ?? null) : null}
+            peaks={track.kind === "Audio" ? (waveforms[waveformKey(clip.first_seq_id, clip.op_index)] ?? null) : null}
             onHover={onHover}
             fresh={clip.delta_id === freshDeltaId}
           />

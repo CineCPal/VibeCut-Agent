@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import secrets
+import shutil
 import struct
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from vibecut_agent.telemetry.bus import TelemetryBus
 from vibecut_agent.telemetry.gateway import (
     FRAME_AUDIO_PEAKS,
     FRAME_CONTACT_STRIP,
+    FRAME_SCRUB_AUDIO,
     Gateway,
     GatewayError,
     JournalTailer,
@@ -275,6 +277,16 @@ def test_control_pauses_runs_a_mock_and_refuses_what_it_cant_do(tmp_path: Path) 
             if e["event_type"] == "MUTATION_EMITTED"
         ]
         assert stages == ["PROPOSED", "VALIDATED", "COMMITTED"]
+        # The music bed's waveform, addressed as a real one: the delta's first seq, the duck's index (3).
+        first = next(
+            e for e in gateway.store.events("trc_mock_0001") if e["event_type"] == "MUTATION_EMITTED"
+        )
+        for _ in range(100):
+            if gateway.peaks.get("trc_mock_0001"):
+                break
+            await asyncio.sleep(0.02)
+        [frame] = gateway.peaks["trc_mock_0001"]
+        assert unpack_binary_frame(frame)[:3] == (FRAME_AUDIO_PEAKS, 3, first["seq_id"])
         assert gateway.paused is False
 
     with_gateway(check, tmp_path)
@@ -518,6 +530,184 @@ def test_a_strip_id_outside_the_strips_folder_is_not_read(tmp_path: Path) -> Non
     gateway = Gateway(tmp_path, port=0, bus=TelemetryBus(flush_interval_sec=0.01))
     assert gateway._strip_frame(1, "../secret") is None
     assert gateway._strip_frame(1, "missing") is None
+
+
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+
+
+def _rt(value: int, rate: float = 25.0) -> dict[str, Any]:
+    return {"OTIO_SCHEMA": "RationalTime.1", "value": value, "rate": rate}
+
+
+def _audio_delta(media: str, delta_id: str = "delta_a") -> dict[str, Any]:
+    """A picture op, then an op on A1 over 2 s of `media` from 1 s, at 10 s on the timeline."""
+    return {
+        "delta_id": delta_id,
+        "target_host": "premiere",
+        "target_timeline": "Seq",
+        "timeline_fps": 25.0,
+        "narrative_rationale": "Dialogue under the drone",
+        "operations": [
+            {
+                "op_id": "op_v",
+                "op_type": "INSERT_CLIP",
+                "track_Selector": {"kind": "Video", "index": 2},
+                "media_reference": {"source_name": "drone.mov", "target_url": "file:///nowhere/drone.mov"},
+                "source_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": _rt(0), "duration": _rt(50)},
+                "timeline_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": _rt(250), "duration": _rt(50)},
+            },
+            {
+                "op_id": "op_a",
+                "op_type": "INSERT_CLIP",
+                "track_Selector": {"kind": "Audio", "index": 1},
+                "media_reference": {"source_name": "tone.wav", "target_url": "file://" + media},
+                "source_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": _rt(25), "duration": _rt(50)},
+                "timeline_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": _rt(250), "duration": _rt(50)},
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def tone(tmp_path: Path) -> Path:
+    """4 s: silence for 2 s, then a sine."""
+    path = tmp_path / "media" / "tone.wav"
+    path.parent.mkdir()
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-t", "2", "-i", "anullsrc=r=48000:cl=mono",
+            "-f", "lavfi", "-t", "2", "-i", "sine=frequency=440:sample_rate=48000",
+            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", str(path),
+        ],
+        check=True,
+    )  # fmt: skip
+    return path
+
+
+async def _binary(ws: WsClient, frame_type: int) -> tuple[int, int, int, bytes]:
+    while True:
+        opcode, data = await asyncio.wait_for(ws.receive(), timeout=10)
+        if opcode == 0x2 and data[4] == frame_type:
+            return unpack_binary_frame(data)
+
+
+@needs_ffmpeg
+def test_a_deltas_audio_op_gets_its_waveform_live_and_later(tmp_path: Path, tone: Path) -> None:
+    """The A1 op's media, measured from its source range, reaches a client as 0x01 on the delta's first
+    MUTATION_EMITTED seq and the op's index; the picture op (and its missing file) gets none; a later
+    client gets the waveform after the welcome; the commit doesn't measure again."""
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    async def check(gateway: Gateway) -> None:
+        ws = await WsClient.connect(gateway.port)
+        await ws.send_json(_hello(trace="trc_audio"))
+        assert (await ws.receive_json())["type"] == "SERVER_WELCOME"
+        emitter = TraceEmitter(TelemetryBus(tmp_path), "trc_audio")
+        emitter.ensure_root()
+        delta = _audio_delta(str(tone))
+        for stage in ("PROPOSED", "VALIDATED", "COMMITTED"):
+            emitter.mutation(
+                "task_x", stage, delta, agent_id="worker.otio_cutter.01", subagent="PACING_CUTTER"
+            )
+        envelopes = emitter.bus.flush()
+        first = next(e for e in envelopes if e["event_type"] == "MUTATION_EMITTED")
+        frame_type, channel, seq_id, payload = await _binary(ws, FRAME_AUDIO_PEAKS)
+        assert (frame_type, channel, seq_id) == (FRAME_AUDIO_PEAKS, 1, first["seq_id"])
+        peaks = struct.unpack(f"<{len(payload) // 2}h", payload)
+        assert len(peaks) == 512
+        # 1 s to 3 s of the file: silent, then the sine from the middle.
+        assert max(peaks[:240]) < 200 and min(peaks[300::2]) < -3000
+        await asyncio.sleep(0.3)
+        assert len(gateway.peaks["trc_audio"]) == 1
+        await ws.close()
+
+        later = await WsClient.connect(gateway.port)
+        await later.send_json(_hello(trace="trc_audio"))
+        assert (await later.receive_json())["type"] == "SERVER_WELCOME"
+        assert (await _binary(later, FRAME_AUDIO_PEAKS))[1:3] == (1, first["seq_id"])
+        await later.close()
+
+    with_gateway(check, tmp_path)
+
+
+@needs_ffmpeg
+def test_a_scrub_request_gets_the_sound_under_the_playhead(tmp_path: Path, tone: Path) -> None:
+    """At 11.5 s on the timeline the A1 op is 1.5 s in, so 2.5 s into the file: the sine, as 0.25 s of
+    48 kHz s16le to that client alone. Elsewhere, or for an op whose file isn't here, the reason."""
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    async def scrub(ws: WsClient, **request: Any) -> None:
+        await ws.send_json(
+            {"type": "SCRUB_REQUEST", "trace_id": "trc_scrub", "delta_id": "delta_a", **request}
+        )
+
+    async def check(gateway: Gateway) -> None:
+        emitter = TraceEmitter(TelemetryBus(tmp_path), "trc_scrub")
+        emitter.ensure_root()
+        emitter.mutation(
+            "task_x",
+            "PROPOSED",
+            _audio_delta(str(tone)),
+            agent_id="worker.otio_cutter.01",
+            subagent="PACING_CUTTER",
+        )
+        envelopes = emitter.bus.flush()
+        first = next(e for e in envelopes if e["event_type"] == "MUTATION_EMITTED")
+        for _ in range(100):
+            if "delta_a" in gateway.deltas.get("trc_scrub", {}):
+                break
+            await asyncio.sleep(0.02)
+        ws = await WsClient.connect(gateway.port)
+        await ws.send_json(_hello(trace="trc_scrub"))
+        assert (await ws.receive_json())["type"] == "SERVER_WELCOME"
+
+        await scrub(ws, request_id=1, op_id="op_a", timeline_seconds=11.5)
+        _, channel, seq_id, payload = await _binary(ws, FRAME_SCRUB_AUDIO)
+        assert (channel, seq_id, len(payload)) == (1, first["seq_id"], 24_000)
+        assert max(struct.unpack("<12000h", payload)) > 3000
+
+        refusals: list[tuple[int, dict[str, Any], str]] = [
+            (2, {"op_id": "op_a", "timeline_seconds": 30.0}, "isn't over this op"),
+            (3, {"op_id": "op_v", "timeline_seconds": 10.5}, "isn't a file"),
+            (4, {"op_id": "op_missing", "timeline_seconds": 10.5}, "isn't in the delta"),
+            (5, {"op_id": "op_a", "timeline_seconds": "soon"}, "must be a number"),
+        ]
+        for request_id, request, reason in refusals:
+            await scrub(ws, request_id=request_id, **request)
+            answer = await ws.receive_json()
+            assert answer["type"] == "SCRUB_UNAVAILABLE" and answer["request_id"] == request_id
+            assert reason in answer["reason"]
+        await ws.send_json(
+            {"type": "SCRUB_REQUEST", "trace_id": "trc_scrub", "delta_id": "nope", "request_id": 6}
+        )
+        assert "isn't in this trace" in (await ws.receive_json())["reason"]
+        await ws.close()
+
+    with_gateway(check, tmp_path)
+
+
+def test_only_a_local_file_an_op_names_is_read(tmp_path: Path) -> None:
+    from vibecut_agent.telemetry.gateway import media_of, op_span
+
+    real = tmp_path / "a b.wav"
+    real.write_bytes(b"")
+    assert media_of({"target_url": "file://" + str(real).replace(" ", "%20")}) == str(real)
+    assert media_of({"target_url": str(real)}) == str(real)
+    assert media_of({"target_url": "file://other-mac" + str(real)}) is None
+    assert media_of({"target_url": "https://example.com/a.wav"}) is None
+    assert media_of({"target_url": "relative.wav"}) is None
+    assert media_of({"target_url": None}) is None
+    assert (
+        op_span({"timeline_range": {"start_time": _rt(25), "duration": _rt(50)}, "source_range": None})
+        is None
+    )
+    assert op_span(
+        {
+            "timeline_range": {"start_time": _rt(25), "duration": _rt(50)},
+            "source_range": {"start_time": _rt(100), "duration": _rt(50)},
+        }
+    ) == (1.0, 2.0, 4.0)
 
 
 def test_an_unmasked_frame_closes_the_connection(tmp_path: Path) -> None:

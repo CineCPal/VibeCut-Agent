@@ -4,7 +4,8 @@
  * over the socket's ArrayBuffer; the payload is a view into the same buffer (no copy).
  *
  * Waveform peaks (0x01) are int16 (min, max) pairs in little-endian order, as an Int16Array reads them on
- * every platform this runs on (the gateway packs them `<h`).
+ * every platform this runs on (the gateway packs them `<h`). Scrub audio (0x03) is 48 kHz mono s16le, the
+ * same byte order.
  */
 import { VCTB_HEADER_BYTES, VCTB_MAGIC, VctbFrameType } from "@vibecut/contracts";
 
@@ -48,6 +49,16 @@ export function packVctbFrame(frameType: number, channel: number, seqId: number,
   view.setUint32(12, payload.byteLength, false);
   new Uint8Array(buffer, VCTB_HEADER_BYTES).set(payload);
   return buffer;
+}
+
+/** A scrub audio frame's samples in [-1, 1), for an AudioBuffer. */
+export function scrubSamples(frame: VctbFrame): Float32Array {
+  if (frame.frameType !== VctbFrameType.TIMELINE_SCRUB_AUDIO) return new Float32Array(0);
+  const count = Math.floor(frame.payload.byteLength / 2);
+  const view = new DataView(frame.payload.buffer, frame.payload.byteOffset, count * 2);
+  const samples = new Float32Array(count);
+  for (let i = 0; i < count; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+  return samples;
 }
 
 /** A waveform frame's (min, max) pairs as plain numbers in [-1, 1]. */
