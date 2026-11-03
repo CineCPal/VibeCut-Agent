@@ -79,6 +79,18 @@ export function startTelemetry(adapter: RuntimeHostAdapter, store: Store = useVi
   state().setConnection({ url: adapter.wsUrl, source: "gateway" });
   client.connect();
 
+  state().setControlSender(async (traceId, action, params) => {
+    const response = await fetch(`${adapter.httpBase}/api/v1/control/${encodeURIComponent(traceId)}`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ action, params: params ?? {} }),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${response.status}`);
+    }
+  });
+
   const poll = async (path: string) => {
     const response = await fetch(`${adapter.httpBase}${path}`, { headers });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -122,6 +134,7 @@ export function startTelemetry(adapter: RuntimeHostAdapter, store: Store = useVi
     clearInterval(healthTimer);
     clearInterval(tracesTimer);
     clearInterval(pruneTimer);
+    state().setControlSender(null);
     client?.close();
     reconciler.clear();
   };

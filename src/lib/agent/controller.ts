@@ -13,7 +13,7 @@
  * - stop: `abort_turn`. Switching editor or model starts a new job; switching provider also starts the
  *   history over, since Gemini's and Claude's histories don't mix.
  */
-import { cancelSidecar, onSidecarEvent, onSidecarExit, sendToSidecar, startSidecar } from "../ipc";
+import { cancelSidecar, onSidecarEvent, onSidecarExit, onVisualizerCancel, sendToSidecar, startSidecar } from "../ipc";
 import { newId } from "../id";
 import { refreshAgentStatus } from "./availability";
 import { describeError, snapshotFor } from "./context";
@@ -549,6 +549,11 @@ async function answerToolCalls(jobId: string, calls: ToolCall[]): Promise<void> 
   }
 }
 
+/** A job id as an orchestrated chat's trace id spells it (telemetry/bus.py `trace_id_for`). */
+export function traceCaller(jobId: string): string {
+  return jobId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 48);
+}
+
 /** Routes the chat job's events into the agent store. Call once for the app's lifetime. */
 export function startAgentService(): () => void {
   let stopped = false;
@@ -636,6 +641,14 @@ export function startAgentService(): () => void {
         default:
           break;
       }
+    }),
+  );
+
+  // Cancel in the Telemetry Studio (Phase 22) is this chat's Stop, when the run it names is this chat's.
+  keep(
+    onVisualizerCancel((caller) => {
+      const { jobId } = useAgentStore.getState();
+      if (jobId && traceCaller(jobId) === caller) void stopTurn();
     }),
   );
 

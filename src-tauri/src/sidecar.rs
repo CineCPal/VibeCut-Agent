@@ -881,9 +881,15 @@ pub fn start_gateway(app: &AppHandle) -> Result<bool, String> {
     };
     let app = app.clone();
     std::thread::spawn(move || {
-        // Not interactive: the empty request is written and stdin closed, which is when the gateway starts.
-        let exit = pump(GATEWAY_JOB_ID, &job, child, &serde_json::json!({}), false, |event| {
-            emit_event(&app, GATEWAY_JOB_ID, GATEWAY_JOB_ID, event)
+        // Not interactive: the request is written and stdin closed, which is when the gateway starts. With
+        // appControl, the visualizer's Cancel, Reveal and playhead actions come back as `control` events.
+        let request = serde_json::json!({ "appControl": true });
+        let exit = pump(GATEWAY_JOB_ID, &job, child, &request, false, |event| {
+            if event.get("type").and_then(Value::as_str) == Some("control") {
+                crate::visualizer::on_control(&app, &event);
+            } else {
+                emit_event(&app, GATEWAY_JOB_ID, GATEWAY_JOB_ID, event)
+            }
         });
         app.state::<SidecarJobs>().remove_if_same(GATEWAY_JOB_ID, &job);
         let _ = app.emit(EXIT_EVENT, exit);

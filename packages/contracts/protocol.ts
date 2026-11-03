@@ -102,6 +102,8 @@ export const GatewayHealthSchema = z.object({
   workers: z.record(z.string(), z.unknown()),
   telemetry_dir: z.string().nullable().optional(),
   paused: z.boolean().optional(),
+  /** The app started this gateway: CANCEL, REVEAL_IN_FINDER and SET_NLE_PLAYHEAD reach the app. */
+  app_control: z.boolean().optional(),
 });
 export type GatewayHealth = z.infer<typeof GatewayHealthSchema>;
 

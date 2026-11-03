@@ -14,13 +14,18 @@ to the WebSocket and SSE clients.
 
 Endpoints:
 - `WS /ws/v1/telemetry`: CLIENT_HELLO -> SERVER_WELCOME, then TELEMETRY_BATCH frames, PING -> PONG, and VCTB
-  binary frames.
+  binary frames. A COMPLETED whose VLM_SHOT_TAGS artifact names contact strips gets each one as a 0x02
+  frame tied to its seq id, read from `<folder>/strips/<id>.jpg` (instrument.TraceEmitter.attach_strip);
+  a client that connects later gets its trace's strips after the welcome.
 - `GET /sse/v1/telemetry?trace_id=`
 - `GET /api/v1/health`
 - `GET /api/v1/traces`
 - `GET /api/v1/traces/{id}/snapshot`
 - `GET /api/v1/traces/{id}/events?from_seq=&to_seq=`
-- `POST /api/v1/control/{id}` with `{action, params}`
+- `POST /api/v1/control/{id}` with `{action, params}`. PAUSE, RESUME and TRIGGER_MOCK_RUN are the gateway's
+  own. CANCEL, REVEAL_IN_FINDER and SET_NLE_PLAYHEAD are the app's: a gateway the app started (request
+  `{"appControl": true}`, sidecar.rs `start_gateway`) checks them and hands them on as a `control` event on
+  stdout, which the app carries out (visualizer.rs); any other gateway answers 409.
 
 Security (V5): the gateway binds loopback by default. A non-loopback bind (VIBECUT_TELEMETRY_BIND, for an
 iPad on the studio LAN) is refused unless VIBECUT_TELEMETRY_TOKEN is set; with a token, every HTTP request
@@ -38,6 +43,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import signal
 import struct
 import sys
@@ -71,6 +77,12 @@ CLIENT_QUEUE_SIZE = 512
 LIVE_SECONDS = 30.0
 # A client this many events behind is sent to the snapshot rather than replayed.
 REPLAY_LIMIT = 2_000
+# A contact strip is a 3-panel JPEG of about 100 KB; anything far bigger isn't one.
+MAX_STRIP_BYTES = 4 * 1024 * 1024
+STRIP_ID = re.compile(r"[A-Za-z0-9_-]{1,160}")
+# The actions only the app can carry out, and a chat's trace id (bus.trace_id_for("mcp", job id)).
+APP_ACTIONS = ("CANCEL", "REVEAL_IN_FINDER", "SET_NLE_PLAYHEAD")
+MCP_TRACE = re.compile(r"trc_mcp_([A-Za-z0-9-]{1,48})_[0-9a-f]{6}")
 SSE_KEEPALIVE_SECONDS = 15.0
 
 # VCTB binary frames (§5.2 C).
@@ -461,6 +473,7 @@ class Gateway:
         token: str | None = None,
         bus: TelemetryBus | None = None,
         tail_interval: float = TAIL_INTERVAL_SECONDS,
+        forward: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if not is_loopback_host(bind) and not token:
             raise GatewayError(
@@ -479,11 +492,16 @@ class Gateway:
         self.clients: set[Client] = set()
         self.paused = False
         self.mock_runs = 0
+        # Hands the app's control actions to the app that started this gateway (None: nobody to ask).
+        self.forward = forward
         self._server: asyncio.Server | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._connections: set[asyncio.StreamWriter] = set()
         self.store.listeners.append(self._broadcast)
         self.store.binary_listeners.append(self._broadcast_binary)
+        self.store.listeners.append(self._send_strips)
+        # Each trace's contact strips as (seq id, strip id), sent again to a client that connects later.
+        self.strips: dict[str, list[tuple[int, str]]] = {}
         self.bus.add_listener(lambda envelopes: self.store.add(envelopes))
         self.bus.active_workers = lambda: len(self.clients)
 
@@ -555,6 +573,33 @@ class Gateway:
         for client in list(self.clients):
             if client.kind == "ws" and client.follows(trace_id):
                 self._offer(client, frame)
+
+    def _strip_frame(self, seq_id: int, strip_id: str) -> bytes | None:
+        if self.folder is None or not STRIP_ID.fullmatch(strip_id):
+            return None
+        path = self.folder / "strips" / f"{strip_id}.jpg"
+        try:
+            if path.stat().st_size > MAX_STRIP_BYTES:
+                return None
+            data = path.read_bytes()
+        except OSError:
+            return None
+        return pack_binary_frame(FRAME_CONTACT_STRIP, 0, seq_id, data)
+
+    def _send_strips(self, trace_id: str, events: list[Envelope]) -> None:
+        for env in events:
+            if env["event_type"] != "COMPLETED":
+                continue
+            for artifact in env["payload"].get("artifacts") or []:
+                if artifact.get("artifact_type") != "VLM_SHOT_TAGS":
+                    continue
+                for strip_id in artifact.get("contact_strip_frame_ids") or []:
+                    if not isinstance(strip_id, str):
+                        continue
+                    self.strips.setdefault(trace_id, []).append((env["seq_id"], strip_id))
+                    frame = self._strip_frame(env["seq_id"], strip_id)
+                    if frame is not None:
+                        self.store.add_binary(trace_id, frame)
 
     # Connections.
 
@@ -687,6 +732,7 @@ class Gateway:
             },
             "telemetry_dir": str(self.folder) if self.folder is not None else None,
             "paused": self.paused,
+            "app_control": self.forward is not None,
         }
 
     def trace_summaries(self) -> list[dict[str, Any]]:
@@ -715,10 +761,55 @@ class Gateway:
             mock_id = trace_id if trace_id not in ("", "new", "mock") else f"trc_mock_{self.mock_runs:04d}"
             self._spawn(self._mock_run(mock_id, speed))
             return 200, {"ok": True, "trace_id": mock_id}
-        if action in ("CANCEL", "REVEAL_IN_FINDER", "SET_NLE_PLAYHEAD"):
-            # V6: the gateway only watches; the agents run in other processes it can't reach.
-            return 409, {"error": f"{action} isn't wired: the gateway only watches the agents"}
+        if action in APP_ACTIONS:
+            if self.forward is None:
+                # V6: a gateway run on its own only watches; the agents run in processes it can't reach.
+                return 409, {"error": f"{action} needs the gateway the app starts (Open Telemetry Studio)"}
+            message = self.app_action(trace_id, action, params if isinstance(params, dict) else {})
+            self.forward(message)
+            return 202, {"ok": True, "forwarded": True}
         raise GatewayError(400, f"Unknown action: {action!r}")
+
+    def app_action(self, trace_id: str, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """The `control` message for the app, once `params` check out against the trace."""
+        if trace_id not in self.store.traces:
+            raise GatewayError(404, f"No trace {trace_id!r}")
+        if action == "CANCEL":
+            # Only a chat's trace names the job to stop: trc_mcp_<the chat's job id>_<random>.
+            match = MCP_TRACE.fullmatch(trace_id)
+            if match is None:
+                raise GatewayError(409, "Only a chat's run can be cancelled from here")
+            return {"action": action, "traceId": trace_id, "caller": match.group(1)}
+        if action == "REVEAL_IN_FINDER":
+            path = params.get("path")
+            if not isinstance(path, str) or path not in self.media_paths(trace_id):
+                raise GatewayError(400, "path must be a file this trace's agents used")
+            return {"action": action, "traceId": trace_id, "path": path}
+        host, timeline, seconds = params.get("host"), params.get("timeline"), params.get("seconds")
+        if host not in ("premiere", "resolve"):
+            raise GatewayError(400, "host must be premiere or resolve")
+        if not isinstance(timeline, str) or not timeline:
+            raise GatewayError(400, "timeline must name the editor's timeline")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 <= seconds < 86_400:
+            raise GatewayError(400, "seconds must be a time on the timeline")
+        return {
+            "action": action,
+            "traceId": trace_id,
+            "host": host,
+            "timeline": timeline,
+            "seconds": float(seconds),
+        }
+
+    def media_paths(self, trace_id: str) -> set[str]:
+        """The files a trace's tool calls named, and the ones their artifacts did."""
+        found: set[str] = set()
+        for env in self.store.events(trace_id):
+            payload = env["payload"]
+            found.update(p for p in payload.get("media_paths") or [] if isinstance(p, str))
+            for artifact in payload.get("artifacts") or []:
+                if isinstance(artifact, dict) and isinstance(artifact.get("media_path"), str):
+                    found.add(artifact["media_path"])
+        return found
 
     async def _mock_run(self, trace_id: str, speed: float) -> None:
         from vibecut_agent.telemetry import mock_emitter
@@ -822,6 +913,10 @@ class Gateway:
                             ensure_ascii=False,
                         )
                     )
+            for seq_id, strip_id in self.strips.get(trace_id or "", []):
+                frame = self._strip_frame(seq_id, strip_id)
+                if frame is not None:
+                    await socket.send_bytes(frame)
             client.ready = True
         elif kind == "PING":
             trace_id = client.trace_id or self.store.active_trace_id()
@@ -946,14 +1041,24 @@ async def serve(gateway: Gateway, on_ready: Callable[[], None]) -> None:
 
 
 def main(stdin: TextIO, emitter: Any) -> int:
-    """`telemetry-gateway`: request `{bind?, port?, telemetryDir?}` (or none); emits `ready {url, wsUrl,
-    telemetryDir}` once listening and `done` after SIGTERM."""
+    """`telemetry-gateway`: request `{bind?, port?, telemetryDir?, appControl?}` (or none); emits `ready
+    {url, wsUrl, telemetryDir}` once listening, `control {action, traceId, ...}` for each app action asked
+    for when `appControl` is true, and `done` after SIGTERM."""
     from vibecut_agent.protocol import RequestError
 
-    options = options_from(read_optional_request(stdin))
+    request = read_optional_request(stdin)
+    options = options_from(request)
+
+    def forward(message: dict[str, Any]) -> None:
+        emitter.emit("control", **message)
+
     try:
         gateway = Gateway(
-            options["folder"], bind=options["bind"], port=options["port"], token=options["token"]
+            options["folder"],
+            bind=options["bind"],
+            port=options["port"],
+            token=options["token"],
+            forward=forward if request.get("appControl") is True else None,
         )
     except GatewayError as exc:
         raise RequestError(str(exc)) from None

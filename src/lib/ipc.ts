@@ -29,6 +29,8 @@ export const KEEP_ON_TOP_EVENT = "keep-on-top";
 export const MINI_PLAYER_EVENT = "mini-player";
 export const MCP_REQUEST_EVENT = "mcp-request";
 export const MCP_OUTSIDE_EVENT = "mcp-outside";
+/** Cancel in the Telemetry Studio, for a chat's run (visualizer.rs `CANCEL_TURN_EVENT`). */
+export const VISUALIZER_CANCEL_EVENT = "visualizer-cancel-turn";
 /** The agent session's job id (`SESSION_JOB_ID` in sidecar.rs). */
 export const SESSION_JOB_ID = "agent-session";
 
@@ -105,6 +107,11 @@ export function onSidecarEvent(handler: (payload: SidecarEventPayload) => void):
 
 export function onSidecarExit(handler: (payload: SidecarExitPayload) => void): Promise<UnlistenFn> {
   return listen<SidecarExitPayload>(SIDECAR_EXIT_EVENT, (event) => handler(event.payload));
+}
+
+/** The Telemetry Studio asks to stop a chat's turn; `caller` is that chat's job id as its trace id spells it. */
+export function onVisualizerCancel(handler: (caller: string) => void): Promise<UnlistenFn> {
+  return listen<{ caller: string }>(VISUALIZER_CANCEL_EVENT, (event) => handler(event.payload.caller));
 }
 
 export function onSessionStatus(handler: (status: SessionStatus) => void): Promise<UnlistenFn> {

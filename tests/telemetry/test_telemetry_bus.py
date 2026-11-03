@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -302,6 +303,20 @@ def test_the_gpu_lock_holder_is_read_from_the_lock_file(tmp_path: Path) -> None:
     lock.write_text("")
     assert bus_module.gpu_lock_holder(lock) is None
     assert bus_module.gpu_lock_holder(tmp_path / "missing") is None
+
+
+def test_the_editors_come_from_the_apps_status_file_while_the_app_runs(tmp_path: Path) -> None:
+    status = tmp_path / bus_module.NLE_STATUS_FILE
+    assert bus_module.nle_connected(status) == {"premiere": False, "resolve": False}
+    status.write_text(json.dumps({"pid": os.getpid(), "premiere": True, "resolve": False, "updated_at": 1.0}))
+    assert bus_module.nle_connected(status) == {"premiere": True, "resolve": False}
+    assert TelemetryBus(tmp_path).resource_sample()["nle_connected"] == {"premiere": True, "resolve": False}
+    # A file left by an app that has quit says nothing is connected.
+    status.write_text(json.dumps({"pid": 2**22 + 12345, "premiere": True, "resolve": True}))
+    assert bus_module.nle_connected(status) == {"premiere": False, "resolve": False}
+    status.write_text("{not json")
+    assert bus_module.nle_connected(status) == {"premiere": False, "resolve": False}
+    assert bus_module.nle_connected(None) == {"premiere": False, "resolve": False}
 
 
 # ------------------------------------------------------------------------------ cost

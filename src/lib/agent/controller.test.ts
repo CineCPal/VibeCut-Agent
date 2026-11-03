@@ -5,6 +5,7 @@ import { nleState } from "../../test/nleFixtures";
 const handlers = vi.hoisted(() => ({
   event: null as ((p: SidecarEventPayload) => void) | null,
   exit: null as ((p: SidecarExitPayload) => void) | null,
+  cancel: null as ((caller: string) => void) | null,
 }));
 const ipc = vi.hoisted(() => ({
   startSidecar: vi.fn(),
@@ -15,6 +16,7 @@ const ipc = vi.hoisted(() => ({
   loadChatAttachment: vi.fn(async () => ({ mime: "image/png", data: "QUJD" })),
   onSidecarEvent: vi.fn(async (h: (p: SidecarEventPayload) => void) => ((handlers.event = h), () => undefined)),
   onSidecarExit: vi.fn(async (h: (p: SidecarExitPayload) => void) => ((handlers.exit = h), () => undefined)),
+  onVisualizerCancel: vi.fn(async (h: (caller: string) => void) => ((handlers.cancel = h), () => undefined)),
 }));
 vi.mock("../ipc", () => ipc);
 
@@ -36,6 +38,7 @@ import {
   startEditingLastMessage,
   stopTurn,
   TOOL_DETAIL_CHARS,
+  traceCaller,
   toolDetail,
 } from "./controller";
 import { useEditLogStore } from "../../store/useEditLogStore";
@@ -255,6 +258,17 @@ describe("agent controller", () => {
     event({ type: "result", text: "", history: [], aborted: true });
     expect(agent().messages.at(-1)).toMatchObject({ role: "error", text: "Stopped." });
     expect(agent().status).toBe("idle");
+  });
+
+  it("stops the turn when the Telemetry Studio cancels this chat's run, and not another's", async () => {
+    await sendUserMessage("go");
+    const jobId = agent().jobId!;
+    handlers.cancel?.("someone-else");
+    expect(agent().status).toBe("thinking");
+    handlers.cancel?.(traceCaller(jobId));
+    await vi.waitFor(() => expect(ipc.sendToSidecar).toHaveBeenCalledWith(jobId, { type: "abort_turn" }));
+    expect(agent().status).toBe("stopping");
+    expect(traceCaller("chat_1.a")).toBe("chat-1-a");
   });
 
   it("ends the session on an error or an unexpected exit", async () => {

@@ -595,7 +595,9 @@ class TelemetryBus:
             "gpu_lock_holder": gpu_lock_holder(self.gpu_lock_path),
             "active_workers": self.active_workers(),
             "dropped_debug_events": self._dropped_debug_events,
-            "nle_connected": {"premiere": False, "resolve": False},
+            "nle_connected": nle_connected(
+                self._journal_dir / NLE_STATUS_FILE if self._journal_dir else None
+            ),
         }
 
     def emit_heartbeat(self, trace_id: str) -> None:
@@ -642,6 +644,36 @@ def gpu_lock_holder(path: Path | None) -> str | None:
     except OSError:
         return None
     return f"pid:{text}" if text.isdigit() else None
+
+
+NLE_STATUS_FILE = "nle_status.json"
+
+
+def nle_connected(path: Path | None) -> dict[str, bool]:
+    """Which editors the app's watchers see, from the `nle_status.json` the app writes on each change
+    (nle.rs `write_nle_status`). Both false when there's no file or the app that wrote it isn't running."""
+    none = {"premiere": False, "resolve": False}
+    if path is None:
+        return none
+    try:
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return none
+    if not isinstance(status, dict) or not _running(status.get("pid")):
+        return none
+    return {host: status.get(host) is True for host in none}
+
+
+def _running(pid: object) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 # The process's bus.

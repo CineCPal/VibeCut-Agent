@@ -1,10 +1,13 @@
 /**
  * Pane B, the OTIO live preview (visualizer-spec.md §4.2 B): V2, V1, A1 and A2 (and any other track a
  * delta names) with every op of every delta at its exact RationalTime, its latest stage, and who made it.
- * The header shows the playhead's timecode at the timeline's rate, and the latest delta and its stage.
+ * The header shows the playhead's timecode at the timeline's rate, and the latest delta and its stage. When
+ * the app started the gateway, "Move playhead" moves the editor's playhead on that delta's timeline to the
+ * preview's (lib/control.ts).
  */
 import type { SupportedRate } from "@vibecut/contracts";
 import { useMemo, useState } from "react";
+import { useAppControl } from "../../lib/control";
 import { buildTracks, timelineSeconds } from "../../lib/timeline/viewModel";
 import { rationalTime, toSmpte } from "../../lib/timecode/rationalTime";
 import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
@@ -28,6 +31,7 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
   const hoverTask = useVisualizerStore((s) => s.hoverTask);
   const [zoom, setZoom] = useState(2);
   const [playheadSec, setPlayheadSec] = useState(0);
+  const control = useAppControl();
   const pxPerSec = ZOOMS[zoom];
   const tracks = useMemo(() => buildTracks(view.mutations, pxPerSec), [view.mutations, pxPerSec]);
   const seconds = useMemo(() => timelineSeconds(view.mutations), [view.mutations]);
@@ -62,6 +66,23 @@ export function OtioTimelineDock({ collapsible = true }: { collapsible?: boolean
         ) : (
           <span className="text-cool-grey">No delta yet</span>
         )}
+        {latest && control.available && (
+          <button
+            type="button"
+            className="rounded border border-border px-1.5 font-sans text-cool-grey hover:border-cool-grey hover:text-white"
+            title={`Move the playhead of ${latest.target_timeline} in ${latest.target_host === "resolve" ? "Resolve" : "Premiere"} to ${playhead}`}
+            onClick={() =>
+              control.send(
+                "SET_NLE_PLAYHEAD",
+                { host: latest.target_host, timeline: latest.target_timeline, seconds: playheadSec },
+                `Playhead sent: ${playhead}`,
+              )
+            }
+          >
+            Move playhead
+          </button>
+        )}
+        {control.notice && <span className="font-sans text-cool-grey" role="status">{control.notice}</span>}
         <span className="ml-auto flex items-center gap-1">
           <button type="button" className="rounded border border-border px-1.5 text-cool-grey hover:text-white disabled:opacity-40" onClick={() => setZoom((z) => Math.max(0, z - 1))} disabled={zoom === 0} aria-label="Zoom out the timeline">
             −

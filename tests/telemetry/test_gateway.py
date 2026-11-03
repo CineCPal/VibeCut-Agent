@@ -246,7 +246,7 @@ def test_control_pauses_runs_a_mock_and_refuses_what_it_cant_do(tmp_path: Path) 
         status, _, body = await http(gateway.port, "POST", "/api/v1/control/any", {"action": "RESUME"})
         assert body["paused"] is False
         status, _, body = await http(gateway.port, "POST", "/api/v1/control/any", {"action": "CANCEL"})
-        assert status == 409 and "isn't wired" in body["error"]
+        assert status == 409 and "needs the gateway the app starts" in body["error"]
         status, _, body = await http(gateway.port, "POST", "/api/v1/control/any", {"action": "DANCE"})
         assert status == 400
         status, _, body = await http(
@@ -278,6 +278,53 @@ def test_control_pauses_runs_a_mock_and_refuses_what_it_cant_do(tmp_path: Path) 
         assert gateway.paused is False
 
     with_gateway(check, tmp_path)
+
+
+def test_the_apps_gateway_checks_its_actions_and_hands_them_on(tmp_path: Path) -> None:
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    chat = "trc_mcp_job-7_a1b2c3"
+    emitter = TraceEmitter(TelemetryBus(), chat)
+    emitter.ensure_root()
+    emitter.tool_call("analyze_shot_visuals", {"media_path": "/m/b.mov"}, lambda: {"shots": []})
+    ingest = TraceEmitter(TelemetryBus(), "trc_ing_d4e5f6")
+    ingest.ensure_root()
+    sent: list[dict[str, Any]] = []
+
+    async def check(gateway: Gateway) -> None:
+        gateway.store.add(emitter.bus.flush() + ingest.bus.flush())
+
+        async def control(trace: str, action: str, **params: Any) -> tuple[int, Any]:
+            path = f"/api/v1/control/{trace}"
+            status, _, body = await http(gateway.port, "POST", path, {"action": action, "params": params})
+            return status, body
+
+        assert (await http(gateway.port, "GET", "/api/v1/health"))[2]["app_control"] is True
+        assert await control(chat, "REVEAL_IN_FINDER", path="/m/b.mov") == (
+            202,
+            {"ok": True, "forwarded": True},
+        )
+        assert (await control(chat, "REVEAL_IN_FINDER", path="/etc/passwd"))[0] == 400
+        playhead = await control(chat, "SET_NLE_PLAYHEAD", host="resolve", timeline="Cut", seconds=12.5)
+        assert playhead[0] == 202
+        assert (await control(chat, "SET_NLE_PLAYHEAD", host="avid", timeline="Cut", seconds=1))[0] == 400
+        assert (await control(chat, "SET_NLE_PLAYHEAD", host="resolve", timeline="Cut", seconds=-1))[0] == 400
+        assert (await control(chat, "CANCEL"))[0] == 202
+        assert (await control("trc_ing_d4e5f6", "CANCEL"))[0] == 409
+        assert (await control("trc_nobody", "CANCEL"))[0] == 404
+
+    with_gateway(check, tmp_path, forward=sent.append)
+    assert sent == [
+        {"action": "REVEAL_IN_FINDER", "traceId": chat, "path": "/m/b.mov"},
+        {
+            "action": "SET_NLE_PLAYHEAD",
+            "traceId": chat,
+            "host": "resolve",
+            "timeline": "Cut",
+            "seconds": 12.5,
+        },
+        {"action": "CANCEL", "traceId": chat, "caller": "job-7"},
+    ]
 
 
 def test_other_origins_and_hosts_are_refused_without_a_token(tmp_path: Path) -> None:
@@ -425,6 +472,52 @@ def test_fragments_pings_and_binary_frames(tmp_path: Path) -> None:
         assert opcode == 0x8
 
     with_gateway(check, tmp_path)
+
+
+def test_a_traced_contact_strip_streams_live_and_to_a_later_client(tmp_path: Path) -> None:
+    """A shot analysis whose COMPLETED names a strip (written by another process's emitter) reaches a
+    connected client as VCTB 0x02 after its batch, tied to that envelope's seq; a client that connects
+    afterwards gets it after the welcome."""
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    image = tmp_path / "shot_strip.jpg"
+    image.write_bytes(b"\xff\xd8" + bytes(range(256)) * 4)
+
+    async def receive_strip(ws: WsClient) -> tuple[int, int, int, bytes]:
+        while True:
+            opcode, data = await asyncio.wait_for(ws.receive(), timeout=5)
+            if opcode == 0x2:
+                return unpack_binary_frame(data)
+
+    async def check(gateway: Gateway) -> None:
+        ws = await WsClient.connect(gateway.port)
+        await ws.send_json(_hello(trace="trc_strip"))
+        assert (await ws.receive_json())["type"] == "SERVER_WELCOME"
+        emitter = TraceEmitter(TelemetryBus(tmp_path), "trc_strip")
+        emitter.ensure_root()
+        result = {"media_path": "/m/b.mov", "shots": [{"shot_scale": "WIDE"}]}
+        emitter.tool_call("analyze_shot_visuals", {}, lambda: (emitter.attach_strip(image), result)[1])
+        envelopes = emitter.bus.flush()
+        completed = next(e for e in envelopes if e["event_type"] == "COMPLETED")
+        frame_type, channel, seq_id, payload = await receive_strip(ws)
+        assert (frame_type, channel, seq_id) == (FRAME_CONTACT_STRIP, 0, completed["seq_id"])
+        assert payload == image.read_bytes()
+        await ws.close()
+
+        later = await WsClient.connect(gateway.port)
+        await later.send_json(_hello(trace="trc_strip"))
+        assert (await later.receive_json())["type"] == "SERVER_WELCOME"
+        assert (await receive_strip(later))[2] == completed["seq_id"]
+        await later.close()
+
+    with_gateway(check, tmp_path)
+
+
+def test_a_strip_id_outside_the_strips_folder_is_not_read(tmp_path: Path) -> None:
+    (tmp_path / "secret.jpg").write_bytes(b"not for you")
+    gateway = Gateway(tmp_path, port=0, bus=TelemetryBus(flush_interval_sec=0.01))
+    assert gateway._strip_frame(1, "../secret") is None
+    assert gateway._strip_frame(1, "missing") is None
 
 
 def test_an_unmasked_frame_closes_the_connection(tmp_path: Path) -> None:

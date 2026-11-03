@@ -9,6 +9,7 @@
 import type { ArtifactRef } from "@vibecut/contracts";
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { useNow } from "../../hooks/useTicker";
+import { CHAT_TRACE, useAppControl } from "../../lib/control";
 import { SUBAGENT_SHORT } from "../../lib/studio/bays";
 import { avatarForStatus, formatCount, formatMs, isRunning, STATUS_COLOR } from "../../lib/format/format";
 import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
@@ -88,6 +89,23 @@ export function AgentInspectorDrawer() {
   const now = useNow(250, running);
   const traceRef = useRef<HTMLPreElement | null>(null);
   const pinned = useRef(true);
+  const control = useAppControl();
+
+  // The files this task's tool calls named and its artifacts reported, for Show in Finder.
+  const files = useMemo(() => {
+    if (!node) return [];
+    const found = new Set<string>();
+    for (const env of logs) {
+      const p = env.payload;
+      if (env.event_type === "TOOL_INVOCATION" && "task_id" in p && p.task_id === node.task_id && "media_paths" in p) {
+        for (const path of p.media_paths) found.add(path);
+      }
+    }
+    for (const a of node.artifacts) if ("media_path" in a && a.media_path) found.add(a.media_path);
+    return [...found];
+  }, [node, logs]);
+  const canCancel =
+    control.available && !!node && node.parent_task_id === null && isRunning(node.status) && CHAT_TRACE.test(view.trace_id ?? "");
 
   // The strip streamed for this task: a VCTB 0x02 frame tied to one of its envelopes' seqs.
   const strip = useMemo(() => {
@@ -138,7 +156,18 @@ export function AgentInspectorDrawer() {
             {lastMutation?.validation_token ? ` (${lastMutation.validation_token.slice(0, 13)})` : ""}
           </p>
         </div>
+        {canCancel && (
+          <button
+            type="button"
+            className="ml-auto shrink-0 rounded border border-loss px-2 py-0.5 font-semibold text-loss hover:bg-[#2a1214]"
+            title="Stop this chat's turn, as its Stop button does"
+            onClick={() => control.send("CANCEL", {}, "Asked the chat to stop")}
+          >
+            Stop run
+          </button>
+        )}
       </header>
+      {control.notice && <p className="text-[11px] text-cool-grey" role="status">{control.notice}</p>}
 
       <div className="grid grid-cols-2 gap-1.5">
         <Gauge label="Latency" value={formatMs(latency)} sub={`TTFB ${formatMs(m.ttfb_ms)}`} fraction={Math.min(1, latency / 60000)} color={color} />
@@ -214,6 +243,31 @@ export function AgentInspectorDrawer() {
                 <span className="text-[#e6edf3]">{mu.delta_id}</span>
                 <span className="text-warning">{mu.mutation_stage}</span>
                 <span className="text-cool-grey">{mu.operations.length} ops</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {files.length > 0 && (
+        <section>
+          <h3 className="mb-1 text-[10px] uppercase tracking-wide text-cool-grey">Files ({files.length})</h3>
+          <ul className="space-y-1">
+            {files.map((path) => (
+              <li key={path} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#e6edf3]" title={path}>
+                  {path.split("/").pop()}
+                </span>
+                {control.available && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded border border-border px-1.5 text-[11px] text-cool-grey hover:border-cool-grey hover:text-white"
+                    aria-label={`Show ${path.split("/").pop()} in Finder`}
+                    onClick={() => control.send("REVEAL_IN_FINDER", { path }, "Shown in Finder")}
+                  >
+                    Show in Finder
+                  </button>
+                )}
               </li>
             ))}
           </ul>

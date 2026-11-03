@@ -12,11 +12,15 @@ root: SPAWN, a handoff from the orchestrator, TOOL_INVOCATION, then COMPLETED, o
 
 from __future__ import annotations
 
+import contextlib
 import json
+import re
+import shutil
 import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from vibecut_agent.telemetry.bus import TelemetryBus, get_bus, trace_id_for
@@ -48,6 +52,9 @@ ROOT_AGENT_ID = "orchestrator.supervisor"
 # Tool arguments larger than this (in characters of JSON) are summarised, not sent whole.
 MAX_ARGUMENT_CHARS = 8_000
 MAX_SUMMARY_CHARS = 280
+# Contact strips (VCTB 0x02) wait in `<telemetry>/strips/<id>.jpg` for the gateway; the newest are kept.
+STRIPS_FOLDER = "strips"
+MAX_KEPT_STRIPS = 200
 
 # A tool's `{"error"}` text, mapped to the contract's error codes; the first match wins.
 FAILURE_CODES: tuple[tuple[str, str, bool], ...] = (
@@ -145,6 +152,8 @@ class TraceEmitter:
         self._tasks_failed = 0
         # The shim's forwarded calls (its event loop) and the bus (a worker thread) both make tasks.
         self._lock = threading.Lock()
+        # Contact strip ids by task, named in its VLM_SHOT_TAGS artifact (attach_strip).
+        self._strips: dict[str, list[str]] = {}
 
     # Raw events.
 
@@ -447,6 +456,28 @@ class TraceEmitter:
         task.began = time.perf_counter()
         return task
 
+    def attach_strip(self, image: Path) -> str | None:
+        """Copies the running task's contact strip JPEG to `<telemetry>/strips/<id>.jpg`, where the gateway
+        picks it up when the task's COMPLETED names it (VCTB 0x02). The id, or None with no journal."""
+        folder = self.bus.journal_dir
+        if self.current_task is None or folder is None or not image.is_file():
+            return None
+        task_id = self.current_task[0]
+        strip_id = re.sub(r"[^A-Za-z0-9_-]", "-", f"{self.trace_id}_{task_id}")[:160]
+        strips = folder / STRIPS_FOLDER
+        try:
+            strips.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(image, strips / f"{strip_id}.jpg")
+        except OSError:
+            return None
+        with self._lock:
+            self._strips.setdefault(task_id, []).append(strip_id)
+        with contextlib.suppress(OSError):
+            kept = sorted(strips.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in kept[MAX_KEPT_STRIPS:]:
+                old.unlink(missing_ok=True)
+        return strip_id
+
     def end_tool(
         self,
         task: ToolTask,
@@ -489,7 +520,7 @@ class TraceEmitter:
             subagent=task.subagent,
             latency_ms=latency_ms,
             summary=said,
-            artifacts=artifacts_of(task.name, result),
+            artifacts=artifacts_of(task.name, result, self._strips.pop(task.task_id, [])),
             parent=self.root_task_id,
         )
         self.handoff(
@@ -550,8 +581,9 @@ def summary_of(name: str, result: Any) -> str:
     return short(result)
 
 
-def artifacts_of(name: str, result: Any) -> list[dict[str, Any]]:
-    """The contract's ArtifactRefs a tool's result makes, where one fits."""
+def artifacts_of(name: str, result: Any, strips: list[str] | None = None) -> list[dict[str, Any]]:
+    """The contract's ArtifactRefs a tool's result makes, where one fits. `strips` are the contact strip
+    ids attach_strip copied for the task."""
     if not isinstance(result, dict):
         return []
     if name == "semantic_asset_search":
@@ -595,7 +627,7 @@ def artifacts_of(name: str, result: Any) -> list[dict[str, Any]]:
                 "media_path": str(result.get("media_path", "")),
                 "shot_count": len(shots),
                 "dominant_scales": scales[:4],
-                "contact_strip_frame_ids": [],
+                "contact_strip_frame_ids": list(strips or []),
             }
         ]
     if name == "propose_otio_delta" and "valid" in result:

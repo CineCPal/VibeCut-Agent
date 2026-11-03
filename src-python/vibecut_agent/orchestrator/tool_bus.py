@@ -133,6 +133,22 @@ def _measure_loudness(path: str, start: float, end: float | None) -> dict[str, A
     return loudness.measure(path, start, end)
 
 
+def first_strip(folder: Path, media_path: str, result: Any) -> Path | None:
+    """The first of the result's shots that has a 3-frame contact strip in the worker's keyframe folder
+    (ffmpeg_ops.extract_keyframes_for_vlm names it `<stem>_<first frame>_strip.jpg`), for the visualizer."""
+    shots = result.get("shots") if isinstance(result, dict) else None
+    stem = Path(media_path).stem
+    for shot in shots or []:
+        try:
+            first = int(shot["source_range"]["start_time"]["value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        image = folder / f"{stem}_{first:08d}_strip.jpg"
+        if image.is_file():
+            return image
+    return None
+
+
 def default_workers(config: OrchestratorConfig) -> dict[str, Callable[[], Any]]:
     """Builders for the chat's workers, each with a GPU lock that gives up after CHAT_LOCK_TIMEOUT_SECONDS."""
 
@@ -426,7 +442,8 @@ class OrchestratorToolBus:
         path = self._media(args["media_path"])
         start, end = args.get("start_seconds", 0.0), args.get("end_seconds")
         self._window(start, end)
-        return self.worker("vlm").analyze(
+        worker = self.worker("vlm")
+        result = worker.analyze(
             path,
             start=start,
             end=end,
@@ -434,6 +451,11 @@ class OrchestratorToolBus:
             custom_prompt_focus=args.get("custom_prompt_focus"),
             on_progress=self._progress(os.path.basename(path)),
         )
+        if self.telemetry is not None:
+            image = first_strip(worker.keyframe_dir(path), path, result)
+            if image is not None:
+                self.telemetry.attach_strip(image)
+        return result
 
     def detect_media_boundaries(self, args: dict[str, Any]) -> Any:
         path = self._media(args["media_path"])

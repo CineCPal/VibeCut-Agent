@@ -2747,7 +2747,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Only the gateway emits heartbeats, and only to a trace active in the last 10 s, so an idle trace stops growing.
 - **V4:** a trace has one writer, so its seq ids are contiguous: `trc_mcp_<caller>_<rand>`, `trc_ing_<rand>`, `trc_mock_<n>`. Event ids are `evt_<time hex><random>` (Python 3.13 has no `uuid7`).
 - **V5:** loopback only by default. A non-loopback bind is refused without `VIBECUT_TELEMETRY_TOKEN`; with one, HTTP needs `Bearer`/`?token=` and the WS hello needs `auth_token`. Without a token, requests whose Origin or Host isn't loopback get 403 (DNS rebinding, cross-site WebSocket).
-- **V6:** control does `TRIGGER_MOCK_RUN` and `PAUSE`/`RESUME` (viewer broadcast only). `CANCEL`, `REVEAL_IN_FINDER` and `SET_NLE_PLAYHEAD` answer 409 "not wired": the gateway can't reach the agents' processes.
+- **V6:** control does `TRIGGER_MOCK_RUN` and `PAUSE`/`RESUME` (viewer broadcast only). `CANCEL`, `REVEAL_IN_FINDER` and `SET_NLE_PLAYHEAD` answer 409 "not wired": the gateway can't reach the agents' processes. *(Revised 2026-11-02: the gateway the app starts hands them to the app; see "The app's actions from the visualizer" below.)*
 - **V7:** the snapshot carries both the spec's reduced `nodes`/`edges`/`otio_tracks`/`recent_logs` and `replay_events`, the trace compacted. The visualizer hydrates by reducing those itself, so its reducer is the UI's single source of truth.
 - **V8:** no PNG atlases ship. `ProceduralPixelAvatar` draws every sprite: 16x16, 8 states x 8 frames, into the §3.4 atlas layout. A `public/sprites/<role>_atlas.png` that loads wins.
 - **V9:** the OTIO dock is built from the deltas alone; there is no fetch of the timeline as it was.
@@ -2760,9 +2760,9 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Not done here:**
 - No app UI starts the gateway, and the visualizer isn't embedded in the Tauri window or the panel (V10).
-- No producer sends contact strips (VCTB 0x02) or scrub audio (0x03) yet: the VLM worker doesn't keep its strip bytes. The viewer shows a placeholder, and the mock run streams only a waveform.
+- No producer sends scrub audio (0x03) yet. Contact strips (0x02) now stream from real shot analyses; see "Contact strips and the editors' status" below.
 - The supervisor (not routed to) isn't instrumented, and neither are token counts or thought streams from Claude Code. The tool bus only sees tool calls, so live MUTATION and lifecycle events come through but THOUGHT chunks only come from the mock.
-- `nle_connected` is always false in a real heartbeat.
+- ~~`nle_connected` is always false in a real heartbeat.~~ Now from the app's watchers; see "Contact strips and the editors' status" below.
 - Not seen in a real browser here: the built-in browser can't open a localhost server started from this shell. The canvas and layout are covered by jsdom tests (with no canvas context) and a production build, not by eye.
 
 **Verification (2026-11-02):**
@@ -2866,6 +2866,48 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - The choice is this viewer's convenience, kept in `localStorage` (`vibecut.visualizer.collapsedDocks`), with every read and write in `try`. Without storage, both docks start open and a toggle lasts until reload.
 - The narrow Premiere panel's tabs never collapse.
 - Checked with headless Chromium screenshots (both collapsed; OTIO only). Tests in `App.test.tsx`: by button and key, not while typing in the search box, remembered, blocked storage, and the narrow panel. Visualizer vitest 88.
+
+**Contact strips and the editors' status (2026-11-02, the user's go-ahead on the two gaps that mattered most with real runs):**
+- **Contact strips (VCTB 0x02):**
+  - The VLM worker already keeps each shot's 3-frame strip on disk (`<index>/keyframes/<sha1>/<stem>_<first frame>_strip.jpg`, `ffmpeg_ops.extract_keyframes_for_vlm`), including after a cache hit.
+  - `tool_bus.analyze_shot_visuals`, only when traced, finds the first shot with a strip (`first_strip`) and hands it to `TraceEmitter.attach_strip`.
+  - `attach_strip` copies it to `<telemetry>/strips/<trace>_<task>.jpg` (the newest 200 are kept) and names the id in the task's `VLM_SHOT_TAGS` artifact, `contact_strip_frame_ids`.
+  - The gateway, on any COMPLETED that names strips, reads `<folder>/strips/<id>.jpg` (ids `[A-Za-z0-9_-]` only, at most 4 MB) and sends a 0x02 frame on channel 0 tied to that envelope's seq, after its batch. A client that connects later gets the trace's strips after its welcome. The visualizer needed no change.
+  - **Decided (Claude; no Gemini review):** strips cross processes as files beside the journal, not a new channel, since each trace's writer is another process (V4). One strip per analysis, since the inspector shows one per task. The `vibecut.vlm.v1` result is unchanged.
+- **The editors' status (`nle_connected`):**
+  - `nle.rs` `publish` now also writes `<appDataDir>/telemetry/nle_status.json` (`write_nle_status`: `{pid, premiere, resolve, updated_at}`, written to a temporary file and renamed) on every watcher state change.
+  - The heartbeat (`bus.nle_connected`) reads it and trusts it only while that pid runs. With no file, a dead pid or a bad file, both are false, as before.
+  - The top bar's Host and the About box already showed `nle_connected`.
+- **Tests:** `the_nle_status_file_says_which_editors_are_connected` (cargo), `test_the_editors_come_from_the_apps_status_file_while_the_app_runs`, `test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace`, `test_a_traced_contact_strip_streams_live_and_to_a_later_client` and `test_a_strip_id_outside_the_strips_folder_is_not_read`. pytest 1322 passed, 2 skipped; cargo 146; vitest 867 and visualizer 89; ruff, mypy, eslint and tsc clean. pytest failed one test once in three full runs and passed the other two; most likely a timing test, not identified.
+- **Still to check live:** after a reinstall, an orchestrated `analyze_shot_visuals` shows its strip in the inspector, and the top bar's Host names the editor that's open.
+
+**The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
+- **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
+  - The app starts its gateway with `{"appControl": true}`. Only then does the gateway forward (202 `{ok, forwarded}`) and report `app_control: true` in its health. A gateway run from a terminal still answers 409, now saying it needs the app's.
+  - **Checks in the gateway (`Gateway.app_action`):**
+    - The trace must exist (404).
+    - Reveal: only a file the trace's tool calls or artifacts named (`media_paths`, `media_path`).
+    - Playhead: `host` is premiere or resolve, a `timeline`, and `seconds` in 0 to 24 h.
+    - Cancel: only a chat's trace, `trc_mcp_<job>_<6 hex>` (409 for an ingest or mock trace); the job part goes to the app as `caller`.
+  - **In the app (`visualizer.rs`, `parse_control` checks again):**
+    - Reveal: `tauri_plugin_opener::reveal_item_in_dir`.
+    - Playhead: `nle_call(host, "set_playhead", {timeline, time})`, the watcher's own call.
+    - Cancel: `visualizer-cancel-turn {caller}` to the main window. `startAgentService` (src/lib/agent/controller.ts) calls `stopTurn()`, the Stop button's own path (abort_turn, queue paused, reviews skipped), only when `traceCaller(jobId)` is that caller. Direct mode never makes a chat trace, so this never fires there.
+- **In the visualizer:** `lib/control.ts` (`useAppControl`; the runtime registers the sender in the store, `sendControl`). The buttons appear only when the gateway reports `app_control`:
+  - "Stop run" on a chat's running root task in the inspector;
+  - "Files" in the inspector, each with "Show in Finder";
+  - "Move playhead" in the OTIO dock's header, to the preview's playhead on the latest delta's timeline.
+  - Each shows what happened, or the gateway's reason, as a status line.
+- **Contracts:** `GatewayHealthSchema.app_control` (optional).
+- **Decided (Claude; no Gemini review):** the spec's embedded adapter would call Tauri directly, but the Telemetry Studio window has no IPC permissions (only `main` does), and a browser on the gateway would get nothing. The gateway's stdout to the app reaches both, with checks on each side.
+- **Tests:**
+  - `test_the_apps_gateway_checks_its_actions_and_hands_them_on`;
+  - `control_events_become_actions_and_bad_ones_are_dropped` (cargo);
+  - the controller's "stops the turn when the Telemetry Studio cancels this chat's run, and not another's";
+  - `src/lib/control.test.tsx` (5: Finder, Stop, playhead, a refusal, none without the app's gateway).
+- **Totals:** pytest 1323 passed, 2 skipped; cargo 147; vitest 868; visualizer 94; ruff, mypy, eslint and tsc clean.
+- **Checked from the terminal:** a real `telemetry-gateway` with `{"appControl": true}`, on port 18790 with a scratch journal. It reported `app_control: true`, forwarded Reveal, the playhead and Cancel as `control` lines, and refused Reveal of `/etc/hosts`.
+- **Still to check live:** in the installed app, Show in Finder opens Finder, Move playhead moves Resolve's or Premiere's playhead, and Stop run stops an orchestrated chat's turn.
 
 ## Sync in orchestrated mode (2026-11-02)
 
@@ -3629,4 +3671,6 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.
 - **2026-11-02 (Claude): Forwarded tools in the trace.** The shim traces the app tools it forwards (B-roll Library, bins, Analyzer, sync) for the visualizer; timeline reads stay untraced. See "Forwarded tools in the trace" under Phase 22.
 - **2026-11-02 (Claude): Premiere's clip order, live check passed.** An orchestrated reorder past two clips and its Revert from the app kept every track in order. See "Premiere's clip order".
+- **2026-11-02 (Claude): The app's actions from the visualizer.** Stop run, Show in Finder and Move playhead go from the visualizer through the app's gateway (checked, then a `control` event) to the app, which stops the chat's turn as its Stop button does, reveals the file, or moves the editor's playhead. See "The app's actions from the visualizer" under Phase 22.
+- **2026-11-02 (Claude): Contact strips and the editors' status in the visualizer.** A traced shot analysis streams its first contact strip (VCTB 0x02) through the gateway, and the heartbeat's `nle_connected` comes from the app's watchers via `telemetry/nle_status.json`. See "Contact strips and the editors' status" under Phase 22.
 - **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.

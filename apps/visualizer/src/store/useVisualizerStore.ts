@@ -54,7 +54,13 @@ export interface HostHealth {
   workers: Record<string, unknown>;
   telemetry_dir?: string | null;
   paused?: boolean;
+  /** The app started this gateway, so Cancel, Reveal and the editor's playhead reach the app. */
+  app_control?: boolean;
 }
+
+/** The app's actions, through the gateway's control endpoint (lib/control.ts). */
+export type AppAction = "CANCEL" | "REVEAL_IN_FINDER" | "SET_NLE_PLAYHEAD";
+export type ControlSender = (traceId: string, action: AppAction, params?: Record<string, unknown>) => Promise<void>;
 
 export interface KnownTrace {
   trace_id: string;
@@ -83,6 +89,8 @@ export interface VisualizerState {
   viewMode: ViewMode;
   connection: ConnectionState;
   hostHealth: HostHealth | null;
+  /** Posts a control action to the gateway; null with no gateway (the mock source). */
+  sendControl: ControlSender | null;
   /** VCTB 0x01 peaks by the seq they belong to, as numbers in [-1, 1]. */
   waveforms: Record<number, number[]>;
   /** VCTB 0x02 JPEG strips by seq, as object URLs. */
@@ -106,6 +114,7 @@ export interface VisualizerState {
   setViewMode: (mode: ViewMode) => void;
   setConnection: (patch: Partial<ConnectionState>) => void;
   setHostHealth: (health: HostHealth | null) => void;
+  setControlSender: (sender: ControlSender | null) => void;
   setKnownTraces: (traces: KnownTrace[]) => void;
   addWaveform: (seq: number, peaks: number[]) => void;
   addContactStrip: (seq: number, url: string) => void;
@@ -145,6 +154,7 @@ const initial = () => ({
   viewMode: "split" as ViewMode,
   connection: { status: "idle" as ConnectionStatus, detail: null, latency_ms: null, url: null, source: "gateway" as const },
   hostHealth: null,
+  sendControl: null as ControlSender | null,
   waveforms: {},
   contactStrips: {},
   aboutOpen: false,
@@ -255,6 +265,7 @@ export const useVisualizerStore = create<VisualizerState>()(
     setViewMode: (mode) => set((s) => void (s.viewMode = mode)),
     setConnection: (patch) => set((s) => void Object.assign(s.connection, patch)),
     setHostHealth: (health) => set((s) => void (s.hostHealth = health)),
+    setControlSender: (sender) => set((s) => void (s.sendControl = sender)),
     setKnownTraces: (traces) =>
       set((s) => {
         for (const t of traces) {

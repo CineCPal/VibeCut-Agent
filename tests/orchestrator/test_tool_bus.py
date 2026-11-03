@@ -500,3 +500,39 @@ def test_finishing_the_trace_completes_its_root_with_a_tally(config, tmp_path):
     done = root[-1]["payload"]
     assert done["output_summary"] == "2 tool calls, 1 failed"
     assert done["latency_ms"] > 0
+
+
+def test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace(config, tmp_path, media):
+    from pathlib import Path
+
+    from vibecut_agent.telemetry.bus import TelemetryBus
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    frames = tmp_path / "keyframes"
+    frames.mkdir()
+    stem = Path(media["b.mov"]).stem
+    (frames / f"{stem}_00000024_strip.jpg").write_bytes(b"\xff\xd8second shot")
+
+    def shot(first):
+        return {"source_range": {"start_time": {"value": first, "rate": 24.0}}}
+
+    class Vlm(Worker):
+        def keyframe_dir(self, path):
+            return frames
+
+    # The first shot is too short for a strip (it has its middle frame), so the second's is used.
+    bus = make_bus(config, tmp_path, vlm=Vlm({"shots": [shot(0), shot(24)]}))
+    journal = tmp_path / "telemetry"
+    bus.telemetry = TraceEmitter(TelemetryBus(journal), "trc_strip")
+    bus.dispatch("analyze_shot_visuals", {"media_path": media["b.mov"]})
+    completed = next(e for e in bus.telemetry.bus.flush() if e["event_type"] == "COMPLETED")
+    [artifact] = completed["payload"]["artifacts"]
+    [strip_id] = artifact["contact_strip_frame_ids"]
+    assert (journal / "strips" / f"{strip_id}.jpg").read_bytes() == b"\xff\xd8second shot"
+
+    # Without a strip on disk the artifact names none.
+    bare = make_bus(config, tmp_path, vlm=Vlm({"shots": [shot(0)]}))
+    bare.telemetry = TraceEmitter(TelemetryBus(journal), "trc_bare")
+    bare.dispatch("analyze_shot_visuals", {"media_path": media["b.mov"]})
+    done = next(e for e in bare.telemetry.bus.flush() if e["event_type"] == "COMPLETED")
+    assert done["payload"]["artifacts"][0]["contact_strip_frame_ids"] == []

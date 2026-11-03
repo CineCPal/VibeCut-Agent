@@ -11,6 +11,9 @@
 //! `GIVE_UP_AFTER` starts in a row that never reported `ready` it stays down until `nle_reconnect`.
 //!
 //! `nle_call` sends one read to a watcher (`status`, `read_timeline`) and waits for its `reply`.
+//!
+//! Each change is also written to `<appDataDir>/telemetry/nle_status.json` (`write_nle_status`), with the
+//! app's pid, so the telemetry gateway's heartbeat can say which editors are connected (Phase 22).
 
 use crate::sidecar::{
     lock, package_dir, pump, python_root, resolve_python, start_child, uv_environment, Launch, SidecarJob,
@@ -21,11 +24,14 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const STATE_EVENT: &str = "nle-state";
+/// In the app's telemetry folder; read by `bus.nle_connected` in the telemetry package.
+pub const NLE_STATUS_FILE: &str = "nle_status.json";
 /// How long `nle_call` waits for a reply. The watcher gives Premiere 25 s for its longest read.
 const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 /// A rebuild imports a whole new timeline (Premiere's XML import alone may take 170 s; Phase 6b), or
@@ -271,6 +277,30 @@ fn publish(app: &AppHandle, host: Host, generation: u64, state: NleState) {
     }
     *lock(&slot.state) = state.clone();
     let _ = app.emit(STATE_EVENT, state);
+    if let Ok(dir) = app.path().app_data_dir() {
+        // Both watchers publish from their own threads; one writer at a time keeps the file whole.
+        static WRITING: Mutex<()> = Mutex::new(());
+        let _guard = lock(&WRITING);
+        if let Err(e) = write_nle_status(&dir.join("telemetry"), &nle.states(), std::process::id()) {
+            eprintln!("Couldn't write {NLE_STATUS_FILE}: {e}");
+        }
+    }
+}
+
+/// `{"pid", "premiere", "resolve", "updated_at"}`: which editors are connected, for the telemetry gateway.
+/// Written to a temporary file and renamed, so a reader never sees half of it.
+pub fn write_nle_status(dir: &Path, states: &[NleState], pid: u32) -> std::io::Result<()> {
+    let connected = |host: Host| states.iter().any(|s| s.host == host && s.status == NleStatus::Connected);
+    let body = json!({
+        "pid": pid,
+        "premiere": connected(Host::Premiere),
+        "resolve": connected(Host::Resolve),
+        "updated_at": now(),
+    });
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{NLE_STATUS_FILE}.tmp"));
+    std::fs::write(&tmp, body.to_string())?;
+    std::fs::rename(&tmp, dir.join(NLE_STATUS_FILE))
 }
 
 /// The process that watches `host`, or why there can't be one.
@@ -427,6 +457,25 @@ pub async fn nle_call(app: AppHandle, host: Host, command: String, args: Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_nle_status_file_says_which_editors_are_connected() {
+        let dir = std::env::temp_dir().join(format!("vibecut-nle-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut resolve = NleState::plain(Host::Resolve, NleStatus::Connected, None, 1.0);
+        let premiere = NleState::plain(Host::Premiere, NleStatus::Disconnected, Some("Not running".into()), 1.0);
+        write_nle_status(&dir, &[premiere.clone(), resolve.clone()], 4242).unwrap();
+        let read = || serde_json::from_str::<Value>(&std::fs::read_to_string(dir.join(NLE_STATUS_FILE)).unwrap()).unwrap();
+        let body = read();
+        assert_eq!(body["pid"], 4242);
+        assert_eq!(body["premiere"], false);
+        assert_eq!(body["resolve"], true);
+        resolve.status = NleStatus::Error;
+        write_nle_status(&dir, &[premiere, resolve], 4242).unwrap();
+        assert_eq!(read()["resolve"], false);
+        assert!(!dir.join(format!("{NLE_STATUS_FILE}.tmp")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn hosts_serialize_lowercase_and_map_to_watch_commands() {

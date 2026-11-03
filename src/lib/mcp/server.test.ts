@@ -9,6 +9,7 @@ const ipc = vi.hoisted(() => ({
   nleCall: vi.fn(),
   onSidecarEvent: vi.fn(async (_h: (p: SidecarEventPayload) => void) => () => undefined),
   onSidecarExit: vi.fn(async (_h: (p: SidecarExitPayload) => void) => () => undefined),
+  onVisualizerCancel: vi.fn(async () => () => undefined),
   getMcpStatus: vi.fn(),
   mcpReply: vi.fn(),
   onMcpOutside: vi.fn(async () => () => undefined),
