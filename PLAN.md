@@ -2810,7 +2810,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Still to check live** (status 2026-11-03):
 1. ~~An orchestrated turn in the app with `VIBECUT_TELEMETRY=1`~~ Done: seen in the app since 2026-11-02 ("In the app" below), the COMMITTED included. The original note: a reinstall with `--orchestrated` and the variable, or a dev build. Expect a `trc_mcp_*` journal in `~/Library/Application Support/com.cj.vibecutagent/telemetry` with propose and commit as tasks and mutations, the commit's COMMITTED included (not yet seen live: the terminal check had no app to validate against).
-2. The visualizer by eye: studio animation, DAG pan/zoom/fit, OTIO lanes and the inspector have been used live in the Telemetry Studio window (2026-11-02 and 2026-11-03). Still not checked: log virtualization at 100k rows.
+2. The visualizer by eye: studio animation, DAG pan/zoom/fit, OTIO lanes and the inspector have been used live in the Telemetry Studio window (2026-11-02 and 2026-11-03). ~~Still not checked: log virtualization at 100k rows.~~ Checked in headless Chrome with a 100k-row stress run (2026-11-03, two fixes); see "The log at 100k rows" below. Left: the user's look in the Telemetry Studio.
 
 **The DAG in large runs (2026-11-02, the user's report: "the DAG chart becomes too tall to fit the panel, everything becomes too small to see"):**
 - **Cause 1, one tall column.** In an orchestrated run every task is the supervisor's child, so all of them were rank 1 in one column. Today's 16-task run was 488 x 1956 px, which needs 17% zoom to fit a 900 x 400 pane, and the floor was 25%, so it overflowed as well as being unreadable.
@@ -2934,6 +2934,48 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Five `SCRUB_REQUEST`s came back as 24,000-byte 0x03 frames in 59, 61, 65, 75 and 88 ms.
   - A headless Chrome screenshot of the built visualizer against that gateway showed the waveform on the A1 insert, none on the V2 picture clip, and the toggle in the header.
 - **Still to check live (the user):** reinstall (`npm run install-app -- --orchestrated` with `VIBECUT_TELEMETRY=1` and the model variables), then, in the Telemetry Studio, drag the OTIO ruler over a committed audio delta from an orchestrated chat and listen. A chat's deltas name the editor's own media paths, so their files must be on this Mac.
+
+**The log at 100k rows (2026-11-03, the user's request: "create a test run for the 100k rows"):** the last of Phase 22's visualizer checks. A stress run to watch, a test suite, and a timed run in a real browser. Two fixes came out of them.
+- **The stress run, `telemetry/stress_emitter.py`** (new; deterministic, like `mock_emitter`):
+  - A root task plus 200 workers over the six worker roles, each chained to the one before on its role.
+  - Each worker spawns, makes tool calls (every 25th on a GPU role is a GPU-lock wait, WARN) and completes, until the trace holds exactly `--rows` envelopes. DEBUG, INFO and WARN rows.
+  - Every row is a Tier-0 event, which the bus never drops and the snapshot never folds, so a viewer sees all 100,000 rows whether it watches live or opens the trace later.
+  - Running it:
+    - `PYTHONPATH=src-python uv run python -m vibecut_agent.telemetry.stress_emitter` writes `trc_stress_0001.jsonl` (100k rows, 73 MB, under 1 s) into the installed app's telemetry folder, or VIBECUT_APP_DATA_DIR's.
+    - `--realtime --rate 5000 --trace-id trc_stress_live` journals it live for the gateway to stream (20 s).
+    - Also `--rows`, `--tasks` and `--out`.
+  - Delete the journals from `~/Library/Application Support/com.cj.vibecutagent/telemetry` afterwards; they're 73 MB each.
+- **Found and fixed:**
+  - **Immer made each batch cost more as the log grew.** The reducer itself takes 100k rows in 61 ms, but under the store's Immer draft the same rows took 9.9 s (10–17 ms per 128-event batch). At a live 5,000 rows a second, that is about half the main thread. There were two causes:
+    - The log was pushed into a drafted 100k array, which Immer copied and walked on every batch (3.4 s).
+    - Each packet sprite was capped with a `splice` per event, through the draft's proxy (5 s).
+  - Now `reduceEnvelopes` appends the log once per call as a new frozen array (`appendLogs`; Immer neither drafts nor walks a frozen array). The store passes the log as it was (`logsBefore`, via Immer's `original`). Packets are capped once per call.
+  - Result: 100k rows in 1.3 s, with a batch at 100k costing about what it did at 2k (1.6 against 1.8 ms). Hydrating a 100k snapshot takes 30 ms.
+  - One behaviour change: past 110,000 rows the log is cut back to the newest 100,000 at the end of the batch that passed it, not at the exact row.
+  - **The dock filtered all 100k rows on every update** (about 9 ms) even with no filter on. `filterLogs` now hands back the log itself when nothing is filtered.
+- **Tests:**
+  - `TerminalReplayDock.100k.test.tsx` (4):
+    - 100k rows live in 128-event batches, under 6 s, with the last batches no more than 3× the early ones;
+    - the cut past 110k;
+    - a 100k hydrate under 2 s;
+    - the dock drawing at most 60 rows at the top and halfway down, and a search over all 100k.
+  - jsdom doesn't scroll, so following the tail is checked in the browser instead.
+  - `test_stress_emitter.py` (5):
+    - exact rows, all valid, contiguous and deterministic;
+    - every row survives the snapshot, and every task completes;
+    - the default run is 100k;
+    - a realtime run is in order;
+    - the command's default folder.
+  - Totals: visualizer 107; root vitest 868; pytest 1340 passed, 2 skipped, and 1 failed: `test_mcp_server.py::test_outside_callers_are_refused_while_outside_control_is_off` (untouched here), which failed once under full-suite load and passed alone 3 of 3. ruff, mypy, eslint and tsc are clean.
+- **Checked in headless Chrome (2026-11-03, Claude):** the built visualizer at 1440 x 900, a scratch `telemetry-gateway` (port 18799), driven over the DevTools protocol.
+  - **Opening the finished 100k trace:**
+    - The snapshot is 73 MB, served in 0.6 s.
+    - "100,000/100,000" showed 2.3 s after navigation, at the tail (27 rows drawn, seq 99,974–100,000).
+    - Scrolling top to bottom in 2 s: 61 fps, worst frame 16.8 ms. Halfway down, 47 rows were drawn around seq 50,000.
+    - Searching all 100k rows for "GPU_METAL_LOCK" took 37 ms (1,292 rows).
+    - **Open:** opening runs one long task of 1.2 s, from parsing and checking the 73 MB snapshot (JSON.parse and Zod on every envelope). It's a one-off freeze when a big finished trace is opened. Streaming the snapshot in chunks would end it.
+  - **Live at 5,000 rows/s** (`--realtime`, followed as the latest run): 60 fps in each 4 s sample up to 91,500 rows (p95 16.7 ms, worst 16.8 ms), no long tasks, and the log kept on the newest row.
+- **Still to check live (the user):** in the installed app's Telemetry Studio, run the stress emitter (with `--realtime` to watch it come in), pick `trc_stress_0001` or `trc_stress_live` in the Trace menu, then scroll, filter and search.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
@@ -3773,3 +3815,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): Contact strips and the editors' status in the visualizer.** A traced shot analysis streams its first contact strip (VCTB 0x02) through the gateway, and the heartbeat's `nle_connected` comes from the app's watchers via `telemetry/nle_status.json`. See "Contact strips and the editors' status" under Phase 22.
 - **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.
 - **2026-11-03 (Claude): Real audio in the OTIO dock.** The gateway measures each delta's audio ops from their own media (VCTB 0x01, addressed by the delta's first seq and the op's index) and answers `SCRUB_REQUEST`s with 0.25 s of the sound under the playhead (0x03). Dragging the ruler plays it, with a Scrub audio toggle. See "Real audio in the OTIO dock" under Phase 22 (V16–V19).
+- **2026-11-03 (Claude): The log at 100k rows.** A 100k-row stress run (`telemetry/stress_emitter.py`) and a 100k test suite; two fixes (the log and packet sprites kept off Immer's per-write path: 100k rows live in 1.3 s instead of 9.9 s, flat per batch; no filtering pass with no filter on). Headless Chrome: 61 fps scrolling 100k rows, 60 fps live at 5,000 rows/s; open: a 1.2 s freeze opening a 73 MB snapshot. See "The log at 100k rows" under Phase 22.
