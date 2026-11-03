@@ -2826,6 +2826,21 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **Checked:** headless Chromium screenshots of today's real trace (91 events, 17 tasks) in the split layout at 1440 x 900, before and after.
 - **Tests:** layout wrapping, the row choice, even splits and the memo; compact cards when zoomed out; the store placing again for the pane and the replay projection. Visualizer vitest 86.
 
+**Forwarded tools in the trace (2026-11-02):**
+- **Why:** the Library tools (`e41398b`) and the sync tools are the app's, forwarded by the shim; they never pass the bus, where tracing happens, so they didn't appear in the visualizer.
+- **The visualizer needed no change.** It's generic over the contract's roles and tool names.
+- **The fix:** `TraceEmitter.tool_call` is split into `begin_tool` and `end_tool`, so the shim's async `call_tool` can trace a forwarded call. That covers its spawn, invocation, result or failure, timing and the handoff back.
+- **What's traced:** a forwarded tool with a role in `TOOL_AGENTS` (`Orchestration.trace_for`). The timeline reads have no role, so they aren't traced.
+- **Roles:**
+  - the Library, folder and bin tools: `BROLL_RETRIEVER` (`app.broll_library`, `app.media_pool`);
+  - `analyze_broll_folder`: `VISION_TAGGER` (`app.broll_analyzer`);
+  - sync: `AUDIO_ENGINEER` (`app.audio_sync`).
+- **Summaries:** a task's summary is the app's own line for the call (`summary` in its reply).
+- **GPU lock:** `requires_gpu_lock` is now only for `worker.*` agents. The app's models don't take VibeCut's lock.
+- **Threads:** the emitter's counters are behind a lock, since the event loop and the bus's worker thread both make tasks.
+- **Test:** `test_an_orchestrated_chat_traces_the_app_tools_it_forwards_but_not_timeline_reads` checks a Library search, a timeline read and a failed sync against the contract. It fails without the shim change.
+- **Still to check live:** an orchestrated chat that searches the Library, with the visualizer open.
+
 **Collapsible docks (2026-11-02, the user's request):**
 - The OTIO Live Preview and the Terminal & Replay Log collapse to their header row. Click the title (`DockToggle`, a chevron with `aria-expanded`) or press T or L.
 - The row then sizes to the header (`auto`), and the panes above take the space. The DAG re-wraps for it.
@@ -3590,3 +3605,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): The visualizer's DAG fits large runs.** A tall rank wraps into columns shaped for the pane, cards go compact below 75% zoom, the zoom floor is 0.1x, and the split layout no longer grows to the OTIO dock's width. See "The DAG in large runs" under Phase 22.
 - **2026-11-02 (Claude): The visualizer's OTIO preview and log collapse** to their headers (title or T/L), remembered per browser. See "Collapsible docks" under Phase 22.
 - **2026-11-02 (Claude): Library search in orchestrated mode.** The B-roll Library's tools, the media-pool reads and the B-roll Analyzer now go through to the app in orchestrated chats, which couldn't search the user's library. Not a sub-agent; see "Library search in orchestrated mode" above.
+- **2026-11-02 (Claude): Forwarded tools in the trace.** The shim traces the app tools it forwards (B-roll Library, bins, Analyzer, sync) for the visualizer; timeline reads stay untraced. See "Forwarded tools in the trace" under Phase 22.

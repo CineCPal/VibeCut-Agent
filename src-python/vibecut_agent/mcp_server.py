@@ -20,7 +20,10 @@ orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
   and the media pool among them), the B-roll Analyzer and the three sync tools (tool_bus.FORWARDED_TOOLS);
 - it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
   timeline and whose commit go to the app through the bridge as this chat's own calls;
-- it refuses any other call.
+- it refuses any other call;
+- with telemetry on (Phase 22), it traces the app's tools it forwards that have a role in the visualizer
+  (telemetry.instrument.TOOL_AGENTS: the B-roll Library, the bins, the Analyzer, sync) as the bus traces its
+  own; the timeline reads aren't traced.
 The bus lives as long as this process, which is one Claude Code run: one turn. A validation token is
 good for the turn it was handed out in. Outside callers are never orchestrated.
 
@@ -340,6 +343,15 @@ class Orchestration:
                 results.append({"error": str(exc)})
         return results
 
+    def trace_for(self, name: str) -> Any:
+        """This run's TraceEmitter for a forwarded call worth a task in the visualizer, else None (telemetry
+        off, or a timeline read). The bus, which holds the trace, is made here if no tool has needed it yet."""
+        from vibecut_agent.telemetry.instrument import TOOL_AGENTS
+
+        if name not in self.forwarded or name not in TOOL_AGENTS:
+            return None
+        return self.bus.telemetry
+
     def dispatch(self, name: str, args: dict[str, Any]) -> Any:
         """Runs an orchestration tool on the bus; call from a worker thread."""
         bus = self.bus
@@ -381,11 +393,22 @@ def build_server(bridge: AppBridge, orchestration: Orchestration | None = None) 
             except Exception as exc:  # noqa: BLE001 - progress is best effort; the call goes on
                 print(f"vibecut mcp: progress not sent: {exc}", file=sys.stderr)
 
+        trace = orchestration.trace_for(name) if orchestration is not None else None
+        task = trace.begin_tool(name, args) if trace is not None else None
         try:
             reply = await bridge.ask_reply("call_tool", timeout, name=name, args=args, on_wait=on_wait)
         except BridgeError as exc:
+            if trace is not None and task is not None:
+                trace.end_tool(task, {"error": str(exc)})
             return text_result({"error": str(exc)}, is_error=True)
+        except BaseException as exc:
+            if trace is not None and task is not None:
+                trace.end_tool(task, error=exc)
+            raise
         result = reply.get("result")
+        if trace is not None and task is not None:
+            summary = reply.get("summary")
+            trace.end_tool(task, result, summary=summary if isinstance(summary, str) else None)
         is_error = isinstance(result, dict) and "error" in result
         return text_result(result, is_error=is_error, images=reply.get("images"))
 

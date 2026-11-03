@@ -509,6 +509,76 @@ def test_an_orchestrated_chat_edits_only_through_a_validated_delta(
     assert mcp_server.timeout_for("commit_otio_delta") == mcp_server.LONG_TIMEOUT_SECONDS
 
 
+def test_an_orchestrated_chat_traces_the_app_tools_it_forwards_but_not_timeline_reads(
+    folder: Path, orchestration: Any
+) -> None:
+    """The B-roll Library, the Analyzer and sync run in the app, not on the bus, so the shim traces them for
+    the visualizer itself (Phase 22)."""
+    from vibecut_agent.telemetry.bus import TelemetryBus, validate_envelope
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    trace = TraceEmitter(TelemetryBus(), "trc_test_shim")
+    orchestration.bus.telemetry = trace
+
+    def answer(request: dict[str, Any]) -> dict[str, Any]:
+        if request["kind"] == "list_tools":
+            return {"ok": True, "result": {"tools": ORCHESTRATED_DECLARATIONS}}
+        if request["name"] == "find_broll":
+            return {
+                "ok": True,
+                "result": {"matches": [{"path": "/a.mov", "start": 1.0, "end": 4.0, "status": "ok"}]},
+                "summary": 'Found 1 B-roll match(es) for "dusk" in the Library.',
+            }
+        if request["name"] == "sync_clips":
+            return {"ok": True, "result": {"error": '"Cam A" has no linked sound to sync'}}
+        return {"ok": True, "result": {"markers": []}}
+
+    fake = FakeApp(folder, answer)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                found = await client.call_tool("find_broll", {"query": "dusk"})
+                await client.call_tool("list_markers", {})
+                synced = await client.call_tool("sync_clips", {"clipIds": ["v1"]})
+                return found, synced
+
+        found, synced = run(go)
+    finally:
+        fake.stop()
+    assert found.is_error is False and synced.is_error is True
+    envelopes = trace.bus.flush()
+    assert [validate_envelope(e) for e in envelopes if validate_envelope(e)] == []
+    spawned = [
+        (e["agent_id"], e["subagent_type"], e["payload"]["task_label"])
+        for e in envelopes
+        if e["event_type"] == "SPAWN"
+    ]
+    # The root, then a task each for the Library search and the sync; the timeline read isn't one.
+    assert spawned == [
+        ("orchestrator.supervisor", "MASTER_ORCHESTRATOR", "Orchestrated turn"),
+        ("app.broll_library", "BROLL_RETRIEVER", "B-roll Library search"),
+        ("app.audio_sync", "AUDIO_ENGINEER", "Sync clips"),
+    ]
+    invoked = [e["payload"] for e in envelopes if e["event_type"] == "TOOL_INVOCATION"]
+    assert [(p["tool_name"], p["requires_gpu_lock"]) for p in invoked] == [
+        ("find_broll", False),
+        ("sync_clips", False),
+    ]
+    (done,) = [e["payload"] for e in envelopes if e["event_type"] == "COMPLETED"]
+    assert done["task_id"] == invoked[0]["task_id"]
+    assert done["output_summary"] == 'Found 1 B-roll match(es) for "dusk" in the Library.'
+    (failed,) = [e["payload"] for e in envelopes if e["event_type"] == "FAILED"]
+    assert failed["task_id"] == invoked[1]["task_id"] and "no linked sound" in failed["error_message"]
+    back = [
+        e["payload"]
+        for e in envelopes
+        if e["event_type"] == "CONTEXT_HANDOFF" and e["payload"]["to_task_id"] == "task_root"
+    ]
+    assert [p["packet_type"] for p in back] == ["CLIP_MANIFEST"]
+
+
 def test_only_the_apps_own_chat_is_orchestrated(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(mcp_server.ORCHESTRATED_ENV, "1")
     assert mcp_server.orchestrated_from_env("job-1") is True

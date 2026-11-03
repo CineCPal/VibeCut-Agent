@@ -13,8 +13,10 @@ root: SPAWN, a handoff from the orchestrator, TOOL_INVOCATION, then COMPLETED, o
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from vibecut_agent.telemetry.bus import TelemetryBus, get_bus, trace_id_for
@@ -27,7 +29,20 @@ TOOL_AGENTS: dict[str, tuple[str, str, str, str]] = {
     "detect_media_boundaries": ("AUDIO_ENGINEER", "worker.audio_sync", "CPU_NEON", "Media boundaries"),
     "propose_otio_delta": ("PACING_CUTTER", "worker.otio_cutter", "CPU_NEON", "Propose OTIO delta"),
     "commit_otio_delta": ("COLOR_GRADER", "worker.color_nle", "NLE_IPC", "Commit to the editor"),
+    # The app's tools an orchestrated chat keeps (tool_bus.FORWARDED_TOOLS), run in the app, not by a local
+    # worker: the shim traces them (mcp_server.py). The five timeline reads aren't traced.
+    "find_broll": ("BROLL_RETRIEVER", "app.broll_library", "METAL_MPS", "B-roll Library search"),
+    "list_spyglass_folders": ("BROLL_RETRIEVER", "app.broll_library", "CPU_NEON", "B-roll Library folders"),
+    "describe_spyglass_folder": ("BROLL_RETRIEVER", "app.broll_library", "CPU_NEON", "B-roll Library folder"),
+    "list_media_pool": ("BROLL_RETRIEVER", "app.media_pool", "NLE_IPC", "Project bins"),
+    "search_media_pool": ("BROLL_RETRIEVER", "app.media_pool", "NLE_IPC", "Project bin search"),
+    "analyze_broll_folder": ("VISION_TAGGER", "app.broll_analyzer", "METAL_MPS", "Analyze a B-roll folder"),
+    "sync_and_place": ("AUDIO_ENGINEER", "app.audio_sync", "CPU_NEON", "Sync and place"),
+    "sync_clips": ("AUDIO_ENGINEER", "app.audio_sync", "CPU_NEON", "Sync clips"),
+    "slip_into_sync": ("AUDIO_ENGINEER", "app.audio_sync", "CPU_NEON", "Slip into sync"),
 }
+# Only the local workers take VibeCut's GPU lock (workers/base.py); the app's own models don't.
+GPU_LOCK_AGENT_PREFIX = "worker."
 DEFAULT_AGENT = ("MASTER_ORCHESTRATOR", "orchestrator.supervisor", "CLOUD_API", "Tool")
 ROOT_AGENT_ID = "orchestrator.supervisor"
 # Tool arguments larger than this (in characters of JSON) are summarised, not sent whole.
@@ -128,6 +143,8 @@ class TraceEmitter:
         self._root_began = time.perf_counter()
         self._tasks_done = 0
         self._tasks_failed = 0
+        # The shim's forwarded calls (its event loop) and the bus (a worker thread) both make tasks.
+        self._lock = threading.Lock()
 
     # Raw events.
 
@@ -152,8 +169,9 @@ class TraceEmitter:
         )
 
     def next_task_id(self, tag: str) -> str:
-        self._count += 1
-        return f"task_{self._count:03d}_{tag}"
+        with self._lock:
+            self._count += 1
+            return f"task_{self._count:03d}_{tag}"
 
     def spawn(
         self,
@@ -373,13 +391,26 @@ class TraceEmitter:
 
     def tool_call(self, name: str, args: Any, run: Callable[[], Any]) -> Any:
         """Runs `run()` (the bus's own dispatch) as a task; its result is returned unchanged."""
+        task = self.begin_tool(name, args)
+        self.current_task = (task.task_id, task.agent_id, task.subagent)
+        try:
+            result = run()
+        except Exception as exc:
+            self.end_tool(task, error=exc)
+            raise
+        finally:
+            self.current_task = None
+        self.end_tool(task, result)
+        return result
+
+    def begin_tool(self, name: str, args: Any) -> ToolTask:
+        """A tool call's task, spawned and handed its arguments; `end_tool` finishes it. The shim uses the
+        two for the app's tools it forwards (mcp_server.py), whose calls it awaits."""
         self.ensure_root()
         subagent, agent_id, backend, label = TOOL_AGENTS.get(name, DEFAULT_AGENT)
-        task_id = self.next_task_id(name.split("_")[0])
-        self.current_task = (task_id, agent_id, subagent)
-        root = (ROOT_AGENT_ID, "MASTER_ORCHESTRATOR")
+        task = ToolTask(name, self.next_task_id(name.split("_")[0]), agent_id, subagent, time.perf_counter())
         self.spawn(
-            task_id,
+            task.task_id,
             agent_id=agent_id,
             subagent=subagent,
             label=label,
@@ -391,8 +422,8 @@ class TraceEmitter:
         )
         self.handoff(
             self.root_task_id,
-            task_id,
-            from_agent=root,
+            task.task_id,
+            from_agent=(ROOT_AGENT_ID, "MASTER_ORCHESTRATOR"),
             to_agent=(agent_id, subagent),
             packet_type="OTIO_DELTA" if name == "propose_otio_delta" else "PROMPT_TOKENS",
             summary=f"{name}",
@@ -401,65 +432,87 @@ class TraceEmitter:
         self.emit(
             "TOOL_INVOCATION",
             {
-                "task_id": task_id,
-                "tool_call_id": f"call_{task_id}",
+                "task_id": task.task_id,
+                "tool_call_id": f"call_{task.task_id}",
                 "tool_name": name,
                 "target_subagent": subagent,
                 "arguments": compact_arguments(args),
-                "requires_gpu_lock": backend == "METAL_MPS",
+                "requires_gpu_lock": backend == "METAL_MPS" and agent_id.startswith(GPU_LOCK_AGENT_PREFIX),
                 "media_paths": media_paths_of(args),
             },
             agent_id=agent_id,
             subagent=subagent,
             parent=self.root_task_id,
         )
-        began = time.perf_counter()
-        try:
-            result = run()
-        except Exception as exc:
+        task.began = time.perf_counter()
+        return task
+
+    def end_tool(
+        self,
+        task: ToolTask,
+        result: Any = None,
+        *,
+        error: BaseException | None = None,
+        summary: str | None = None,
+    ) -> None:
+        """Completes `task` with its result, or fails it on `error` or a `{"error"}` result. `summary` (the
+        app's own line for a forwarded call) stands in for the one made from the result."""
+        if error is not None:
             self.failed(
-                task_id,
-                agent_id=agent_id,
-                subagent=subagent,
-                message=f"{type(exc).__name__}: {exc}",
+                task.task_id,
+                agent_id=task.agent_id,
+                subagent=task.subagent,
+                message=f"{type(error).__name__}: {error}",
                 code="NLE_BRIDGE_TIMEOUT",
                 parent=self.root_task_id,
             )
-            raise
-        finally:
-            self.current_task = None
-        latency_ms = (time.perf_counter() - began) * 1000.0
-        self._tasks_done += 1
-        if isinstance(result, dict) and "error" in result:
-            self._tasks_failed += 1
+            return
+        latency_ms = (time.perf_counter() - task.began) * 1000.0
+        with self._lock:
+            self._tasks_done += 1
+            failed = isinstance(result, dict) and "error" in result
+            if failed:
+                self._tasks_failed += 1
+        if failed:
             self.failed(
-                task_id,
-                agent_id=agent_id,
-                subagent=subagent,
+                task.task_id,
+                agent_id=task.agent_id,
+                subagent=task.subagent,
                 message=str(result["error"]),
                 parent=self.root_task_id,
             )
-        else:
-            self.completed(
-                task_id,
-                agent_id=agent_id,
-                subagent=subagent,
-                latency_ms=latency_ms,
-                summary=summary_of(name, result),
-                artifacts=artifacts_of(name, result),
-                parent=self.root_task_id,
-            )
-            self.handoff(
-                task_id,
-                self.root_task_id,
-                from_agent=(agent_id, subagent),
-                to_agent=root,
-                packet_type=PACKET_BACK.get(name, "PROMPT_TOKENS"),
-                summary=summary_of(name, result),
-                payload_bytes=len(json.dumps(result, ensure_ascii=False, default=str)),
-                clip_count=len(result.get("hits") or []) if isinstance(result, dict) else 0,
-            )
-        return result
+            return
+        said = short(summary) if summary else summary_of(task.name, result)
+        self.completed(
+            task.task_id,
+            agent_id=task.agent_id,
+            subagent=task.subagent,
+            latency_ms=latency_ms,
+            summary=said,
+            artifacts=artifacts_of(task.name, result),
+            parent=self.root_task_id,
+        )
+        self.handoff(
+            task.task_id,
+            self.root_task_id,
+            from_agent=(task.agent_id, task.subagent),
+            to_agent=(ROOT_AGENT_ID, "MASTER_ORCHESTRATOR"),
+            packet_type=PACKET_BACK.get(task.name, "PROMPT_TOKENS"),
+            summary=said,
+            payload_bytes=len(json.dumps(result, ensure_ascii=False, default=str)),
+            clip_count=len(result.get("hits") or []) if isinstance(result, dict) else 0,
+        )
+
+
+@dataclass
+class ToolTask:
+    """One tool call's task while it runs (`TraceEmitter.begin_tool`)."""
+
+    name: str
+    task_id: str
+    agent_id: str
+    subagent: str
+    began: float
 
 
 PACKET_BACK = {
@@ -468,6 +521,12 @@ PACKET_BACK = {
     "analyze_shot_visuals": "VLM_TAGS",
     "propose_otio_delta": "VALIDATION_TOKEN",
     "commit_otio_delta": "NLE_COMMIT_BATCH",
+    "find_broll": "CLIP_MANIFEST",
+    "search_media_pool": "CLIP_MANIFEST",
+    "analyze_broll_folder": "VLM_TAGS",
+    "sync_and_place": "NLE_COMMIT_BATCH",
+    "sync_clips": "NLE_COMMIT_BATCH",
+    "slip_into_sync": "NLE_COMMIT_BATCH",
 }
 
 
