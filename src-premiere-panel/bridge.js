@@ -14,7 +14,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.18.0";
+const PANEL_VERSION = "0.18.1";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 // At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).

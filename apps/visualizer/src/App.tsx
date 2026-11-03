@@ -1,7 +1,10 @@
 /**
  * The 4-pane studio (visualizer-spec.md §4.1): the top bar; Pane A (the studio and DAG workspace) over
  * Pane B (the OTIO dock); Pane C (the inspector) on the right; Pane D (the terminal and replay log)
- * along the bottom. A narrow Premiere panel (embedded_cep) gets one column, with the inspector in a tab.
+ * along the bottom. A narrow Premiere panel (embedded_cep) gets one column, with the inspector in a tab;
+ * choosing a task on another tab (a DAG node, a studio bay, a log row) also opens the inspector as a sheet
+ * in the tab's lower part, closed with ✕ or Esc. The tab keeps the part above, so the DAG lays itself out
+ * there rather than under the sheet.
  *
  * Keys: 1/2/3 switch views, F fits the DAG, T and L collapse or open the OTIO preview and the log (each to
  * its header, the space going to the panes above), , and . step the replay, Esc deselects, ? opens About.
@@ -45,6 +48,11 @@ function useHotkeys() {
 
 function CompactLayout() {
   const [tab, setTab] = useState<"studio" | "inspector" | "timeline" | "log">("studio");
+  const selected = useVisualizerStore((s) => s.selectedTaskId);
+  // The sheet opens for each task chosen; ✕ hides it and keeps the selection (the DAG stays lit).
+  const [sheetFor, setSheetFor] = useState<string | null>(null);
+  useEffect(() => setSheetFor(selected), [selected]);
+  const sheet = sheetFor !== null && sheetFor === selected && tab !== "inspector";
   const tabs = [
     ["studio", "Studio"],
     ["inspector", "Inspector"],
@@ -60,11 +68,29 @@ function CompactLayout() {
           </button>
         ))}
       </div>
-      <div role="tabpanel" className="min-h-0 flex-1">
-        {tab === "studio" && <WorkspaceViewport />}
-        {tab === "inspector" && <AgentInspectorDrawer />}
-        {tab === "timeline" && <OtioTimelineDock collapsible={false} />}
-        {tab === "log" && <TerminalReplayDock collapsible={false} />}
+      <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1">
+          {tab === "studio" && <WorkspaceViewport />}
+          {tab === "inspector" && <AgentInspectorDrawer />}
+          {tab === "timeline" && <OtioTimelineDock collapsible={false} />}
+          {tab === "log" && <TerminalReplayDock collapsible={false} />}
+        </div>
+        {sheet && (
+          <div role="dialog" aria-label="Task inspector" className="flex h-[58%] min-h-0 shrink-0 flex-col border-t border-athletic-blue-light bg-surface shadow-[0_-8px_24px_rgba(0,0,0,0.5)]">
+            <div className="flex items-center border-b border-border px-3 py-1 text-xs">
+              <span className="font-semibold text-[#e6edf3]">Inspector</span>
+              <button type="button" className="ml-auto rounded px-1.5 text-cool-grey hover:text-white" onClick={() => setTab("inspector")}>
+                Open as tab
+              </button>
+              <button type="button" aria-label="Close the inspector" className="rounded px-1.5 text-cool-grey hover:text-white" onClick={() => setSheetFor(null)}>
+                ✕
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <AgentInspectorDrawer />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

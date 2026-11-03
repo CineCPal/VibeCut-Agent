@@ -122,7 +122,7 @@ describe("App", () => {
     fireEvent.keyDown(window, { key: "1" });
     expect(screen.getByRole("img", { name: /Virtual editing studio/ })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "About ?" }));
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
     const dialog = screen.getByRole("dialog", { name: "About VibeCut Agent Telemetry Studio" });
     expect(within(dialog).getByText(/1\.0\.0 \(vibecut\.visualizer\.spec\.v1/)).toBeInTheDocument();
     expect(within(dialog).getByText(/No external APIs/)).toBeInTheDocument();
@@ -190,5 +190,29 @@ describe("App", () => {
     // A tab's dock doesn't collapse: no toggle, and its tracks show.
     expect(screen.queryByRole("button", { name: "OTIO Live Preview" })).toBeNull();
     expect(document.getElementById("otio-tracks")).toBeVisible();
+  });
+
+  it("opens the inspector as a sheet when a DAG task is chosen in the narrow panel", () => {
+    const cep = resolveHostAdapter({ search: "?mode=embedded_cep&source=mock", hostname: "", host: "", protocol: "http:" });
+    render(<App adapter={cep} />);
+    play();
+    expect(screen.queryByRole("dialog", { name: "Task inspector" })).toBeNull();
+    const dag = screen.getByRole("group", { name: /Execution DAG/ });
+    fireEvent.click(within(dag).getByRole("button", { name: /Assemble the teaser/ }));
+    const sheet = screen.getByRole("dialog", { name: "Task inspector" });
+    expect(within(sheet).getByRole("complementary", { name: "Agent inspector" })).toHaveTextContent("Assemble the teaser");
+    // ✕ hides it; the task stays chosen. Choosing another opens it again.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Close the inspector" }));
+    expect(screen.queryByRole("dialog", { name: "Task inspector" })).toBeNull();
+    expect(useVisualizerStore.getState().selectedTaskId).not.toBeNull();
+    fireEvent.click(within(dag).getByRole("button", { name: /Tag drone shots/ }));
+    expect(screen.getByRole("dialog", { name: "Task inspector" })).toHaveTextContent("Tag drone shots");
+    // Esc deselects, which closes it; on the Inspector tab itself there's no sheet.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Task inspector" })).toBeNull();
+    fireEvent.click(within(dag).getByRole("button", { name: /Assemble the teaser/ }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Task inspector" })).getByRole("button", { name: "Open as tab" }));
+    expect(screen.getByRole("tab", { name: "Inspector" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog", { name: "Task inspector" })).toBeNull();
   });
 });

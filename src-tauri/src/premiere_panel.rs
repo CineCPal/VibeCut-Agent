@@ -219,7 +219,7 @@ mod tests {
         for file in PANEL_FILES {
             assert!(source.join(file).is_file(), "{file} is missing");
         }
-        assert_eq!(bundle_version(&source).as_deref(), Some("0.18.0"));
+        assert_eq!(bundle_version(&source).as_deref(), Some("0.18.1"));
         let manifest = std::fs::read_to_string(source.join("CSXS/manifest.xml")).unwrap();
         assert!(manifest.contains("ExtensionBundleId=\"com.vibecutagent.connect\""));
         assert!(!manifest.contains("com.vibecut.connect\""));

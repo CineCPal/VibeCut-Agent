@@ -115,7 +115,7 @@ export function TopTelemetryBar() {
           onClick={() => setAboutOpen(true)}
           title="About This App (?)"
         >
-          About ?
+          About
         </button>
       </nav>
     </header>
