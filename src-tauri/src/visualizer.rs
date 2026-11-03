@@ -8,7 +8,8 @@
 //! build loads the visualizer's dev server (`npm --prefix apps/visualizer run dev`, port 5173). Either way it
 //! reads the telemetry gateway on 127.0.0.1:18765. Opening the window starts the gateway as a job of the
 //! app's own (sidecar.rs) unless one is listening there already (a terminal's), and closing the window stops
-//! the one the app started. The app's CSP lets its pages reach the gateway (tauri.conf.json, connect-src).
+//! the one the app started. The app's CSP lets its pages reach the gateway (tauri.conf.json, connect-src) and
+//! show the contact strips the gateway streams, which the visualizer turns into `blob:` URLs (img-src).
 //!
 //! The visualizer's app actions reach the app through the gateway the app started: it checks them and
 //! sends each back as a `control` event (gateway.py), which `on_control` carries out. Reveal shows the
@@ -158,6 +159,23 @@ pub fn closed(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_apps_csp_lets_the_visualizer_reach_the_gateway_and_show_its_strips() {
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        let directive = |name: &str| -> Vec<&str> {
+            csp.split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with(name))
+                .map(|d| d.split_whitespace().skip(1).collect())
+                .unwrap_or_default()
+        };
+        assert!(directive("connect-src").contains(&"http://127.0.0.1:18765"));
+        assert!(directive("connect-src").contains(&"ws://127.0.0.1:18765"));
+        // The contact strips (VCTB 0x02) are object URLs the page makes from the frames it receives.
+        assert!(directive("img-src").contains(&"blob:"));
+    }
 
     #[test]
     fn control_events_become_actions_and_bad_ones_are_dropped() {
