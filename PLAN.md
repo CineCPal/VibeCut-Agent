@@ -2840,6 +2840,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - The gateway's loopback check already accepts the origin `tauri://localhost`, whose host is `localhost`.
   - The window has no IPC permissions (capabilities name only `main`), and needs none.
 - **Telemetry:** the window shows runs only while the app has `VIBECUT_TELEMETRY=1` (the installer writes it with `--orchestrated`).
+- **Full screen (the user's request):** the window goes full screen in a Space of its own (the green button, or Globe/Fn-F). An accessory app's windows don't get that by default, so `allow_full_screen` sets `FullScreenPrimary` and clears `FullScreenAuxiliary`, `FullScreenNone` and `CanJoinAllSpaces`. With Keep on Top on, the agent panel can still float over it.
 - **Tests:** `visualizer.rs` (the page per build, the loopback address), `tray.rs` (the new item opens no view), and the adapter's Tauri case. cargo 144, visualizer vitest 89, app vitest 867, tsc, eslint.
 - **Still to check live:** opening it from the menu-bar menu in the installed app. Clicking the status item through accessibility doesn't open its menu, so the user does this check.
 

@@ -1,6 +1,8 @@
 //! The Telemetry Studio window (Phase 22's visualizer, apps/visualizer), opened from the menu-bar menu as a
 //! window of its own, outside a browser. It's an ordinary window: not kept on top of the editors as the
-//! main one can be (window_mode.rs), and closing it closes it (the main window only hides).
+//! main one can be (window_mode.rs), and closing it closes it (the main window only hides). It can go full
+//! screen in a Space of its own (the green button, or Globe/Fn-F): an accessory app's windows don't get
+//! that by themselves, so `allow_full_screen` marks it a primary full-screen window.
 //!
 //! The installed app loads the visualizer built into the bundle (`dist/visualizer`, `npm run build`); a dev
 //! build loads the visualizer's dev server (`npm --prefix apps/visualizer run dev`, port 5173). Either way it
@@ -55,8 +57,38 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
         .resizable(true)
         .build()
         .map_err(|e| format!("The Telemetry Studio window didn't open: {e}"))?;
+    allow_full_screen(&window);
     let _ = window.set_focus();
     Ok(())
+}
+
+/// Lets the window go full screen in a Space of its own (macOS), rather than the green button zooming it.
+fn allow_full_screen(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let handle = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            use objc2_app_kit::NSWindow;
+            let Ok(ptr) = handle.ns_window() else { return };
+            // SAFETY: Tauri's NSWindow for this webview window, used on the main thread while it lives.
+            let ns = unsafe { &*(ptr as *const NSWindow) };
+            ns.setCollectionBehavior(full_screen_behavior(ns.collectionBehavior()));
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// A window's collection behavior with primary full screen on, and what would stop it off.
+#[cfg(target_os = "macos")]
+fn full_screen_behavior(
+    behavior: objc2_app_kit::NSWindowCollectionBehavior,
+) -> objc2_app_kit::NSWindowCollectionBehavior {
+    use objc2_app_kit::NSWindowCollectionBehavior as B;
+    let mut behavior = behavior;
+    behavior.remove(B::FullScreenAuxiliary | B::FullScreenNone | B::CanJoinAllSpaces);
+    behavior.insert(B::FullScreenPrimary);
+    behavior
 }
 
 /// The window has closed: stop the gateway the app started for it.
@@ -78,6 +110,16 @@ mod tests {
             WebviewUrl::App(path) => assert_eq!(path, std::path::PathBuf::from("visualizer/index.html")),
             other => panic!("expected the bundled page, got {other:?}"),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_window_is_made_a_primary_full_screen_window() {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        let given = B::FullScreenAuxiliary | B::CanJoinAllSpaces | B::Managed;
+        let made = full_screen_behavior(given);
+        assert!(made.contains(B::FullScreenPrimary | B::Managed));
+        assert!(!made.intersects(B::FullScreenAuxiliary | B::FullScreenNone | B::CanJoinAllSpaces));
     }
 
     #[test]
