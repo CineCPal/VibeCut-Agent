@@ -44,6 +44,13 @@ export interface TraceSnapshot {
   replay_events: TelemetryEnvelope[];
 }
 
+/** One page of a snapshot's replay (`?offset&limit&at_seq`). `replay_total` is missing from a gateway that
+ * doesn't page, which sends the whole replay as one page. */
+export interface TraceSnapshotPage extends TraceSnapshot {
+  replay_total: number | null;
+  replay_offset: number;
+}
+
 export interface WsClientOptions {
   url: string;
   httpBase: string;
@@ -55,6 +62,9 @@ export interface WsClientOptions {
   lastSeenSeq: () => number;
   onEnvelopes: (envelopes: TelemetryEnvelope[]) => void;
   onSnapshot: (snapshot: TraceSnapshot) => void;
+  /** When given, the welcome asks for the snapshot here (the runtime loads it in pages) instead of
+   * fetching it whole for `onSnapshot`. */
+  onSnapshotNeeded?: (traceId: string) => void;
   onBinary?: (frame: VctbFrame) => void;
   onStatus?: (status: ConnectionStatus, detail?: string) => void;
   onWelcome?: (activeTraceId: string | null, currentSeq: number) => void;
@@ -162,6 +172,28 @@ export class TelemetryWsClient {
       trace_id: String(body.trace_id ?? traceId),
       snapshot_seq_id: typeof body.snapshot_seq_id === "number" ? body.snapshot_seq_id : 0,
       replay_events: this.validEnvelopes(body.replay_events),
+    };
+  }
+
+  /** A page of the snapshot's replay, pinned to `atSeq` after the first. */
+  async fetchSnapshotPage(traceId: string, offset: number, limit: number, atSeq: number | null): Promise<TraceSnapshotPage> {
+    const pinned = atSeq === null ? "" : `&at_seq=${atSeq}`;
+    const url = `${this.options.httpBase}/api/v1/traces/${encodeURIComponent(traceId)}/snapshot?offset=${offset}&limit=${limit}${pinned}`;
+    const response = await this.fetchImpl(url, { headers: this.headers() });
+    if (!response.ok) throw new Error(`Snapshot failed: HTTP ${response.status}`);
+    const body = (await response.json()) as {
+      trace_id?: unknown;
+      snapshot_seq_id?: unknown;
+      replay_events?: unknown;
+      replay_total?: unknown;
+      replay_offset?: unknown;
+    };
+    return {
+      trace_id: String(body.trace_id ?? traceId),
+      snapshot_seq_id: typeof body.snapshot_seq_id === "number" ? body.snapshot_seq_id : 0,
+      replay_events: this.validEnvelopes(body.replay_events),
+      replay_total: typeof body.replay_total === "number" ? body.replay_total : null,
+      replay_offset: typeof body.replay_offset === "number" ? body.replay_offset : offset,
     };
   }
 
@@ -284,6 +316,10 @@ export class TelemetryWsClient {
       const traceId = message.active_trace_id;
       const stale = reconnect && gone > SNAPSHOT_AFTER_MS;
       if (traceId && (message.requires_snapshot_fetch || stale) && message.current_seq_id > 0) {
+        if (this.options.onSnapshotNeeded) {
+          this.options.onSnapshotNeeded(traceId);
+          return;
+        }
         this.fetchSnapshot(traceId)
           .then((snapshot) => this.options.onSnapshot(snapshot))
           .catch((error: unknown) => this.options.onStatus?.("error", String(error)));

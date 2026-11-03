@@ -25,7 +25,9 @@ Endpoints:
 - `GET /sse/v1/telemetry?trace_id=`
 - `GET /api/v1/health`
 - `GET /api/v1/traces`
-- `GET /api/v1/traces/{id}/snapshot`
+- `GET /api/v1/traces/{id}/snapshot`, whole; or a page of its replay with `?offset=&limit=` (at most 20,000),
+  pinned to one seq with `&at_seq=` (the first page's `snapshot_seq_id`), so a 100k-row trace loads in pages
+  without the viewer freezing. Page one carries the reduced state too; every page has `replay_total`.
 - `GET /api/v1/traces/{id}/events?from_seq=&to_seq=`
 - `POST /api/v1/control/{id}` with `{action, params}`. PAUSE, RESUME and TRIGGER_MOCK_RUN are the gateway's
   own. CANCEL, REVEAL_IN_FINDER and SET_NLE_PLAYHEAD are the app's: a gateway the app started (request
@@ -81,6 +83,9 @@ MAX_EVENTS_PER_RESPONSE = 20_000
 CLIENT_QUEUE_SIZE = 512
 # A journal touched this recently is a live run.
 LIVE_SECONDS = 30.0
+# A snapshot page's largest replay, and the snapshots kept for paging (by trace and seq).
+MAX_SNAPSHOT_PAGE = 20_000
+SNAPSHOTS_KEPT = 4
 # A client this many events behind is sent to the snapshot rather than replayed.
 REPLAY_LIMIT = 2_000
 # A contact strip is a 3-panel JPEG of about 100 KB; anything far bigger isn't one.
@@ -203,6 +208,7 @@ class TraceStore:
         self.traces: dict[str, Trace] = {}
         self.listeners: list[Callable[[str, list[Envelope]], None]] = []
         self.binary_listeners: list[Callable[[str, bytes], None]] = []
+        self._snapshots: dict[tuple[str, int], dict[str, Any]] = {}
 
     def add(self, envelopes: list[Envelope], source: str = "live", updated: float | None = None) -> None:
         fresh: dict[str, list[Envelope]] = {}
@@ -250,6 +256,36 @@ class TraceStore:
     def snapshot(self, trace_id: str) -> dict[str, Any]:
         trace = self.traces.get(trace_id)
         return snapshot(trace_id, list(trace.events.values()) if trace else [])
+
+    def snapshot_page(
+        self, trace_id: str, offset: int, limit: int, at_seq: int | None = None
+    ) -> dict[str, Any]:
+        """Replay events [offset, offset + limit) of the snapshot at `at_seq` (default: now), and how many there
+        are. The first page also has the reduced state. The snapshot is worked out once per (trace, seq) and
+        kept for the pages after, as later events don't change it."""
+        trace = self.traces.get(trace_id)
+        latest = trace.latest_seq_id if trace else 0
+        seq = latest if at_seq is None else max(0, min(at_seq, latest))
+        key = (trace_id, seq)
+        whole = self._snapshots.get(key)
+        if whole is None:
+            events = [e for s, e in trace.events.items() if s <= seq] if trace else []
+            whole = snapshot(trace_id, events)
+            self._snapshots[key] = whole
+            while len(self._snapshots) > SNAPSHOTS_KEPT:
+                del self._snapshots[next(iter(self._snapshots))]
+        replay = whole["replay_events"]
+        offset = max(0, offset)
+        page = {
+            "trace_id": trace_id,
+            "snapshot_seq_id": whole["snapshot_seq_id"],
+            "replay_total": len(replay),
+            "replay_offset": offset,
+            "replay_events": replay[offset : offset + max(1, min(limit, MAX_SNAPSHOT_PAGE))],
+        }
+        if offset == 0:
+            page = {**whole, **page}
+        return page
 
 
 class JournalTailer:
@@ -872,7 +908,20 @@ class Gateway:
         elif len(parts) == 5 and parts[:3] == ["api", "v1", "traces"] and request.method == "GET":
             trace_id = parts[3]
             if parts[4] == "snapshot":
-                await self._respond(writer, 200, self.store.snapshot(trace_id), request)
+                offset, limit, at_seq = (request.param(name) for name in ("offset", "limit", "at_seq"))
+                if offset is None and limit is None and at_seq is None:
+                    body = self.store.snapshot(trace_id)
+                else:
+                    try:
+                        body = self.store.snapshot_page(
+                            trace_id,
+                            int(offset or 0),
+                            int(limit or MAX_SNAPSHOT_PAGE),
+                            int(at_seq) if at_seq else None,
+                        )
+                    except ValueError:
+                        raise GatewayError(400, "offset, limit and at_seq are whole numbers") from None
+                await self._respond(writer, 200, body, request)
             elif parts[4] == "events":
                 from_seq = int(request.param("from_seq") or 1)
                 to_seq_text = request.param("to_seq")

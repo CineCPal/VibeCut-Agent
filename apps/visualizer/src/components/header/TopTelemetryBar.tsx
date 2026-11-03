@@ -24,6 +24,7 @@ export function TopTelemetryBar() {
   const connection = useVisualizerStore((s) => s.connection);
   const followed = useVisualizerStore((s) => s.followedTraceId);
   const known = useVisualizerStore((s) => s.knownTraces);
+  const hydration = useVisualizerStore((s) => s.hydration);
   const followLatest = useVisualizerStore((s) => s.followLatest);
   const health = useVisualizerStore((s) => s.hostHealth);
   const viewMode = useVisualizerStore((s) => s.viewMode);
@@ -85,6 +86,11 @@ export function TopTelemetryBar() {
       </span>
       <span className="font-mono text-cool-grey">CPU: {cpu === undefined ? "–" : `${cpu.toFixed(1)}%`}</span>
       <span className="font-mono text-cool-grey">Events: {formatCount(view.event_count)}</span>
+      {hydration && hydration.total > 0 && (
+        <span className="font-mono text-athletic-blue-light" role="status" data-testid="hydration">
+          Loading {Math.floor((100 * hydration.loaded) / hydration.total)}%
+        </span>
+      )}
       <nav className="ml-auto flex items-center gap-1" aria-label="View mode">
         {MODES.map(({ mode, key, label }) => (
           <button

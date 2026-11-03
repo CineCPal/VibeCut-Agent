@@ -339,6 +339,47 @@ def test_the_apps_gateway_checks_its_actions_and_hands_them_on(tmp_path: Path) -
     ]
 
 
+def test_a_snapshot_pages_its_replay_pinned_to_one_seq(tmp_path: Path) -> None:
+    """Pages of the replay add up to the whole snapshot's; pinned with at_seq, a trace growing meanwhile
+    doesn't shift them; only page one carries the reduced state; no paging params give the whole thing."""
+    from vibecut_agent.telemetry import stress_emitter
+
+    envelopes = stress_emitter.generate("trc_page", rows=6_000, tasks=20)
+
+    async def check(gateway: Gateway) -> None:
+        gateway.store.add(envelopes[:5_000])
+        base = "/api/v1/traces/trc_page/snapshot"
+        status, _, first = await http(gateway.port, "GET", f"{base}?offset=0&limit=2000")
+        assert status == 200
+        assert (first["snapshot_seq_id"], first["replay_total"], len(first["replay_events"])) == (
+            5_000,
+            5_000,
+            2_000,
+        )
+        assert "nodes" in first and "recent_logs" in first
+        gateway.store.add(envelopes[5_000:])
+        pages = [first]
+        for offset in (2_000, 4_000):
+            _, _, page = await http(gateway.port, "GET", f"{base}?offset={offset}&limit=2000&at_seq=5000")
+            assert (page["snapshot_seq_id"], page["replay_total"], page["replay_offset"]) == (
+                5_000,
+                5_000,
+                offset,
+            )
+            assert "nodes" not in page
+            pages.append(page)
+        seqs = [e["seq_id"] for page in pages for e in page["replay_events"]]
+        assert seqs == list(range(1, 5_001))
+        _, _, whole = await http(gateway.port, "GET", base)
+        assert whole["snapshot_seq_id"] == 6_000 and len(whole["replay_events"]) == 6_000
+        _, _, now = await http(gateway.port, "GET", f"{base}?offset=0&limit=100000")
+        assert (now["replay_total"], len(now["replay_events"])) == (6_000, 6_000)
+        status, _, body = await http(gateway.port, "GET", f"{base}?offset=two")
+        assert status == 400 and "whole numbers" in body["error"]
+
+    with_gateway(check, tmp_path)
+
+
 def test_other_origins_and_hosts_are_refused_without_a_token(tmp_path: Path) -> None:
     async def check(gateway: Gateway) -> None:
         status, headers, _ = await http(

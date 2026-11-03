@@ -148,6 +148,8 @@ export interface VisualizerState {
   /** VCTB 0x02 JPEG strips by seq, as object URLs. */
   contactStrips: Record<number, string>;
   aboutOpen: boolean;
+  /** A snapshot being loaded in pages: how far along (null when none is). */
+  hydration: { trace_id: string; seq: number; loaded: number; total: number } | null;
   /** The DAG layout's size (for fit-to-view). */
   dagSize: { width: number; height: number };
   /** The DAG pane's size, which the layout is shaped for (0 x 0 until it's measured). */
@@ -157,6 +159,10 @@ export interface VisualizerState {
 
   applyBatch: (envelopes: readonly TelemetryEnvelope[], nowMs?: number) => void;
   hydrateSnapshot: (traceId: string, seq: number, events: readonly TelemetryEnvelope[]) => void;
+  /** A snapshot in pages: start (the trace afresh), each page in order, then the end. */
+  beginHydrate: (traceId: string, seq: number, total: number) => void;
+  appendHydrate: (events: readonly TelemetryEnvelope[]) => void;
+  finishHydrate: () => void;
   followTrace: (traceId: string | null) => void;
   setFollowLatest: (on: boolean) => void;
   setReplayCursor: (seq: number | null) => void;
@@ -216,6 +222,7 @@ const initial = () => ({
   scrubNotice: null as string | null,
   contactStrips: {},
   aboutOpen: false,
+  hydration: null as VisualizerState["hydration"],
   dagSize: { width: 0, height: 0 },
   dagBox: { width: 0, height: 0 },
   collapsedDocks: loadCollapsed(),
@@ -245,6 +252,8 @@ export const useVisualizerStore = create<VisualizerState>()(
             followed = env.trace_id;
             mine.length = 0;
             s.live = createTraceState(followed);
+            // A snapshot still loading for the old trace stops at its next page.
+            s.hydration = null;
             s.selectedTaskId = null;
             s.replayCursorSeqId = null;
             s.projection = null;
@@ -261,27 +270,61 @@ export const useVisualizerStore = create<VisualizerState>()(
         if (s.live.topology_version !== before) s.dagSize = layOut(s.live, s.dagBox);
       }),
 
-    hydrateSnapshot: (traceId, seq, events) =>
+    hydrateSnapshot: (traceId, seq, events) => {
+      get().beginHydrate(traceId, seq, events.length);
+      get().appendHydrate(events);
+      get().finishHydrate();
+    },
+
+    beginHydrate: (traceId, seq, total) =>
       set((s) => {
         s.live = createTraceState(traceId);
         s.followedTraceId = traceId;
         s.projection = null;
         s.replayCursorSeqId = null;
+        s.dagSize = { width: 0, height: 0 };
         projections.reset(traceId);
-        reduceEnvelopes(s.live, events, { packets: false });
-        s.live.max_seq_id = Math.max(s.live.max_seq_id, seq);
-        s.dagSize = layOut(s.live, s.dagBox);
-        s.knownTraces[traceId] = {
-          trace_id: traceId,
-          latest_seq_id: seq,
-          last_timestamp_ms: events.at(-1)?.timestamp_ms ?? 0,
-          source: s.knownTraces[traceId]?.source ?? "journal",
+        s.hydration = { trace_id: traceId, seq, loaded: 0, total };
+      }),
+
+    appendHydrate: (events) =>
+      set((s) => {
+        if (!s.hydration || s.live.trace_id !== s.hydration.trace_id || !events.length) return;
+        const logsBefore = isDraft(s.live) ? (original(s.live)?.logs ?? []) : s.live.logs;
+        const before = s.live.topology_version;
+        reduceEnvelopes(s.live, events, { packets: false, logsBefore });
+        s.hydration.loaded += events.length;
+        // A page of thousands lands as one update: the DAG is placed again only when it grew.
+        if (s.live.topology_version !== before) s.dagSize = layOut(s.live, s.dagBox);
+        const last = events.at(-1)!;
+        s.knownTraces[last.trace_id] = {
+          trace_id: last.trace_id,
+          latest_seq_id: Math.max(s.hydration.seq, s.knownTraces[last.trace_id]?.latest_seq_id ?? 0),
+          last_timestamp_ms: last.timestamp_ms,
+          source: s.knownTraces[last.trace_id]?.source ?? "journal",
+        };
+      }),
+
+    finishHydrate: () =>
+      set((s) => {
+        const hydration = s.hydration;
+        if (!hydration) return;
+        s.hydration = null;
+        if (s.live.trace_id !== hydration.trace_id && s.live.trace_id !== null) return;
+        s.live.trace_id = hydration.trace_id;
+        s.live.max_seq_id = Math.max(s.live.max_seq_id, hydration.seq);
+        s.knownTraces[hydration.trace_id] = {
+          trace_id: hydration.trace_id,
+          latest_seq_id: Math.max(hydration.seq, s.knownTraces[hydration.trace_id]?.latest_seq_id ?? 0),
+          last_timestamp_ms: s.live.logs.at(-1)?.timestamp_ms ?? 0,
+          source: s.knownTraces[hydration.trace_id]?.source ?? "journal",
         };
       }),
 
     followTrace: (traceId) =>
       set((s) => {
         s.followedTraceId = traceId;
+        s.hydration = null;
         s.live = createTraceState(traceId);
         s.projection = null;
         s.replayCursorSeqId = null;
