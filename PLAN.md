@@ -2973,9 +2973,33 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
     - "100,000/100,000" showed 2.3 s after navigation, at the tail (27 rows drawn, seq 99,974–100,000).
     - Scrolling top to bottom in 2 s: 61 fps, worst frame 16.8 ms. Halfway down, 47 rows were drawn around seq 50,000.
     - Searching all 100k rows for "GPU_METAL_LOCK" took 37 ms (1,292 rows).
-    - **Open:** opening runs one long task of 1.2 s, from parsing and checking the 73 MB snapshot (JSON.parse and Zod on every envelope). It's a one-off freeze when a big finished trace is opened. Streaming the snapshot in chunks would end it.
+    - ~~**Open:** opening runs one long task of 1.2 s, from parsing and checking the 73 MB snapshot (JSON.parse and Zod on every envelope). It's a one-off freeze when a big finished trace is opened. Streaming the snapshot in chunks would end it.~~ Fixed: the snapshot loads in pages; see "Opening a big trace without a freeze" below. The 1.2 s figure also included boot work (see there).
   - **Live at 5,000 rows/s** (`--realtime`, followed as the latest run): 60 fps in each 4 s sample up to 91,500 rows (p95 16.7 ms, worst 16.8 ms), no long tasks, and the log kept on the newest row.
 - **Still to check live (the user):** in the installed app's Telemetry Studio, run the stress emitter (with `--realtime` to watch it come in), pick `trc_stress_0001` or `trc_stress_live` in the Trace menu, then scroll, filter and search.
+
+**Opening a big trace without a freeze (2026-11-03, the user's request: "work on snapshot freeze"):** a finished 100k-row trace was fetched as one 73 MB snapshot, then parsed, checked with Zod and reduced in one task.
+- **Gateway:**
+  - `GET /api/v1/traces/{id}/snapshot?offset=&limit=&at_seq=` returns a page of the compacted replay (at most 20,000 events), with `replay_total` and `replay_offset`.
+  - `at_seq` pins every page after the first to the first page's `snapshot_seq_id`, so a trace still growing doesn't shift the pages.
+  - Page one also carries the reduced state (`nodes`, `edges`, `otio_tracks`, `recent_logs`).
+  - `TraceStore.snapshot_page` works each snapshot out once per (trace, seq) and keeps the last 4, so 40 pages don't reduce 100k events 40 times.
+  - With no paging parameters the endpoint answers as before, whole.
+- **Visualizer:**
+  - `runtime.loadSnapshot` fetches pages of `SNAPSHOT_PAGE` (2,500 events, about 1.8 MB), a frame apart, into `beginHydrate` / `appendHydrate` / `finishHydrate`. `hydrateSnapshot` is now those three in one go.
+  - The DAG is placed again only when a page adds tasks.
+  - Live events for that trace that arrive meanwhile are held, then applied after the last page (the ones after the snapshot's seq, in order).
+  - Choosing another trace, or follow-latest moving to a new run, clears `hydration`, so the old load stops at its next page and the new trace loads its own.
+  - The top bar shows "Loading N%".
+  - `wsClient.onSnapshotNeeded` hands the welcome's snapshot to the runtime; without it, the client fetches whole as before, and a gateway that doesn't page is read as one page.
+- **Tests:**
+  - pytest `test_a_snapshot_pages_its_replay_pinned_to_one_seq`: the pages add up to the whole replay, stay pinned while the trace grows, only page one has the state, the whole snapshot still comes with no parameters, and bad parameters give 400.
+  - Visualizer `src/lib/runtime.test.ts` (2, the first tests of the runtime itself): pinned pages; the store filling page by page; live events held and applied after, in order; and a switch to another trace stopping the load and loading that one.
+  - Totals: visualizer 109; pytest 1342 passed, 2 skipped; root vitest 868; ruff, mypy, eslint and tsc clean.
+- **Checked in headless Chrome (2026-11-03, Claude):** the 100k stress trace from a scratch gateway, three opens.
+  - From the first snapshot request until the last page was in, the page kept drawing: 40 pages in 1.5–2.4 s, p95 frame 16.8 ms, worst frame 50–67 ms, and one long task of 57–79 ms.
+  - Before, the same work ran as one task. `JSON.parse` of the 73 MB alone takes 140 ms in that Chrome, before Zod and the reducer.
+  - Opening takes a little longer than before (3.4 s against 2.3 s to "100,000/100,000"), in exchange for no freeze.
+- **Found, not fixed:** the visualizer's boot (module evaluation and the first render, before any snapshot request) is a long task of 100–350 ms, and in about one load in five it's 1.1 s, with or without a big trace (`trc_nothing` too). Part of the 1.2 s first measured under "The log at 100k rows" was this. A CPU profile places it in React's first render and module setup, but source maps of the minified build don't pin it down. Seen in headless Chrome only so far.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
@@ -3816,3 +3840,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-02 (Claude): The Telemetry Studio window.** "Open Telemetry Studio" in the menu-bar menu opens the visualizer in a native window of its own (bundled in dist/visualizer), starting the telemetry gateway as an app job when none is listening. See "The Telemetry Studio window" under Phase 22.
 - **2026-11-03 (Claude): Real audio in the OTIO dock.** The gateway measures each delta's audio ops from their own media (VCTB 0x01, addressed by the delta's first seq and the op's index) and answers `SCRUB_REQUEST`s with 0.25 s of the sound under the playhead (0x03). Dragging the ruler plays it, with a Scrub audio toggle. See "Real audio in the OTIO dock" under Phase 22 (V16–V19).
 - **2026-11-03 (Claude): The log at 100k rows.** A 100k-row stress run (`telemetry/stress_emitter.py`) and a 100k test suite; two fixes (the log and packet sprites kept off Immer's per-write path: 100k rows live in 1.3 s instead of 9.9 s, flat per batch; no filtering pass with no filter on). Headless Chrome: 61 fps scrolling 100k rows, 60 fps live at 5,000 rows/s; open: a 1.2 s freeze opening a 73 MB snapshot. See "The log at 100k rows" under Phase 22.
+- **2026-11-03 (Claude): Opening a big trace without a freeze.** The gateway pages a snapshot's replay (`offset`, `limit`, pinned with `at_seq`, worked out once per seq), and the visualizer loads it 2,500 events a frame, holding live events until it's in. Headless Chrome, 100k rows: worst frame 50–67 ms while loading, where it was one task. Open: an occasional 1.1 s long task at the visualizer's boot, with any trace. See "Opening a big trace without a freeze" under Phase 22.
