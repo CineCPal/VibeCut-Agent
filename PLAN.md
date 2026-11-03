@@ -3060,7 +3060,8 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Each row takes the card's width, so its label and model truncate.
   - The badges get two rows at most.
   - Token counts read short (`formatShortCount`: 1.2M→99k), with the full counts in the tooltip and the inspector.
-- **Checked in headless Chrome:** a worst-case trace (long labels; running with MUTATION EMITTED, tokens, GPU, Δ and progress; completed with 1,234,567→98,765, ◆ and Δ) at 125%. With the cards' text forced wider (15 px, letter-spacing) everything stayed inside them. Not seen in WKWebView itself; the overflow the user saw was there.
+- **Checked in headless Chrome:** a worst-case trace (long labels; running with MUTATION EMITTED, tokens, GPU, Δ and progress; completed with 1,234,567→98,765, ◆ and Δ) at 125%. With the cards' text forced wider (15 px, letter-spacing) everything stayed inside them.
+- **Checked live (the user, 2026-11-03, after reinstalling `be5bf7d`): passed**, in the app's Telemetry Studio window (WKWebView), where the overflow was seen.
 - **Tests:** `format.test.ts` (`formatShortCount`). Visualizer 115.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
