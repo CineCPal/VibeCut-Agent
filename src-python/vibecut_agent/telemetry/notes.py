@@ -6,8 +6,11 @@ the chat only writes notes, one JSON line each, to `<telemetry>/notes/<job>.json
 `NotesFollower` turns them into the root task's events:
 
 - `{"thought": text}` and `{"text": text}`: STREAM_CHUNK on the THOUGHT and ASSISTANT_TEXT channels;
+- `{"thinking": true}` and `{"tool": name}`: a line in the root's stream when Claude starts to think (Claude
+  Code passes on the thinking itself empty) or calls a tool, so the stream shows what it's doing;
 - `{"usage": {"input", "output", "cached"}}`: the turn's totals so far, which the chunks carry as
-  `accumulated_tokens` and the root's COMPLETED reports.
+  `accumulated_tokens` (an empty chunk when nothing else is said, so the count moves) and the root's
+  COMPLETED reports.
 
 `NotesWriter` starts each turn's notes as a new file, renamed over the last turn's. A shim starts reading
 where the file it found ended (`start_position`), so a shim started ahead of its turn (the app warms the
@@ -84,7 +87,17 @@ class NotesWriter:
         if not isinstance(inner, dict):
             return
         kind = inner.get("type")
-        if kind == "content_block_delta":
+        if kind == "content_block_start":
+            block = inner.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                self._write({"thinking": True})
+            elif (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and isinstance(block.get("name"), str)
+            ):
+                self._write({"tool": block["name"]})
+        elif kind == "content_block_delta":
             delta = inner.get("delta")
             if not isinstance(delta, dict):
                 return
@@ -142,6 +155,7 @@ class NotesFollower:
         self.inode, self.offset = start
         self.partial = b""
         self.tokens = {"input": 0, "output": 0, "cached": 0}
+        self.at_line_start = True
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -192,11 +206,27 @@ class NotesFollower:
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     self.tokens[key] = max(self.tokens[key], value)
             self.emitter.root_tokens(**self.tokens)
+            self._say("")
             return
-        for key, channel in (("thought", "THOUGHT"), ("text", "ASSISTANT_TEXT")):
-            text = note.get(key)
-            if isinstance(text, str) and text:
-                self.emitter.root_chunk(channel, text, self.tokens["output"])
+        tool = note.get("tool")
+        if note.get("thinking") is True:
+            self._line("· Thinking…")
+        elif isinstance(tool, str) and tool:
+            self._line(f"→ {tool.rsplit('__', 1)[-1]}")
+        elif isinstance(note.get("text"), str):
+            self._say(note["text"])
+        elif isinstance(note.get("thought"), str) and note["thought"]:
+            self.emitter.root_chunk("THOUGHT", note["thought"], self.tokens["output"])
+
+    def _line(self, text: str) -> None:
+        """A line of its own in the root's stream: what Claude is doing, between its words."""
+        self._say(("" if self.at_line_start else "\n") + text + "\n")
+
+    def _say(self, text: str) -> None:
+        # The reply and the lines between its parts share one channel, so the bus keeps their order.
+        self.emitter.root_chunk("ASSISTANT_TEXT", text, self.tokens["output"])
+        if text:
+            self.at_line_start = text.endswith("\n")
 
 
 def start_position(caller: str) -> Position:

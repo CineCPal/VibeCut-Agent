@@ -95,10 +95,13 @@ def test_the_follower_puts_claudes_side_on_the_root_task(tmp_path: Path) -> None
     assert envelopes == []
     writer = NotesWriter(path)
     writer.stream_event(call(100, 0))
+    writer.stream_event(stream({"type": "content_block_start", "content_block": {"type": "thinking"}}))
     writer.stream_event(delta("thinking_delta", "thinking", "Trim the "))
     writer.stream_event(delta("thinking_delta", "thinking", "intro"))
     writer.stream_event(wrote(30))
     writer.stream_event(delta("text_delta", "text", "Trimmed."))
+    tool_use = {"type": "tool_use", "name": "mcp__vibecut__semantic_asset_search"}
+    writer.stream_event(stream({"type": "content_block_start", "content_block": tool_use}))
     follower.poll()
     emitter.tool_call("semantic_asset_search", {"query": "x"}, lambda: {"hits": []})
     with path.open("a") as f:
@@ -108,12 +111,12 @@ def test_the_follower_puts_claudes_side_on_the_root_task(tmp_path: Path) -> None
     assert [e for e in envelopes if validate_envelope(e)] == []
     root = [e for e in envelopes if e["payload"].get("task_id") == "task_root"]
     assert root[0]["event_type"] == "SPAWN"
-    chunks = [e["payload"] for e in root if e["event_type"] == "STREAM_CHUNK"]
-    assert [(c["stream_channel"], c["delta_text"]) for c in chunks] == [
-        ("THOUGHT", "Trim the intro"),
-        ("ASSISTANT_TEXT", "Trimmed."),
-    ]
-    assert chunks[-1]["accumulated_tokens"] == 30
+    chunks = {e["payload"]["stream_channel"]: e["payload"] for e in root if e["event_type"] == "STREAM_CHUNK"}
+    # What Claude does, between its words and in order, on one channel; each usage note moves the count.
+    said = chunks["ASSISTANT_TEXT"]
+    assert said["delta_text"] == "· Thinking…\nTrimmed.\n→ semantic_asset_search\n"
+    assert said["accumulated_tokens"] == 42
+    assert chunks["THOUGHT"]["delta_text"] == "Trim the intro"
     done = next(e["payload"] for e in root if e["event_type"] == "COMPLETED")
     assert (done["input_tokens"], done["output_tokens"], done["cached_tokens"]) == (100, 42, 0)
     # A note after the root is done never spawns it again.
@@ -121,3 +124,15 @@ def test_the_follower_puts_claudes_side_on_the_root_task(tmp_path: Path) -> None
     emitter.root_chunk("THOUGHT", "late", 42)
     emitter.bus.flush()
     assert len(envelopes) == seen
+
+
+def test_a_call_the_run_ended_during_is_cancelled_not_left_running() -> None:
+    emitter = TraceEmitter(TelemetryBus(), "trc_mcp_job-7_a1b2c3")
+    envelopes: list[dict[str, Any]] = []
+    emitter.bus.add_listener(envelopes.extend)
+    emitter.begin_tool("analyze_shot_visuals", {"media_path": "/m/long.mxf"})
+    emitter.finish()
+    failed = next(e["payload"] for e in envelopes if e["event_type"] == "FAILED")
+    assert (failed["task_id"], failed["error_code"]) == ("task_001_analyze", "TASK_CANCELLED")
+    done = next(e["payload"] for e in envelopes if e["event_type"] == "COMPLETED")
+    assert done["output_summary"] == "1 tool calls, 1 failed"

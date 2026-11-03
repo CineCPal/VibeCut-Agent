@@ -157,6 +157,8 @@ class TraceEmitter:
         self._strips: dict[str, list[str]] = {}
         # Claude's token totals for the turn, from the chat's notes (notes.py), for the root's COMPLETED.
         self._root_tokens = {"input": 0, "output": 0, "cached": 0}
+        # Tool calls begun and not yet ended, which finish() marks cancelled if the run ends first.
+        self._open: dict[str, ToolTask] = {}
 
     # Raw events.
 
@@ -393,6 +395,22 @@ class TraceEmitter:
         ingest); then a flush. Nothing when the root was never spawned (no tool was called), or once it's done."""
         if not self._root_spawned:
             return
+        with self._lock:
+            unfinished = list(self._open.values())
+            self._open.clear()
+            self._tasks_done += len(unfinished)
+            self._tasks_failed += len(unfinished)
+        for task in unfinished:
+            # The run ended (Claude Code closed the shim, or the chat stopped) while this call was running.
+            self.failed(
+                task.task_id,
+                agent_id=task.agent_id,
+                subagent=task.subagent,
+                message="The run ended before this call finished",
+                code="TASK_CANCELLED",
+                recoverable=False,
+                parent=self.root_task_id,
+            )
         self._root_spawned = False
         self._root_finished = True
         self.completed(
@@ -487,6 +505,8 @@ class TraceEmitter:
             parent=self.root_task_id,
         )
         task.began = time.perf_counter()
+        with self._lock:
+            self._open[task.task_id] = task
         return task
 
     def attach_strip(self, image: Path) -> str | None:
@@ -521,6 +541,8 @@ class TraceEmitter:
     ) -> None:
         """Completes `task` with its result, or fails it on `error` or a `{"error"}` result. `summary` (the
         app's own line for a forwarded call) stands in for the one made from the result."""
+        with self._lock:
+            self._open.pop(task.task_id, None)
         if error is not None:
             self.failed(
                 task.task_id,

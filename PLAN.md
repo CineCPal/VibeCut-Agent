@@ -2879,7 +2879,10 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - The heartbeat (`bus.nle_connected`) reads it and trusts it only while that pid runs. With no file, a dead pid or a bad file, both are false, as before.
   - The top bar's Host and the About box already showed `nle_connected`.
 - **Tests:** `the_nle_status_file_says_which_editors_are_connected` (cargo), `test_the_editors_come_from_the_apps_status_file_while_the_app_runs`, `test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace`, `test_a_traced_contact_strip_streams_live_and_to_a_later_client` and `test_a_strip_id_outside_the_strips_folder_is_not_read`. pytest 1322 passed, 2 skipped; cargo 146; vitest 867 and visualizer 89; ruff, mypy, eslint and tsc clean. pytest failed one test once in three full runs and passed the other two; most likely a timing test, not identified.
-- **Still to check live:** after a reinstall, an orchestrated `analyze_shot_visuals` shows its strip in the inspector, and the top bar's Host names the editor that's open.
+- **Checked (2026-11-02):**
+  - **The real path, from the terminal:** a 2-shot test clip (testsrc2, then SMPTE bars), the traced tool bus, ffmpeg and Qwen3-VL (`qwen3-vl:8b-instruct`, Ollama). The COMPLETED (seq 5) named `trc_mcp_stripcheck_abc123_task_001_analyze`. The strip was the first shot's start, middle and end (0.58 s, 2.0 s, 3.4 s; 1536 x 288, 40 KB). A real `telemetry-gateway` on that folder sent it to a new WebSocket client after its welcome as 0x02, channel 0, seq 5.
+  - **The installed app (reinstalled with `--orchestrated` and the variables):** it wrote `telemetry/nle_status.json` with its own pid, both false with neither editor running.
+- **Still to check live:** the strip in the Telemetry Studio's inspector after an orchestrated chat's shot analysis, and the top bar's Host with an editor open.
 
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
@@ -2907,7 +2910,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - `src/lib/control.test.tsx` (5: Finder, Stop, playhead, a refusal, none without the app's gateway).
 - **Totals:** pytest 1323 passed, 2 skipped; cargo 147; vitest 868; visualizer 94; ruff, mypy, eslint and tsc clean.
 - **Checked from the terminal:** a real `telemetry-gateway` with `{"appControl": true}`, on port 18790 with a scratch journal. It reported `app_control: true`, forwarded Reveal, the playhead and Cancel as `control` lines, and refused Reveal of `/etc/hosts`.
-- **Still to check live:** in the installed app, Show in Finder opens Finder, Move playhead moves Resolve's or Premiere's playhead, and Stop run stops an orchestrated chat's turn.
+- **Still to check live (the user; the menu-bar menu can't be clicked from here):** in the installed app (reinstalled 2026-11-02 with these changes), Show in Finder opens Finder, Move playhead moves Resolve's or Premiere's playhead, and Stop run stops an orchestrated chat's turn.
 
 **Claude's side of the turn (2026-11-02, building on):** the root task of a chat's trace shows Claude's thinking and reply as they stream, and its token counts.
 - **Why notes, not a second writer:** the trace is the MCP shim's (V4, one writer per trace), but Claude Code's stream is read by the chat process (`claude_code_chat._run_once`). Its final `result` (usage) arrives just as Claude Code ends the shim. The stream carries what's needed while the turn runs, though: `thinking_delta` and `text_delta` blocks, and `message_start`/`message_delta` usage.
@@ -2929,7 +2932,22 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - the chat's `test_an_orchestrated_turn_notes_claudes_side_for_the_trace_and_a_direct_one_doesnt`;
   - `test_an_orchestrated_shim_finishes_its_trace_however_it_ends`, now with the last turn's notes before the shim starts and a longer new file. Its first version caught the shrink-only bug that the inode check fixes.
 - **Totals:** pytest 1327 passed, 2 skipped; vitest 868; visualizer 94.
-- **Still to check live:** whether Claude Code 2.1's `--include-partial-messages` streams `thinking_delta` at the chat's effort levels (the reply's `text_delta` and the usage lines are certain), and the root's tokens against the chat's own usage card.
+- **Checked from the terminal (2026-11-02, Claude Code 2.1.317, `claude-opus-5-5`, `--effort high`, the chat's streaming flags):**
+  - A `thinking` block streams, but its one `thinking_delta` has empty text; only a `signature_delta` follows. So the THOUGHT channel stays empty for real runs (the writer skips empty deltas), and the root's stream shows Claude's reply (16 `text_delta`s).
+  - The captured stream replayed through `NotesWriter` gave input 72,604 and output 120, which is exactly the `result`'s usage (2 + 72,602 cache creation; 120).
+- **Found in the first live run (2026-11-03, the user: "I do not think the live thought trace is working"):** an analysis of a Mousetrap MXF in the installed app.
+  - The root's stream was empty for the whole tool call, and that was by the design above, not a fault. Claude's first model call was only the tool call: no words, and empty thinking. The notes held only usage (22,966 in, 197 out), and usage reached the root only with text or at the end.
+  - A second trace from the same minute finished its root with "0 tool calls" while its analysis task stayed SPAWNED: its shim ended mid-call.
+  - The analysis task showed no progress: the tool bus's progress went only to the chat's status line.
+- **Fixes:**
+  - **Notes** also mark a thinking block's start (`{"thinking": true}`) and each tool call (`{"tool": name}`, from `content_block_start`). The follower writes them as lines of their own, "· Thinking…" and "→ analyze_shot_visuals", in the root's stream.
+  - Each usage note sends an empty chunk carrying the new `accumulated_tokens`, so the root's output count moves while a tool runs.
+  - The reply, those lines and the empty chunks share the ASSISTANT_TEXT channel, so the bus's per-channel coalescing keeps their order. Thinking text, if any ever streams, stays on THOUGHT.
+  - **`TraceEmitter.finish`** fails each tool call that began and never ended as `TASK_CANCELLED` ("The run ended before this call finished", not recoverable) before completing the root, and counts it in the summary.
+  - **`OrchestratorToolBus._progress`**, when traced, also emits BATCH_PROGRESS for the running task (phase, fraction, 0 to 100 items, the worker's line as its label): the inspector's progress gauge.
+  - **Tests:** the follower test now covers the markers, their order and the moving count; `test_a_call_the_run_ended_during_is_cancelled_not_left_running`; `test_a_traced_tools_progress_reaches_its_task`; the shim test checks the count reached 4. pytest 1328 passed, 2 skipped.
+  - **A flaky test, unrelated:** `test_outside_callers_are_refused_while_outside_control_is_off` fails about 1 run in 6 on the committed code too ("isn't running": the bridge checks before the fake app's first heartbeat). One full run also failed `test_an_orchestrated_chat_traces_the_app_tools_it_forwards_but_not_timeline_reads` once (it passed alone); probably the same race, not confirmed.
+- **Still to check live:** the root's tokens against the chat's own usage card in the app; the lines, live count and progress after the next reinstall.
 
 ## Sync in orchestrated mode (2026-11-02)
 

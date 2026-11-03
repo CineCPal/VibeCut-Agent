@@ -536,3 +536,21 @@ def test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace(config, tmp_
     bare.dispatch("analyze_shot_visuals", {"media_path": media["b.mov"]})
     done = next(e for e in bare.telemetry.bus.flush() if e["event_type"] == "COMPLETED")
     assert done["payload"]["artifacts"][0]["contact_strip_frame_ids"] == []
+
+
+def test_a_traced_tools_progress_reaches_its_task(config, tmp_path, media):
+    from vibecut_agent.telemetry.bus import TelemetryBus, validate_envelope
+    from vibecut_agent.telemetry.instrument import TraceEmitter
+
+    bus = make_bus(config, tmp_path, whisper=Worker({"segments": []}))
+    bus.telemetry = TraceEmitter(TelemetryBus(), "trc_progress")
+    bus.dispatch("transcribe_and_align", {"media_path": media["b.mov"]})
+    envelopes = bus.telemetry.bus.flush()
+    assert [e for e in envelopes if validate_envelope(e)] == []
+    [progress] = [e["payload"] for e in envelopes if e["event_type"] == "BATCH_PROGRESS"]
+    assert (progress["task_id"], progress["fraction"], progress["completed_items"]) == (
+        "task_001_transcribe",
+        0.5,
+        50,
+    )
+    assert progress["current_item_label"] == "half way"

@@ -394,6 +394,22 @@ class OrchestratorToolBus:
     def _progress(self, name: str) -> Callable[[str, float, str], None]:
         def report(phase: str, fraction: float, detail: str) -> None:
             self.status(f"{name}: {detail}" if detail else f"{name}: {phase}")
+            telemetry = self.telemetry
+            if telemetry is not None and telemetry.current_task is not None:
+                # Phase 22: the running task's progress bar in the visualizer (BATCH_PROGRESS, coalesced).
+                task_id, agent_id, subagent = telemetry.current_task
+                telemetry.progress(
+                    task_id,
+                    agent_id=agent_id,
+                    subagent=subagent,
+                    phase=phase,
+                    fraction=fraction,
+                    completed_items=round(min(1.0, max(0.0, fraction)) * 100),
+                    total_items=100,
+                    eta_seconds=None,
+                    label=detail or None,
+                    parent=telemetry.root_task_id,
+                )
 
         return report
 

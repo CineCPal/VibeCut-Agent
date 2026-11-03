@@ -654,8 +654,10 @@ def test_an_orchestrated_shim_finishes_its_trace_however_it_ends(tmp_path: Path,
     root = [e["event_type"] for e in events if e["agent_id"] == "orchestrator.supervisor"]
     assert root[0] == "SPAWN" and root[-1] == "COMPLETED" and root.count("COMPLETED") == 1
     # Claude's side of this turn, not the last one's, is on the root.
-    thoughts = [e["payload"]["delta_text"] for e in events if e["event_type"] == "STREAM_CHUNK"]
-    assert thoughts == ["Trim it"]
+    chunks = [e["payload"] for e in events if e["event_type"] == "STREAM_CHUNK"]
+    assert [c["delta_text"] for c in chunks if c["stream_channel"] == "THOUGHT"] == ["Trim it"]
+    # The usage note moves the count while the turn runs.
+    assert max(c["accumulated_tokens"] for c in chunks) == 4
     done = next(
         e["payload"]
         for e in events
