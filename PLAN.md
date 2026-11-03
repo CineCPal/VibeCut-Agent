@@ -3042,6 +3042,17 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - Try Stop run, Move playhead and Show in Finder from the panel.
   - Not seen in Premiere's own CEF yet: the CSS fallbacks, and CEP's real `Origin` header for its page.
 
+**The panel's inspector sheet and the About label (2026-11-03, the user: "the About button ... unnecessary question marks"; "in the Premiere Panel DAG, can clicking on a task/node pop up an inspector panel?"; panel 0.18.1):**
+- **About:** the button reads "About" in both the window and the panel. The `?` key still opens it, as its tooltip says.
+- **The inspector sheet (the narrow layout only):**
+  - Choosing a task on any tab but Inspector (a DAG node, a studio bay, a log row) opens the inspector as a sheet in the tab's lower 58%, with "Open as tab" and ✕.
+  - ✕ hides it and keeps the task chosen (the DAG stays lit). Choosing another task opens it again, and Esc deselects, which closes it.
+  - The tab keeps the part above, so the DAG lays itself out there rather than under the sheet. The first try overlaid it, and the DAG's centred nodes were hidden, as a screenshot showed.
+- **Panel 0.18.1:** the installed panel was already 0.18.0, and Update panel appears only for a new version.
+- **Tests:** App.test.tsx, "opens the inspector as a sheet when a DAG task is chosen in the narrow panel". Visualizer 114; root vitest 868; cargo's panel tests.
+- **Checked:** headless Chrome, the built panel bundle from a `file://` page at 420 x 720. In DAG mode, clicking a task opened the sheet with that task, the DAG visible above it.
+- **Still to check live (the user):** reinstall, Update panel (0.18.1), restart Premiere.
+
 **The app's actions from the visualizer (2026-11-02, building on after the user's go-ahead):** Cancel, Show in Finder and Move playhead, the three control actions V6 left unwired.
 - **The path:** visualizer → `POST /api/v1/control/{trace}` → the gateway checks the action → a `control` event on the gateway's stdout → the app (`sidecar::start_gateway`'s pump → `visualizer::on_control`).
   - The app starts its gateway with `{"appControl": true}`. Only then does the gateway forward (202 `{ok, forwarded}`) and report `app_control: true` in its health. A gateway run from a terminal still answers 409, now saying it needs the app's.
@@ -3883,3 +3894,4 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-03 (Claude): The log at 100k rows.** A 100k-row stress run (`telemetry/stress_emitter.py`) and a 100k test suite; two fixes (the log and packet sprites kept off Immer's per-write path: 100k rows live in 1.3 s instead of 9.9 s, flat per batch; no filtering pass with no filter on). Headless Chrome: 61 fps scrolling 100k rows, 60 fps live at 5,000 rows/s; open: a 1.2 s freeze opening a 73 MB snapshot. See "The log at 100k rows" under Phase 22.
 - **2026-11-03 (Claude): Opening a big trace without a freeze.** The gateway pages a snapshot's replay (`offset`, `limit`, pinned with `at_seq`, worked out once per seq), and the visualizer loads it 2,500 events a frame, holding live events until it's in. Headless Chrome, 100k rows: worst frame 50–67 ms while loading, where it was one task. Open: an occasional 1.1 s long task at the visualizer's boot, with any trace. See "Opening a big trace without a freeze" under Phase 22.
 - **2026-11-03 (Claude): The Telemetry Studio in Premiere's panel (panel 0.18.0).** A third panel extension runs the visualizer docked in Premiere. It reaches the gateway with a per-run panel key from gateway.json, the only way a `file://` page's `Origin: null` gets in (V20). The app keeps its gateway running while the panel's heartbeat is fresh. The narrow layout stacks and shortens. Fixed on the way: the gateway let `Origin: null` in with no key, since a hostless origin counted as loopback. See "The Telemetry Studio in Premiere's panel" under Phase 22.
+- **2026-11-03 (Claude): The panel's inspector sheet, and About without the "?" (panel 0.18.1).** In the narrow layout, choosing a task opens the inspector as a sheet under the tab; the button reads "About". See "The panel's inspector sheet and the About label" under Phase 22.
