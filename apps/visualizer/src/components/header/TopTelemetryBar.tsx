@@ -1,9 +1,9 @@
 /**
- * The top bar (visualizer-spec.md §4.1): the trace being followed (and a picker), live state, the host,
+ * The top bar (visualizer-spec.md §4.1): the trace being followed (and a picker), live state, the editors the app sees,
  * who holds the GPU lock, CPU, the event count, the view modes, and About.
  */
 import { formatCount } from "../../lib/format/format";
-import { selectView, useVisualizerStore, type ViewMode } from "../../store/useVisualizerStore";
+import { nleConnected, selectView, useVisualizerStore, type ViewMode } from "../../store/useVisualizerStore";
 
 const MODES: { mode: ViewMode; key: string; label: string }[] = [
   { mode: "split", key: "1", label: "Split Studio+DAG" },
@@ -38,8 +38,8 @@ export function TopTelemetryBar() {
   const metrics = (health?.host_metrics ?? {}) as { host_cpu_percent?: number; gpu_lock_holder?: string | null };
   const cpu = heartbeat?.host_cpu_percent ?? metrics.host_cpu_percent;
   const gpu = heartbeat?.gpu_lock_holder ?? metrics.gpu_lock_holder ?? null;
-  const nle = heartbeat?.nle_connected;
-  const host = nle ? [nle.premiere && "Premiere", nle.resolve && "Resolve"].filter(Boolean).join(" + ") || "No NLE" : "–";
+  const nle = nleConnected(health, heartbeat);
+  const editor = nle ? [nle.premiere && "Premiere", nle.resolve && "Resolve"].filter(Boolean).join(" + ") || "none" : "–";
   const traces = Object.values(known).sort((a, b) => b.last_timestamp_ms - a.last_timestamp_ms);
   const live = replay === null && connection.status === "open";
 
@@ -78,7 +78,7 @@ export function TopTelemetryBar() {
         {connection.latency_ms !== null && <span className="font-mono text-cool-grey">{Math.round(connection.latency_ms)}ms</span>}
       </span>
       <span className="text-cool-grey">
-        Host: <span className="text-[#e6edf3]">{host}</span>
+        Editor: <span className="text-[#e6edf3]" data-testid="editor-status">{editor}</span>
       </span>
       <span className="text-cool-grey">
         GPU Lock: <span className={gpu ? "text-warning" : "text-[#e6edf3]"}>{gpu ?? "free"}</span>

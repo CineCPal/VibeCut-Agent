@@ -58,6 +58,21 @@ export interface HostHealth {
   app_control?: boolean;
 }
 
+export interface NleConnected {
+  premiere: boolean;
+  resolve: boolean;
+}
+
+/** Which editors the app sees: the gateway's live health first (polled every 2 s), else the trace's last
+ * heartbeat (sent only while a run is active, so a finished trace's is old). Null when neither says. */
+export function nleConnected(health: HostHealth | null, heartbeat: { nle_connected: NleConnected } | null): NleConnected | null {
+  const live = (health?.host_metrics as { nle_connected?: Partial<NleConnected> } | undefined)?.nle_connected;
+  if (live && typeof live.premiere === "boolean" && typeof live.resolve === "boolean") {
+    return { premiere: live.premiere, resolve: live.resolve };
+  }
+  return heartbeat?.nle_connected ?? null;
+}
+
 /** The app's actions, through the gateway's control endpoint (lib/control.ts). */
 export type AppAction = "CANCEL" | "REVEAL_IN_FINDER" | "SET_NLE_PLAYHEAD";
 export type ControlSender = (traceId: string, action: AppAction, params?: Record<string, unknown>) => Promise<void>;

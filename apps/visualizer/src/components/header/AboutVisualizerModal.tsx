@@ -13,7 +13,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import pkg from "../../../package.json";
 import { SUBAGENT_SHORT } from "../../lib/studio/bays";
-import { selectView, useVisualizerStore } from "../../store/useVisualizerStore";
+import { nleConnected, selectView, useVisualizerStore } from "../../store/useVisualizerStore";
 import type { RuntimeHostAdapter } from "../../lib/host/runtimeHostAdapter";
 
 export const APP_VERSION: string = pkg.version;
@@ -69,7 +69,7 @@ export function AboutVisualizerModal({ adapter }: { adapter: RuntimeHostAdapter 
 
   if (!open) return null;
   const heartbeat = view.heartbeat;
-  const nle = heartbeat?.nle_connected;
+  const nle = nleConnected(health, heartbeat);
   const backends = [...new Set(Object.values(view.nodes).map((n) => n.hardware_backend))];
   const workers = health?.workers ?? {};
   const gatewayOk = health?.status === "ok";

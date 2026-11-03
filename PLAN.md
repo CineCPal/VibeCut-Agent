@@ -2878,6 +2878,7 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - `nle.rs` `publish` now also writes `<appDataDir>/telemetry/nle_status.json` (`write_nle_status`: `{pid, premiere, resolve, updated_at}`, written to a temporary file and renamed) on every watcher state change.
   - The heartbeat (`bus.nle_connected`) reads it and trusts it only while that pid runs. With no file, a dead pid or a bad file, both are false, as before.
   - The top bar's Host and the About box already showed `nle_connected`.
+  - **Fixed 2026-11-03 (the user: "I do not see host anywhere"):** both read only the followed trace's last heartbeat, which arrives only while a run is active, so they showed "–" between runs and an old value on a finished trace. They now read the gateway's live health first (`nleConnected` in the store; health is polled every 2 s and its `host_metrics` is the same sample), then the heartbeat. The top bar's item is now "Editor: Premiere / Resolve / Premiere + Resolve / none". Test: `TopTelemetryBar.test.tsx`.
 - **Tests:** `the_nle_status_file_says_which_editors_are_connected` (cargo), `test_the_editors_come_from_the_apps_status_file_while_the_app_runs`, `test_a_shot_analysis_hands_its_first_contact_strip_to_the_trace`, `test_a_traced_contact_strip_streams_live_and_to_a_later_client` and `test_a_strip_id_outside_the_strips_folder_is_not_read`. pytest 1322 passed, 2 skipped; cargo 146; vitest 867 and visualizer 89; ruff, mypy, eslint and tsc clean. pytest failed one test once in three full runs and passed the other two; most likely a timing test, not identified.
 - **Checked (2026-11-02):**
   - **The real path, from the terminal:** a 2-shot test clip (testsrc2, then SMPTE bars), the traced tool bus, ffmpeg and Qwen3-VL (`qwen3-vl:8b-instruct`, Ollama). The COMPLETED (seq 5) named `trc_mcp_stripcheck_abc123_task_001_analyze`. The strip was the first shot's start, middle and end (0.58 s, 2.0 s, 3.4 s; 1536 x 288, 40 KB). A real `telemetry-gateway` on that folder sent it to a new WebSocket client after its welcome as 0x02, channel 0, seq 5.
@@ -2947,7 +2948,12 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
   - **`OrchestratorToolBus._progress`**, when traced, also emits BATCH_PROGRESS for the running task (phase, fraction, 0 to 100 items, the worker's line as its label): the inspector's progress gauge.
   - **Tests:** the follower test now covers the markers, their order and the moving count; `test_a_call_the_run_ended_during_is_cancelled_not_left_running`; `test_a_traced_tools_progress_reaches_its_task`; the shim test checks the count reached 4. pytest 1328 passed, 2 skipped.
   - **A flaky test, unrelated:** `test_outside_callers_are_refused_while_outside_control_is_off` fails about 1 run in 6 on the committed code too ("isn't running": the bridge checks before the fake app's first heartbeat). One full run also failed `test_an_orchestrated_chat_traces_the_app_tools_it_forwards_but_not_timeline_reads` once (it passed alone); probably the same race, not confirmed.
-- **Still to check live:** the root's tokens against the chat's own usage card in the app; the lines, live count and progress after the next reinstall.
+- **Checked live (the user, 2026-11-03, after reinstalling `8d2d1c9`): passed.**
+  - The root's live thought trace shows Claude's side of the turn.
+  - The analysis task's progress bar works.
+  - A call cut off mid-run was marked cancelled/failed.
+  - The first live run (before the fixes) had already shown the strip, the streamed reply and the root's totals (46,670 in, 601 out).
+- **Still to check live:** the root's tokens against the chat's own usage card in the app.
 
 ## Sync in orchestrated mode (2026-11-02)
 
