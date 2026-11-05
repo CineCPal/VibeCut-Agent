@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.18.2"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.20.6"
 	ExtensionBundleName="VibeCut Agent Connect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<!-- VibeCut Agent's link to Premiere Pro (PLAN.md, Phase 3), adapted from VibeCut's
 	     com.vibecut.connect. A hidden panel that starts with Premiere, takes one request file at a
@@ -10,11 +10,18 @@
 	     Agent B-roll (Window, Extensions): the B-roll Library inside Premiere, from which shots can be
 	     dragged into the Project panel or the timeline, as VibeCut's own B-roll panel does. Since 0.18.0
 	     a third, VibeCut Agent Telemetry Studio: the app's visualizer in one column, reading the
-	     telemetry gateway with the panel key in the app's gateway.json (PLAN.md, Phase 22). -->
+	     telemetry gateway with the panel key in the app's gateway.json (PLAN.md, Phase 22). Since 0.20.6
+	     a fourth, VibeCut Agent: the app's chat, B-roll and history in one dockable panel, with a Window
+	     button for the app's own window (PLAN.md, In-host panels). Since 0.20.6 it also has the
+	     Analyze tab, the usage tracker, and copy, paste and undo in its text fields. Since 0.20.6 the
+	     B-roll panel is named VibeCut Agent Library (its extension id is unchanged). Since 0.20.6 the
+	     panels keep React off Node's queueMicrotask, which crashed the CEP renderer on a reload. Since
+	     0.20.6 the Telemetry Studio never reloads its page: Node's timers outlived it and kept reloading it. -->
 	<ExtensionList>
-		<Extension Id="com.vibecutagent.connect.panel" Version="0.18.2" />
-		<Extension Id="com.vibecutagent.connect.broll" Version="0.18.2" />
-		<Extension Id="com.vibecutagent.connect.studio" Version="0.18.2" />
+		<Extension Id="com.vibecutagent.connect.panel" Version="0.20.6" />
+		<Extension Id="com.vibecutagent.connect.broll" Version="0.20.6" />
+		<Extension Id="com.vibecutagent.connect.studio" Version="0.20.6" />
+		<Extension Id="com.vibecutagent.connect.chat" Version="0.20.6" />
 	</ExtensionList>
 	<ExecutionEnvironment>
 		<HostList>
@@ -69,7 +76,7 @@
 				</Lifecycle>
 				<UI>
 					<Type>Panel</Type>
-					<Menu>VibeCut Agent B-roll</Menu>
+					<Menu>VibeCut Agent Library</Menu>
 					<Geometry>
 						<Size>
 							<Height>640</Height>
@@ -106,6 +113,34 @@
 						<MinSize>
 							<Height>360</Height>
 							<Width>300</Width>
+						</MinSize>
+					</Geometry>
+				</UI>
+			</DispatchInfo>
+		</Extension>
+		<Extension Id="com.vibecutagent.connect.chat">
+			<DispatchInfo>
+				<Resources>
+					<MainPath>./chat/index.html</MainPath>
+					<CEFCommandLine>
+						<Parameter>--enable-nodejs</Parameter>
+						<Parameter>--mixed-context</Parameter>
+					</CEFCommandLine>
+				</Resources>
+				<Lifecycle>
+					<AutoVisible>true</AutoVisible>
+				</Lifecycle>
+				<UI>
+					<Type>Panel</Type>
+					<Menu>VibeCut Agent</Menu>
+					<Geometry>
+						<Size>
+							<Height>680</Height>
+							<Width>380</Width>
+						</Size>
+						<MinSize>
+							<Height>360</Height>
+							<Width>280</Width>
 						</MinSize>
 					</Geometry>
 				</UI>

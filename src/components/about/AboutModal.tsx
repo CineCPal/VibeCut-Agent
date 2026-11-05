@@ -166,6 +166,12 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
             value="Local only"
             detail="Shown by macOS when an answer finishes or a change waits for review while the window is away; nothing is sent anywhere"
           />
+          <StatusRow
+            label="Panels in the editors"
+            tone="ok"
+            value="Local files only"
+            detail="Premiere's VibeCut Agent panel (Window → Extensions) and Resolve's Workflow Integration plugin (Workspace → Workflow Integrations) show this app's chat, B-roll and history through files in ~/Library/Application Support/VibeCut Agent/host-bridge/chat/ · no network port, and no key or token is ever written there · Resolve's plugin window blocks every network request"
+          />
           <SidecarStatusRow />
           {NLE_HOSTS.map((host) => (
             <StatusRow

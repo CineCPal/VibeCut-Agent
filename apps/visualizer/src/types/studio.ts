@@ -27,11 +27,6 @@ export interface StudioBayConfig {
   bay: number;
   subagent: SubagentType;
   title: string;
-  /** Logical anchor (the bay's centre) on the 1280x980 grid (§3.1, made taller)'s table. */
-  x: number;
-  y: number;
-  w: number;
-  h: number;
   accent: string;
   props: string;
 }
@@ -72,6 +67,9 @@ export interface DataPacketSprite {
   w: number;
   h: number;
   label: string | null;
+  /** The desks it leaves and reaches (lib/studio/stations.ts keys); null: the room's first desk. */
+  from_key: string | null;
+  to_key: string | null;
   /** Wall clock (performance-free, Date.now()) when it left, and how long it travels. */
   born_ms: number;
   duration_ms: number;

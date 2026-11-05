@@ -3226,6 +3226,283 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 
 **Not done:** `add_clips` and the native rebuild still use `place_clip_exact` without the nudge. Their frame-early correction covers sound-only files, and nothing was seen wrong with them here.
 
+## In-host panels: VibeCut Agent in Premiere and Resolve (2026-11-03)
+
+**Spec:** `docs/specs/host-panels-plan.md` (`vibecut.host.panels.v1`), Phases 1–6. The menu-bar app and its floating window are unchanged; the panels are two more views of the same conversation. **Port source:** VibeCut's own in-editor panels, removed in its commit `9e056a4` ("VibeCut stands alone"), read with `git -C ../VibeCut show 9e056a4^:<path>`: `host_chat.rs`, `resolve_panel.rs`, `src-host-panel/` and `src-resolve-plugin/`, renamed throughout (folders, ids, env vars) so nothing touches VibeCut's.
+
+**Three surfaces, one app:**
+- **The menu bar and the floating window** (unchanged): `ActivationPolicy::Accessory`, the "VA" icon, Open Agent Panel / B-Roll Library / Analyzer / Telemetry Studio, the Mini Player (⌥⌘M). Closing the window hides it.
+- **Premiere, panel 0.19.0:** a fourth extension in `com.vibecutagent.connect`, `com.vibecutagent.connect.chat`, **Window → Extensions → VibeCut Agent** (dockable, 380×680, min 280×360). The hidden bridge, **VibeCut Agent B-roll** and **VibeCut Agent Telemetry Studio** are unchanged.
+- **Resolve Studio, plugin 0.19.0:** a Workflow Integration plugin, `com.vibecutagent.resolve` (`src-resolve-plugin/`), **Workspace → Workflow Integrations → VibeCut Agent**. Resolve opens it as a floating window of its own (not dockable), an Electron process it starts and stops.
+- Both panels run one React UI (`src-premiere-panel-ui/HostApp.tsx`): **Chat · B-roll · History** tabs, and a header **Window** button that opens the app's floating window (Chat, or Library from the B-roll tab).
+
+**New IPC boundary: `src-tauri/src/host_chat.rs`.** For each editor, `~/Library/Application Support/VibeCut Agent/host-bridge/chat/<premiere|resolve>/` (`VIBECUT_AGENT_HOST_CHAT_DIR` overrides the `chat/` folder) holds:
+- `inbox/<id>.json`: an action, written as `.<id>.json.tmp` and renamed. A thread polls every 150 ms, reads each oldest first, deletes it, and emits **`host-chat-action` `{host, action, error, fileId}`**.
+  - Checks (shared with `broll_panel.rs` through `drain_inbox_with`): a plain file, not a symlink, ≤ 64 KiB; JSON whose `id` matches the file name; a known `type`. The action is rebuilt from its allowed fields only.
+  - Fields: `send`/`edit_last` text trimmed, not empty, ≤ 16,000 characters; `load_chat`/`review_decision`/`queue_remove` ids; `decision` apply/skip/all; `aiChoice` one of the four `AiChoiceId`s; `set_effort` opus/sonnet × the five `EffortLevel`s; `set_gemini_effort` low/medium/high; `set_review_edits` a bool; `set_playhead` 0–86,400 s; `open_window` chat/library/broll/visualizer (chat by default). `broll_*` actions are `broll_panel::validate_action`'s.
+  - **`open_window` is answered in Rust** too, on the main thread: `tray::open_view` (Chat, Library, or Broll = the Analyzer), or `visualizer::open` for the Telemetry Studio. The event still goes to the frontend.
+- `state.json` (**`host_chat_publish(host, state)`**) and `broll.json` (**`host_chat_broll_publish(host, file)`**), each ≤ 4 MiB, written atomically, and only when the panel has made its folder (`false` otherwise).
+- `thumbs/s<id>.txt`: **`host_chat_thumbs(host, shotIds)`**, through `broll_panel::write_thumbs` (factored out of `broll_panel_thumbs`; that command is unchanged).
+- `agent-alive.json` stamped every second; `panel-alive.json` stamped by the panel, read by **`host_chat_status(host)`** (fresh within 5 s). `window.json`: the Resolve window's place, written by its main process only.
+- `nle::Host` gained `as_str()`. The B-roll-only panel's folder and module (`host-bridge/broll/premiere/`, `broll_panel.rs`) are untouched.
+
+**Shared schema: `src/types/hostPanel.ts`** (`HOST_PANEL_VERSION = 1`, `HostPanelStateFile`, `HostChatAction`), as in spec §3; `types/brollPanel.ts` exports `PanelBrollAction = PanelAction`. No key, token or profile path is in it.
+
+**App side: `src/lib/hostChatBridge.ts`**, started in `App.tsx` beside `startBrollPanelBridge`:
+- Publishes both editors' `state.json` and `broll.json` 80 ms after any change to the agent, editor, edit log, connection (drafts), chat history, Library, MCP or prompt stores. An unchanged file isn't rewritten; an editor whose panel never ran is tried again every 2 s.
+- `state.json` has the newest 200 messages, each cut at 20k characters (`MAX_PANEL_MESSAGES`, `MAX_PANEL_TEXT_CHARS`), and the newest 100 saved chats.
+- **Actions** use the same functions as the window: `submitMessage`, `stopTurn`, `newConversation`, `openChat`, `retryLastTurn`, `sendEditedMessage`, `revertLastRequest({byUser})`, `answerReview`, the agent store's setters, `resumeQueue`, `sendDraft` / `discardDraft`, `nleCall(host, "set_playhead")`, and `brollPanel.handleAction(action, host)`.
+  - A host-scoped action (send, edit, retry, revert, draft, playhead, Import/Source/Place) first switches the preferred editor to the panel's when it is connected and isn't the active one, so the turn works in the editor whose panel sent it.
+  - Actions run one at a time per editor. Revert and draft answers go into the chat (as from the window) and the panel's `notice`; a failure becomes a failed notice and an error in the chat.
+- `lib/brollPanel.ts`: `buildBrollFile(now, host = "premiere", have = its thumbs)` and `handleAction(action, host = "premiere")`, so the B-roll file and actions work for either editor. The B-roll-only panel calls them as before.
+
+**Panel UI (`src-premiere-panel-ui/`):**
+- `transport.ts` adds `readState()`, `send(HostChatAction)` and `panelChatDir(home, host)`. `useHostPanel.ts` reads every 250 ms, stamps every 1 s, says `hello` on mount.
+- `ChatTab.tsx`: the timeline, Revert N, New chat; the draft bar; messages, with runs of tool steps folded, Review edits first's Apply / Skip / Apply all, Retry (or "Revert N & retry") and Edit on the last message, timecodes and findings that move the playhead; the queue; the model, effort or thinking level, Review edits; Enter, Shift+Enter, ↑ to edit, `/` for saved prompts.
+- `HistoryTab.tsx`: saved chats filtered by title; opening one switches to Chat. `Broll.tsx` takes any view with `act` and `pending`.
+- Entry points: `cepChat.tsx` (CEP Node `fs`, CEP's file drag) and `electron.tsx` (the plugin's preload; a card's drag becomes `startDrag(key)`, with the key looked up from the last `broll.json`).
+- **Build:** `vite.panel.config.ts` takes `--mode broll|chat|resolve` (broll by default, unchanged output); `npm run build:panel` builds all three, and `npm run build` runs it.
+
+**The Resolve plugin (`src-resolve-plugin/`):**
+- `main.js`: one 420×720 window (min 300×360), floating, its place in `window.json`; `sandbox`, `contextIsolation`, no Node in the page, no `webview`, `backgroundThrottling: false`; navigation and new windows denied, permission requests refused, every non-`file:`/`devtools:` request cancelled. A drag (`panel:startDrag`) starts `event.sender.startDrag` with the shot's thumbnail as its icon, or a plain one.
+- `files.js` (Vitest: `files.test.ts`): every path inside `chat/resolve/`, no part a symlink; the page may write only `panel-alive.json` and `inbox/.?<id>.json(.tmp)?`; `dragTarget` takes only an absolute, plain media file that `broll.json` lists for that key.
+- `preload.js` exposes `window.vibecutPanel` {chatDir, readText, writeText, rename, makeDir, startDrag}. `index.html`'s CSP: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:`.
+
+**Installer: `src-tauri/src/resolve_plugin.rs`**, shaped like `premiere_panel.rs`:
+- Copies `PLUGIN_FILES` (staged, then renamed) into `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/com.vibecutagent.resolve`. `VIBECUT_AGENT_RESOLVE_PLUGIN_DIR` and `VIBECUT_AGENT_RESOLVE_PLUGIN_ROOT` override the source and the target. An unbuilt `dist/` is refused with "Run npm run build:panel".
+- Commands `resolve_plugin_status`, `resolve_plugin_install` and `resolve_plugin_uninstall`, returning `ResolvePluginStatus` {resolveInstalled, bundledVersion, installedVersion, installedPath, running}.
+- Bundled under `resolve-plugin/` (tauri.conf.json), like `premiere-panel/`. `tests/test_bundle_resources.py` now checks every `PANEL_FILES` and `PLUGIN_FILES` entry is a bundle resource.
+- **Settings → Editors:** a **DaVinci Resolve plugin** card under the Premiere panel's (Install / Update / Uninstall, `resolvePluginAdvice` in `lib/nleStatus.ts`: "After installing or updating, restart DaVinci Resolve and open Workspace → Workflow Integrations → VibeCut Agent."). **About → Network & API:** a "Panels in the editors" row (local files only).
+
+**Decided (Claude, against the spec; the code's types are the truth):**
+- H1. `set_effort` takes all five `EffortLevel`s (`xhigh` too), and `set_gemini_effort` low/medium/high: the spec listed four efforts and an "off" that `GeminiEffort` doesn't have.
+- H2. Names the spec got wrong, mapped to what exists: `handleBrollAction` → `brollPanel.handleAction(action, host)`; `loadChat(chatId)` → `openChat(id)`; the title → `customTitle || autoTitle || chatTitle(messages)`; `outsideRunning` → `useMcpStore.outsideRunning > 0`; `sendDraft(host)` → `sendDraft({host, timeline: draft.base, step: "draft-bar", stepText: ""})`, as the window's draft bar calls it.
+- H3. `open_window`'s `broll` is the Analyzer (`View::Broll`); `visualizer` opens the Telemetry Studio window (no `View` for it).
+- H4. Payload caps from VibeCut: 200 messages × 20k characters, 100 saved chats.
+- H5. Actions run one at a time per editor, in order. A failure is a notice, and the bridge keeps serving.
+- H6. The Resolve page can't write `window.json` (the spec listed it as page-writable): only the main process writes it, so the page's writes stay its inbox and heartbeat, as in VibeCut.
+- H7. The Review edits checkbox is the panels' native `Check`, styled `vc-check`; the drawn `vc-box` (VibeCut's UXP checkbox) isn't needed in CEP or Electron.
+
+**Tests:**
+- Rust: `host_chat` (every action, field stripping, refusals, inbox order with the host, symlinked and oversized actions, publishing only where a panel ran, per-editor folders) and `resolve_plugin` (install and replace, leaving `com.vibecut.agent` alone; unbuilt and incomplete refused; the repo's plugin at 0.19.0). `premiere_panel`'s repo test now asserts 0.19.0. cargo 159.
+- Vitest: `lib/hostChatBridge.test.ts` (serialization, editor switching, review decisions, send/stop/retry/edit/revert, failures, playhead, B-roll delegation), `src-premiere-panel-ui/HostApp.test.tsx` (tabs, send, queue and Stop, review cards, Revert, Retry and Edit, timecodes, draft and queue, model and effort, `/` prompts, History, Window), `src-resolve-plugin/files.test.ts` (ported), `EditorsSection.test.tsx` (the Resolve card). `bridge.test.ts` expects 0.19.0.
+- pytest: `test_every_editor_panel_file_is_bundled`.
+
+**Live checks owed (need the user and the editors):**
+- Settings → Editors → **Update panel** (0.19.0), restart Premiere, open Window → Extensions → VibeCut Agent: send a message, see it in the floating window too, Apply/Skip a review card, Revert, drag a B-roll card onto the timeline, press Window.
+- **Install plugin**, restart Resolve Studio, open Workspace → Workflow Integrations → VibeCut Agent: the same, with a drag into the Media Pool and the timeline.
+- Reinstall the app afterwards per the user's setup (`npm run install-app -- --orchestrated` with `VIBECUT_TELEMETRY=1` and the model variables).
+
+### Panel 0.20.0: more of the window, the Analyzer, and editing keys (2026-11-03)
+
+**Why (the user, 2026-11-03):** the in-editor panel should carry more of the window's UI, with the usage tracker and the B-Roll Analyzer; and copy, paste, undo and redo didn't work in either editor's panel.
+
+**What the panel gained (Premiere panel 0.20.0, Resolve plugin 0.20.0):**
+- **Header**, as the window's: each editor's light (Pr / Re, the window's `NleStatusPill`, with project · timeline on hover), the **usage tracker** (the window's `UsageMeter`: a pill with the Claude plan's 5-hour use, or today's tokens; it opens to the 5-hour, weekly and extra-usage meters with their resets, this chat's tokens, today and the last 7 days by model, and **Refresh**), then project · timeline and **Window**.
+- **Footer**, as the window's `StatusBar`: the agent's state and model, and the last reply's timing (first words …).
+- **Chat:** finished replies formatted as Markdown (GFM tables; timecodes still move the playhead; other links show as text, since a panel can't open a browser), **Copy** on each message, the chat's title, and **tool cards** (state, name and summary, opening to the call's arguments and result, each with Copy) in place of plain step lines.
+- **Analyze tab** (the window's Analyze tab, `FolderAnalyzer`): the folder, the segment options, content-aware scoring and near-duplicates, Advanced (brief, weights, workers, reset), Analyze folder with progress, ETA and Cancel, search by a sentence, the ranked clips (score, best stretch, chips, segment ticks), the selects (Include, Order, N / minimum, sequence name, the total), **Export XML** and **Build timeline**. Each clip has **Source** (opens the chosen segment in the editor's Source monitor / source viewer, In and Out marked; the panel can't play video), **Place** (at the playhead, revertible) and **Finder**.
+- Tabs are now **Chat · B-roll · Analyze · History**; Window opens the Analyzer from the Analyze tab.
+
+**Boundary changes (`vibecut.host.panels.v1`, `HOST_PANEL_VERSION` 2):**
+- `state.json` adds `editors` (both editors' status and detail), `usage` (plan, planAt, this chat's totals, today, the last 7 days, the model labels) and `agent.lastReply`.
+- **New file `analyzer.json`** (`HostAnalyzerFile`), written through the new command **`host_chat_analyzer_publish(host, file)`** (4 MiB, only where the panel ran). It carries the folder, options, the three jobs' progress, the best 200 ranked clips (`MAX_PANEL_CLIPS`), the search hits, the selects' totals, why Build and Place can't run in that editor, and the last answer. **No clip paths:** clips are named by their place in the list.
+- New actions, each rebuilt in `host_chat.rs`:
+  - `usage_refresh`;
+  - `analyzer_start` / `_cancel` / `_reset_options` / `_export` / `_build` / `_reveal_export`;
+  - `analyzer_set_folder {path}`: an absolute path to a folder that exists;
+  - `analyzer_set_option {key, value}`: a known option, its value of that kind, numbers in `useBrollStore`'s ranges, text ≤ 200 characters;
+  - `analyzer_match {query}`: ≤ 300 characters, not empty;
+  - `analyzer_toggle_segment {clip, segment}`;
+  - `analyzer_place` / `analyzer_source {list: ranked|matches, clip, segment}`;
+  - `analyzer_reveal {list, clip}`.
+- **App side (`hostChatBridge.ts`):** `buildHostAnalyzerFile` and `runAnalyzer` use the window's functions (`useBrollStore`'s setters, `startAnalysis`, `startMatch`, `cancelJob`, `placeAtPlayhead(…, {host})`, `openInSourceMonitor`, `exportSelectsXml`, `buildSelectsTimeline`, `revealInFinder`). Place, Source and Build switch to the panel's editor first, like the chat's actions. The bridge also follows the usage, turn-timing, B-roll and sidecar-job stores.
+- **A version mismatch is said:** `transport.stateVersion()` reports another version's `state.json`, and the panel asks for Settings → Editors → Update (or the app's update) instead of waiting.
+
+**Editing keys (the bug):**
+- **Premiere** keeps ⌘C, ⌘X, ⌘V, ⌘Z, ⇧⌘Z and ⌘A for its Edit menu, so a CEP panel's fields never got them.
+  - `src-premiere-panel-ui/editKeys.ts` asks CEP for them (`__adobe_cep__.registerKeyEventsInterest`) and does each edit with `document.execCommand`. Paste is `insertText`, so it lands on the field's own undo history and React sees it.
+  - The pasteboard is read and written through `/usr/bin/pbpaste` and `pbcopy` (CEP's Node). Copy also works on selected text outside a field.
+  - Installed in both Premiere panels: the chat panel and the B-roll panel's search box. The Telemetry Studio panel isn't changed.
+- **Resolve:** the plugin's Electron process starts with no menu, and on macOS those keys come from the Edit menu's roles.
+  - `main.js` now sets an application menu with Edit (undo, redo, cut, copy, paste, paste and match style, delete, select all).
+  - Two new IPC calls: `panel:chooseFolder` (Resolve's own folder dialog, for the Analyze tab) and `panel:copyText` (Electron's clipboard, text only, ≤ 64 KiB).
+
+**Decided (Claude):**
+- H8. **Export XML** in the panel has no save dialog. The XML goes beside the footage as "<folder> selects <date time>.xml", so it never replaces a file, and **Show in Finder** names only the XML the app wrote.
+- H9. **The folder comes from the editor's own picker**: CEP's `window.cep.fs.showOpenDialogEx`, or Resolve's dialog through the main process. Without one, the panel takes a typed path. Rust refuses anything that isn't an existing absolute folder.
+- H10. **Preview is the Source monitor.** The window's in-app video preview isn't in the panel; Source opens the chosen segment in the editor instead.
+- H11. **The panel's Markdown is its own** (`Markdown.tsx`, react-markdown and remark-gfm, already dependencies). The window's version calls Tauri. The usage arithmetic is the window's own `lib/agent/usage.ts`, which has no Tauri in it.
+- H12. The panel's tool cards don't show a tool's images (they're files on disk the panel can't read), and the composer has no image attachments or @-mentions yet.
+
+**Tests:**
+- Rust: `analyzer_actions_keep_only_their_fields` and `bad_analyzer_actions_are_refused` (host_chat). The repo tests assert 0.20.0. cargo 161.
+- Vitest: `hostChatBridge.test.ts` adds the lights, usage and timing, usage refresh, and an Analyze tab suite: publishing by place with no paths, why Build and Place can't run, options, Place / Source / ticks by index, export beside the footage and build in the panel's editor, search only with content-aware scoring.
+- `HostApp.test.tsx` adds the lights, footer, usage popover and Refresh, the version mismatch, formatted replies and Copy, tool cards, and the Analyze tab (folder picker or typed path, options, analyze, ticks, segments, Place, Source, Export, Build blocked, search, progress and Cancel).
+- New `editKeys.test.ts`: key interest, copy, cut, paste, undo, redo, select all, keys left alone.
+- Totals: vitest 924, visualizer 115, pytest 1345.
+
+**Live checks owed:** after Settings → Editors → Update panel / Update plugin (0.20.0) and an editor restart:
+- ⌘C, ⌘V, ⌘X, ⌘Z, ⇧⌘Z and ⌘A in the message box, in Premiere and Resolve;
+- the usage popover against the window's;
+- an analysis started from the panel, with its progress showing in both the panel and the window;
+- Export XML (find it beside the footage), Build timeline, and Source / Place on a segment.
+
+### CEP renderer crash (panel 0.20.2, 2026-11-03)
+
+**Symptom (the user):** Premiere showed "Sorry, an error occurred" with report files every time it opened.
+
+**Found:**
+- `~/Library/Logs/DiagnosticReports/` had 13 `CEPHtmlEngine Helper (Renderer)` reports on 2026-11-03, from 14:12 on, about two per launch.
+- All 13 are the same crash: `EXC_BAD_ACCESS` (SIGSEGV) at address 0 in `libnode.dylib node::task_queue::EnqueueMicrotask`.
+- The Telemetry Studio panel's CEP log has "OOPS! Render process terminated" just before each report, and the other panels' logs are clean.
+
+**Cause:**
+- With `--enable-nodejs --mixed-context`, the page's `queueMicrotask` is Node's, and React 19 schedules with it.
+- The Studio page reloads when `gateway.json` changes (a new key every app run, so at Premiere launch after an app restart, and after each reinstall).
+- During the reload Node's environment is gone while React still queues work through Node's binding, which dereferences null.
+- The chat and Library panels had the same exposure.
+
+**Fix:**
+- `nodeSafeMicrotasks.ts`, imported first in every CEP entry (`cep.tsx`, `cepChat.tsx`, and `apps/visualizer/src/cep.tsx` via its copy in `apps/visualizer/src/lib/host/`).
+- When Node is in the page, it replaces `queueMicrotask` with V8's own queue (`Promise.resolve().then`). An error thrown in a callback is still reported, from a timeout.
+- Checked in the built bundles: the shim runs before React's code, which captures `queueMicrotask` when it loads.
+- Resolve's plugin has no Node in its page and is unchanged.
+
+**Tests:** `nodeSafeMicrotasks.test.ts`, in both packages: the queue is replaced, its order is kept, errors surface, and the global is left alone without Node. vitest 927, visualizer 118, cargo 161.
+
+**Checked live (2026-11-03, Premiere 26.5.2, panel 0.20.2):**
+- Premiere opened at 17:16 with no dialog. The chat and Telemetry Studio panels loaded, with no "Render process terminated" in their logs and no new `CEPHtmlEngine Helper (Renderer)` report.
+- The last report, 17:13, came before 0.20.2 was installed (17:14).
+- Still to try: restart VibeCut Agent with Premiere open, which reloads the Studio.
+
+**Clean-up (the user's request, 2026-11-03):** VibeCut's old editor pieces were moved to the Trash ("VibeCut leftovers 2026-11-03"):
+- its CEP panel `com.vibecut.connect`;
+- its Resolve plugin `com.vibecut.agent`;
+- `~/Library/Application Support/VibeCut/` (`host-bridge`, `premiere-bridge`, `activity`);
+- the UXP plugin storage for `com.vibecut.agent` and `com.vibecut.probe`.
+
+None of them is used by current VibeCut code.
+
+### The Telemetry Studio reload loop (panel 0.20.3, 2026-11-03)
+
+**Symptom (the user):** with 0.20.2 the Telemetry Studio panel no longer crashed, but it kept flickering and resetting its view.
+
+**Found (live, Premiere 26.5.2):**
+- The CEP page loaded once (one "ClientInitialized" in its log), but its WebSocket lived about 1.7 s and a new one started every 2.0 s, each fetching the trace's snapshot again: a fresh page each time.
+- The gateway was fine. A Python replay of the panel's exact handshake, the visualizer's own `TelemetryWsClient` run in Node, and the built visualizer in headless Chrome from `file://` each held one connection for 10 s or more.
+- `gateway.json` never changed. But `studio-panel-alive.json`, stamped every 2 s by one timer, was written **98 times in 6 s**.
+
+**Cause:**
+- In CEP's mixed context `setInterval` is Node's, and Node's timers outlive the page: `window.location.reload()` doesn't stop them.
+- The first page load (17:17:07) read `gateway.json` just before the app wrote a new one (17:17:09). Its interval, still holding the old text, saw "changed" on every tick and reloaded the page every 2 s, for ever, and each reload left one more interval behind.
+- Before 0.20.2 this same loop crashed the renderer on the first reload (the queueMicrotask crash above), which hid it.
+
+**Fix (`apps/visualizer/src/cep.tsx`, `lib/host/cepPanel.ts` `startPanelLoop`):**
+- The Studio page never reloads itself. A changed `gateway.json` restarts the view in place: it stops the telemetry connection and its timers (`startTelemetry`'s stop), then renders `App` again, keyed by the gateway and its key.
+- The loop is kept on the page's global scope (`__vibecutStudioLoop`). A new page stops the one a previous page left, along with that page's telemetry.
+- `pagehide` stops everything, so CEP reloading or closing the page leaves no Node timer behind.
+- The chat and Library panels never reload themselves; their timers belong to React effects.
+
+**Tests:** `cepPanel.test.ts` covers the loop: a change shows the new gateway in place with no reload, a second page stops the first page's loop and what it started, and stop clears all. visualizer 121, vitest 927, cargo 161.
+
+**Live check owed:**
+- Update panel (0.20.3), then **quit Premiere fully** (the running Premiere holds dozens of leftover Node timers) and open it again.
+- The Studio should stay steady: one WebSocket that lives on, and `studio-panel-alive.json` written about every 2 s.
+
+## Markers and vision in orchestrated mode (2026-11-05)
+
+**Why (the user, 2026-11-05):** in the Premiere panel (installed app, orchestrated, Claude Code on the Work profile), "analyze this sequence and add markers" found the 62 cuts with `detect_media_boundaries` but then replied "I couldn't add the markers" and "I couldn't look at the frames".
+
+**Found (the run's Claude Code transcript):**
+- **Markers:** the run had no way to add one. `add_markers` wasn't in `FORWARDED_TOOLS`, and `vibecut.otio.delta.v1` has no marker operation.
+- **Frames:** the run had `analyze_shot_visuals` (Ollama was up, with `qwen3-vl:8b-instruct`) but never called it. The app's own prompt (`prompt.ts`, `visionTools.ts`) names `add_markers` and `look_at_media`; `ORCHESTRATED_INSTRUCTION` is added after it and mentioned neither markers nor which tool looks at the picture, so Claude looked for the direct-mode tools and gave up.
+
+**Decided (Claude; no Gemini review, per the user's standing rule):**
+- **Markers go through to the app**, like the sync tools: `MARKER_TOOLS` (`add_markers`, `update_marker`, `remove_markers`) join `FORWARDED_TOOLS`. Each is the app's own edit, as in direct mode. Markers don't change `otio_delta.timeline_hash`, so adding one never stales a validation token. No schema changes.
+- **Vision stays on the local VLM.** `look_at_clip`, `look_at_timeline` and `look_at_media` (contact sheets to Claude) are not forwarded; that would bypass the VLM worker boundary. The instruction now says `analyze_shot_visuals` is how to look at the picture (`sample_strategy` "scene_cuts" for a shot list) and that direct-mode tools named elsewhere don't exist in this mode.
+- Telemetry: the marker tools are traced on the NLE bay (`COLOR_GRADER`, `app.markers`, `NLE_IPC`).
+
+**Changes:** `orchestrator/tool_bus.py` (`MARKER_TOOLS`), `orchestrator/supervisor.py` (`ORCHESTRATED_INSTRUCTION`, docstring), `mcp_server.py` (docstring), `telemetry/instrument.py` (`TOOL_AGENTS`), `ORCHESTRATOR_SPEC.md` §3.2. Direct mode is unchanged.
+
+**Tests:** `test_an_orchestrated_chat_adds_markers_through_the_app`, the orchestrated tool list now includes `add_markers`, and the delta-only test refuses `build_broll_selects_timeline` instead (`tests/test_mcp_server.py`); `test_the_instruction_names_the_marker_and_vision_tools_this_mode_has` (`tests/orchestrator/test_supervisor.py`).
+
+**Live check owed:** reinstall (orchestrated, with the model variables), then in the Premiere panel: "analyze this sequence and add a marker at each shot with a short description".
+
+### The Telemetry Studio was blank in Premiere (panel 0.20.4, 2026-11-05)
+
+**Symptom (the user):** the studio doesn't appear in the in-host Telemetry Studio panel; the DAG does.
+
+**Cause:** the studio was sized with container-query units (`containerType: "size"`, `width: min(100cqw, calc(100cqh * …))`). Premiere 26.5.2's CEP is CEF/Chromium 99.2; container-query units came in Chromium 105. CEP dropped the width as invalid, so the studio's frame (whose only children are absolute) was 0 px wide. The window's visualizer (a current WebKit) has them, so it looked fine there.
+
+**Fix (`VirtualStudioCanvas.tsx`):** `fitStudio(width, height)` sizes the frame in px from its box, measured with a `ResizeObserver` (Chromium 64), as `DagCanvas` already does. Before the first measure it is full width at the studio's `aspect-ratio` (Chromium 88). No container-query units are left in the visualizer or the built `studio.js`/`studio.css`.
+
+**Tests:** `fitStudio` in `VirtualStudioCanvas.test.tsx` (width-bound, height-bound, unsized box). visualizer 122.
+
+**Live check owed:** Update panel (0.20.4), quit Premiere fully, open the Telemetry Studio panel: the studio's seven bays show above the DAG in the Studio tab.
+
+### The panels match the window (panel 0.20.5, 2026-11-05)
+
+**Why (the user):** make the Premiere panel's style and colours match the standalone window.
+
+**Before:** `src-premiere-panel-ui/panel.css` still used VibeCut's palette (navy `#0b1420`, teal, `#e0435a`, Inter, JetBrains Mono), not this app's `AGENTS.md` §3 tokens.
+
+**Changes (`panel.css`; one file for the Premiere chat and Library panels and the Resolve plugin):**
+- Each `--vc-*` variable now names its window token: canvas background, surface for replies, cards and the composer bar, one border colour, white for primary text, warm grey for body text, cool grey for secondary text and idle tabs, Athletic Blue for fills, Athletic Blue Light for text, focus and the active tab, and profit, loss and warning for status. Fonts are the window's sans and mono stacks.
+- Shapes follow the window's components: message bubbles as `MessageList` (8 px radius, bordered, user right in Athletic Blue, replies left on surface), errors as its alert (loss border at 50 %, loss fill at 10 %), tabs as `TabBar` (medium weight, cool grey to warm grey on hover, white with a blue underline when on), the composer as `Composer` (surface bar, canvas box, 6 px radius), primary buttons Athletic Blue, plus the window's focus ring, selection and `color-scheme: dark`.
+- No `color-mix()`, grid or `:has()`: CEP 12 is Chromium 99. The Resolve window's `backgroundColor` is canvas too (`src-resolve-plugin/main.js`).
+
+**Checked:** a headless Chrome screenshot of the built CSS with the chat tab's classes; vitest.
+
+**Version (the user: "the panel's colours weren't updated"):** the restyle first shipped under 0.20.4, the number an earlier install that day already had, so Settings saw the panel as current and Update panel had nothing newer to copy (the installed `chat/dist/panel.css` still had `#0b1420`). Bumped to 0.20.5. Any change to a panel's files needs a new panel version.
+
+**Live check owed:** with Update panel (0.20.5), the chat and Library panels in Premiere and the Resolve plugin.
+
+## The app's tools in orchestrated mode (2026-11-05)
+
+**Why (the user, 2026-11-05):** after the markers fix, asked which other tools the orchestrator couldn't use. About 130 app tools existed; orchestrated mode forwarded 22. Every request also told Claude `remember_note` saves project facts, and it wasn't forwarded: the markers failure again.
+
+**Decided (Claude; no Gemini review, per the user's standing rule; the user approved groups 1–3):**
+- **Reads** (`READ_ONLY_TOOLS`): `get_clip_info`, `get_clip_transform`, `get_clip_color`, `get_transcript`, `search_transcript`, `list_speakers`, `find_filler_words`, `check_pacing`, `find_beats`, `review_edit`, `read_client_notes`, `make_chapters`, `find_thumbnails`.
+- **Project notes** (`NOTES_TOOLS`): `remember_note`, `forget_note`. They write the app's notes, never the editor.
+- **Direct edits no delta reaches** (`APP_EDIT_TOOLS`): a clip's look, speed and fades; `normalize_loudness`, `clean_dialogue`, `fill_room_tone`; `add_lower_thirds`, `create_captions`; tracks, `nest_clips`, `set_clips_enabled`, `label_timeline_clips`; timelines, `make_social_version`, `import_media`, selection, bins and clip metadata; the exports; `set_playhead_time`, `learn_style`, `revert_timeline_edits`. Each is the app's own edit with backup, edit-log entry and Revert, as in direct mode. No schema change.
+- **Still delta-only:** `add_clips`, `delete_clips`, `split_clip`, the trims, `slip_clip`, `move_clip`, `set_transition`, `set_clip_levels`, `duck_music`, `close_gaps`, `insert_clip`, `replace_clip`, `remove_time_ranges`, `rearrange_sections`.
+- **Not decided (group 4):** the app's composite cutters (`remove_transcript_lines`, `remove_speaker_lines`, `cut_by_speaker`, `cut_to_beats`, `make_split_edit`, `run_story_editor`). Forwarding them is faster but bypasses delta validation for cuts; left for the user.
+- `ORCHESTRATED_INSTRUCTION` lists what's available and says to propose a delta after a direct edit, not before (a direct edit changes the timeline a token was given for).
+- Telemetry: each forwarded tool has a `TOOL_AGENTS` role and `agent_id`, which is its desk in the studio; the timeline reads, `set_playhead_time` and `select_clip` stay untraced. `export_broll_selects` is `app.broll_library`.
+
+**Tests (`tests/orchestrator/test_supervisor.py`):** every forwarded name is a tool the app declares (read from `src/lib/agent/*.ts`), none of the delta's edits is forwarded, every forwarded tool but the pointers is traced with a valid role, every traced `agent_id` has a desk in its own room in `stations.ts`, and the instruction names the notes and the reads. pytest 1352, vitest 927, ruff, mypy.
+
+**Live check owed:** reinstall (orchestrated); then in the panel "remember that the client wants warm grades", "what does the interviewer say about tuition?", "balance the colour of V1".
+
+## The studio as an edit suite (2026-11-05)
+
+**Why (the user):** "can the telemetry's studio be better laid out, or look like an editing suite with each bot/tool having its own work station?"
+
+**Decided (Claude):**
+- The seven SubagentType bays become seven rooms; each agent has its own workstation in its role's room, keyed by `agent_id` without an instance suffix (`worker.vlm.01` → `worker.vlm`). `lib/studio/stations.ts` lists 27 desks, matching `TOOL_AGENTS` and `ROOT_AGENT_ID`; an unlisted agent gets a guest desk in its room. No telemetry contract change: the room is `subagent_type`, the desk is `agent_id`.
+- A desk shows its gear (bridge, decks, light table, rack, card catalogue, flatbed, fader console, grading panel, pin board or monitors), lit and animated in its state colour when busy; the bot at it (the role's sprite, the avatar FSM unchanged); an on-air lamp; its name, what it does, and its HUD text (READY when idle); a progress bar while reading.
+- The floor plan (`lib/studio/suite.ts`) packs rooms into 3, 2 or 1 columns: the most columns that keep the text at 0.6× or more at the box's width, preferring a plan that fits whole, at most 1×. A narrow Premiere panel gets one column that scrolls rather than a 4 px-text miniature.
+- The reducer keeps `studioStations` beside `studioBays`; packets carry `from_key`/`to_key` and fly desk to desk with a short trail (handoffs between two desks of one room show too); labels don't print over each other. Conduits are cable trays between rooms; the fixed bay coordinates, `bayAt` and the chamfered routes are gone. visualizer-spec.md §3.1 notes the change.
+
+**Checked:** headless Chrome screenshots of the mock run (`?source=mock`) at 1600 and 2400 px (2 and 3 columns) and as the panel (`mode=embedded_cep`, one column). visualizer 124 (floor plan: each desk in its room, nothing overlaps, guest desks, fit by width; per-desk state and selection), lint, typecheck; the CEP build lowers to ES2020 with no container units.
+
+**Live check owed:** in the app's Telemetry Studio window and the Premiere panel after Update panel (0.20.4).
+
+## Studio styles (panel 0.20.6, 2026-11-05)
+
+**Why (the user):** "Save this telemetry studio as a style. Create another style that's more compact and dynamic."
+
+**Decided (Claude):**
+- The studio has styles (`StudioStyle` in `lib/studio/suite.ts`), chosen per viewer and remembered in the browser (`vibecut.visualizer.studioStyle`, the store's `studioStyle`), from a Suite / Compact switch in a slim bar over the studio, or with **S**. About lists the key.
+- **Suite:** the edit suite as built today ("The studio as an edit suite"), unchanged and the default.
+- **Compact:** the same rooms and desks in tight live tiles (160 x 62): the bot, its name, what it's doing, a state bar, an on-air lamp, and a 20 s activity trace from its own events (`lib/studio/activity.ts`, read from the log's tail each frame). Busy tiles pulse their border and a light sweeps across them; a success flashes green as it fades; each room has a live "n/m live" count and a load bar; packets land on the bot with a ring. Up to four columns of rooms; readable at 0.7× (13 px names).
+- Each style has its own sizes (`METRICS`); the floor plan and fit take the style. Same desks, state, selection and packets in both.
+
+**Checked:** headless Chrome screenshots of the mock run in both styles, wide and as the 520 px panel: in the split pane at 2400 px Compact shows the whole run with no scrolling (Suite scrolls); in the panel it takes two columns with full names, Suite one. visualizer 127 (both styles' plans: every desk once in its room, no overlaps; Compact fits more columns and less than 60 % of the Suite's height; activity slices; the switch, its memory and S).
+
+**Version:** panel 0.20.6, so Update panel copies the new studio.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -3907,3 +4184,9 @@ None left. 1. ~~Gemini Flash and Pro chats, and the Pro → Flash notice~~, 2. ~
 - **2026-11-03 (Claude): The Telemetry Studio in Premiere's panel (panel 0.18.0).** A third panel extension runs the visualizer docked in Premiere. It reaches the gateway with a per-run panel key from gateway.json, the only way a `file://` page's `Origin: null` gets in (V20). The app keeps its gateway running while the panel's heartbeat is fresh. The narrow layout stacks and shortens. Fixed on the way: the gateway let `Origin: null` in with no key, since a hostless origin counted as loopback. See "The Telemetry Studio in Premiere's panel" under Phase 22.
 - **2026-11-03 (Claude): The panel's inspector sheet, and About without the "?" (panel 0.18.1).** In the narrow layout, choosing a task opens the inspector as a sheet under the tab; the button reads "About". See "The panel's inspector sheet and the About label" under Phase 22.
 - **2026-11-03 (Claude): DAG cards hold their text (panel 0.18.2).** The full card clips, truncates per row, keeps two rows of badges and shortens token counts. See "DAG cards hold their text" under Phase 22.
+- **2026-11-03 (Claude): In-host panels (`vibecut.host.panels.v1`, Premiere panel 0.19.0, Resolve plugin 0.19.0).** A dockable VibeCut Agent panel in Premiere (Window → Extensions → VibeCut Agent) and a Workflow Integration plugin in Resolve Studio (Workspace → Workflow Integrations → VibeCut Agent), both with Chat · B-roll · History and a Window button, over the menu-bar app's own conversation through files (`host_chat.rs`, `hostChatBridge.ts`); the Resolve plugin installs from Settings → Editors (`resolve_plugin.rs`). Ported from VibeCut's removed panels. Decisions H1–H7, the tests and the live checks owed: "In-host panels" above.
+- **2026-11-03 (Claude): Panel 0.20.0: more of the window, the Analyzer, and editing keys.** The in-editor panels gain the window's header (Pr/Re lights, the usage tracker with Refresh), footer (state, model, reply timing), formatted replies with Copy, tool cards, and an Analyze tab (the B-Roll Analyzer: options, analyze, search, selects, Export XML beside the footage, Build timeline, Source/Place per segment) through a new `analyzer.json` (`host_chat_analyzer_publish`, `HOST_PANEL_VERSION` 2). Copy, paste, undo and redo now work: Premiere's panels take the keys from CEP (`editKeys.ts`), and Resolve's plugin has an Edit menu. Decisions H8–H12: "Panel 0.20.0" under In-host panels above.
+- **2026-11-03 (Claude): The Library, by name (panel 0.20.1, Resolve plugin 0.20.1).** The in-editor panels' B-roll tab is now **Library**, as in the window, and Premiere's B-roll panel is **VibeCut Agent Library** (Window → Extensions; the manifest's `<Menu>` and the page title). Its extension id stays `com.vibecutagent.connect.broll`, so a docked panel keeps its place, and its folder stays `host-bridge/broll/premiere/`. Both panels are 0.20.1, so Settings → Editors offers the update. The user's wish, the Premiere panel; the shared UI renames the tab in Resolve too.
+- **2026-11-03 (Claude): CEP renderer crash fixed (panel 0.20.2).** Premiere's "Sorry, an error occurred" at launch was the Telemetry Studio panel's renderer crashing in Node's `queueMicrotask` (`EnqueueMicrotask`, SIGSEGV) when its page reloaded for a new gateway key. Every CEP entry now imports `nodeSafeMicrotasks.ts` first, which gives React the page's own microtask queue. See "CEP renderer crash (panel 0.20.2)" above.
+- **2026-11-03 (Claude): Panel 0.20.2 checked live.** Premiere opened with no dialog and no renderer crash. VibeCut's old CEP panel, Resolve plugin, bridge folders and UXP storage were moved to the Trash at the user's request. See "CEP renderer crash (panel 0.20.2)".
+- **2026-11-03 (Claude): The Telemetry Studio reload loop (panel 0.20.3).** The Studio panel flickered and reset because Node's timers outlive a CEP page: an old page's gateway watch kept reloading it every 2 s, adding a timer each time (98 heartbeats in 6 s). It now restarts its view in place instead of reloading, stops any loop a previous page left, and stops its timers on `pagehide`. See "The Telemetry Studio reload loop (panel 0.20.3)".

@@ -964,6 +964,8 @@ To prevent out-of-order packets (e.g., when a fast UDP/WebSocket frame or multip
 
 ### 3.1 Virtual Studio / Editing Bay Spatial Layout ("The Edit Suite")
 
+> **Superseded in part (2026-11-05; PLAN.md, "The studio as an edit suite"):** the seven bays are now seven *rooms*, and each agent (`agent_id` without an instance suffix) has its own workstation in its SubagentType's room (`lib/studio/stations.ts`). The fixed 1280 × 980 grid and its coordinates below are replaced by a floor plan of 1, 2 or 3 columns of rooms chosen for the box (`lib/studio/suite.ts`); packets fly desk to desk; the conduits are cable trays between rooms. The roles, the avatar FSM (§3.2) and the packet styles (§3.3) are unchanged.
+
 The **Virtual Studio** renders an interactive pixel-art post-production facility (`1280 × 980` logical coordinate grid — taller than the original `1280 × 720` so bays and text read at split-pane size — rendered with crisp integer scaling `image-rendering: pixelated` on a dark `#0D1117` floorplan with `#161B22` acoustic room bays and `#30363D` cable conduits).
 
 ```text

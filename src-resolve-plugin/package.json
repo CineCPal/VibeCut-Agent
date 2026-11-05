@@ -1,0 +1,6 @@
+{
+  "name": "vibecut-agent-resolve-plugin",
+  "version": "0.20.1",
+  "private": true,
+  "main": "main.js"
+}

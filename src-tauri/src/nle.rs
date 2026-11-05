@@ -72,6 +72,14 @@ pub enum Host {
 impl Host {
     pub const ALL: [Host; 2] = [Host::Premiere, Host::Resolve];
 
+    /// The name on the wire and in the host-bridge folders: "premiere" or "resolve".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Host::Premiere => "premiere",
+            Host::Resolve => "resolve",
+        }
+    }
+
     fn job_id(self) -> &'static str {
         match self {
             Host::Premiere => "nle-premiere",

@@ -2,7 +2,7 @@ import { Broll } from "./Broll";
 import type { Transport } from "./transport";
 import { usePanel } from "./usePanel";
 
-/** The docked "VibeCut Agent B-roll" panel (PLAN.md, "Phase 5b"), after VibeCut's BrollApp.tsx. */
+/** The docked "VibeCut Agent Library" panel (PLAN.md, "Phase 5b"), after VibeCut's BrollApp.tsx. */
 export function BrollApp({ transport }: { transport: Transport }) {
   const view = usePanel(transport);
   const { file, agentRunning } = view;

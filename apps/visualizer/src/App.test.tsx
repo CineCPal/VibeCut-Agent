@@ -116,11 +116,16 @@ describe("App", () => {
     render(<App adapter={adapter} />);
     play();
     fireEvent.keyDown(window, { key: "3" });
-    expect(screen.queryByRole("img", { name: /Virtual editing studio/ })).toBeNull();
+    expect(screen.queryByRole("img", { name: /Virtual edit suite/ })).toBeNull();
     fireEvent.keyDown(window, { key: "2" });
     expect(screen.queryByRole("group", { name: /Execution DAG/ })).toBeNull();
     fireEvent.keyDown(window, { key: "1" });
-    expect(screen.getByRole("img", { name: /Virtual editing studio/ })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Virtual edit suite \(Suite\)/ })).toBeInTheDocument();
+    // S switches the studio's style, and back.
+    fireEvent.keyDown(window, { key: "s" });
+    expect(screen.getByRole("img", { name: /Virtual edit suite \(Compact\)/ })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "S" });
+    expect(screen.getByRole("img", { name: /Virtual edit suite \(Suite\)/ })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "About" }));
     const dialog = screen.getByRole("dialog", { name: "About VibeCut Agent Telemetry Studio" });

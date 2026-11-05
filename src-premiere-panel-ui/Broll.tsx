@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { PanelBrollFile, PanelBrollFolder, PanelShot } from "../src/types/brollPanel";
 import { Check, Press } from "./Press";
 import type { Transport } from "./transport";
-import type { PanelView } from "./usePanel";
+import type { BrollView } from "./usePanel";
 
 /**
  * The B-roll Library inside Premiere (PLAN.md, "Phase 5b"), ported from VibeCut's B-roll tab
@@ -41,7 +41,7 @@ function Thumb({ transport, name, label }: { transport: Transport; name?: string
 
 export const seconds = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 
-function FolderRow({ folder, view, busy }: { folder: PanelBrollFolder; view: PanelView; busy: boolean }) {
+function FolderRow({ folder, view, busy }: { folder: PanelBrollFolder; view: BrollView; busy: boolean }) {
   return (
     <div className="vc-row vc-folder" style={{ paddingLeft: `${4 + folder.depth * 14}px` }}>
       {folder.hasChildren ? (
@@ -67,7 +67,7 @@ interface CardProps {
   /** Its file, for the drag (only while it's usable). */
   path?: string;
   transport: Transport;
-  view: PanelView;
+  view: BrollView;
   /** Why Source and Import are off, or null. */
   canEdit: string | null;
   /** Why Place is off, or null. */
@@ -138,7 +138,7 @@ function Card({ shot, path, transport, view, canEdit, canPlace, onKeyDown }: Car
   );
 }
 
-function Pool({ file, transport, view, canEdit, canPlace }: { file: PanelBrollFile; transport: Transport; view: PanelView; canEdit: string | null; canPlace: string | null }) {
+function Pool({ file, transport, view, canEdit, canPlace }: { file: PanelBrollFile; transport: Transport; view: BrollView; canEdit: string | null; canPlace: string | null }) {
   const [open, setOpen] = useState(true);
   if (!file.pool.length) return null;
   const usable = file.pool.filter((s) => s.status === "ok").map((s) => s.key);
@@ -196,7 +196,7 @@ function Pool({ file, transport, view, canEdit, canPlace }: { file: PanelBrollFi
   );
 }
 
-export function Broll({ file, view, transport }: { file: PanelBrollFile; view: PanelView; transport: Transport }) {
+export function Broll({ file, view, transport }: { file: PanelBrollFile; view: BrollView; transport: Transport }) {
   const [query, setQuery] = useState("");
   const [showFolders, setShowFolders] = useState(false);
   const grid = useRef<HTMLDivElement>(null);

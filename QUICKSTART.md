@@ -59,7 +59,7 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **Premiere Pro:**
   1. Press **Install panel**, then restart Premiere. This copies VibeCut Agent's own CEP panel, `com.vibecutagent.connect`, into `~/Library/Application Support/Adobe/CEP/extensions/`. It runs alongside VibeCut's panel without touching it.
   2. Unsigned panels need CEP's PlayerDebugMode: `defaults write com.adobe.CSXS.12 PlayerDebugMode 1` (the app only reads this setting).
-- **DaVinci Resolve:** needs Resolve Studio 21.1 or later, with Preferences → System → General → "External scripting using" set to **Local**. Nothing to install.
+- **DaVinci Resolve:** needs Resolve Studio 21.1 or later, with Preferences → System → General → "External scripting using" set to **Local**. Nothing to install for the connection itself; the optional in-Resolve panel is below.
 - Each editor is watched continuously. Starting, quitting or restarting it, or switching projects, updates the Pr/Re lights within about 2 s. **Reconnect** restarts a watcher immediately.
 
 **Chat with the agent:** add a key in Settings → Accounts → API keys (or `.env` in dev; see above) and pick the model in Settings.
@@ -101,7 +101,22 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **One driver at a time:** outside edits wait for an in-app chat turn to finish, and the message box waits while an outside call runs.
 - **How it connects:** Claude Code starts `python -m vibecut_agent mcp`, which passes each call to the app through files in `~/Library/Application Support/VibeCut Agent/host-bridge/mcp/` (no network port).
 
-**B-roll in Premiere** (the way to drag clips into Premiere): after Settings → Editors → **Update panel** and a Premiere restart, open **Window → Extensions → VibeCut Agent B-roll** and dock it.
+**VibeCut Agent inside the editors** (optional): the same chat, B-roll Library and past chats in a panel inside Premiere Pro or DaVinci Resolve Studio. It is one more view of the menu-bar app's conversation: a message sent from the panel shows in the floating window too, and the other way round. VibeCut Agent must be running in the menu bar; the panel connects to it by itself.
+- **Premiere Pro:** Settings → Editors → **Install panel** or **Update panel** (0.20.1), restart Premiere, then **Window → Extensions → VibeCut Agent** and dock it.
+- **DaVinci Resolve Studio:** Settings → Editors → **Install plugin** under **DaVinci Resolve plugin**, restart Resolve, then **Workspace → Workflow Integrations → VibeCut Agent**. It opens as a floating window (Resolve doesn't dock plugins), and it remembers where you put it. It copies `com.vibecutagent.resolve` into `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/`, beside VibeCut's plugin without touching it.
+- **The header and footer** match the window's: the Pr/Re lights, the **usage tracker** (click it for the Claude plan's 5-hour and weekly use, this chat, today and the last 7 days, with **Refresh**), and at the bottom the agent's state, its model and how long the last reply took to start.
+- **Chat · Library · Analyze · History tabs:**
+  - **Chat:** replies are formatted as in the window, each message has **Copy**, and each tool call opens to its arguments and result. Send (Enter; Shift+Enter for a new line), queue while it works, Stop, the open draft's Send and Discard, **Apply / Skip / Apply all** on a change waiting for review, **Retry** and **Edit** (or ↑) on your last message, **Revert n** for the latest request, and `/` for saved prompts. Click a time in a reply to move the editor's playhead. The model, effort and **Review edits** sit above the message box.
+  - **Library:** the B-roll Library, as in the docked VibeCut Agent Library panel. Drag a card into the Project panel, the Media Pool or the timeline.
+  - **Analyze:** the B-Roll Analyzer, as in the window. **Choose folder…** opens the editor's own folder dialog. Set the options, **Analyze folder** (with progress and Cancel), search by a sentence with content-aware scoring, tick segments, then **Export XML** (saved beside the footage as "… selects <date time>.xml"; **Show in Finder**) or **Build timeline**. On a clip, **Source** opens the chosen segment in the editor's Source monitor with In and Out marked, and **Place** puts it at the playhead (revertible).
+  - **History:** your saved chats, filtered by title; click one to open it.
+- **Window** in the panel's header brings up the app's floating window (the Library from the Library tab). The menu-bar menu and ⌥⌘M work as before.
+- A message from a panel works in that panel's editor: if both editors are connected, the app switches to it first.
+- **Copy, paste, undo and redo** (⌘C, ⌘V, ⌘X, ⌘Z, ⇧⌘Z, ⌘A) work in the panels' text fields; they need panel 0.20.0 (Premiere) or plugin 0.20.0 (Resolve) or later.
+- If the panel says it and VibeCut Agent don't match, press **Update panel** / **Update plugin** in Settings → Editors and restart the editor.
+- **Privacy:** the panels read and write files in `~/Library/Application Support/VibeCut Agent/host-bridge/chat/`, never a network port, and no key or token is written there. Resolve's plugin window blocks every network request.
+
+**B-roll in Premiere** (the way to drag clips into Premiere): after Settings → Editors → **Update panel** and a Premiere restart, open **Window → Extensions → VibeCut Agent Library** (named VibeCut Agent B-roll before panel 0.20.1) and dock it.
 - It's the B-roll Library inside Premiere. **Drag a card** into the Project panel or onto the timeline (you'll see Premiere's insert marker), and **double-click a card** to open the shot in the Source monitor with In/Out marked.
 - Search, folders, Pool, Source, Import and Place work as in the app. VibeCut Agent must be running (it lives in the menu bar); the panel connects to it by itself.
 
@@ -114,7 +129,7 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
   - **Import** puts it in the "VibeCut B-roll" bin. Revert doesn't undo imports.
   - **Place** puts its picture at the playhead (revertible).
   - **Pool** sets it aside.
-  - **Drag the card** out of the app window (the whole file). For Premiere's timeline, use the docked VibeCut Agent B-roll panel instead (see above).
+  - **Drag the card** out of the app window (the whole file). For Premiere's timeline, use the docked VibeCut Agent Library panel instead (see above).
 - **Premiere:** Source and Import need panel 0.4.0 or later. Press Settings → Editors → Update panel, then restart Premiere.
 
 **B-roll Folder** (B-Roll tab → **Folder**): choose a folder and press **Analyze folder**.

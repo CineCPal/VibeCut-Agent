@@ -22,6 +22,9 @@ export interface PanelView {
   act: (action: ActionBody) => void;
 }
 
+/** What the B-roll tab needs of a panel's view: the B-roll-only panel's, or a full panel's. */
+export type BrollView = Pick<PanelView, "act" | "pending">;
+
 /** Reads the app's `broll.json` for this panel, stamps the panel's heartbeat, and writes its actions
  * (VibeCut's usePanel + useBroll, merged: this panel is the B-roll tab only). */
 export function usePanel(transport: Transport): PanelView {

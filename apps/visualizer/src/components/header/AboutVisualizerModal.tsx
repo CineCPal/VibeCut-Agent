@@ -121,7 +121,7 @@ export function AboutVisualizerModal({ adapter }: { adapter: RuntimeHostAdapter 
           <Row label="Trace storage">{health?.telemetry_dir ?? "<appDataDir>/telemetry/<trace_id>.jsonl"}</Row>
           <Row label="Network">Local only: the gateway on {adapter.httpBase}. No external APIs, no keys.</Row>
           <Row label="Agents">{Object.values(SUBAGENT_SHORT).join(" · ")}</Row>
-          <Row label="Keys">1/2/3 views · F fit DAG · , . step replay · Esc deselect · ? About</Row>
+          <Row label="Keys">1/2/3 views · S studio style · F fit DAG · , . step replay · Esc deselect · ? About</Row>
         </dl>
         <div className="mt-3 flex justify-end">
           <button ref={closeRef} type="button" className="rounded border border-athletic-blue-light px-3 py-1 text-[#e6edf3] hover:bg-athletic-blue" onClick={() => setOpen(false)}>

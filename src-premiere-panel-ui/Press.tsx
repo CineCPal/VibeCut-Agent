@@ -6,6 +6,7 @@ export type PressProps = AriaAttributes & {
   className?: string;
   disabled?: boolean;
   title?: string;
+  role?: string;
   onClick: () => void;
 };
 

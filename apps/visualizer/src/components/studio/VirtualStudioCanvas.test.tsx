@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { avatarOnEvent, effectiveAvatar, idleBay, CELEBRATE_MS, GPU_WAIT_BLOCKED_MS } from "../../lib/studio/avatarFsm";
 import { useVisualizerStore } from "../../store/useVisualizerStore";
 import { completed, env, failed, handoff, planning, spawn, tool, waiting } from "../../test/envelopes";
-import { isStudioIdle, VirtualStudioCanvas } from "./VirtualStudioCanvas";
+import { STATIONS } from "../../lib/studio/stations";
+import { guestsOf, isStudioIdle, VirtualStudioCanvas } from "./VirtualStudioCanvas";
 import type { AvatarState } from "../../types/studio";
 
 const mutation = (stage: "PROPOSED" | "VALIDATED" | "COMMITTED" | "ROLLED_BACK"): TelemetryPayload => ({
@@ -56,41 +57,75 @@ describe("the avatar state machine", () => {
 
 describe("VirtualStudioCanvas", () => {
   beforeEach(() => {
+    localStorage.removeItem("vibecut.visualizer.studioStyle");
     useVisualizerStore.getState().reset();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("mounts without a canvas context and lists the bays for keyboard and screen readers", () => {
+  it("mounts without a canvas context and lists every workstation for keyboard and screen readers", () => {
     render(<VirtualStudioCanvas />);
-    expect(screen.getByRole("img", { name: /Virtual editing studio/ })).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(7);
-    expect(screen.getByRole("button", { name: /Bay 4: Assembly & Pacing Bench, idle/ })).toBeDisabled();
+    expect(screen.getByRole("img", { name: /Virtual edit suite \(Suite\): 7 rooms/ })).toBeInTheDocument();
+    // A button per desk, and the two style buttons.
+    expect(screen.getAllByRole("button")).toHaveLength(STATIONS.length + 2);
+    expect(screen.getByRole("button", { name: /Assembly & Pacing, OTIO cutter: idle/ })).toBeDisabled();
   });
 
-  it("shows each lifecycle event on its bay and selects the bay's task", () => {
+  it("shows each agent's events at its own desk, not its room's others, and selects the desk's task", () => {
     render(<VirtualStudioCanvas />);
     const now = Date.now();
-    const sub = (s: SubagentType) => ({ subagent: s, t: now });
+    const at = (s: SubagentType, agent: string) => ({ subagent: s, agent, t: now });
     act(() =>
       useVisualizerStore.getState().applyBatch(
         [
-          env(1, spawn("task_root"), { ...sub("MASTER_ORCHESTRATOR"), parent: null }),
-          env(2, tool("task_v"), sub("VISION_TAGGER")),
-          env(3, waiting("task_a"), sub("AUDIO_ENGINEER")),
-          env(4, failed("task_n"), sub("COLOR_GRADER")),
+          env(1, spawn("task_root"), { ...at("MASTER_ORCHESTRATOR", "orchestrator.supervisor"), parent: null }),
+          env(2, tool("task_v"), at("VISION_TAGGER", "worker.vlm.01")),
+          env(3, waiting("task_a"), at("AUDIO_ENGINEER", "app.audio_sync")),
+          env(4, failed("task_n"), at("COLOR_GRADER", "app.markers")),
         ],
         now,
       ),
     );
-    const bay = (s: string) => document.querySelector(`[data-subagent="${s}"]`) as HTMLButtonElement;
-    expect(bay("MASTER_ORCHESTRATOR").dataset.avatarState).toBe("PROCESSING_THINKING");
-    expect(bay("VISION_TAGGER").dataset.avatarState).toBe("READING_ASSET");
-    expect(bay("AUDIO_ENGINEER").dataset.avatarState).toBe("LISTENING");
-    expect(bay("COLOR_GRADER").dataset.avatarState).toBe("BLOCKED_ERROR");
-    act(() => bay("VISION_TAGGER").click());
+    const desk = (key: string) => document.querySelector(`[data-station="${key}"]`) as HTMLButtonElement;
+    expect(desk("orchestrator.supervisor").dataset.avatarState).toBe("PROCESSING_THINKING");
+    expect(desk("worker.vlm").dataset.avatarState).toBe("READING_ASSET");
+    expect(desk("app.audio_sync").dataset.avatarState).toBe("LISTENING");
+    expect(desk("app.markers").dataset.avatarState).toBe("BLOCKED_ERROR");
+    // The room's other desks stay idle.
+    expect(desk("app.thumbnails").dataset.avatarState).toBe("IDLE");
+    expect(desk("worker.color_nle").dataset.avatarState).toBe("IDLE");
+    act(() => desk("worker.vlm").click());
     expect(useVisualizerStore.getState().selectedTaskId).toBe("task_v");
-    expect(bay("VISION_TAGGER")).toHaveAttribute("aria-pressed", "true");
+    expect(desk("worker.vlm")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("switches between the suite and compact styles, remembering the choice", () => {
+    render(<VirtualStudioCanvas />);
+    const compact = screen.getByRole("button", { name: "Compact" });
+    expect(screen.getByRole("button", { name: "Suite" })).toHaveAttribute("aria-pressed", "true");
+    act(() => compact.click());
+    expect(compact).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("img", { name: /Virtual edit suite \(Compact\)/ })).toBeInTheDocument();
+    expect(localStorage.getItem("vibecut.visualizer.studioStyle")).toBe("compact");
+    // Every desk is still there, and a reset (a new store) reads the choice back.
+    expect(document.querySelectorAll("[data-station]")).toHaveLength(STATIONS.length);
+    act(() => useVisualizerStore.getState().reset());
+    expect(useVisualizerStore.getState().studioStyle).toBe("compact");
+    act(() => useVisualizerStore.getState().cycleStudioStyle());
+    expect(useVisualizerStore.getState().studioStyle).toBe("suite");
+    expect(localStorage.getItem("vibecut.visualizer.studioStyle")).toBe("suite");
+  });
+
+  it("gives an unlisted agent a desk in its room", () => {
+    render(<VirtualStudioCanvas />);
+    const now = Date.now();
+    act(() =>
+      useVisualizerStore.getState().applyBatch([env(1, tool("task_x"), { subagent: "PACING_CUTTER", agent: "app.brand_new", t: now })], now),
+    );
+    expect(guestsOf(useVisualizerStore.getState().live)).toEqual({ PACING_CUTTER: ["app.brand_new"] });
+    const desk = document.querySelector('[data-station="app.brand_new"]') as HTMLButtonElement;
+    expect(desk.dataset.subagent).toBe("PACING_CUTTER");
+    expect(screen.getAllByRole("button")).toHaveLength(STATIONS.length + 3);
   });
 
   it("spawns packet beams for handoffs, tool calls and mutations, and idles without them", () => {

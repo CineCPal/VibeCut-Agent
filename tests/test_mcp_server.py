@@ -394,9 +394,10 @@ def test_an_orchestrated_chat_sees_the_orchestration_tools_the_reads_and_sync(
         names = [t.name for t in run(go).tools]
     finally:
         fake.stop()
-    # Of the app's tools, add_markers and build_broll_selects_timeline (edits) and get_instructions (the
-    # direct-mode rules) are left out.
+    # Of the app's tools, build_broll_selects_timeline (an edit) and get_instructions (the direct-mode rules)
+    # are left out; add_markers stays, as markers have no delta operation.
     assert names == [
+        "add_markers",
         "list_markers",
         "list_timelines",
         "list_timeline_clips",
@@ -431,6 +432,33 @@ def test_an_orchestrated_chat_syncs_through_the_app(folder: Path, orchestration:
     calls = [(r["caller"], r["name"], r["args"]) for r in fake.seen if r["kind"] == "call_tool"]
     assert calls == [("job-1", "sync_clips", {"clipIds": ["v1"]})]
     assert mcp_server.timeout_for("sync_clips") == mcp_server.LONG_TIMEOUT_SECONDS
+
+
+def test_an_orchestrated_chat_adds_markers_through_the_app(folder: Path, orchestration: Any) -> None:
+    # A delta has no marker operation, so the marker tools go to the app as its own edits.
+    def answer(request: dict[str, Any]) -> dict[str, Any]:
+        if request["kind"] == "list_tools":
+            return {"ok": True, "result": {"tools": ORCHESTRATED_DECLARATIONS}}
+        return {"ok": True, "result": {"added": 2}}
+
+    fake = FakeApp(folder, answer)
+    try:
+        server = build_server(AppBridge(folder, "job-1"), orchestration)
+
+        async def go() -> Any:
+            async with Client(server) as client:
+                return await client.call_tool("add_markers", {"markers": [{"time": 0.7}, {"time": 1.4}]})
+
+        result = run(go)
+    finally:
+        fake.stop()
+    assert result.is_error is False
+    assert json.loads(result.content[0].text) == {"added": 2}
+    calls = [(r["caller"], r["name"], r["args"]) for r in fake.seen if r["kind"] == "call_tool"]
+    assert calls == [("job-1", "add_markers", {"markers": [{"time": 0.7}, {"time": 1.4}]})]
+    for name in ("add_markers", "update_marker", "remove_markers"):
+        assert orchestration.handles(name) is False
+        assert name in orchestration.forwarded
 
 
 def test_an_orchestrated_chat_searches_the_library_through_the_app(folder: Path, orchestration: Any) -> None:
@@ -471,7 +499,7 @@ def test_an_orchestrated_chat_edits_only_through_a_validated_delta(
 
         async def go() -> Any:
             async with Client(server) as client:
-                refused = await client.call_tool("add_markers", {"markers": [{"time": 1.0}]})
+                refused = await client.call_tool("build_broll_selects_timeline", {})
                 read = await client.call_tool("list_markers", {})
                 proposal = await client.call_tool(
                     "propose_otio_delta", {"delta": delta(op("op_001", "DELETE_CLIP", clip_id="c2"))}
@@ -494,7 +522,7 @@ def test_an_orchestrated_chat_edits_only_through_a_validated_delta(
     assert json.loads(commit.content[0].text) == {"committed": True}
     assert bad.is_error is True
     # The app saw the read, the bus's two timeline reads for each of propose and commit, and the commit,
-    # all as this chat's calls; never add_markers.
+    # all as this chat's calls; never build_broll_selects_timeline.
     calls = [(r["caller"], r["name"]) for r in fake.seen if r["kind"] == "call_tool"]
     assert calls == [
         ("job-1", "list_markers"),

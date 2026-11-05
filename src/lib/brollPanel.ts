@@ -1,5 +1,5 @@
 /**
- * The app's side of the "VibeCut Agent B-roll" panel docked in Premiere (PLAN.md, "Phase 5b"), after
+ * The app's side of the "VibeCut Agent Library" panel docked in Premiere (PLAN.md, "Phase 5b"), after
  * VibeCut's panelBroll.ts: it publishes the B-roll Library as `broll.json` whenever the Library or
  * Premiere's state changes, writes the shots' thumbnails, and answers the panel's actions with the
  * Library's own functions (lib/library.ts). The panel names shots by key and folders only from the list
@@ -27,8 +27,11 @@ import {
 import { useLibraryStore, type LibraryShot, type LibraryState } from "../store/useLibraryStore";
 import { useNleStateStore } from "../store/useNleStateStore";
 import { BROLL_PANEL_VERSION, type PanelAction, type PanelBrollFile, type PanelBrollFolder, type PanelShot } from "../types/brollPanel";
+import { NLE_LABELS, type NleHost } from "../types/nle";
 
-const HOST = "premiere" as const;
+/** The B-roll-only panel is Premiere's; the full panels (lib/hostChatBridge.ts) pass their own editor. */
+const HOST: NleHost = "premiere";
+const BADGE: Record<NleHost, string> = { premiere: "Pr", resolve: "Re" };
 /** Coalesces bursts of store changes into one write. */
 const PUBLISH_DELAY_MS = 80;
 
@@ -58,7 +61,7 @@ function folderRows(s: LibraryState): PanelBrollFolder[] {
 /** Only shots with a key the panel's protocol allows (every Spyglass shot has one). */
 const listable = (shot: LibraryShot) => KEY.test(shot.key);
 
-function panelShot(shot: LibraryShot, pooled: boolean): PanelShot {
+function panelShot(shot: LibraryShot, pooled: boolean, have: ReadonlySet<number>): PanelShot {
   return {
     key: shot.key,
     filename: shot.filename,
@@ -67,21 +70,22 @@ function panelShot(shot: LibraryShot, pooled: boolean): PanelShot {
     ...(shot.caption ? { caption: shot.caption } : {}),
     ...(shot.technical !== null ? { technical: Math.round(shot.technical) } : {}),
     status: shot.status,
-    ...(shot.shotId !== null && thumbs.has(shot.shotId) ? { thumb: thumbName(shot.shotId) } : {}),
+    ...(shot.shotId !== null && have.has(shot.shotId) ? { thumb: thumbName(shot.shotId) } : {}),
     ...(pooled ? { pooled: true } : {}),
   };
 }
 
-/** `broll.json` for the Library and Premiere as they are now. */
-export function buildBrollFile(now = Date.now()): PanelBrollFile {
+/** `broll.json` for the Library and `host` (Premiere by default) as they are now. `have`: the shots whose
+ * thumbnail is in that panel's folder. */
+export function buildBrollFile(now = Date.now(), host: NleHost = HOST, have: ReadonlySet<number> = thumbs): PanelBrollFile {
   const s = useLibraryStore.getState();
-  const premiere = useNleStateStore.getState().hosts[HOST];
+  const editor = useNleStateStore.getState().hosts[host];
   const pooled = new Set(s.pool.map((p) => p.key));
   const results = s.results.filter(listable);
   const pool = s.pool.filter(listable);
   const paths: Record<string, string> = {};
   for (const shot of [...results, ...pool]) if (!unusable(shot)) paths[shot.key] = shot.path;
-  const connected = connectedHost(HOST) !== null;
+  const connected = connectedHost(host) !== null;
   return {
     version: BROLL_PANEL_VERSION,
     publishedAt: now,
@@ -91,18 +95,18 @@ export function buildBrollFile(now = Date.now()): PanelBrollFile {
     scopeLabel: scopeLabel(s.scopes),
     mode: s.mode,
     query: s.query,
-    shots: results.map((r) => panelShot(r, pooled.has(r.key))),
+    shots: results.map((r) => panelShot(r, pooled.has(r.key), have)),
     hasMore: s.hasMore,
     total: s.total,
     busy: s.busy,
     error: s.error,
-    pool: pool.map((p) => panelShot(p, true)),
+    pool: pool.map((p) => panelShot(p, true, have)),
     paths,
     editor: {
       connected,
-      timeline: premiere.timeline,
-      noEditor: connected ? null : "Open VibeCut Agent's connection to Premiere first (the app shows Pr in green)",
-      noPlace: placeBlocked(HOST),
+      timeline: editor.timeline,
+      noEditor: connected ? null : `Open VibeCut Agent's connection to ${host === "premiere" ? "Premiere" : NLE_LABELS[host]} first (the app shows ${BADGE[host]} in green)`,
+      noPlace: placeBlocked(host),
     },
     notice: s.notice ? { actionId: answering, text: s.notice.text, failed: s.notice.failed, at: now } : null,
   };
@@ -113,7 +117,8 @@ export function buildBrollFile(now = Date.now()): PanelBrollFile {
 /** A folder the panel may name: one the app listed. */
 const listed = (path: string) => Object.values(useLibraryStore.getState().children).some((kids) => kids.some((f) => f.path === path));
 
-export async function handleAction(action: PanelAction): Promise<void> {
+/** Answers a B-roll action from `host`'s panel (Premiere's by default). */
+export async function handleAction(action: PanelAction, host: NleHost = HOST): Promise<void> {
   switch (action.type) {
     case "hello":
     case "broll_open":
@@ -134,22 +139,27 @@ export async function handleAction(action: PanelAction): Promise<void> {
       return changePool(action.op as PoolOp, action.keys);
     case "broll_import":
       answering = action.id;
-      return importShots(action.keys, HOST);
+      return importShots(action.keys, host);
     case "broll_source":
       answering = action.id;
-      return previewShot(action.key, HOST);
+      return previewShot(action.key, host);
     case "broll_place":
       answering = action.id;
-      return placeShot(action.key, HOST);
+      return placeShot(action.key, host);
   }
 }
 
 // ----------------------------------------------------------------------------- publishing
 
+/** The shots a panel shows that have no thumbnail in `have` yet (at most 200, Rust's limit). */
+export function wantedThumbs(have: ReadonlySet<number>): number[] {
+  const s = useLibraryStore.getState();
+  return [...new Set([...s.results, ...s.pool].flatMap((shot) => (shot.shotId !== null && !have.has(shot.shotId) ? [shot.shotId] : [])))].slice(0, 200);
+}
+
 /** Writes the thumbnails of the shots the panel shows that don't have one yet. */
 async function ensureThumbs(): Promise<boolean> {
-  const s = useLibraryStore.getState();
-  const wanted = [...new Set([...s.results, ...s.pool].flatMap((shot) => (shot.shotId !== null && !thumbs.has(shot.shotId) ? [shot.shotId] : [])))].slice(0, 200);
+  const wanted = wantedThumbs(thumbs);
   if (!wanted.length) return false;
   try {
     const ready = await invoke<number[]>("broll_panel_thumbs", { shotIds: wanted });

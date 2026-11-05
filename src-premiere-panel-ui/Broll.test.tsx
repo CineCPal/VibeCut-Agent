@@ -30,6 +30,7 @@ const FILE: PanelBrollFile = {
 };
 
 const transport: Transport = {
+  readState: vi.fn(),
   readBroll: vi.fn(),
   readThumb: vi.fn(async () => null),
   agentAliveAt: vi.fn(),

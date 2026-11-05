@@ -17,7 +17,8 @@ In orchestrated mode (Phase 21; ``VIBECUT_MCP_ORCHESTRATED=1``, which claude_cod
 own Claude Code run when ``EXECUTION_MODE=orchestrated``), this process plays the part
 orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
 - it offers the six orchestration tools, and of the app's tools only the read-only ones (the B-roll Library
-  and the media pool among them), the B-roll Analyzer and the three sync tools (tool_bus.FORWARDED_TOOLS);
+  and the media pool among them), the B-roll Analyzer, the three sync tools and the three marker tools
+  (tool_bus.FORWARDED_TOOLS);
 - it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
   timeline and whose commit go to the app through the bridge as this chat's own calls;
 - it refuses any other call;

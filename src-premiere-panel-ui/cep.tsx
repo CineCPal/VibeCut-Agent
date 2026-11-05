@@ -1,11 +1,14 @@
+// First: React must never reach Node's queueMicrotask (nodeSafeMicrotasks.ts).
+import "./nodeSafeMicrotasks";
 import { createRoot } from "react-dom/client";
 import { BrollApp } from "./BrollApp";
+import { installEditKeys, pasteboard } from "./editKeys";
 import { fillDrag } from "./fillDrag";
 import { fileTransport, panelDir, type FileOps } from "./transport";
 import "./panel.css";
 
 /**
- * Premiere's docked "VibeCut Agent B-roll" panel (src-premiere-panel/broll/, PLAN.md "Phase 5b"), after
+ * Premiere's docked "VibeCut Agent Library" panel (src-premiere-panel/broll/, PLAN.md "Phase 5b"), after
  * VibeCut's src-host-panel/src/cep.tsx. A CEP panel because Premiere takes a file dragged from a CEP
  * panel (CEP's `com.adobe.cep.dnd.file.0`) into its Project panel and timeline, with its insert marker,
  * as from Finder; a drag from another app's window doesn't get that. CEP runs it with Node
@@ -35,6 +38,9 @@ const ops: FileOps = {
     await fs.promises.mkdir(path, { recursive: true });
   },
 };
+
+// Copy, paste and undo in the search box: Premiere keeps those keys otherwise (editKeys.ts).
+installEditKeys(pasteboard(nodeRequire));
 
 const root = document.getElementById("root");
 if (root) {

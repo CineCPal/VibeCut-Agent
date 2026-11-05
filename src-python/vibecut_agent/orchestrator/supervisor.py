@@ -11,13 +11,13 @@ loop in either mode), and is kept, with its tests, for a provider that may super
 Each turn runs gemini_chat's own loop, unchanged, with three differences:
 
 - Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
-  app's tools, only the ones that read, the B-roll Analyzer and the three sync tools
+  app's tools, only the ones that read, the B-roll Analyzer, the three sync tools and the three marker tools
   (tool_bus.FORWARDED_TOOLS); every other
   edit goes through `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
   say how.
 - When Gemini calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
   orchestration calls run in this process on the bus (each announced with a `status` line, since the
-  app doesn't run them), the read-only and sync calls go on to the app as one `tool_calls` event, and any other
+  app doesn't run them), the read-only, sync and marker calls go on to the app as one `tool_calls` event, and any other
   call is answered with an error. gemini_chat then reads the bus's results first and the app's after,
   through the same `read_tool_result`, and answers them in the order Gemini made the calls.
 - The bus reaches the app itself (to read the timeline, and to commit) with `tool_calls` events of its
@@ -79,6 +79,16 @@ Syncing a camera with a separately recorded sound file is the one edit outside t
 picture and sound but can't find the offset between them. Use sync_and_place to place cameras with their \
 recordings, sync_clips for linked picture and sound already on the timeline, and slip_into_sync to put \
 linked sound back in sync. Each is its own edit, backed up and revertible.
+
+Many of the app's own tools work here too, outside the delta, each its own edit with a backup and Revert:
+- markers: add_markers (many in one call), update_marker, remove_markers; list_markers reads them. Markers don't change the timeline a validation token was given for;
+- project notes: remember_note saves a lasting fact the user tells you, forget_note removes one;
+- a clip's look, speed and fades (set_clip_color, match_clip_color, balance_clip_color, set_clip_transform, set_clip_speed, set_speed_ramp, set_clip_fade), audio repair (normalize_loudness, clean_dialogue, fill_room_tone), graphics (add_lower_thirds, create_captions), tracks and clip state (add_track, set_track_options, nest_clips, set_clips_enabled, label_timeline_clips), the project and its bins (create_timeline, switch_timeline, make_social_version, import_media, bins and clip metadata), delivery (export_video, export_audio, export_clips, export_thumbnails), set_playhead_time, learn_style, and revert_timeline_edits to undo the app's edits, a committed delta among them.
+These edit the timeline, so propose a delta after them, not before. Cuts, trims, moves, inserts, deletes, gaps, transitions, gain and ducking always go in a delta.
+
+The app's reads are here too: get_transcript, search_transcript, list_speakers and find_filler_words for what's said on the timeline (transcribe_and_align is for one file), get_clip_info, get_clip_transform, get_clip_color, and its checks: check_pacing, review_edit, find_beats, read_client_notes, make_chapters, find_thumbnails.
+
+To look at the picture (what a shot shows, its framing, subject, light), use analyze_shot_visuals on the clip's media file over the range you need, in the source's seconds; sample_strategy "scene_cuts" gives one description per shot, which is what a shot list needs. Tools named elsewhere in these instructions that aren't in your tool list (look_at_clip, look_at_timeline, look_at_media, add_clips, split_clip and the other single cuts) don't exist in this mode: use the tools here instead of saying a task can't be done.
 """
 
 TOOL_RESULT_ID_PREFIX = "orch_"

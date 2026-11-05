@@ -1,5 +1,5 @@
 /**
- * The "VibeCut Agent B-roll" panel in Premiere (PLAN.md, "Phase 5b") and the app: `broll.json` (what the
+ * The "VibeCut Agent Library" panel in Premiere (PLAN.md, "Phase 5b") and the app: `broll.json` (what the
  * panel shows) and the actions it writes to `inbox/`. From VibeCut's src/types/hostPanel.ts B-roll part,
  * with the editor's state carried in the same file (the panel has no chat). Shared by the app
  * (src/lib/brollPanel.ts) and the panel (src-premiere-panel-ui/), and checked again by Rust
@@ -72,3 +72,6 @@ export type PanelAction =
   | { id: string; type: "broll_pool"; op: "add" | "remove" | "clear" | "up" | "down"; keys: string[] }
   | { id: string; type: "broll_import"; keys: string[] }
   | { id: string; type: "broll_place" | "broll_source"; key: string };
+
+/** The B-roll actions as the full panels' `HostChatAction` (types/hostPanel.ts) includes them. */
+export type PanelBrollAction = PanelAction;

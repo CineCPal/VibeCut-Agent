@@ -1,25 +1,27 @@
-/* The "VibeCut Agent B-roll" panel docked in Premiere (PLAN.md, "Phase 5b"): VibeCut's panel.css
+/* The "VibeCut Agent Library" panel docked in Premiere (PLAN.md, "Phase 5b"): VibeCut's panel.css
    (src-host-panel/src/panel.css), copied whole so the panel looks like VibeCut's own B-roll dock. */
-/* VibeCut's chat panel inside the editors (PLAN.md, "Phase 6"). VibeCut's own colours
-   (src/styles/globals.css). Flexbox and CSS variables only: Premiere's UXP runtime has no grid,
-   sticky positioning or :has(). */
+/* VibeCut Agent's panels inside the editors (PLAN.md, "Phase 6"). Since 2026-11-05 they use the standalone
+   window's colours and type (AGENTS.md §3; src/styles/index.css), so the panel and the window look like
+   one app (PLAN.md, "The panels match the window"). Each variable below names its token there. Flexbox
+   and CSS variables only, and no color-mix(): CEP 12 is Chromium 99, and Premiere's UXP runtime has no
+   grid, sticky positioning or :has(). */
 :root {
-  --vc-void: #0b0d10;
-  --vc-panel: #0b1420;
-  --vc-raised: #101c2c;
-  --vc-input: #060d16;
-  --vc-hairline: #1e2c3d;
-  --vc-hairline-light: #2c3e55;
-  --vc-fg: #e6e8eb;
-  --vc-fg-muted: #9aa7b0;
-  --vc-fg-faint: #5c6a74;
-  --vc-accent: #0d5aa1;
-  --vc-accent-text: #4a90d9;
-  --vc-teal: #1ec9c2;
-  --vc-danger: #e0435a;
-  --vc-wait: #ffb300;
-  --vc-font: -apple-system, "Inter", system-ui, sans-serif;
-  --vc-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --vc-void: #0d1117; /* canvas */
+  --vc-panel: #0d1117; /* canvas: the window's background */
+  --vc-raised: #161b22; /* surface: assistant replies, cards, the composer bar */
+  --vc-input: #0d1117; /* canvas: the composer's box sits on the surface */
+  --vc-hairline: #30363d; /* border */
+  --vc-hairline-light: #30363d; /* border: the window uses one border colour */
+  --vc-fg: #ffffff; /* text-white: replies, active tabs, hovered controls */
+  --vc-fg-muted: #99928a; /* warm-grey: the window's body text and role labels */
+  --vc-fg-faint: #72808a; /* cool-grey: secondary text, idle tabs and icons */
+  --vc-accent: #002244; /* athletic-blue: fills only (the user's messages, primary buttons) */
+  --vc-accent-text: #4a90d9; /* athletic-blue-light: text, icons, focus and the active tab */
+  --vc-teal: #00c853; /* profit: connected, done */
+  --vc-danger: #ff5252; /* loss: errors, Stop */
+  --vc-wait: #ffb300; /* warning */
+  --vc-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --vc-mono: "Fira Code", "JetBrains Mono", monospace;
 }
 
 html,
@@ -29,9 +31,21 @@ body,
   padding: 0;
   height: 100%;
   background-color: var(--vc-panel);
-  color: var(--vc-fg);
+  color: var(--vc-fg-muted);
   font-family: var(--vc-font);
   font-size: 12px;
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* As the window: a blue focus ring and blue selection. */
+:focus-visible {
+  outline: 2px solid var(--vc-accent-text);
+  outline-offset: 2px;
+}
+::selection {
+  background-color: var(--vc-accent);
+  color: #ffffff;
 }
 
 .vc-panel {
@@ -168,8 +182,9 @@ p {
 }
 .vc-msg {
   margin-bottom: 8px;
-  padding: 6px 8px;
-  border-radius: 4px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
 }
 .vc-msg-text {
   white-space: pre-wrap;
@@ -188,11 +203,15 @@ p {
 
 .vc-msg-user {
   background-color: var(--vc-accent);
+  border-color: var(--vc-accent);
   color: #ffffff;
-  margin-left: 24px;
+  margin-left: 32px;
 }
 .vc-msg-assistant {
   background-color: var(--vc-raised);
+  border-color: var(--vc-hairline);
+  color: var(--vc-fg);
+  margin-right: 32px;
 }
 .vc-msg-tool {
   color: var(--vc-fg-muted);
@@ -203,8 +222,10 @@ p {
   border-radius: 0;
 }
 .vc-msg-error {
-  color: var(--vc-danger);
-  border: 1px solid var(--vc-danger);
+  color: var(--vc-fg);
+  border: 1px solid rgba(255, 82, 82, 0.5);
+  background-color: rgba(255, 82, 82, 0.1);
+  border-radius: 6px;
 }
 
 .vc-log {
@@ -236,7 +257,8 @@ p {
 
 .vc-composer {
   border-top: 1px solid var(--vc-hairline);
-  padding: 8px;
+  background-color: var(--vc-raised);
+  padding: 8px 12px;
   flex: 0 0 auto;
 }
 .vc-input {
@@ -246,11 +268,14 @@ p {
   background-color: var(--vc-input);
   color: var(--vc-fg);
   border: 1px solid var(--vc-hairline-light);
-  border-radius: 4px;
-  padding: 6px;
+  border-radius: 6px;
+  padding: 6px 10px;
   font-family: var(--vc-font);
   font-size: 12px;
   resize: none;
+}
+.vc-input::placeholder {
+  color: var(--vc-fg-faint);
 }
 .vc-composer-actions {
   margin-top: 6px;
@@ -264,8 +289,8 @@ p {
   background-color: transparent;
   color: var(--vc-fg-muted);
   border: 1px solid var(--vc-hairline);
-  border-radius: 4px;
-  padding: 2px 4px;
+  border-radius: 6px;
+  padding: 2px 6px;
   font-size: 12px;
   cursor: pointer;
   flex: 0 0 auto;
@@ -284,6 +309,11 @@ p {
 .vc-btn-primary {
   background-color: var(--vc-accent);
   border-color: var(--vc-accent);
+  color: #ffffff;
+}
+.vc-btn-primary:hover {
+  background-color: rgba(0, 34, 68, 0.8);
+  border-color: var(--vc-accent-text);
   color: #ffffff;
 }
 
@@ -329,17 +359,20 @@ p {
 }
 .vc-tab {
   background-color: transparent;
-  color: var(--vc-fg-muted);
+  color: var(--vc-fg-faint);
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 6px 10px;
+  margin-bottom: -1px;
+  padding: 8px 12px;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
 }
 .vc-tab:hover {
-  color: var(--vc-fg);
+  color: var(--vc-fg-muted);
 }
-.vc-tab-on {
+.vc-tab-on,
+.vc-tab-on:hover {
   color: var(--vc-fg);
   border-bottom-color: var(--vc-accent-text);
 }
@@ -738,4 +771,397 @@ p {
 /* The pool header's toggle shares its row with Import all and Clear, so it isn't full width. */
 .vc-pool .vc-log-toggle {
   width: auto;
+}
+
+/* 0.20.0: the window's header, footer, tool cards, formatted replies and the Analyze tab, in the panel. */
+.vc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.vc-dot-error {
+  background-color: var(--vc-danger);
+}
+.vc-lights {
+  display: flex;
+  flex-direction: row;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.vc-lights > * + * {
+  margin-left: 4px;
+}
+.vc-pill {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  border: 1px solid var(--vc-hairline-light);
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-family: var(--vc-mono);
+  font-size: 11px;
+  color: var(--vc-fg-muted);
+  background-color: transparent;
+  flex: 0 0 auto;
+}
+.vc-pill > * + * {
+  margin-left: 4px;
+}
+.vc-pill-button {
+  cursor: pointer;
+}
+.vc-pill-button:hover {
+  border-color: var(--vc-accent-text);
+}
+.vc-pill-meter {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background-color: var(--vc-hairline);
+}
+.vc-pill-meter .vc-meter-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+.vc-meter {
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background-color: var(--vc-hairline);
+  margin: 3px 0;
+}
+.vc-meter-fill {
+  height: 100%;
+}
+.vc-meter-busy {
+  width: 33%;
+  opacity: 0.6;
+}
+.vc-level-ok {
+  background-color: var(--vc-accent-text);
+}
+.vc-level-warn {
+  background-color: var(--vc-wait);
+}
+.vc-level-full {
+  background-color: var(--vc-danger);
+}
+.vc-level-text-ok {
+  color: var(--vc-fg);
+}
+.vc-level-text-warn {
+  color: var(--vc-wait);
+}
+.vc-level-text-full {
+  color: var(--vc-danger);
+}
+.vc-usage {
+  position: relative;
+  flex: 0 0 auto;
+}
+.vc-pop {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  z-index: 20;
+  width: 250px;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  background-color: var(--vc-raised);
+  border: 1px solid var(--vc-hairline-light);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.vc-usage-plan {
+  margin-bottom: 6px;
+}
+.vc-usage-chat {
+  margin: 6px 0;
+  color: var(--vc-fg-muted);
+}
+.vc-usage-table {
+  width: 100%;
+  font-size: 11px;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+.vc-usage-table caption {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vc-fg-muted);
+  padding-bottom: 2px;
+}
+.vc-usage-table th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--vc-fg);
+  padding: 1px 4px 1px 0;
+}
+.vc-usage-table td {
+  text-align: right;
+  color: var(--vc-fg-muted);
+  padding: 1px 0 1px 4px;
+}
+.vc-footer {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 3px 8px;
+  border-top: 1px solid var(--vc-hairline);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.vc-footer > * + * {
+  margin-left: 5px;
+}
+.vc-footer-timing {
+  flex: 0 1 auto;
+  max-width: 45%;
+}
+
+.vc-msg-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.vc-copy {
+  font-size: 10px;
+}
+.vc-md {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.vc-md > :first-child {
+  margin-top: 0;
+}
+.vc-md > :last-child {
+  margin-bottom: 0;
+}
+.vc-md p,
+.vc-md ul,
+.vc-md ol {
+  margin: 4px 0;
+}
+.vc-md ul,
+.vc-md ol {
+  padding-left: 18px;
+}
+.vc-md h1,
+.vc-md h2,
+.vc-md h3,
+.vc-md h4 {
+  font-size: 12px;
+  margin: 8px 0 4px 0;
+}
+.vc-md code {
+  font-family: var(--vc-mono);
+  font-size: 11px;
+  background-color: var(--vc-input);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.vc-md pre,
+.vc-pre {
+  font-family: var(--vc-mono);
+  font-size: 11px;
+  background-color: var(--vc-input);
+  border: 1px solid var(--vc-hairline);
+  border-radius: 4px;
+  padding: 6px;
+  margin: 4px 0;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.vc-md pre code {
+  background-color: transparent;
+  padding: 0;
+}
+.vc-md table {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 4px 0;
+  display: block;
+  overflow-x: auto;
+}
+.vc-md th,
+.vc-md td {
+  border: 1px solid var(--vc-hairline-light);
+  padding: 2px 5px;
+  text-align: left;
+}
+.vc-md blockquote {
+  margin: 4px 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--vc-hairline-light);
+  color: var(--vc-fg-muted);
+}
+.vc-md-link {
+  color: var(--vc-accent-text);
+}
+
+.vc-tool {
+  border: 1px solid var(--vc-hairline);
+  border-radius: 4px;
+  margin: 3px 0;
+}
+.vc-tool-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background-color: transparent;
+  border: none;
+  color: var(--vc-fg);
+  padding: 3px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.vc-tool-head > * + * {
+  margin-left: 6px;
+}
+.vc-tool-mark {
+  width: 10px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+.vc-tool-name {
+  flex: 0 0 auto;
+  color: var(--vc-accent-text);
+}
+.vc-tool-done .vc-tool-mark {
+  color: var(--vc-teal);
+}
+.vc-tool-failed .vc-tool-mark,
+.vc-tool-failed .vc-tool-name {
+  color: var(--vc-danger);
+}
+.vc-tool-pending .vc-tool-mark {
+  color: var(--vc-wait);
+}
+.vc-tool-declined .vc-tool-mark,
+.vc-tool-running .vc-tool-mark {
+  color: var(--vc-fg-muted);
+}
+.vc-tool-body {
+  padding: 4px 6px 6px 6px;
+  border-top: 1px solid var(--vc-hairline);
+}
+
+.vc-analyze {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.vc-box-section {
+  border: 1px solid var(--vc-hairline);
+  border-radius: 6px;
+  background-color: var(--vc-raised);
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+.vc-box-section > * + * {
+  margin-top: 6px;
+}
+.vc-field {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 90px;
+  min-width: 80px;
+  margin: 2px 0;
+}
+.vc-field .vc-input {
+  padding: 3px 5px;
+}
+.vc-details summary {
+  cursor: pointer;
+  color: var(--vc-fg-muted);
+}
+.vc-details > * + * {
+  margin-top: 6px;
+}
+.vc-job {
+  border: 1px solid var(--vc-hairline);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.vc-clips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.vc-clip {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--vc-hairline);
+}
+.vc-clip-out {
+  opacity: 0.5;
+}
+.vc-score {
+  flex: 0 0 auto;
+  min-width: 26px;
+  text-align: center;
+  border-radius: 3px;
+  background-color: var(--vc-accent);
+  color: #ffffff;
+  font-family: var(--vc-mono);
+  font-size: 11px;
+  padding: 1px 3px;
+}
+.vc-segs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 3px 0 0 0;
+  padding: 0;
+}
+.vc-seg {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  border: 1px solid var(--vc-hairline-light);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin: 0 4px 4px 0;
+  font-size: 11px;
+}
+.vc-seg-on {
+  border-color: var(--vc-accent-text);
+  background-color: rgba(0, 34, 68, 0.6);
+}
+.vc-seg-off {
+  opacity: 0.6;
+}
+.vc-warn {
+  color: var(--vc-wait);
+  font-size: 11px;
+}
+.vc-stale {
+  border: 1px solid rgba(255, 179, 0, 0.5);
+  background-color: rgba(255, 179, 0, 0.1);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.vc-ok {
+  color: var(--vc-teal);
 }

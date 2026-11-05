@@ -1,5 +1,5 @@
 import type { Tone } from "../components/common/StatusDot";
-import type { NleChangeReason, NleConnectionStatus, NleState, PremierePanelStatus } from "../types/nle";
+import type { NleChangeReason, NleConnectionStatus, NleState, PremierePanelStatus, ResolvePluginStatus } from "../types/nle";
 
 export const CONNECTION_TONE: Record<NleConnectionStatus, Tone> = {
   connected: "ok",
@@ -45,5 +45,18 @@ export function panelAdvice(panel: PremierePanelStatus): string | null {
     return "Premiere only loads unsigned panels with CEP's PlayerDebugMode on: run `defaults write com.adobe.CSXS.12 PlayerDebugMode 1` in Terminal, then restart Premiere Pro.";
   }
   if (!panel.running) return "Installed. Start or restart Premiere Pro to load it.";
+  return null;
+}
+
+const OPEN_IN_RESOLVE = "After installing or updating, restart DaVinci Resolve and open Workspace → Workflow Integrations → VibeCut Agent.";
+
+/** What the user should do next for the Resolve plugin, or null when its window is open and current. */
+export function resolvePluginAdvice(plugin: ResolvePluginStatus): string | null {
+  if (!plugin.resolveInstalled) return "DaVinci Resolve Studio isn't installed.";
+  if (!plugin.installedVersion) return `Install the plugin. ${OPEN_IN_RESOLVE}`;
+  if (plugin.bundledVersion && plugin.installedVersion !== plugin.bundledVersion) {
+    return `Update the plugin (installed ${plugin.installedVersion}, this app has ${plugin.bundledVersion}). ${OPEN_IN_RESOLVE}`;
+  }
+  if (!plugin.running) return `Installed. ${OPEN_IN_RESOLVE}`;
   return null;
 }

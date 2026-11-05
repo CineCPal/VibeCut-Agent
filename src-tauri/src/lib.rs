@@ -4,6 +4,7 @@ mod broll_preview;
 mod chat_store;
 mod claude_code;
 mod commands;
+mod host_chat;
 mod login_item;
 mod mcp_bridge;
 mod mini_player;
@@ -12,6 +13,7 @@ mod native_drag;
 mod nle;
 mod premiere_panel;
 mod project_notes;
+mod resolve_plugin;
 mod secrets;
 mod sidecar;
 mod spyglass;
@@ -68,6 +70,8 @@ pub fn run() {
             nle::start_all(app.handle());
             // The B-roll panel docked in Premiere (broll_panel.rs): its inbox and the app's heartbeat.
             broll_panel::start(app.handle());
+            // The VibeCut Agent panels in Premiere and Resolve (host_chat.rs): their inboxes and heartbeats.
+            host_chat::start(app.handle());
             // The MCP bridge (mcp_bridge.rs): an MCP client calling the agent's tools, through files.
             mcp_bridge::start(app.handle());
             // The installed app opened by hand (Spotlight, Launchpad, the Dock) shows its window; started at
@@ -123,6 +127,9 @@ pub fn run() {
             premiere_panel::premiere_panel_status,
             premiere_panel::premiere_panel_install,
             premiere_panel::premiere_panel_uninstall,
+            resolve_plugin::resolve_plugin_status,
+            resolve_plugin::resolve_plugin_install,
+            resolve_plugin::resolve_plugin_uninstall,
             window_mode::keep_on_top_status,
             window_mode::set_keep_on_top,
             mini_player::mini_player_status,
@@ -136,6 +143,11 @@ pub fn run() {
             transcript::read_suite_sync,
             broll_panel::broll_panel_publish,
             broll_panel::broll_panel_status,
+            host_chat::host_chat_publish,
+            host_chat::host_chat_broll_publish,
+            host_chat::host_chat_analyzer_publish,
+            host_chat::host_chat_thumbs,
+            host_chat::host_chat_status,
             mcp_bridge::mcp_reply,
             mcp_bridge::mcp_hold,
             mcp_bridge::mcp_status,

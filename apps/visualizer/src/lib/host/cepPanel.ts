@@ -52,3 +52,47 @@ export function panelLocation(gateway: PanelGateway): Pick<Location, "search" | 
 export function aliveStamp(nowMs: number, pid: number | null): string {
   return JSON.stringify({ time: nowMs / 1000, pid });
 }
+
+/** What the panel's loop needs from CEP, passed in so it's tested without CEP. */
+export interface PanelLoopHost {
+  readGateway: () => string | null;
+  stampAlive: () => void;
+  /** Called with gateway.json's text at the start, and again each time it changes. */
+  onGateway: (text: string | null) => void;
+  /** Called when the loop stops: whatever `onGateway` started (the telemetry connection and its timers). */
+  onStop?: () => void;
+  setInterval: (callback: () => void, ms: number) => unknown;
+  clearInterval: (handle: unknown) => void;
+  /** Where the running loop is kept, so the next page finds it: the page's global scope. */
+  scope: { __vibecutStudioLoop?: { stop: () => void } };
+}
+
+/**
+ * The panel's heartbeat and gateway watch, started once per page. CEP's mixed context makes `setInterval`
+ * Node's, and Node's timers outlive the page: a reloaded page found the last page's timers still running.
+ * One of them, holding an old gateway.json, reloaded the page every 2 s for ever, adding a timer each time
+ * (PLAN.md, "The Telemetry Studio reload loop (panel 0.20.3)"). So a page stops whatever loop a previous
+ * page left, and a changed gateway restarts the view in place (`onGateway`) instead of reloading.
+ */
+export function startPanelLoop(host: PanelLoopHost): () => void {
+  host.scope.__vibecutStudioLoop?.stop();
+  let current = host.readGateway();
+  host.stampAlive();
+  host.onGateway(current);
+  const timer = host.setInterval(() => {
+    host.stampAlive();
+    const next = host.readGateway();
+    if (next === current) return;
+    current = next;
+    host.onGateway(next);
+  }, PANEL_POLL_MS);
+  const loop = {
+    stop: () => {
+      host.clearInterval(timer);
+      host.onStop?.();
+      if (host.scope.__vibecutStudioLoop === loop) delete host.scope.__vibecutStudioLoop;
+    },
+  };
+  host.scope.__vibecutStudioLoop = loop;
+  return loop.stop;
+}

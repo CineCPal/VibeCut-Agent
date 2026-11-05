@@ -16,6 +16,7 @@ import type { TelemetryEnvelope } from "@vibecut/contracts";
 import { isDraft, original } from "immer";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+import { STUDIO_STYLES, type StudioStyle } from "../lib/studio/suite";
 import type { ScrubTarget } from "../lib/audio/scrubPlayer";
 import { createLayoutMemo } from "../lib/dag/layout";
 import { ProjectionCache } from "../lib/reconciler/projection";
@@ -43,6 +44,26 @@ function saveCollapsed(collapsed: Record<DockId, boolean>): void {
     localStorage.setItem(DOCKS_KEY, JSON.stringify(collapsed));
   } catch {
     // Private window or blocked storage: the choice lasts until reload.
+  }
+}
+
+const STYLE_KEY = "vibecut.visualizer.studioStyle";
+
+/** This viewer's studio style (PLAN.md, "Studio styles"): the edit suite unless they chose another. */
+function loadStudioStyle(): StudioStyle {
+  try {
+    const saved = localStorage.getItem(STYLE_KEY);
+    return STUDIO_STYLES.includes(saved as StudioStyle) ? (saved as StudioStyle) : "suite";
+  } catch {
+    return "suite";
+  }
+}
+
+function saveStudioStyle(style: StudioStyle): void {
+  try {
+    localStorage.setItem(STYLE_KEY, style);
+  } catch {
+    // As above: lasts until reload.
   }
 }
 
@@ -143,6 +164,8 @@ export interface VisualizerState {
   scrubber: Scrubber | null;
   /** Whether dragging the ruler plays it (remembered in this browser). */
   scrubAudio: boolean;
+  /** How the studio is drawn (remembered in this browser). */
+  studioStyle: StudioStyle;
   /** Why the last scrub had nothing to play; null once one plays. */
   scrubNotice: string | null;
   /** VCTB 0x02 JPEG strips by seq, as object URLs. */
@@ -183,6 +206,9 @@ export interface VisualizerState {
   setDagBox: (width: number, height: number) => void;
   toggleDock: (dock: DockId) => void;
   prunePackets: (nowMs?: number) => void;
+  setStudioStyle: (style: StudioStyle) => void;
+  /** The next style in STUDIO_STYLES (the S key). */
+  cycleStudioStyle: () => void;
   reset: () => void;
 }
 
@@ -219,6 +245,7 @@ const initial = () => ({
   waveforms: {},
   scrubber: null as Scrubber | null,
   scrubAudio: loadScrubAudio(),
+  studioStyle: loadStudioStyle(),
   scrubNotice: null as string | null,
   contactStrips: {},
   aboutOpen: false,
@@ -415,6 +442,17 @@ export const useVisualizerStore = create<VisualizerState>()(
       set((s) => {
         const alive = s.live.activePackets.filter((p) => p.born_ms + p.duration_ms > nowMs);
         if (alive.length !== s.live.activePackets.length) s.live.activePackets = alive;
+      }),
+    setStudioStyle: (style) =>
+      set((s) => {
+        s.studioStyle = style;
+        saveStudioStyle(style);
+      }),
+    cycleStudioStyle: () =>
+      set((s) => {
+        const at = STUDIO_STYLES.indexOf(s.studioStyle);
+        s.studioStyle = STUDIO_STYLES[(at + 1) % STUDIO_STYLES.length];
+        saveStudioStyle(s.studioStyle);
       }),
     reset: () => {
       projections.reset();

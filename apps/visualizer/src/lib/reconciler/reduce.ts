@@ -25,6 +25,12 @@ import type { DataPacketSprite, PacketType, StudioBayState } from "../../types/s
 import type { MutationRecord } from "../../types/timeline";
 import { avatarOnEvent, avatarOnInbound, idleBay } from "../studio/avatarFsm";
 import { MAX_ACTIVE_PACKETS, makePacket } from "../studio/packets";
+import { stationKey } from "../studio/stations";
+
+/** The supervisor's desk, where tool calls leave from (telemetry/instrument.py ROOT_AGENT_ID). */
+const ROOT_STATION = "orchestrator.supervisor";
+/** The desk a commit reaches. */
+const COMMIT_STATION = "worker.color_nle";
 
 export const STATUS_RANK: Readonly<Record<DagNodeStatus, number>> = {
   PENDING_SPAWN: 0,
@@ -46,6 +52,9 @@ export interface TraceState {
   nodes: Record<string, DagNode>;
   edges: Record<string, DagEdge>;
   studioBays: Record<SubagentType, StudioBayState>;
+  /** Each workstation's state, by desk key (lib/studio/stations.ts `stationKey`); made when its agent first
+   * reports. A bay's state is its room's latest; a station's is that one agent's. */
+  studioStations: Record<string, StudioBayState>;
   activePackets: DataPacketSprite[];
   mutations: Record<string, MutationRecord>;
   logs: TelemetryEnvelope[];
@@ -76,6 +85,7 @@ export function createTraceState(traceId: string | null = null): TraceState {
       SubagentType,
       StudioBayState
     >,
+    studioStations: {},
     activePackets: [],
     mutations: {},
     logs: [],
@@ -174,6 +184,17 @@ function addEdge(
 }
 
 /** Capped to MAX_ACTIVE_PACKETS by `reduceEnvelopes`, once per batch. */
+/** The workstation an agent sits at, made idle on first sight. */
+export function stationFor(state: TraceState, agentId: string, subagent: SubagentType): StudioBayState {
+  const key = stationKey(agentId);
+  const existing = state.studioStations[key];
+  if (existing) return existing;
+  const station = idleBay(subagent);
+  station.agent_id = agentId;
+  state.studioStations[key] = station;
+  return station;
+}
+
 function pushPacket(state: TraceState, packet: DataPacketSprite): void {
   state.activePackets.push(packet);
 }
@@ -206,7 +227,10 @@ export function reduceEnvelope(state: TraceState, env: TelemetryEnvelope, option
   state.max_seq_id = Math.max(state.max_seq_id, env.seq_id);
 
   const bay = state.studioBays[env.subagent_type];
-  if (p.kind !== "CONTEXT_HANDOFF" && p.kind !== "RESOURCE_HEARTBEAT") avatarOnEvent(bay, env);
+  if (p.kind !== "CONTEXT_HANDOFF" && p.kind !== "RESOURCE_HEARTBEAT") {
+    avatarOnEvent(bay, env);
+    avatarOnEvent(stationFor(state, env.agent_id, env.subagent_type), env);
+  }
 
   switch (p.kind) {
     case "SPAWN": {
@@ -255,7 +279,10 @@ export function reduceEnvelope(state: TraceState, env: TelemetryEnvelope, option
       node.metrics.requires_gpu_lock = p.requires_gpu_lock;
       node.metrics.gpu_lock_held = p.requires_gpu_lock;
       if (packets && env.subagent_type !== "MASTER_ORCHESTRATOR") {
-        pushPacket(state, makePacket("MASTER_ORCHESTRATOR", env.subagent_type, "PROMPT_TOKENS", JSON.stringify(p.arguments).length, now, p.tool_name));
+        pushPacket(state, makePacket("MASTER_ORCHESTRATOR", env.subagent_type, "PROMPT_TOKENS", JSON.stringify(p.arguments).length, now, p.tool_name, {
+          from: ROOT_STATION,
+          to: stationKey(env.agent_id),
+        }));
       }
       break;
     }
@@ -292,7 +319,10 @@ export function reduceEnvelope(state: TraceState, env: TelemetryEnvelope, option
         const to: SubagentType = p.mutation_stage === "COMMITTED" ? "COLOR_GRADER" : "MASTER_ORCHESTRATOR";
         const kind: PacketType = p.mutation_stage === "COMMITTED" ? "NLE_COMMIT_BATCH" : "OTIO_DELTA";
         if (to !== env.subagent_type) {
-          pushPacket(state, makePacket(env.subagent_type, to, kind, JSON.stringify(p.operations).length, now, p.delta_id));
+          pushPacket(state, makePacket(env.subagent_type, to, kind, JSON.stringify(p.operations).length, now, p.delta_id, {
+            from: stationKey(env.agent_id),
+            to: to === "COLOR_GRADER" ? COMMIT_STATION : ROOT_STATION,
+          }));
         }
       }
       break;
@@ -361,9 +391,13 @@ export function reduceEnvelope(state: TraceState, env: TelemetryEnvelope, option
         edge.last_active_ms = env.timestamp_ms;
       }
       avatarOnInbound(state.studioBays[p.to_subagent], env);
-      if (packets && p.from_subagent !== p.to_subagent) {
+      avatarOnInbound(stationFor(state, p.to_agent_id, p.to_subagent), env);
+      if (packets && stationKey(p.from_agent_id) !== stationKey(p.to_agent_id)) {
         const label = p.clip_count > 0 ? `×${p.clip_count}` : null;
-        pushPacket(state, makePacket(p.from_subagent, p.to_subagent, p.packet_type, p.payload_bytes, now, label));
+        pushPacket(state, makePacket(p.from_subagent, p.to_subagent, p.packet_type, p.payload_bytes, now, label, {
+          from: stationKey(p.from_agent_id),
+          to: stationKey(p.to_agent_id),
+        }));
       }
       break;
     }

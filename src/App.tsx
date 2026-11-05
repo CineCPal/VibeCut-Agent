@@ -9,6 +9,7 @@ import { startChatHistory } from "./lib/agent/chatHistory";
 import { startChatTitles } from "./lib/agent/chatTitles";
 import { startPlanRefresh } from "./lib/agent/planRefresh";
 import { startBrollPanelBridge } from "./lib/brollPanel";
+import { startHostChatBridge } from "./lib/hostChatBridge";
 import { startMcpBridge } from "./lib/mcp/server";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useKeepOnTop } from "./hooks/useKeepOnTop";
@@ -39,6 +40,8 @@ function App() {
 
   // The B-roll panel docked in Premiere (lib/brollPanel.ts).
   useEffect(() => startBrollPanelBridge(), []);
+  // The VibeCut Agent panels in Premiere and Resolve: the same chat, B-roll and history (lib/hostChatBridge.ts).
+  useEffect(() => startHostChatBridge(), []);
 
   // Past chats and the edit log, saved and restored across restarts (lib/agent/chatHistory.ts).
   useEffect(() => startChatHistory(), []);

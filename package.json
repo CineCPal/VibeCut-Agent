@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && vite build --config vite.panel.config.ts && npm run build:visualizer && npm run build:studio-panel",
+    "build": "tsc && vite build && npm run build:panel && npm run build:visualizer && npm run build:studio-panel",
     "build:visualizer": "npm --prefix apps/visualizer run build -- --outDir ../../dist/visualizer --emptyOutDir",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "build:panel": "vite build --config vite.panel.config.ts",
+    "build:panel": "vite build --config vite.panel.config.ts --mode broll && vite build --config vite.panel.config.ts --mode chat && vite build --config vite.panel.config.ts --mode resolve",
     "build:studio-panel": "npm --prefix apps/visualizer run build:cep",
     "install-app": "zsh -l scripts/install-app.sh"
   },

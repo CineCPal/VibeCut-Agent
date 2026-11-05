@@ -49,3 +49,13 @@ export interface PremierePanelStatus {
   debugMode: boolean;
   running: boolean;
 }
+
+/** Mirrors `ResolvePluginStatus` in `src-tauri/src/resolve_plugin.rs`. */
+export interface ResolvePluginStatus {
+  resolveInstalled: boolean;
+  bundledVersion: string | null;
+  installedVersion: string | null;
+  installedPath: string;
+  /** The plugin's window is open in Resolve now. */
+  running: boolean;
+}

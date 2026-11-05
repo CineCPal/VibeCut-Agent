@@ -15,7 +15,7 @@ import type {
   SidecarExitPayload,
   SidecarInfo,
 } from "../types/sidecar";
-import type { NleHost, NleState, PremierePanelStatus } from "../types/nle";
+import type { NleHost, NleState, PremierePanelStatus, ResolvePluginStatus } from "../types/nle";
 import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
 import type { ClaudeCodeStatus } from "../types/agent";
 import type { ChatSearchHit, ChatSummary, SavedChat, SavedEditLog } from "../types/history";
@@ -163,6 +163,19 @@ export function installPremierePanel(): Promise<PremierePanelStatus> {
 
 export function uninstallPremierePanel(): Promise<PremierePanelStatus> {
   return invoke<PremierePanelStatus>("premiere_panel_uninstall");
+}
+
+export function getResolvePluginStatus(): Promise<ResolvePluginStatus> {
+  return invoke<ResolvePluginStatus>("resolve_plugin_status");
+}
+
+/** Copies VibeCut Agent's Workflow Integration plugin into Resolve's plugin folder (only on the user's request). */
+export function installResolvePlugin(): Promise<ResolvePluginStatus> {
+  return invoke<ResolvePluginStatus>("resolve_plugin_install");
+}
+
+export function uninstallResolvePlugin(): Promise<ResolvePluginStatus> {
+  return invoke<ResolvePluginStatus>("resolve_plugin_uninstall");
 }
 
 /** Asks the user for a folder; null if they cancelled. */

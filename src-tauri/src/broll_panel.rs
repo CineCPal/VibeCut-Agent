@@ -1,4 +1,4 @@
-//! The "VibeCut Agent B-roll" panel docked in Premiere Pro (PLAN.md, "Phase 5b"): the B-roll Library
+//! The "VibeCut Agent Library" panel docked in Premiere Pro (PLAN.md, "Phase 5b"): the B-roll Library
 //! inside the editor, as VibeCut's own B-roll CEP panel is. A shot dragged from a CEP panel goes into
 //! Premiere's Project panel or timeline with its insert marker (CEP's `com.adobe.cep.dnd.file.0`), which
 //! a drag from another app's window doesn't get (live, 2026-10-06). The app keeps the Library, the index
@@ -50,7 +50,7 @@ pub fn panel_dir() -> Result<PathBuf, String> {
     Ok(Path::new(&home).join("Library/Application Support/VibeCut Agent/host-bridge/broll/premiere"))
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
@@ -144,7 +144,10 @@ pub struct ActionEvent {
     pub file_id: String,
 }
 
-fn read_action(path: &Path, file_id: &str) -> Result<Value, String> {
+/// Checks one inbox action against `validate` (`host_chat` passes its own).
+pub(crate) type Validator = fn(&Value, &str) -> Result<Value, String>;
+
+fn read_action(path: &Path, file_id: &str, validate: Validator) -> Result<Value, String> {
     if !valid_id(file_id) {
         return Err("the action's file name isn't an id".into());
     }
@@ -157,11 +160,16 @@ fn read_action(path: &Path, file_id: &str) -> Result<Value, String> {
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("couldn't read the action: {e}"))?;
     let value: Value = serde_json::from_str(&text).map_err(|e| format!("the action isn't JSON: {e}"))?;
-    validate_action(&value, file_id)
+    validate(&value, file_id)
 }
 
 /// Reads, checks and deletes every action waiting in the inbox, oldest first.
 pub fn drain_inbox(dir: &Path) -> Vec<ActionEvent> {
+    drain_inbox_with(dir, validate_action)
+}
+
+/// `drain_inbox` with another action check, for the chat panels' inboxes.
+pub(crate) fn drain_inbox_with(dir: &Path, validate: Validator) -> Vec<ActionEvent> {
     let Ok(entries) = std::fs::read_dir(dir.join("inbox")) else {
         return Vec::new();
     };
@@ -177,7 +185,7 @@ pub fn drain_inbox(dir: &Path) -> Vec<ActionEvent> {
         .into_iter()
         .map(|(_, path)| {
             let file_id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let checked = read_action(&path, &file_id);
+            let checked = read_action(&path, &file_id, validate);
             let _ = std::fs::remove_file(&path);
             let file_id = if valid_id(&file_id) { file_id } else { String::new() };
             match checked {
@@ -306,35 +314,41 @@ pub fn prune(dir: &Path, keep: usize) {
     }
 }
 
+/// Writes the thumbnails of these shots that aren't there yet into `panel`'s `thumbs/`; returns the
+/// shots that have one. Nothing is written for a panel that has never run. Blocking.
+pub(crate) fn write_thumbs(app: &AppHandle, panel: &Path, shot_ids: &[i64]) -> Result<Vec<i64>, String> {
+    if shot_ids.len() > MAX_THUMBS_ASKED {
+        return Err(format!("Ask for at most {MAX_THUMBS_ASKED} thumbnails at a time"));
+    }
+    if !panel.is_dir() {
+        return Ok(Vec::new());
+    }
+    let dir = panel.join("thumbs");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the thumbnail folder: {e}"))?;
+    let missing: Vec<i64> = shot_ids.iter().copied().filter(|id| !dir.join(thumb_name(*id)).is_file()).collect();
+    if !missing.is_empty() {
+        let index = spyglass::index_for(app).ok_or("Spyglass has no index on this computer.")?;
+        let conn = spyglass_archive::open_readonly(&index)?;
+        for (shot_id, keyframe) in spyglass_archive::keyframes(&conn, &missing)? {
+            // A keyframe that can't be read just has no picture in the panel.
+            if let Some(url) = thumb_data_url(Path::new(&keyframe)) {
+                let _ = write_atomic(&dir, &thumb_name(shot_id), url.as_bytes());
+            }
+        }
+        prune(&dir, MAX_THUMBS_KEPT);
+    }
+    Ok(shot_ids.iter().copied().filter(|id| dir.join(thumb_name(*id)).is_file()).collect())
+}
+
 /// Writes the thumbnails of these shots that aren't there yet; returns the shots that have one.
 #[tauri::command]
 pub async fn broll_panel_thumbs(app: AppHandle, shot_ids: Vec<i64>) -> Result<Vec<i64>, String> {
     if shot_ids.len() > MAX_THUMBS_ASKED {
         return Err(format!("Ask for at most {MAX_THUMBS_ASKED} thumbnails at a time"));
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        let panel = panel_dir()?;
-        if !panel.is_dir() {
-            return Ok(Vec::new());
-        }
-        let dir = panel.join("thumbs");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the thumbnail folder: {e}"))?;
-        let missing: Vec<i64> = shot_ids.iter().copied().filter(|id| !dir.join(thumb_name(*id)).is_file()).collect();
-        if !missing.is_empty() {
-            let index = spyglass::index_for(&app).ok_or("Spyglass has no index on this computer.")?;
-            let conn = spyglass_archive::open_readonly(&index)?;
-            for (shot_id, keyframe) in spyglass_archive::keyframes(&conn, &missing)? {
-                // A keyframe that can't be read just has no picture in the panel.
-                if let Some(url) = thumb_data_url(Path::new(&keyframe)) {
-                    let _ = write_atomic(&dir, &thumb_name(shot_id), url.as_bytes());
-                }
-            }
-            prune(&dir, MAX_THUMBS_KEPT);
-        }
-        Ok(shot_ids.into_iter().filter(|id| dir.join(thumb_name(*id)).is_file()).collect())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || write_thumbs(&app, &panel_dir()?, &shot_ids))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

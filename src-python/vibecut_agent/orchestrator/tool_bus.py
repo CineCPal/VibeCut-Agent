@@ -62,7 +62,7 @@ from vibecut_agent.workers.base import CircuitOpen, GpuLock, GpuLockTimeout
 if TYPE_CHECKING:
     from vibecut_agent.telemetry.instrument import TraceEmitter
 
-# The app's tools Claude keeps in orchestrated mode: they only read (ORCHESTRATOR_SPEC.md §3.2).
+# The app's tools Claude keeps in orchestrated mode that only read (ORCHESTRATOR_SPEC.md §3.2).
 READ_ONLY_TOOLS = (
     "list_timelines",
     "list_timeline_clips",
@@ -76,7 +76,25 @@ READ_ONLY_TOOLS = (
     "describe_spyglass_folder",
     "list_media_pool",
     "search_media_pool",
+    # What the app already knows about the timeline and its clips, which no local worker reads (PLAN.md,
+    # "The app's tools in orchestrated mode", 2026-11-05): clip details, the timeline's transcript and
+    # speakers, and its checks (pacing, review, beats, chapters, client notes, thumbnail candidates).
+    "get_clip_info",
+    "get_clip_transform",
+    "get_clip_color",
+    "get_transcript",
+    "search_transcript",
+    "list_speakers",
+    "find_filler_words",
+    "check_pacing",
+    "find_beats",
+    "review_edit",
+    "read_client_notes",
+    "make_chapters",
+    "find_thumbnails",
 )
+# The app's project notes, which every chat on the project sees; they never touch the editor.
+NOTES_TOOLS = ("remember_note", "forget_note")
 # The Analyze tab's scoring of a folder Spyglass hasn't indexed: it reads the footage and leaves the editor as
 # it was, but runs a job the tab shows.
 LIBRARY_TOOLS = ("analyze_broll_folder",)
@@ -84,7 +102,65 @@ LIBRARY_TOOLS = ("analyze_broll_folder",)
 # reach. Each is a direct edit with its own backup, edit-log entry and Revert (PLAN.md, "Sync in orchestrated
 # mode").
 SYNC_TOOLS = ("sync_and_place", "sync_clips", "slip_into_sync")
-FORWARDED_TOOLS = READ_ONLY_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS
+# Markers, also kept as the app's own edits: a delta has no marker operation, and markers aren't part of the
+# timeline a delta is checked against (otio_delta.timeline_hash leaves them out), so adding one can't stale a
+# validation token (PLAN.md, "Markers in orchestrated mode", 2026-11-05).
+MARKER_TOOLS = ("add_markers", "update_marker", "remove_markers")
+# The app's other edits that no delta operation reaches: a clip's look, speed and fades, audio repair,
+# graphics, tracks, the project and its bins, delivery, and Revert. Each is a direct edit with its own backup,
+# edit-log entry and Revert, as in direct mode; cuts, trims, moves, inserts, deletes, gaps, transitions, gain
+# and ducking still go through a delta (PLAN.md, "The app's tools in orchestrated mode", 2026-11-05).
+APP_EDIT_TOOLS = (
+    # A clip's look, speed and fades.
+    "set_clip_color",
+    "match_clip_color",
+    "balance_clip_color",
+    "save_color_template",
+    "set_clip_transform",
+    "set_clip_speed",
+    "set_speed_ramp",
+    "clear_clip_speed",
+    "set_clip_fade",
+    # Audio repair and level.
+    "normalize_loudness",
+    "clean_dialogue",
+    "fill_room_tone",
+    # Graphics.
+    "add_lower_thirds",
+    "create_captions",
+    # Tracks and clip state.
+    "add_track",
+    "remove_track",
+    "set_track_options",
+    "nest_clips",
+    "set_clips_enabled",
+    "label_timeline_clips",
+    # The project: timelines, media and bins.
+    "create_timeline",
+    "duplicate_timeline",
+    "switch_timeline",
+    "rename_timeline",
+    "make_social_version",
+    "import_media",
+    "select_clip",
+    "select_media_assets",
+    "set_clip_labels",
+    "set_clip_metadata",
+    "create_bins",
+    "move_clips",
+    "rename_clips",
+    # Delivery.
+    "export_video",
+    "export_audio",
+    "export_clips",
+    "export_thumbnails",
+    "export_broll_selects",
+    # The playhead, a reference edit's style, and undoing the app's edits (a committed delta among them).
+    "set_playhead_time",
+    "learn_style",
+    "revert_timeline_edits",
+)
+FORWARDED_TOOLS = READ_ONLY_TOOLS + NOTES_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS + MARKER_TOOLS + APP_EDIT_TOOLS
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.
 MAX_RESULT_CHARS = 60_000

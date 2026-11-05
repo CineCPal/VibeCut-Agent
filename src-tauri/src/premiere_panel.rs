@@ -27,6 +27,10 @@ pub const PANEL_FILES: &[&str] = &[
     "studio/index.html",
     "studio/dist/studio.js",
     "studio/dist/studio.css",
+    // The docked VibeCut Agent panel (In-host panels), built by `npm run build:panel`.
+    "chat/index.html",
+    "chat/dist/panel.js",
+    "chat/dist/panel.css",
 ];
 /// CEP 11 is Premiere 22–24; CEP 12 is Premiere 25 and later.
 const CSXS_DOMAINS: &[&str] = &["com.adobe.CSXS.11", "com.adobe.CSXS.12"];
@@ -219,7 +223,7 @@ mod tests {
         for file in PANEL_FILES {
             assert!(source.join(file).is_file(), "{file} is missing");
         }
-        assert_eq!(bundle_version(&source).as_deref(), Some("0.18.2"));
+        assert_eq!(bundle_version(&source).as_deref(), Some("0.20.6"));
         let manifest = std::fs::read_to_string(source.join("CSXS/manifest.xml")).unwrap();
         assert!(manifest.contains("ExtensionBundleId=\"com.vibecutagent.connect\""));
         assert!(!manifest.contains("com.vibecut.connect\""));

@@ -31,6 +31,7 @@ export function makePacket(
   payloadBytes: number,
   bornMs: number,
   label: string | null = null,
+  keys: { from: string | null; to: string | null } = { from: null, to: null },
 ): DataPacketSprite {
   const style = STYLE[packetType];
   counter += 1;
@@ -43,6 +44,8 @@ export function makePacket(
     w: style.w,
     h: style.h,
     label,
+    from_key: keys.from,
+    to_key: keys.to,
     born_ms: bornMs,
     duration_ms: transitMs(payloadBytes),
   };

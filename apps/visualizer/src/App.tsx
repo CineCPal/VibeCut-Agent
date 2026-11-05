@@ -28,6 +28,7 @@ function useHotkeys() {
   const selectTask = useVisualizerStore((s) => s.selectTask);
   const setAboutOpen = useVisualizerStore((s) => s.setAboutOpen);
   const toggleDock = useVisualizerStore((s) => s.toggleDock);
+  const cycleStudioStyle = useVisualizerStore((s) => s.cycleStudioStyle);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -39,11 +40,12 @@ function useHotkeys() {
       else if (e.key === "?") setAboutOpen(true);
       else if (e.key === "t" || e.key === "T") toggleDock("otio");
       else if (e.key === "l" || e.key === "L") toggleDock("log");
+      else if (e.key === "s" || e.key === "S") cycleStudioStyle();
       else if (e.key === "Escape" && !useVisualizerStore.getState().aboutOpen) selectTask(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setViewMode, selectTask, setAboutOpen, toggleDock]);
+  }, [setViewMode, selectTask, setAboutOpen, toggleDock, cycleStudioStyle]);
 }
 
 function CompactLayout() {
