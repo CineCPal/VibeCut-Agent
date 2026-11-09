@@ -26,6 +26,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
+import numpy as np
+
 from vibecut_agent.broll import ffprobe_util
 from vibecut_agent.core.timecode_math import (
     RationalTime,
@@ -457,18 +459,21 @@ def _audio_pipe(path: str, start_s: float, duration_s: float, sample_rate: int) 
 
 
 def _read_samples(
-    process: subprocess.Popen[bytes], limit: int, on_chunk: Callable[[array.array[int]], None]
+    process: subprocess.Popen[bytes],
+    limit: int,
+    on_chunk: Callable[[array.array[int]], None],
+    timeout_s: float = AUDIO_TIMEOUT_S,
 ) -> None:
     """Hands `on_chunk` the pipe's samples (at most `limit`) a chunk at a time; FfmpegOpError when ffmpeg
-    fails or runs past AUDIO_TIMEOUT_S."""
+    fails or runs past `timeout_s`."""
     assert process.stdout is not None and process.stderr is not None
-    deadline = time.monotonic() + AUDIO_TIMEOUT_S
+    deadline = time.monotonic() + timeout_s
     left = limit
     carry = b""
     try:
         while left > 0:
             if time.monotonic() > deadline:
-                raise FfmpegOpError(f"ffmpeg took over {AUDIO_TIMEOUT_S:g} s reading the sound")
+                raise FfmpegOpError(f"ffmpeg took over {timeout_s:g} s reading the sound")
             data = process.stdout.read(_PIPE_CHUNK)
             if not data:
                 break
@@ -490,7 +495,7 @@ def _read_samples(
                 message = process.stderr.read().decode(errors="ignore").strip()[-300:]
                 raise FfmpegOpError(message or "ffmpeg couldn't read the sound")
     except subprocess.TimeoutExpired:
-        raise FfmpegOpError(f"ffmpeg took over {AUDIO_TIMEOUT_S:g} s reading the sound") from None
+        raise FfmpegOpError(f"ffmpeg took over {timeout_s:g} s reading the sound") from None
     finally:
         if process.poll() is None:
             process.kill()
@@ -557,3 +562,38 @@ def scrub_pcm(path: str, at_s: float, duration_s: float = SCRUB_SECONDS) -> byte
     limit = round(duration_s * SCRUB_SAMPLE_RATE)
     _read_samples(_audio_pipe(path, at_s, duration_s, SCRUB_SAMPLE_RATE), limit, take)
     return b"".join(chunks)
+
+
+# Harmonizer (media/harmonize.py) needs a file's whole sound at once: its chroma DTW and note pairing see
+# the full signal. It comes through the same pipe as the snippets above, a chunk at a time, as 16-bit
+# samples turned into float32 here (4 bytes a sample: 30 minutes at 16 kHz is 115 MB).
+DECODE_MAX_SECONDS = 30 * 60.0
+DECODE_TIMEOUT_S = 600.0
+
+
+def decode_mono(
+    path: str,
+    sample_rate: int,
+    max_seconds: float = DECODE_MAX_SECONDS,
+    timeout_s: float = DECODE_TIMEOUT_S,
+) -> np.ndarray:
+    """The file's first sound stream mixed to mono at `sample_rate`, as float32 from -1 to 1. A file whose
+    sound runs past `max_seconds` is refused rather than cut short. FfmpegOpError when it has no sound or
+    ffmpeg can't read it."""
+    _check_file(path)
+    if not 1000 <= sample_rate <= 48000:
+        raise FfmpegOpError("sample_rate must be 1 to 48 kHz")
+    chunks: list[np.ndarray] = []
+
+    def take(samples: array.array[int]) -> None:
+        chunks.append(np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0)
+
+    # One second past the limit, so a file that runs over it is seen to.
+    limit = round((max_seconds + 1) * sample_rate)
+    _read_samples(_audio_pipe(path, 0.0, max_seconds + 1, sample_rate), limit, take, timeout_s)
+    audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+    if audio.size > max_seconds * sample_rate:
+        raise FfmpegOpError(f"its sound runs over {max_seconds / 60:g} minutes")
+    if audio.size == 0:
+        raise FfmpegOpError("it has no sound")
+    return audio

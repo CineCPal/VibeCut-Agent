@@ -27,6 +27,7 @@ import { poolInstruction } from "./poolTools";
 import { storyInstruction } from "./storyTools";
 import { ANALYZER_INSTRUCTION } from "./analyzerTools";
 import { syncInstruction } from "./syncTools";
+import { harmonizeInstruction } from "./harmonizeTools";
 
 const WORDS: Record<NleHost, { product: string; editor: string; timeline: string; colors: string[]; ids: string }> = {
   premiere: {
@@ -104,6 +105,7 @@ ${transcriptInstruction(host)}
 ${draftInstruction(host)}
 ${timingInstruction(host)}
 ${syncInstruction(host)}
+${harmonizeInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}
 ${ANALYZER_INSTRUCTION}

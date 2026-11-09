@@ -21,6 +21,7 @@ import { orchestratorExecutors } from "./orchestratorTools";
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
 import { analyzerExecutors, analyzerToolDeclarations } from "./analyzerTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
+import { harmonizeExecutors, harmonizeToolDeclarations } from "./harmonizeTools";
 import { timingExecutors, timingToolDeclarations } from "./timingTools";
 import { poolExecutors, poolToolDeclarations } from "./poolTools";
 import { visionExecutors, visionToolDeclarations } from "./visionTools";
@@ -68,6 +69,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...transcriptToolDeclarations(host),
     ...draftToolDeclarations(host),
     ...syncToolDeclarations(host),
+    ...harmonizeToolDeclarations(host),
     ...storyToolDeclarations(host),
     ...SPYGLASS_TOOLS,
     ...analyzerToolDeclarations(host),
@@ -349,6 +351,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...timingExecutors(context),
     ...poolExecutors(context),
     ...syncExecutors(context),
+    ...harmonizeExecutors(context),
     ...storyExecutors(context),
     ...analyzerExecutors(),
   };

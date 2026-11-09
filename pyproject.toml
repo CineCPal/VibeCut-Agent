@@ -42,6 +42,13 @@ diarize = [
 mcp = [
     "mcp==2.3.0",
 ]
+# Harmonizer (`media-harmonize`, PLAN.md "Harmonizer in the agent"): chroma DTW and note pairing that line
+# takes of one performance up with a reference recording, ported from VibeCut's harmonizer with its pins.
+# Installed on first use (sidecar.rs, `extras_for`).
+harmonize = [
+    "librosa==1.0.0",
+    "scipy==1.18.1",
+]
 # Phase 21 (ORCHESTRATOR_SPEC.md): `EXECUTION_MODE=orchestrated`'s local workers. OTIO deltas, schema
 # checks, the sqlite-vec index and faster-whisper. No sidecar run installs it yet. OTIO 0.18.0 and 0.18.1
 # can't hold a dict or list in metadata on Python 3.14 ("bad any cast", their JSON adapter included).
@@ -108,6 +115,8 @@ module = [
     "vibecut_agent.nle.resolve_structure",
     "vibecut_agent.nle.premiere_organize",
     "vibecut_agent.nle.resolve_organize",
+    # Harmonizer's alignment engine, from VibeCut's harmonizer/align.py.
+    "vibecut_agent.media.harmonize",
 ]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
@@ -124,6 +133,11 @@ ignore_missing_imports = true
 # Phase 21's `orchestrator` extra: OTIO, jsonschema, sqlite-vec and faster-whisper ship no stubs.
 [[tool.mypy.overrides]]
 module = ["opentimelineio.*", "jsonschema.*", "sqlite_vec", "faster_whisper.*"]
+ignore_missing_imports = true
+
+# The `harmonize` extra: librosa and scipy ship no stubs.
+[[tool.mypy.overrides]]
+module = ["librosa", "librosa.*", "scipy", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

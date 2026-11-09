@@ -83,6 +83,7 @@ describe("agent tools", () => {
       "slip_into_sync",
       "link_clips",
       "unlink_clips",
+      "harmonize_takes",
       "run_story_editor",
       "find_broll",
       "list_spyglass_folders",

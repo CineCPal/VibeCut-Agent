@@ -160,7 +160,15 @@ APP_EDIT_TOOLS = (
     "learn_style",
     "revert_timeline_edits",
 )
-FORWARDED_TOOLS = READ_ONLY_TOOLS + NOTES_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS + MARKER_TOOLS + APP_EDIT_TOOLS
+# The draft (PLAN.md, "Harmonizer in the agent", 2026-11-09): Harmonizer lines takes of one performance up
+# with a reference in the app's draft, and set_speed_ramp ramps a clip there, since neither editor can script
+# a variable speed on a clip already on a timeline. send_to_* builds the draft as a NEW timeline and leaves
+# the user's as it was, so it needs no delta check; discard_draft throws the draft away. The delta's own cuts
+# stay out of the draft.
+DRAFT_TOOLS = ("harmonize_takes", "send_to_resolve", "send_to_premiere", "discard_draft")
+FORWARDED_TOOLS = (
+    READ_ONLY_TOOLS + NOTES_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS + MARKER_TOOLS + APP_EDIT_TOOLS + DRAFT_TOOLS
+)
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.
 MAX_RESULT_CHARS = 60_000

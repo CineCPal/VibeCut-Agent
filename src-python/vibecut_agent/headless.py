@@ -95,6 +95,14 @@ def media_beats(emitter: Emitter, stdin: TextIO) -> int:
     return commands.main("media-beats", beats.run, stdin, emitter)
 
 
+def media_harmonize(emitter: Emitter, stdin: TextIO) -> int:
+    """Takes of one performance lined up with a reference recording (PLAN.md, "Harmonizer in the agent";
+    the `harmonize` extra)."""
+    from vibecut_agent.media import commands, harmonize
+
+    return commands.main("media-harmonize", harmonize.run, stdin, emitter)
+
+
 def media_clean(emitter: Emitter, stdin: TextIO) -> int:
     """Dialogue cleaned with ffmpeg, written next to each file (Phase 18c)."""
     from vibecut_agent.media import clean, commands
@@ -210,6 +218,7 @@ COMMANDS: dict[str, Command] = {
     "media-frames": media_frames,
     "media-loudness": media_loudness,
     "media-beats": media_beats,
+    "media-harmonize": media_harmonize,
     "media-clean": media_clean,
     "media-titles": media_titles,
     "media-shots": media_shots,

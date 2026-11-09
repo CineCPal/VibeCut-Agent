@@ -277,7 +277,11 @@ def app_tool_names() -> set[str]:
     names: set[str] = set()
     for path in (Path(__file__).resolve().parents[2] / "src" / "lib" / "agent").glob("*.ts"):
         if not path.name.endswith(".test.ts"):
-            names.update(re.findall(r'^\s*name: "([a-z_]+)"', path.read_text(), re.MULTILINE))
+            source = path.read_text()
+            names.update(re.findall(r'^\s*name: "([a-z_]+)"', source, re.MULTILINE))
+            # A tool named for the editor (draft.ts's `send_to_${host}`).
+            for stem in re.findall(r"^\s*name: `([a-z_]+)\$\{host\}`", source, re.MULTILINE):
+                names.update({f"{stem}premiere", f"{stem}resolve"})
     return names
 
 
@@ -320,7 +324,16 @@ def test_each_forwarded_tool_but_the_pointers_has_a_studio_station():
 
 
 def test_the_instruction_names_the_notes_and_the_app_reads():
-    for name in ("remember_note", "forget_note", "get_transcript", "review_edit", "revert_timeline_edits"):
+    for name in (
+        "remember_note",
+        "forget_note",
+        "get_transcript",
+        "review_edit",
+        "revert_timeline_edits",
+        "harmonize_takes",
+        "send_to_resolve",
+        "discard_draft",
+    ):
         assert name in ORCHESTRATED_INSTRUCTION
 
 

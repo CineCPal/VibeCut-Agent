@@ -1009,7 +1009,8 @@ export function setDraftSpeedRamp(draft: HostDraft, id: string, changes: { sourc
 }
 
 /** One take placed by Harmonizer, for `placeHarmonizedDraft`: its file, its timing (harmonize.ts's
- * PlacedTake) and whether the file has sound. */
+ * PlacedTake), whether the file has sound and whether it has picture (an audio-only take goes on an
+ * audio track, switched off). */
 export interface DraftTake {
   sourcePath: string;
   startTime: number;
@@ -1019,15 +1020,66 @@ export interface DraftTake {
   timeRemap?: RemapPoint[];
   flagged: { start: number; end: number; speed: number }[];
   hasSound: boolean;
+  /** Absent means it has. */
+  hasPicture?: boolean;
+}
+
+const checkSyncName = (path: string) => `Check sync: ${fileName(path)} at `;
+
+/**
+ * The draft without any clip of these files (on any track), the clips linked to them, or the red
+ * "Check sync" markers of an earlier placement of them: so a take placed again, or a take that was
+ * already on the timeline as it was shot, shows once (VibeCut's placeHarmonized). `earliestStart` is
+ * where the first of the removed clips began, null when none were. Nothing else moves.
+ */
+export function withoutTakes(draft: HostDraft, paths: string[]): { draft: HostDraft; removed: number; earliestStart: number | null } {
+  const files = new Set(paths);
+  const all = [...draft.video, ...draft.audio].flatMap((t) => t.clips);
+  const groups = new Set(all.filter((c) => files.has(c.sourcePath) && c.linkGroup).map((c) => c.linkGroup));
+  const goes = (c: DraftClip) => files.has(c.sourcePath) || (c.linkGroup !== undefined && groups.has(c.linkGroup));
+  const gone = all.filter(goes);
+  if (!gone.length) return { draft, removed: 0, earliestStart: null };
+  const keep = (tracks: DraftTrack[]) => tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => !goes(c)) }));
+  const names = paths.map(checkSyncName);
+  return {
+    draft: {
+      ...draft,
+      video: keep(draft.video),
+      audio: keep(draft.audio),
+      markers: draft.markers.filter((m) => !names.some((n) => m.name.startsWith(n))),
+      changes: [...draft.changes, `Took out ${plural(gone.length, "earlier clip")} of ${plural(files.size, "take")}`],
+    },
+    removed: gone.length,
+    earliestStart: Math.min(...gone.map((c) => c.start)),
+  };
+}
+
+/** The timeline time of the reference recording's own time 0, from its first clip at normal speed on an
+ * audio track of the draft; null when it isn't there. */
+export function referenceZeroIn(draft: HostDraft, referencePath: string): number | null {
+  const clip = draft.audio
+    .flatMap((t) => t.clips)
+    .filter((c) => c.sourcePath === referencePath && !c.timeRemap && Math.abs(c.speed - 1) < 1e-6)
+    .sort((a, b) => a.start - b.start)[0];
+  return clip ? round3(clip.start - clip.sourceIn) : null;
 }
 
 /**
- * Harmonizer's result in a draft (PLAN.md, "Phase 8b"), as VibeCut's placeHarmonized lays it out:
- * the reference recording on an audio track of its own from `referenceZero`, each take on a video track
- * of its own (the first take on top; empty tracks are used before new ones are added) with its time map, its own sound linked beneath and switched off, and a red
- * marker at each stretch Harmonizer flagged. Nothing already in the draft moves.
+ * Harmonizer's result in a draft (PLAN.md, "Phase 8b" and "Harmonizer in the agent"), as VibeCut's
+ * placeHarmonized lays it out: the reference recording on an audio track of its own from `referenceZero`
+ * (unless `addReference` is false: it's already there), each take on a video track of its own (the
+ * first take on top; empty tracks are used before new ones are added) with its time map, its own sound
+ * linked beneath and switched off, and a red marker at each stretch Harmonizer flagged. A take with no
+ * picture goes on an audio track, switched off: the reference is what's heard. Nothing already in the
+ * draft moves.
  */
-export function placeHarmonizedDraft(draft: HostDraft, reference: { sourcePath: string; duration: number }, referenceZero: number, takes: DraftTake[]): HostDraft {
+export function placeHarmonizedDraft(
+  draft: HostDraft,
+  reference: { sourcePath: string; duration: number },
+  referenceZero: number,
+  takes: DraftTake[],
+  options: { addReference?: boolean } = {},
+): HostDraft {
   const fps = draft.fps;
   const zero = snap(referenceZero, fps);
   const video = draft.video.map((t) => ({ ...t, clips: [...t.clips] }));
@@ -1042,7 +1094,9 @@ export function placeHarmonizedDraft(draft: HostDraft, reference: { sourcePath: 
     else tracks[index] = { ...tracks[index], clips: [clip] };
   };
   const base = (path: string): Omit<DraftClip, "start" | "end" | "sourceIn" | "sourceOut"> => ({ sourcePath: path, sourceName: fileName(path), speed: 1, enabled: true, volumeDb: null });
-  put(audio, freeAudio, "audio", { ...base(reference.sourcePath), start: zero, end: snap(zero + reference.duration, fps), sourceIn: 0, sourceOut: round3(reference.duration) });
+  if (options.addReference !== false) {
+    put(audio, freeAudio, "audio", { ...base(reference.sourcePath), start: zero, end: snap(zero + reference.duration, fps), sourceIn: 0, sourceOut: round3(reference.duration) });
+  }
   const markers = [...draft.markers];
   // The last take first, so the first ends up on the top track.
   for (const [n, take] of [...takes].reverse().entries()) {
@@ -1057,12 +1111,16 @@ export function placeHarmonizedDraft(draft: HostDraft, reference: { sourcePath: 
       sourceOut: round3(take.sourceOut),
       speed: round3((take.sourceOut - take.sourceIn) / take.duration),
       ...(take.timeRemap ? { timeRemap: take.timeRemap } : {}),
-      ...(take.hasSound ? { linkGroup: group } : {}),
     };
-    put(video, freeVideo, "video", clip);
-    if (take.hasSound) put(audio, freeAudio, "audio", { ...clip, enabled: false });
+    if (take.hasPicture === false) {
+      put(audio, freeAudio, "audio", { ...clip, enabled: false });
+    } else {
+      const linked = take.hasSound ? { ...clip, linkGroup: group } : clip;
+      put(video, freeVideo, "video", linked);
+      if (take.hasSound) put(audio, freeAudio, "audio", { ...linked, enabled: false });
+    }
     for (const f of take.flagged) {
-      markers.push({ time: snap(start + f.start, fps), name: `Check sync: ${fileName(take.sourcePath)} at ${Math.round(f.speed * 100)}%`, color: "Red", note: "Harmonizer flagged this stretch", duration: round3(f.end - f.start) });
+      markers.push({ time: snap(start + f.start, fps), name: `${checkSyncName(take.sourcePath)}${Math.round(f.speed * 100)}%`, color: "Red", note: "Harmonizer flagged this stretch: its speed is outside what it trusts. Compare the take with the reference here.", duration: round3(f.end - f.start) });
     }
   }
   const ends = [...video, ...audio].flatMap((t) => t.clips.map((c) => c.end));

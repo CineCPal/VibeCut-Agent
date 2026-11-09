@@ -5,7 +5,7 @@
  *
  * Not reviewed: reads and searches; the selection and the playhead; transcribing (it writes only a
  * transcript beside the media); the Story Editor (it only opens a draft); and the draft's own cuts
- * (remove_time_ranges, rearrange_sections, the transcript-line cuts, set_speed_ramp, close_gaps, insert_clip,
+ * (remove_time_ranges, rearrange_sections, the transcript-line cuts, set_speed_ramp, harmonize_takes, close_gaps, insert_clip,
  * replace_clip), which reach the editor only
  * through send_to_*, which is reviewed.
  */
@@ -127,6 +127,8 @@ export const NOT_REVIEWED = new Set([
   "analyze_broll_folder",
   "export_broll_selects",
   "set_speed_ramp",
+  // Harmonizer: lines takes up in the draft, as set_speed_ramp does.
+  "harmonize_takes",
   "rearrange_sections",
   "remove_transcript_lines",
   "remove_speaker_lines",

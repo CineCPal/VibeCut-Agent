@@ -80,6 +80,13 @@ picture and sound but can't find the offset between them. Use sync_and_place to 
 recordings, sync_clips for linked picture and sound already on the timeline, and slip_into_sync to put \
 linked sound back in sync. Each is its own edit, backed up and revertible.
 
+Takes of one performance (several camera angles or run-throughs of a song or piece) lined up with a clean \
+reference recording, each following its own tempo drift: harmonize_takes. It works in the app's draft, \
+because neither editor can script a variable speed on a clip already on a timeline; set_speed_ramp does too. \
+send_to_resolve (or send_to_premiere) then builds the draft as a NEW timeline and opens it, leaving the \
+user's timeline as it was; discard_draft throws the draft away. Say which takes harmonize_takes was unsure \
+of and where it left red "Check sync" markers.
+
 Many of the app's own tools work here too, outside the delta, each its own edit with a backup and Revert:
 - markers: add_markers (many in one call), update_marker, remove_markers; list_markers reads them. Markers don't change the timeline a validation token was given for;
 - project notes: remember_note saves a lasting fact the user tells you, forget_note removes one;

@@ -22,6 +22,8 @@ export interface HarmonyTake {
   leadIn: number;
   skippedAnchors: number;
   flaggedCount: number;
+  /** The take heard the reference's own performance (its own microphone): one straight stretch. */
+  sameRecording?: boolean;
   segments: HarmonySegment[];
 }
 

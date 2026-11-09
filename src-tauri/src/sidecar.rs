@@ -71,6 +71,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "media-frames", interactive: false, managed: false },
     CommandSpec { name: "media-loudness", interactive: false, managed: false },
     CommandSpec { name: "media-beats", interactive: false, managed: false },
+    // Harmonizer: takes of one performance lined up with a reference recording (the `harmonize` extra).
+    CommandSpec { name: "media-harmonize", interactive: false, managed: false },
     // Dialogue cleaned with ffmpeg, written next to each file (Phase 18c).
     CommandSpec { name: "media-clean", interactive: false, managed: false },
     // Lower thirds rendered as ProRes 4444 clips with alpha (Phase 18d).
@@ -206,6 +208,7 @@ pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
         "broll-analyze" if flag("enableEnergy") && !flag("catalog") => vec!["energy"],
         "ingest-index" if flag("diarize") => vec!["orchestrator", "transcribe", "diarize"],
         "ingest-index" => vec!["orchestrator", "transcribe"],
+        "media-harmonize" => vec!["harmonize"],
         _ => Vec::new(),
     }
 }
@@ -1088,6 +1091,7 @@ mod tests {
     #[test]
     fn only_content_aware_broll_runs_install_the_energy_extra() {
         assert_eq!(extras_for("broll-match", &json!({})), vec!["energy"]);
+        assert_eq!(extras_for("media-harmonize", &json!({"takePaths": []})), vec!["harmonize"]);
         assert_eq!(extras_for("broll-analyze", &json!({"enableEnergy": true})), vec!["energy"]);
         assert!(extras_for("broll-analyze", &json!({"enableEnergy": false})).is_empty());
         assert!(extras_for("broll-analyze", &json!({"enableEnergy": true, "catalog": true})).is_empty());

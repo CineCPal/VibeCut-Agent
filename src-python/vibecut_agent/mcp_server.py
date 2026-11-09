@@ -68,6 +68,8 @@ LONG_TOOLS = frozenset(
     {
         "transcribe_clips",
         "sync_and_place",
+        # Harmonizer: chroma DTW and note pairing over each whole take.
+        "harmonize_takes",
         "sync_clips",
         "slip_into_sync",
         "run_story_editor",
