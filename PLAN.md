@@ -3458,6 +3458,20 @@ None of them is used by current VibeCut code.
 
 **Live check owed:** with Update panel (0.20.5), the chat and Library panels in Premiere and the Resolve plugin.
 
+### The Resolve panel matches (Resolve plugin 0.20.6, 2026-11-09)
+
+**Why (the user):** "Make the Resolve VibeCut Agent panel match the style, color and look of the standalone and the Premiere Pro panels."
+
+**Cause:** the Resolve plugin runs the same UI and `panel.css` as the Premiere panel, restyled to the window's tokens in 0.20.5 ("The panels match the window"). But only the Premiere panel's version moved (0.20.5, 0.20.6); the plugin stayed at 0.20.1, so Settings → Editors saw the copy installed on 2026-11-03 as current and never offered an update. That copy still had VibeCut's navy palette (`#0b1420`) in `panel.css` and as the window's background in `main.js`. The same trap as the Premiere panel's 0.20.4.
+
+**Decided (Claude):**
+- The plugin's version now follows the Premiere panel's: 0.20.6, the same UI. `manifest.xml` says any change to its files needs a new version.
+- The plugin window's title bar is dark (`nativeTheme.themeSource = "dark"` in `main.js`), as the app is, whatever macOS's appearance; a light title bar sat over the dark panel.
+
+**Tests:** `resolve_plugin.rs` asserts 0.20.6; cargo, vitest.
+
+**Live check owed:** in Resolve, close the VibeCut Agent window and open it again from Workspace → Workflow Integrations (or restart Resolve): the window's colours, fonts, tabs, bubbles and composer as in the Premiere panel, with a dark title bar.
+
 ## The app's tools in orchestrated mode (2026-11-05)
 
 **Why (the user, 2026-11-05):** after the markers fix, asked which other tools the orchestrator couldn't use. About 130 app tools existed; orchestrated mode forwarded 22. Every request also told Claude `remember_note` saves project facts, and it wasn't forwarded: the markers failure again.
@@ -4228,3 +4242,4 @@ None of them is used by current VibeCut code.
 - **2026-11-03 (Claude): The Telemetry Studio reload loop (panel 0.20.3).** The Studio panel flickered and reset because Node's timers outlive a CEP page: an old page's gateway watch kept reloading it every 2 s, adding a timer each time (98 heartbeats in 6 s). It now restarts its view in place instead of reloading, stops any loop a previous page left, and stops its timers on `pagehide`. See "The Telemetry Studio reload loop (panel 0.20.3)".
 - **2026-11-09 (Claude): Harmonizer in the agent.** `harmonize_takes` lines takes of one performance up with a reference recording in the draft (VibeCut's engine as `media-harmonize`, the `harmonize` extra; streamed decode), sorts out files that aren't the piece by confidence, and works in orchestrated mode with the draft tools (`send_to_*`, `discard_draft`). See "Harmonizer in the agent".
 - **2026-11-09 (Claude): Harmonizer: a smooth tempo curve.** Takes are retimed along one bounded, smooth tempo curve by default (no more 27%-400% lurches), with stretches merged, and each take reports where its notes are in sync within a frame, with red "Out of sync" markers elsewhere. `fit: "notes"` keeps the old path. See "Harmonizer: a smooth tempo curve".
+- **2026-11-09 (Claude): The Resolve panel matches (Resolve plugin 0.20.6).** The plugin's version had stayed at 0.20.1 through the 0.20.5 restyle, so Resolve kept VibeCut's navy palette; it now follows the Premiere panel's version, and its title bar is dark. See "The Resolve panel matches".

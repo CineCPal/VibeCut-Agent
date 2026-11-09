@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- VibeCut Agent's Workflow Integration panel for DaVinci Resolve Studio. Installed from Settings > Editors. -->
+<!-- VibeCut Agent's Workflow Integration panel for DaVinci Resolve Studio. Installed from Settings > Editors.
+     Its version follows the Premiere panel's (the same UI and panel.css): any change to its files needs a
+     new one, or Settings sees the installed copy as current (PLAN.md, "The Resolve panel matches"). -->
 <BlackmagicDesign>
     <Plugin>
         <Id>com.vibecutagent.resolve</Id>
         <Name>VibeCut Agent</Name>
-        <Version>0.20.1</Version>
+        <Version>0.20.6</Version>
         <Description>VibeCut Agent chat and B-roll panel for DaVinci Resolve. VibeCut Agent must be running in the menu bar.</Description>
         <FilePath>main.js</FilePath>
     </Plugin>

@@ -9,7 +9,7 @@
  * no Node in the page.
  */
 
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeImage, session } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeImage, nativeTheme, session } = require("electron");
 const path = require("path");
 const { chatDir, createFileOps, createPanelOps, dragTarget } = require("./files");
 
@@ -118,6 +118,9 @@ function saveBoundsSoon() {
 }
 
 async function createWindow() {
+  // The app and its panels are dark whatever macOS is set to: a light title bar over the dark panel
+  // didn't match the window or the Premiere panel (PLAN.md, "The Resolve panel matches").
+  nativeTheme.themeSource = "dark";
   mainWindow = new BrowserWindow({
     width: 420,
     height: 720,

@@ -197,11 +197,11 @@ mod tests {
         for file in PLUGIN_FILES.iter().filter(|f| !f.starts_with("dist/")) {
             assert!(repo.join(file).is_file(), "{file} is missing from src-resolve-plugin");
         }
-        assert_eq!(plugin_version(&repo).as_deref(), Some("0.20.1"));
+        assert_eq!(plugin_version(&repo).as_deref(), Some("0.20.6"));
         let manifest = std::fs::read_to_string(repo.join("manifest.xml")).unwrap();
         assert!(manifest.contains("<Id>com.vibecutagent.resolve</Id>") && !manifest.contains("com.vibecut.agent"));
         let package = std::fs::read_to_string(repo.join("package.json")).unwrap();
-        assert!(package.contains("\"version\": \"0.20.1\""));
+        assert!(package.contains("\"version\": \"0.20.6\""));
         let files = std::fs::read_to_string(repo.join("files.js")).unwrap();
         assert!(files.contains(r#""VibeCut Agent", "host-bridge", "chat", "resolve""#));
     }
