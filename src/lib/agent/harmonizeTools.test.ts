@@ -35,7 +35,7 @@ const VIEW: HostTimeline = {
 };
 
 const seg = (refStart: number, refEnd: number, takeStart: number, takeEnd: number, flagged = false) => ({ refStart, refEnd, takeStart, takeEnd, flagged });
-const take = (path: string, segments: ReturnType<typeof seg>[], offsetConfidence = 90, sameRecording = false) => ({
+const take = (path: string, segments: ReturnType<typeof seg>[], offsetConfidence = 90, sameRecording = false, inSync = [{ refStart: segments[0].refStart, refEnd: segments[segments.length - 1].refEnd }]) => ({
   path,
   duration: 60,
   offset: segments[0].takeStart - segments[0].refStart,
@@ -44,6 +44,8 @@ const take = (path: string, segments: ReturnType<typeof seg>[], offsetConfidence
   skippedAnchors: 0,
   flaggedCount: segments.filter((s) => s.flagged).length,
   sameRecording,
+  inSync,
+  syncErrorMs: sameRecording ? 0 : 14.6,
   segments,
 });
 const HARMONY = {
@@ -52,7 +54,11 @@ const HARMONY = {
   referenceDuration: 25,
   anchorCount: 40,
   takes: [
-    take("/m/take1.mov", [seg(0, 10, 2, 12), seg(10, 20, 12, 21.5, true)]),
+    // Its notes miss the reference by more than a frame from 6 s to 12 s of the reference.
+    take("/m/take1.mov", [seg(0, 10, 2, 12), seg(10, 20, 12, 21.5, true)], 90, false, [
+      { refStart: 0, refEnd: 6 },
+      { refStart: 12, refEnd: 20 },
+    ]),
     take("/m/zoom.wav", [seg(0, 20, 0.5, 20.5)], 25, true),
     take("/m/other.mov", [seg(0, 20, 3, 23)], 0),
   ],
@@ -81,7 +87,8 @@ describe("harmonize_takes (Harmonizer in the agent)", () => {
   it("runs Harmonizer on the files named and lines the takes up in the draft, replacing a take's clips already there", async () => {
     const outcome = await harmonizeExecutors(ctx()).harmonize_takes({ reference: "/m/reference.wav", takes: ["v1", "/m/zoom.wav", "/m/other.mov"], sameRecorder: ["/m/zoom.wav"] });
     const harmonize = jobs.runJob.mock.calls.find((c) => c[0] === "media-harmonize")!;
-    expect(harmonize[2]).toEqual({ referencePath: "/m/reference.wav", takePaths: ["/m/take1.mov", "/m/zoom.wav", "/m/other.mov"], noRetime: ["/m/zoom.wav"] });
+    // The smooth fit by default, with a frame of the 25 fps timeline as the sync tolerance.
+    expect(harmonize[2]).toEqual({ referencePath: "/m/reference.wav", takePaths: ["/m/take1.mov", "/m/zoom.wav", "/m/other.mov"], noRetime: ["/m/zoom.wav"], fit: "smooth", syncTolerance: 0.04 });
 
     const draft = useConnectionStore.getState().connections.resolve.draft!;
     // take1 was at 0 on the timeline: the takes go where it was, and its old clips are gone.
@@ -90,17 +97,35 @@ describe("harmonize_takes (Harmonizer in the agent)", () => {
     const audio = draft.audio.flatMap((t) => t.clips).map((c) => [c.sourceName, c.start, c.enabled]);
     expect(audio).toEqual(expect.arrayContaining([["reference.wav", 0, true], ["zoom.wav", 0, false], ["take1.mov", 0, false]]));
     expect(audio).toHaveLength(3);
-    expect(draft.markers.map((m) => [m.time, m.name])).toEqual([[10, "Check sync: take1.mov at 95%"]]);
+    expect(draft.markers.map((m) => [m.time, m.name, m.duration])).toEqual([
+      [6, "Out of sync: take1.mov", 6],
+      [10, "Check sync: take1.mov at 95%", 10],
+    ]);
 
     expect(outcome.summary).toContain("Lined up 2 take(s) with reference.wav from 0.0s");
     expect(outcome.summary).toContain("replaced 2 earlier clip(s) of the takes");
-    expect(outcome.summary).toContain("1 stretch(es) marked in red");
+    expect(outcome.summary).toContain("in sync within a frame: take1.mov 70%, zoom.wav 100%");
+    expect(outcome.summary).toContain("1 out-of-sync stretch(es) marked in red");
+    expect(outcome.summary).toContain("1 stretch(es) at an unusual speed marked to check");
     expect(outcome.summary).toContain("unsure of zoom.wav");
     expect(outcome.summary).toContain("left out other.mov, which don't sound like this performance");
     expect((outcome.result as { notThisPerformance: unknown }).notThisPerformance).toEqual([{ take: "other.mov", confidence: 0 }]);
     expect(outcome.summary).toContain("send_to_resolve builds it");
     const result = outcome.result as { takes: Record<string, unknown>[] };
-    expect(result.takes[0]).toMatchObject({ take: "take1.mov", picture: true, slowestPercent: 95, fastestPercent: 100, confidence: 90, flagged: [{ start: 10, end: 20, speedPercent: 95 }] });
+    expect(result.takes[0]).toMatchObject({
+      take: "take1.mov",
+      picture: true,
+      slowestPercent: 95,
+      fastestPercent: 100,
+      confidence: 90,
+      inSyncPercent: 70,
+      syncErrorMs: 15,
+      inSync: [
+        { start: 0, end: 6 },
+        { start: 12, end: 20 },
+      ],
+      flagged: [{ start: 10, end: 20, speedPercent: 95 }],
+    });
     expect(result.takes[1]).toMatchObject({ take: "zoom.wav", picture: false, sameRecording: true, unsure: expect.stringContaining("another piece") });
   });
 
@@ -141,6 +166,14 @@ describe("harmonize_takes (Harmonizer in the agent)", () => {
     jobs.runJob.mockImplementation(async (command: string) => (command === "media-harmonize" ? { status: "failed", error: "zoom.wav has no sound to line up", result: null } : { status: "done", result: { info: {} } }));
     await expect(run({ reference: "/m/reference.wav", takes: ["/m/zoom.wav"] })).rejects.toThrow("zoom.wav has no sound to line up");
     expect(useConnectionStore.getState().connections.resolve.draft).toBeNull();
+  });
+
+  it("passes the fit asked for and checks it", async () => {
+    const run = harmonizeExecutors(ctx()).harmonize_takes;
+    await run({ reference: "/m/reference.wav", takes: ["v1"], fit: "notes", stiffness: 20 });
+    expect(jobs.runJob.mock.calls.find((c) => c[0] === "media-harmonize")![2]).toMatchObject({ fit: "notes", stiffness: 20, syncTolerance: 0.04 });
+    await expect(run({ reference: "/m/reference.wav", takes: ["v1"], fit: "wobbly" })).rejects.toThrow('fit must be "smooth" or "notes"');
+    await expect(run({ reference: "/m/reference.wav", takes: ["v1"], stiffness: 0 })).rejects.toThrow("stiffness");
   });
 
   it("checks requests as the sidecar does, and tells picture from sound", () => {

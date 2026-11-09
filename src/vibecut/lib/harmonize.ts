@@ -137,6 +137,14 @@ export function parseHarmonyResult(raw: unknown): HarmonyResult | null {
       skippedAnchors: num(take.skippedAnchors) ?? 0,
       flaggedCount: num(take.flaggedCount) ?? segments.filter((s) => s.flagged).length,
       sameRecording: take.sameRecording === true,
+      inSync: Array.isArray(take.inSync)
+        ? take.inSync.flatMap((r) => {
+            const range = (typeof r === "object" && r !== null ? r : {}) as Record<string, unknown>;
+            const [a, b] = [num(range.refStart), num(range.refEnd)];
+            return a !== null && b !== null && b > a ? [{ refStart: a, refEnd: b }] : [];
+          })
+        : [],
+      syncErrorMs: num(take.syncErrorMs) ?? 0,
       segments,
     });
   }
@@ -146,4 +154,26 @@ export function parseHarmonyResult(raw: unknown): HarmonyResult | null {
     anchorCount: num(r.anchorCount) ?? 0,
     takes,
   };
+}
+
+/** Out-of-sync stretches shorter than this aren't worth a marker. */
+export const MIN_OUT_OF_SYNC_SECONDS = 0.5;
+
+/**
+ * The take's in-sync reference ranges as seconds from the start of its clip, which shows reference
+ * `refStart` to `refStart + duration` (PLAN.md, "Harmonizer: a smooth tempo curve"), and the stretches of
+ * the clip between them (out of sync, at least MIN_OUT_OF_SYNC_SECONDS long).
+ */
+export function syncOnClip(inSync: { refStart: number; refEnd: number }[], refStart: number, duration: number): { inSync: { start: number; end: number }[]; outOfSync: { start: number; end: number }[] } {
+  const on = inSync
+    .map((r) => ({ start: Math.max(0, r.refStart - refStart), end: Math.min(duration, r.refEnd - refStart) }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+  const outOfSync: { start: number; end: number }[] = [];
+  let at = 0;
+  for (const r of [...on, { start: duration, end: duration }]) {
+    if (r.start - at >= MIN_OUT_OF_SYNC_SECONDS) outOfSync.push({ start: at, end: r.start });
+    at = Math.max(at, r.end);
+  }
+  return { inSync: on, outOfSync };
 }

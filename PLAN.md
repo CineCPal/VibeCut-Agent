@@ -3521,6 +3521,23 @@ None of them is used by current VibeCut code.
 
 **Live check owed:** reinstall (`npm run install-app -- --orchestrated`, with VIBECUT_TELEMETRY=1 and the model vars); in Resolve, a timeline with the takes and the reference, "line up these takes with the reference", then send. The first run installs the `harmonize` extra.
 
+## Harmonizer: a smooth tempo curve (2026-11-09)
+
+**Why (the user, 2026-11-09):** "It creates moments in the video where it's retimed really fast and then goes really slow to sync back up." In the "Harmonize Video Takes" chat (seven Lindeblad Piano 1126 bins, "<bin> 2" timelines), each take that is the reference's own recording came out as one stretch at 100%, but every separate run-through got 100-155 stretches from 27% to 400%. The red markers flag only outside 50-200%, so most of it was unmarked.
+
+**Cause (measured on the 1126 proxies and Zoom files):** the "notes" fit pins every paired note to about 15 ms, and two run-throughs never share note-level timing (each note a little early or late, a few wrong pairs). Note to note the takes ran 0.87x-1.17x of the reference; the path swung 0.27x-4x. On the prototype recordings the gap filler (the chroma guide's 64 ms wobble in gaps over 4 s) added more; the 1126 takes have no such gaps.
+
+**Decided (Claude; no Gemini review, per the user's standing rule; the user approved all three):**
+- **A smooth tempo curve is the default** (`fit: "smooth"`, `harmonize.smooth_path`): take time piecewise linear on 0.5 s knots (wider past 600 knots), each interval's speed within 0.8-1.25 of the take's overall pace, least squares to the paired notes plus `stiffness` (default 5) times the squared speed change between neighbours, Huber-reweighted (40 ms) so wrong pairs don't bend it; solved with scipy's `lsq_linear`. The envelope fallback's points feed it the same way. `fit: "notes"` keeps VibeCut's note-by-note path.
+- **Merged stretches:** the knots are simplified to within 8 ms (`SMOOTH_MERGE_TOLERANCE`), so Resolve gets 21-75 pieces per take instead of 100-155.
+- **In-sync ranges** (`in_sync_ranges`): where the take's notes land within `syncTolerance` (the tool sends one frame of the timeline, 1/fps; default 42 ms), a run broken by two misses in a row or a 3 s gap with no notes, kept when 2 s or longer. The reference's own recording (and a same-recorder take whose line was found) is in sync throughout. The result carries `inSync` and `syncErrorMs`; the tool reports `inSyncPercent` and the ranges in timeline time, and puts a red "Out of sync: <file>" marker (with duration) on each stretch of a take between them of 0.5 s or more. The note tells the agent to stay on the `sameRecording` take and cut to another only inside its in-sync ranges.
+
+**Result on the 1126 takes** (smooth vs. notes): speeds 80-116% (C034 up to 126%, its pace bound) with no jump over 10% between neighbours, against 27-400%; median miss 11-16 ms (C033 and C034 about 27 ms); in sync within a frame 85-88% of the time for bins 2 and 6, 65-70% for bin 4, 34-44% for bin 5's C033 and C034, 100% for each reference's own recording.
+
+**Tests:** `test_harmonize.py` (+6: the smooth fit against the notes fit on a jittered run-through, the own recording in sync throughout, in-sync ranges splitting and forgiving one wrong pair, `smooth_path` bounds and a wrong pair, `fit` and `syncTolerance` refused when bad, the new result fields; the two note-precision tests now ask for `fit: "notes"`), `harmonize.test.ts` (`syncOnClip`, parsing `inSync`, "Out of sync" markers), `harmonizeTools.test.ts` (the request's fit and frame tolerance, inSyncPercent, the markers, the fit refused when bad). Gate: pytest 1385 passed, 2 skipped; ruff, format, mypy; vitest 945, tsc, eslint.
+
+**Live check owed:** reinstall, then re-run the seven bins and play the takes against the reference.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4210,3 +4227,4 @@ None of them is used by current VibeCut code.
 - **2026-11-03 (Claude): Panel 0.20.2 checked live.** Premiere opened with no dialog and no renderer crash. VibeCut's old CEP panel, Resolve plugin, bridge folders and UXP storage were moved to the Trash at the user's request. See "CEP renderer crash (panel 0.20.2)".
 - **2026-11-03 (Claude): The Telemetry Studio reload loop (panel 0.20.3).** The Studio panel flickered and reset because Node's timers outlive a CEP page: an old page's gateway watch kept reloading it every 2 s, adding a timer each time (98 heartbeats in 6 s). It now restarts its view in place instead of reloading, stops any loop a previous page left, and stops its timers on `pagehide`. See "The Telemetry Studio reload loop (panel 0.20.3)".
 - **2026-11-09 (Claude): Harmonizer in the agent.** `harmonize_takes` lines takes of one performance up with a reference recording in the draft (VibeCut's engine as `media-harmonize`, the `harmonize` extra; streamed decode), sorts out files that aren't the piece by confidence, and works in orchestrated mode with the draft tools (`send_to_*`, `discard_draft`). See "Harmonizer in the agent".
+- **2026-11-09 (Claude): Harmonizer: a smooth tempo curve.** Takes are retimed along one bounded, smooth tempo curve by default (no more 27%-400% lurches), with stretches merged, and each take reports where its notes are in sync within a frame, with red "Out of sync" markers elsewhere. `fit: "notes"` keeps the old path. See "Harmonizer: a smooth tempo curve".

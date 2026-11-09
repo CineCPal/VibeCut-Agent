@@ -1022,9 +1022,13 @@ export interface DraftTake {
   hasSound: boolean;
   /** Absent means it has. */
   hasPicture?: boolean;
+  /** Stretches (seconds from the clip's start) where the take's notes miss the reference by more than the
+   * sync tolerance: not a place to cut to it. Each gets a red "Out of sync" marker. */
+  outOfSync?: { start: number; end: number }[];
 }
 
 const checkSyncName = (path: string) => `Check sync: ${fileName(path)} at `;
+const outOfSyncName = (path: string) => `Out of sync: ${fileName(path)}`;
 
 /**
  * The draft without any clip of these files (on any track), the clips linked to them, or the red
@@ -1040,7 +1044,7 @@ export function withoutTakes(draft: HostDraft, paths: string[]): { draft: HostDr
   const gone = all.filter(goes);
   if (!gone.length) return { draft, removed: 0, earliestStart: null };
   const keep = (tracks: DraftTrack[]) => tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => !goes(c)) }));
-  const names = paths.map(checkSyncName);
+  const names = paths.flatMap((p) => [checkSyncName(p), outOfSyncName(p)]);
   return {
     draft: {
       ...draft,
@@ -1118,6 +1122,9 @@ export function placeHarmonizedDraft(
       const linked = take.hasSound ? { ...clip, linkGroup: group } : clip;
       put(video, freeVideo, "video", linked);
       if (take.hasSound) put(audio, freeAudio, "audio", { ...linked, enabled: false });
+    }
+    for (const o of take.outOfSync ?? []) {
+      markers.push({ time: snap(start + o.start, fps), name: outOfSyncName(take.sourcePath), color: "Red", note: "Harmonizer: this take's notes miss the reference here by more than a frame. Don't cut to it here; use the reference's own recording or a take that's in sync.", duration: round3(o.end - o.start) });
     }
     for (const f of take.flagged) {
       markers.push({ time: snap(start + f.start, fps), name: `${checkSyncName(take.sourcePath)}${Math.round(f.speed * 100)}%`, color: "Red", note: "Harmonizer flagged this stretch: its speed is outside what it trusts. Compare the take with the reference here.", duration: round3(f.end - f.start) });

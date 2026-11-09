@@ -23,7 +23,10 @@ request: {
     "noRetime": [paths among takePaths whose sound comes from the same recorder as the reference],
     "mergeTolerance": 0.02,       optional: stretches this close to normal speed are joined
     "flagSpeedMin": 0.5,          optional: stretches outside these are flagged for review
-    "flagSpeedMax": 2.0
+    "flagSpeedMax": 2.0,
+    "fit": "smooth",              optional: one tempo curve ("smooth") or every note pinned ("notes")
+    "stiffness": 5,               optional, smooth fit: how strongly speed changes are resisted
+    "syncTolerance": 0.042        optional: seconds a note may miss and still count as in sync
 }
 result: {
     "referencePath", "referenceDuration", "anchorCount",
@@ -32,6 +35,7 @@ result: {
         before), "offsetConfidence" (0-100: the share of line windows or notes that agreed), "leadIn"
         (seconds of the reference before the take has anything), "skippedAnchors", "flaggedCount",
         "sameRecording" (the take heard the reference's own performance: one straight stretch),
+        "inSync": [{"refStart", "refEnd"}] (where its notes land within syncTolerance), "syncErrorMs",
         "segments": [{"refStart", "refEnd", "takeStart", "takeEnd", "flagged"}]
     }]
 }
@@ -514,10 +518,111 @@ def segments_from_path(path, merge_tolerance, flag_speed_min, flag_speed_max):
     return merged
 
 
-DEFAULTS = {
+# ---- A different performance, smoothly (PLAN.md, "Harmonizer: a smooth tempo curve", 2026-11-09) ----
+# Two run-throughs never share note-level timing: the pianist places each note a little early or late,
+# and a few notes pair wrongly. Pinning every note (the "notes" fit above) turns each of those into a burst
+# of fast or slow playback: on the Lindeblad 1126 takes, 100-155 stretches from 0.27x to 4x, while
+# note-to-note the takes ran 0.87x-1.17x of the reference. The "smooth" fit is one tempo curve instead:
+# take time is piecewise linear on knots SMOOTH_KNOT apart, each knot interval's speed held within
+# SMOOTH_SPEED_LO..HI of the take's overall pace, fitted to the paired notes by least squares plus
+# `stiffness` times the squared change of speed between neighbouring intervals; notes further than
+# SMOOTH_HUBER off are down-weighted (iteratively reweighted, Huber), so a wrong pair doesn't bend it. On
+# those takes: 0.80x-1.16x with no jumps, 84-98% of notes within a frame (65% on a take that really drifts).
+# Where a take's notes stay within the sync tolerance is reported (`in_sync_ranges`), so the edit can cut
+# to it there and stay on the reference's own recording elsewhere.
+SMOOTH_KNOT = 0.5
+SMOOTH_MAX_KNOTS = 600  # longer spans get wider knots, which keeps the fit to a few hundred unknowns
+SMOOTH_SPEED_LO = 0.8
+SMOOTH_SPEED_HI = 1.25
+SMOOTH_HUBER = 0.04
+SMOOTH_ITERATIONS = 6
+DEFAULT_STIFFNESS = 5.0
+# The smooth curve's knots are merged into the fewest stretches within this many seconds of it.
+SMOOTH_MERGE_TOLERANCE = 0.008
+# In sync: notes within the tolerance (default about a frame at 24 fps), runs broken by two misses in a row
+# or a gap with no notes longer than SYNC_MAX_GAP, kept when at least SYNC_MIN_SECONDS long.
+DEFAULT_SYNC_TOLERANCE = 0.042
+SYNC_MAX_GAP = 3.0
+SYNC_MIN_SECONDS = 2.0
+
+
+def smooth_path(anchors, stiffness=DEFAULT_STIFFNESS):
+    """The smooth tempo curve through `anchors` ((reference seconds, take seconds), see above), as points
+    on its knots, rising in both times."""
+    from scipy.optimize import lsq_linear
+
+    pr = np.asarray(sorted(anchors), dtype=np.float64)
+    r0, r1 = float(pr[0, 0]), float(pr[-1, 0])
+    span = r1 - r0
+    pace = (pr[-1, 1] - pr[0, 1]) / span if span > 0 else 1.0
+    if span < 2 * SMOOTH_KNOT or not math.isfinite(pace) or pace <= 0:
+        return [(r0, float(pr[0, 1])), (r1, float(pr[-1, 1]))]
+    knot = max(SMOOTH_KNOT, span / SMOOTH_MAX_KNOTS)
+    n = math.ceil(span / knot)
+    knots = r0 + knot * np.arange(n + 1)
+    lo = max(PATH_SPEED_MIN, SMOOTH_SPEED_LO * pace)
+    hi = min(PATH_SPEED_MAX, SMOOTH_SPEED_HI * pace)
+    # take(r) = t0 + sum over intervals k of speed_k * (the part of interval k before r)
+    a = np.hstack([np.ones((len(pr), 1)), np.clip(pr[:, :1] - knots[None, :-1], 0, knot)])
+    b = pr[:, 1]
+    d = np.zeros((max(0, n - 1), n + 1))
+    for k in range(n - 1):
+        d[k, k + 1], d[k, k + 2] = -1.0, 1.0
+    lower = np.r_[-np.inf, np.full(n, lo)]
+    upper = np.r_[np.inf, np.full(n, hi)]
+    weights = np.ones(len(b))
+    x = np.r_[pr[0, 1], np.full(n, min(max(pace, lo), hi))]
+    for _ in range(SMOOTH_ITERATIONS):
+        m = np.vstack([a * weights[:, None], math.sqrt(stiffness) * d])
+        y = np.concatenate([b * weights, np.zeros(n - 1)])
+        x = lsq_linear(m, y, bounds=(lower, upper)).x
+        error = np.abs(a @ x - b)
+        weights = np.sqrt(np.where(error <= SMOOTH_HUBER, 1.0, SMOOTH_HUBER / np.maximum(error, 1e-9)))
+    takes = x[0] + np.r_[0.0, np.cumsum(x[1:]) * knot]
+    return [(float(r), float(t)) for r, t in zip(knots, takes, strict=True)]
+
+
+def in_sync_ranges(anchors, points, tolerance=DEFAULT_SYNC_TOLERANCE):
+    """(ranges, median error): the reference stretches where the take's notes land within `tolerance`
+    seconds of where `points` puts them (see the constants above), and the median miss over all notes."""
+    if len(anchors) < 2 or len(points) < 2:
+        return [], 0.0
+    pr = np.asarray(sorted(anchors), dtype=np.float64)
+    path = np.asarray(points, dtype=np.float64)
+    inside = (pr[:, 0] >= path[0, 0]) & (pr[:, 0] <= path[-1, 0])
+    pr = pr[inside]
+    if len(pr) < 2:
+        return [], 0.0
+    error = np.abs(pr[:, 1] - np.interp(pr[:, 0], path[:, 0], path[:, 1]))
+    good = error <= tolerance
+    # One miss between two hits is a wrong pair, not the take drifting.
+    kept = good.copy()
+    kept[1:-1] |= good[:-2] & good[2:]
+    ranges: list[tuple[float, float]] = []
+    start: float | None = None
+    end = 0.0
+    for i in range(len(pr)):
+        at = float(pr[i, 0])
+        joined = start is not None and at - float(pr[i - 1, 0]) <= SYNC_MAX_GAP
+        if kept[i] and (joined or start is None):
+            start = at if start is None else start
+            end = at
+            continue
+        if start is not None and end - start >= SYNC_MIN_SECONDS:
+            ranges.append((start, end))
+        start, end = (at, at) if kept[i] else (None, 0.0)
+    if start is not None and end - start >= SYNC_MIN_SECONDS:
+        ranges.append((start, end))
+    return ranges, float(np.median(error))
+
+
+DEFAULTS: dict[str, Any] = {
     "merge_tolerance": 0.02,
     "flag_speed_min": 0.5,
     "flag_speed_max": 2.0,
+    "fit": "smooth",
+    "stiffness": DEFAULT_STIFFNESS,
+    "sync_tolerance": DEFAULT_SYNC_TOLERANCE,
 }
 
 
@@ -542,7 +647,7 @@ def _envelope_path(ref_envelope, take_envelope, guide):
 def harmonize(
     ref_path: str,
     take_paths: list[str],
-    options: dict[str, float] | None = None,
+    options: dict[str, Any] | None = None,
     no_retime: frozenset[str] = frozenset(),
     on_progress: Callable[[str, float, str], None] = lambda phase, fraction, detail: None,
     is_cancelled: Callable[[], bool] = lambda: False,
@@ -552,7 +657,9 @@ def harmonize(
     which get one stretch at exactly 1x. Returns the report: per take, the stretches mapping reference
     time to take time, plus where it starts (lead-in and offset) and a confidence out of 100 (the share
     of line windows or note matches that agreed). `anchor_count` and `skipped_anchors` count the
-    note-matching points tried and the ones too weak to use.
+    note-matching points tried and the ones too weak to use. `options["fit"]` is "smooth" (the default: one
+    tempo curve, see smooth_path) or "notes" (every paired note pinned, as VibeCut did); `in_sync` gives
+    each take's in-sync reference ranges (see in_sync_ranges) and `sync_error` its median miss in seconds.
 
     `on_progress(phase, fraction, detail)` reports "read", "offset", "anchors" and "solve" in turn,
     `fraction` covering the whole job. Only the reference and the take being matched are in memory."""
@@ -571,6 +678,8 @@ def harmonize(
     ref_notes = None  # the reference's notes, found once for the first take that needs them
 
     segments, offsets, confidence, leadin, skipped, take_durations, same = {}, {}, {}, {}, {}, {}, {}
+    in_sync: dict[str, list[tuple[float, float]]] = {}
+    sync_error: dict[str, float] = {}
     anchor_count = 0
     for i, name in enumerate(names):
         base = 0.1 + 0.9 * i / len(names)
@@ -600,6 +709,9 @@ def harmonize(
             )
             confidence[name] = 100.0 * line[2] if line else 0.0
             skipped[name] = 0
+            # One recorder's sound is in sync wherever it overlaps; a guess from the guide isn't checked.
+            in_sync[name] = [(points[0][0], points[-1][0])] if line else []
+            sync_error[name] = 0.0
         elif line:
             slope, intercept, inlier_share = line
             ref_t = guide[0]
@@ -610,20 +722,28 @@ def harmonize(
             )
             confidence[name] = 100.0 * inlier_share
             skipped[name] = 0
+            in_sync[name] = [(points[0][0], points[-1][0])]
+            sync_error[name] = 0.0
         else:
             if ref_notes is None:
                 ref_notes = onset_notes(ref_audio)
             pairs, matched, tried = onset_pairs(ref_notes, onset_notes(take), guide)
             if len(pairs) >= MIN_PAIRS:
+                anchors = list(pairs)
                 refined = fill_gaps(pairs, guide)
             else:
                 refined, matched, tried = _envelope_path(ref_envelope, _onset_envelope(take), guide)
+                anchors = list(refined)
             if len(refined) < 2:
                 ref_t, take_t, _ = guide
                 refined = [(ref_t[0], take_t[0]), (ref_t[-1], take_t[-1])]
-            points = _extend_to_overlap(
-                remove_stutters(simplify_path(_clamp_speeds(refined))), ref_duration, take_duration
-            )
+                anchors = list(refined)
+            if opts["fit"] == "smooth":
+                curve = simplify_path(smooth_path(anchors, opts["stiffness"]), SMOOTH_MERGE_TOLERANCE)
+            else:
+                curve = remove_stutters(simplify_path(_clamp_speeds(refined)))
+            points = _extend_to_overlap(curve, ref_duration, take_duration)
+            in_sync[name], sync_error[name] = in_sync_ranges(anchors, points, opts["sync_tolerance"])
             anchor_count = max(anchor_count, tried)
             confidence[name] = 100.0 * matched / tried if tried else 0.0
             skipped[name] = tried - matched
@@ -651,6 +771,9 @@ def harmonize(
         "skipped_anchors": skipped,
         "excluded_leadin_ref_sec": leadin,
         "same_performance": same,
+        "in_sync": in_sync,
+        "sync_error": sync_error,
+        "fit": opts["fit"],
         "merge_tolerance": opts["merge_tolerance"],
         "flag_speed_min": opts["flag_speed_min"],
         "flag_speed_max": opts["flag_speed_max"],
@@ -689,15 +812,22 @@ def validate(request: dict[str, Any]) -> dict[str, Any]:
     no_retime = request.get("noRetime") or []
     if not isinstance(no_retime, list) or any(p not in takes for p in no_retime):
         raise RequestError("noRetime must list takes from takePaths")
-    options = {}
+    options: dict[str, Any] = {}
     for key, option, low, high in (
         ("mergeTolerance", "merge_tolerance", 0.0, 0.5),
         ("flagSpeedMin", "flag_speed_min", 0.05, 1.0),
         ("flagSpeedMax", "flag_speed_max", 1.0, 20.0),
+        ("stiffness", "stiffness", 0.1, 1000.0),
+        ("syncTolerance", "sync_tolerance", 0.005, 0.5),
     ):
         value = _number(request, key, low, high)
         if value is not None:
             options[option] = value
+    fit = request.get("fit")
+    if fit is not None:
+        if fit not in ("smooth", "notes"):
+            raise RequestError('fit must be "smooth" or "notes"')
+        options["fit"] = fit
     return {"reference": reference, "takes": takes, "noRetime": frozenset(no_retime), "options": options}
 
 
@@ -738,6 +868,12 @@ def to_result(report: dict[str, Any]) -> dict[str, Any]:
                 "skippedAnchors": report["skipped_anchors"][path],
                 "flaggedCount": sum(1 for s in segments if s["flagged"]),
                 "sameRecording": bool(report.get("same_performance", {}).get(path, False)),
+                "inSync": [
+                    {"refStart": float(a), "refEnd": float(b)}
+                    for a, b in report.get("in_sync", {}).get(path, [])
+                    if math.isfinite(a) and math.isfinite(b) and b > a
+                ],
+                "syncErrorMs": round(_finite(report.get("sync_error", {}).get(path, 0.0)) * 1000, 1),
                 "segments": segments,
             }
         )

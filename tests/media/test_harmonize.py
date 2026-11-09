@@ -297,7 +297,7 @@ def test_note_pairing_puts_a_different_performances_notes_on_the_references(tmp_
         np.array([0.5 + (r if r <= middle else middle + (r - middle) * 1.05) for r in performance]) + jitter
     )
     take = write_wav(tmp_path / "run3.wav", click_track(played, played[-1] + 2, 13))
-    report = harmonize.harmonize(ref, [take])
+    report = harmonize.harmonize(ref, [take], {"fit": "notes"})
     segments = report["segments"][take]
     errors = [
         abs(take_time_at(segments, r) - t) for r, t in zip(performance[2:-2], played[2:-2], strict=True)
@@ -346,10 +346,82 @@ def test_a_chord_held_longer_with_no_new_notes_is_bridged_by_the_notes_either_si
         tmp_path / "held.wav",
         click_track(take_notes, duration + 1, 15, hold=(hold_start, hold_end + 0.8, 196)),
     )
-    report = harmonize.harmonize(ref, [take])
+    report = harmonize.harmonize(ref, [take], {"fit": "notes"})
     segments = report["segments"][take]
     for r, t in zip(ref_notes[2:-2], take_notes[2:-2], strict=True):
         assert abs(take_time_at(segments, r) - t) < 0.015
+
+
+@needs_ffmpeg
+def test_the_smooth_fit_follows_a_different_performances_tempo_without_lurching(tmp_path, performance):
+    """The default fit: every note up to 40 ms early or late (a separate run-through), 5% slower from the
+    middle on. The notes fit chases each note (its speeds swing); the smooth one follows the tempo, stays
+    near the take's pace with no sudden speed change, and still puts the notes within a frame."""
+    needs_librosa()
+    duration = float(performance[-1]) + 2
+    ref = write_wav(tmp_path / "ref.wav", click_track(performance, duration, 1))
+    jitter = np.random.default_rng(12).uniform(-0.04, 0.04, performance.size)
+    middle = float(performance[len(performance) // 2])
+    played = (
+        np.array([0.5 + (r if r <= middle else middle + (r - middle) * 1.05) for r in performance]) + jitter
+    )
+    take = write_wav(tmp_path / "run3.wav", click_track(played, played[-1] + 2, 13))
+
+    def speeds(report):
+        return [
+            (s["take_end"] - s["take_start"]) / (s["ref_end"] - s["ref_start"])
+            for s in report["segments"][take]
+        ]
+
+    smooth = harmonize.harmonize(ref, [take])
+    notes = harmonize.harmonize(ref, [take], {"fit": "notes"})
+    assert smooth["fit"] == "smooth"
+    assert min(speeds(smooth)) >= 0.8 and max(speeds(smooth)) <= 1.25
+    assert max(abs(b - a) for a, b in itertools.pairwise(speeds(smooth))) < 0.1
+    assert max(speeds(notes)) - min(speeds(notes)) > max(speeds(smooth)) - min(speeds(smooth))
+    segments = smooth["segments"][take]
+    errors = [
+        abs(take_time_at(segments, r) - t) for r, t in zip(performance[2:-2], played[2:-2], strict=True)
+    ]
+    assert np.median(errors) < 0.03
+    assert max(errors) < 0.08
+    # Most of the piece is in sync within a frame; the median miss is reported.
+    covered = sum(b - a for a, b in smooth["in_sync"][take])
+    assert covered > 0.8 * (performance[-1] - performance[0])
+    assert smooth["sync_error"][take] < 0.03
+
+
+@needs_ffmpeg
+def test_the_references_own_recording_is_in_sync_throughout(files):
+    needs_librosa()
+    report = harmonize.harmonize(files["ref"], [files["steady"]], no_retime=frozenset({files["steady"]}))
+    (only,) = report["segments"][files["steady"]]
+    assert report["in_sync"][files["steady"]] == [(only["ref_start"], only["ref_end"])]
+
+
+def test_in_sync_ranges_split_where_the_take_drifts_and_forgive_one_wrong_pair():
+    refs = np.arange(0.0, 30.0, 0.5)
+    path = [(0.0, 0.0), (30.0, 30.0)]
+    takes = refs.copy()
+    takes[(refs >= 12) & (refs < 18)] += 0.1  # 6 s where the take is 100 ms off
+    takes[10] += 0.2  # one wrong pair at 5 s
+    ranges, median = harmonize.in_sync_ranges(list(zip(refs, takes, strict=True)), path, 0.042)
+    assert ranges == [(0.0, 11.5), (18.0, 29.5)]
+    assert median == 0.0
+    # Too short to cut to, or nothing to go on: no range.
+    assert harmonize.in_sync_ranges([(0.0, 0.0), (1.0, 1.0)], path)[0] == []
+    assert harmonize.in_sync_ranges([(0.0, 0.0)], path) == ([], 0.0)
+
+
+def test_smooth_path_keeps_speeds_bounded_and_ignores_a_wrong_pair():
+    refs = np.arange(0.0, 20.0, 0.4)
+    takes = 1.0 + refs * 1.02
+    takes[25] += 0.5  # a wrong pair
+    curve = np.array(harmonize.smooth_path(list(zip(refs, takes, strict=True))))
+    speeds = np.diff(curve[:, 1]) / np.diff(curve[:, 0])
+    assert np.all((speeds >= 0.8 * 1.02 - 1e-9) & (speeds <= 1.25 * 1.02 + 1e-9))
+    assert np.max(np.abs(np.interp(refs, curve[:, 0], curve[:, 1]) - (1.0 + refs * 1.02))) < 0.03
+    assert harmonize.smooth_path([(0.0, 1.0), (0.5, 1.5)]) == [(0.0, 1.0), (0.5, 1.5)]
 
 
 def test_remove_stutters_drops_a_brief_slow_then_fast_pair_but_keeps_a_real_hold():
@@ -412,6 +484,8 @@ def media(tmp_path):
         (lambda r, m: r.update(takePaths=[m["a.mov"] + ".missing"]), "File not found"),
         (lambda r, m: r.update(noRetime=[m["b.mov"]]), "noRetime"),
         (lambda r, m: r.update(flagSpeedMax=100), "flagSpeedMax"),
+        (lambda r, m: r.update(fit="wobbly"), "fit must be"),
+        (lambda r, m: r.update(syncTolerance=2), "syncTolerance"),
         (lambda r, m: r.update(takePaths=[f"/t{i}.mov" for i in range(17)]), "At most 16"),
     ],
 )
@@ -429,7 +503,7 @@ def test_reports_the_takes_in_the_apps_shape(monkeypatch, media):
 
     def fake_harmonize(ref, takes, options, no_retime, on_progress):
         on_progress("solve", 1.0, "Done")
-        assert options == {"flag_speed_max": 1.5}
+        assert options == {"flag_speed_max": 1.5, "fit": "smooth", "stiffness": 8.0, "sync_tolerance": 0.04}
         assert no_retime == frozenset({media["b.mov"]})
         segs = [
             {
@@ -453,6 +527,8 @@ def test_reports_the_takes_in_the_apps_shape(monkeypatch, media):
             "skipped_anchors": dict.fromkeys(takes, 0),
             "excluded_leadin_ref_sec": dict.fromkeys(takes, 0.0),
             "same_performance": {takes[0]: False, takes[1]: True},
+            "in_sync": {takes[0]: [(0.5, 3.5), (3.6, 3.6)], takes[1]: [(0.0, 4.0)]},
+            "sync_error": {takes[0]: 0.0123, takes[1]: 0.0},
         }
 
     monkeypatch.setattr(harmonize, "harmonize", fake_harmonize)
@@ -461,6 +537,9 @@ def test_reports_the_takes_in_the_apps_shape(monkeypatch, media):
         "takePaths": [media["a.mov"], media["b.mov"]],
         "noRetime": [media["b.mov"]],
         "flagSpeedMax": 1.5,
+        "fit": "smooth",
+        "stiffness": 8,
+        "syncTolerance": 0.04,
     }
     code, capture = run_command(request)
     assert code == 0
@@ -474,6 +553,9 @@ def test_reports_the_takes_in_the_apps_shape(monkeypatch, media):
     ]
     assert first["flaggedCount"] == 0
     assert (first["sameRecording"], second["sameRecording"]) == (False, True)
+    # A range of no length is dropped.
+    assert first["inSync"] == [{"refStart": 0.5, "refEnd": 3.5}]
+    assert (first["syncErrorMs"], second["syncErrorMs"]) == (12.3, 0.0)
     assert capture.of_type("progress")[0]["fraction"] == 1.0
     assert "media-harmonize" in COMMANDS
 

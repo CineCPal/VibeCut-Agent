@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { HostTimeline } from "../../types/timeline";
 import type { HarmonySegment } from "../types/harmony";
 import { draftFromSnapshot, placeHarmonizedDraft, referenceZeroIn, withoutTakes } from "./connect/hostDraft";
-import { parseHarmonyResult, placeTake, takeSpeedRange, takeTiming } from "./harmonize";
+import { parseHarmonyResult, placeTake, syncOnClip, takeSpeedRange, takeTiming } from "./harmonize";
 import { remapProblem } from "./timeRemap";
 
 const seg = (refStart: number, refEnd: number, takeStart: number, takeEnd: number, flagged = false): HarmonySegment => ({
@@ -79,6 +79,12 @@ describe("parseHarmonyResult", () => {
     });
     expect(parsed?.takes[0].segments).toEqual(DRIFTING);
     expect(parsed?.takes[0].sameRecording).toBe(false);
+    expect(parsed?.takes[0].inSync).toEqual([]);
+    const withSync = parseHarmonyResult({
+      referencePath: "/r.wav",
+      takes: [{ path: "/a.mov", syncErrorMs: 12.5, inSync: [{ refStart: 1, refEnd: 9 }, { refStart: 5, refEnd: 5 }, { refStart: "x" }], segments: DRIFTING }],
+    });
+    expect(withSync?.takes[0]).toMatchObject({ inSync: [{ refStart: 1, refEnd: 9 }], syncErrorMs: 12.5 });
     expect(parseHarmonyResult({ referencePath: "/r.wav", takes: [{ path: "/a.mov", sameRecording: true, segments: DRIFTING }] })?.takes[0].sameRecording).toBe(true);
     expect(parseHarmonyResult({ referencePath: "/r.wav", takes: [{ path: "/a.mov", segments: [{ refStart: "x" }] }] })).toBeNull();
     expect(parseHarmonyResult(null)).toBeNull();
@@ -120,6 +126,28 @@ const VIEW: HostTimeline = {
   ],
   markers: [],
 };
+
+describe("syncOnClip", () => {
+  it("puts the in-sync ranges on the clip and marks the stretches between them, leaving out slivers", () => {
+    // The clip shows reference 2..22.
+    const sync = syncOnClip(
+      [
+        { refStart: 0, refEnd: 8 },
+        { refStart: 8.3, refEnd: 12 },
+        { refStart: 15, refEnd: 30 },
+      ],
+      2,
+      20,
+    );
+    expect(sync.inSync).toEqual([
+      { start: 0, end: 6 },
+      { start: expect.closeTo(6.3, 9), end: 10 },
+      { start: 13, end: 20 },
+    ]);
+    expect(sync.outOfSync).toEqual([{ start: 10, end: 13 }]);
+    expect(syncOnClip([], 0, 10).outOfSync).toEqual([{ start: 0, end: 10 }]);
+  });
+});
 
 describe("harmonized takes in the draft", () => {
   const timing = (segments: HarmonySegment[], zero: number) => placeTake(takeTiming(segments, 60)!, zero)!;
@@ -170,13 +198,16 @@ describe("harmonized takes in the draft", () => {
   it("lines up with the reference already there, puts a take with no picture on an audio track switched off, and placing again replaces the markers", () => {
     const base = draftFromSnapshot(VIEW);
     const zero = referenceZeroIn(base, "/m/reference.wav")!;
-    const take = { sourcePath: "/m/zoom.wav", ...timing(DRIFTING, zero), hasSound: true, hasPicture: false };
+    const take = { sourcePath: "/m/zoom.wav", ...timing(DRIFTING, zero), hasSound: true, hasPicture: false, outOfSync: [{ start: 3, end: 5 }] };
     const once = placeHarmonizedDraft(base, { sourcePath: "/m/reference.wav", duration: 25 }, zero, [take], { addReference: false });
     const all = [...once.video, ...once.audio].flatMap((t) => t.clips);
     expect(all.filter((c) => c.sourceName === "reference.wav")).toHaveLength(1);
     expect(once.video.flatMap((t) => t.clips).map((c) => c.sourceName)).toEqual(["take1.mov", "intro.mov"]);
     expect(once.audio.at(-1)!.clips[0]).toMatchObject({ sourceName: "zoom.wav", start: 2, enabled: false });
-    expect(once.markers.map((m) => m.name)).toEqual(["Check sync: zoom.wav at 95%"]);
+    expect(once.markers.map((m) => [m.time, m.name, m.duration])).toEqual([
+      [5, "Out of sync: zoom.wav", 2],
+      [12, "Check sync: zoom.wav at 95%", 10],
+    ]);
 
     const { draft: cleared } = withoutTakes(once, ["/m/zoom.wav"]);
     expect(cleared.markers).toEqual([]);

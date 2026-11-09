@@ -24,6 +24,11 @@ export interface HarmonyTake {
   flaggedCount: number;
   /** The take heard the reference's own performance (its own microphone): one straight stretch. */
   sameRecording?: boolean;
+  /** Reference stretches where the take's notes land within the sync tolerance (PLAN.md, "Harmonizer: a
+   * smooth tempo curve"): where it's safe to cut to this take. */
+  inSync?: { refStart: number; refEnd: number }[];
+  /** The median miss of its notes, in milliseconds. */
+  syncErrorMs?: number;
   segments: HarmonySegment[];
 }
 
