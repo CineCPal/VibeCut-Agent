@@ -3562,7 +3562,7 @@ None of them is used by current VibeCut code.
 
 **Tests:** `launch_env.rs` (+4: reads a bundle's `LSEnvironment`; no bundle or no Info.plist gives none; no `LSEnvironment` gives nothing; a value already set wins). Gate: cargo test 165 passed, 3 ignored.
 
-**Live check owed:** reinstall with `--orchestrated` and `VIBECUT_TELEMETRY=1`, log out and in (or `launchctl kickstart` the LaunchAgent), and check `/api/v1/health` reports `orchestrated` and a new `trc_mcp_*.jsonl` appears on the next chat turn.
+**Live check (2026-11-17): passed for the launch.** Reinstalled with `--orchestrated` and `VIBECUT_TELEMETRY=1`, quit the app, and started it with `launchctl kickstart gui/<uid>/"VibeCut Agent"` (`--at-login`, as at login). The session sidecar had `VIBECUT_EXECUTION_MODE=orchestrated`, `VIBECUT_TELEMETRY=1` and the three model variables. The reinstall replaced the CEP extension under a running Premiere, and the studio panel's renderer died (`NSInvalidSendPortException`, 14:36), so the panels must be reopened (Window → Extensions) after an install. Owed: a new `trc_mcp_*.jsonl` showing in the studio on the next chat turn.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
