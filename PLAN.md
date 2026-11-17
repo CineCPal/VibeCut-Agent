@@ -3552,6 +3552,18 @@ None of them is used by current VibeCut code.
 
 **Live check owed:** reinstall, then re-run the seven bins and play the takes against the reference.
 
+## The Telemetry Studio went quiet after a login launch (2026-11-17)
+
+**Symptom (the user, 2026-11-17):** "The telemetry studio isn't reflecting what VibeCut Agent is doing." The studio panel in Premiere was connected to a healthy gateway, but the newest journal in `<appDataDir>/telemetry` was from 2026-11-09, and `/api/v1/health` reported `execution_mode: direct`.
+
+**Cause:** the running app (started 2026-11-11 with `--at-login`) had none of `EXECUTION_MODE`, `VIBECUT_TELEMETRY` or the model variables. "Open at login" is tauri-plugin-autostart's LaunchAgent, which runs `Contents/MacOS/vibecut-agent` directly from launchd, and launchd never applies Info.plist `LSEnvironment`; only LaunchServices does (Dock, Spotlight, Finder). The install script's claim that the values hold "at login" was wrong. Every launch at login was direct mode with telemetry off, so no tool bus wrote a journal.
+
+**Fix (decided, Claude):** `src-tauri/src/launch_env.rs`. The first thing `run()` does is read the bundle's own `Contents/Info.plist` (`plist` crate, already in the tree through Tauri) and set each `LSEnvironment` string that the environment doesn't already have, before any thread or sidecar starts. A real environment value (terminal, `tauri dev`) still wins; a binary outside a bundle (dev build) does nothing. No IPC, schema or sidecar change; the code's default stays direct.
+
+**Tests:** `launch_env.rs` (+4: reads a bundle's `LSEnvironment`; no bundle or no Info.plist gives none; no `LSEnvironment` gives nothing; a value already set wins). Gate: cargo test 165 passed, 3 ignored.
+
+**Live check owed:** reinstall with `--orchestrated` and `VIBECUT_TELEMETRY=1`, log out and in (or `launchctl kickstart` the LaunchAgent), and check `/api/v1/health` reports `orchestrated` and a new `trc_mcp_*.jsonl` appears on the next chat turn.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;

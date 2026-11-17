@@ -5,6 +5,7 @@ mod chat_store;
 mod claude_code;
 mod commands;
 mod host_chat;
+mod launch_env;
 mod login_item;
 mod mcp_bridge;
 mod mini_player;
@@ -32,6 +33,9 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The installed app's Info.plist LSEnvironment (EXECUTION_MODE, VIBECUT_TELEMETRY, models), which
+    // launchd skips when "Open at login" starts it. First, before any thread or sidecar (launch_env.rs).
+    launch_env::apply();
     // Dev builds read the LLM keys from the repository's `.env`; release builds from the Keychain (secrets.rs).
     // Values are never logged, never sent to the UI, and never passed to the sidecar's environment;
     // they reach it only inside a chat's stdin request.

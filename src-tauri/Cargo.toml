@@ -31,6 +31,8 @@ rustfft = "6.4.1"
 base64 = "0.22"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
+# The bundle's Info.plist LSEnvironment, applied when launchd starts the app at login (launch_env.rs). Already in the tree through Tauri.
+plist = "1"
 
 # Lets the window into a full-screen editor's Space (window_mode.rs). Already in the tree through Tauri.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -6,7 +6,8 @@
 # A login shell, so npm, cargo and uv are on PATH as in a terminal. Run it as `npm run install-app`.
 #
 # `npm run install-app -- --orchestrated` makes the installed copy start in orchestrated mode (Phase 21)
-# however it's opened (Dock, Spotlight, at login): EXECUTION_MODE goes in its Info.plist's LSEnvironment,
+# however it's opened (Dock, Spotlight, at login): EXECUTION_MODE goes in its Info.plist's LSEnvironment
+# (launchd skips LSEnvironment at login, so the app applies it itself at startup: launch_env.rs),
 # with any VIBECUT_GEMMA_MODEL, VIBECUT_VLM_MODEL, VIBECUT_EMBED_MODEL, VIBECUT_WHISPER_MODEL,
 # VIBECUT_VALIDATOR_MODE and VIBECUT_LOCAL_LLM_BASE_URL set when you run this. The code's default stays
 # direct; installing again without the flag drops it.
