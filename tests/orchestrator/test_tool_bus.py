@@ -17,7 +17,7 @@ from vibecut_agent.core import ffmpeg_ops
 from vibecut_agent.orchestrator import tool_bus
 from vibecut_agent.orchestrator.otio_delta import timeline_hash
 from vibecut_agent.orchestrator.schemas import ORCHESTRATOR_TOOLS, OTIO_DELTA_ID, errors_against, errors_in
-from vibecut_agent.orchestrator.tool_bus import claude_tools, fit, inline_refs
+from vibecut_agent.orchestrator.tool_bus import brief_commit, claude_tools, fit, inline_refs
 from vibecut_agent.workers.base import GpuLockTimeout
 
 HAS_OTIO = importlib.util.find_spec("opentimelineio") is not None
@@ -266,6 +266,54 @@ def test_a_valid_delta_is_kept_for_its_commit(config, tmp_path, snapshot):
     # A token is used once.
     again = bus.dispatch("commit_otio_delta", {"validation_token": token, "commit_summary": "Drop it again"})
     assert "already committed" in again["error"]
+
+
+def test_a_ripple_delta_passes_the_whole_proposal_and_its_report_fits_the_schema(config, tmp_path, snapshot):
+    # Seen live (2026-11-18): the compiler made ripple_delete, but the validator's report schema didn't list
+    # it, so every ripple was refused as "the arguments don't fit".
+    from tests.orchestrator.timeline import tr
+
+    bus = make_bus(config, tmp_path, App(snapshot))
+    result = bus.dispatch(
+        "propose_otio_delta",
+        {
+            "delta": delta(
+                op("op_001", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(50, 25)),
+                op("op_002", "INSERT_GAP", timeline_range=tr(25, 25)),
+            )
+        },
+    )
+    assert result["valid"] is True, result
+    assert [c["command"] for c in result["translated_nle_batch"]] == [
+        "backup_timeline",
+        "ripple_delete",
+        "insert_time",
+    ]
+
+
+def test_a_result_that_breaks_vibecuts_own_schema_says_so(config, tmp_path, snapshot, monkeypatch):
+    from vibecut_agent.orchestrator.schemas import SchemaError
+
+    bus = make_bus(config, tmp_path, App(snapshot))
+
+    def broken(_args):
+        raise SchemaError(
+            "vibecut.gemma.validator.v1", ["translated_nle_batch.1.command: not one of the commands"]
+        )
+
+    monkeypatch.setitem(bus._handlers, "propose_otio_delta", broken)
+    result = bus.dispatch("propose_otio_delta", removal())
+    assert "VibeCut bug" in result["error"] and "arguments" not in result["error"]
+    assert result["details"] == ["translated_nle_batch.1.command: not one of the commands"]
+
+
+def test_a_long_commit_result_reaches_claude_as_counts():
+    changes = [{"kind": "deleted", "itemId": f"c{i}", "filePath": "/x" * 40} for i in range(400)]
+    briefed = brief_commit({"committed": True, "editId": "e9", "changes": [*changes, {"kind": "shifted"}]})
+    assert briefed["changeCounts"] == {"deleted": 400, "shifted": 1}
+    assert "changes" not in briefed and briefed["editId"] == "e9"
+    small = {"committed": True, "changes": changes[:2]}
+    assert brief_commit(small) == small
 
 
 def test_an_invalid_delta_gets_no_token(config, tmp_path, snapshot):

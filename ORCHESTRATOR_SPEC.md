@@ -892,6 +892,8 @@ When `EXECUTION_MODE=orchestrated`, Claude receives six high-level orchestration
               "set_clip_fades",
               "set_transition",
               "duck_clip",
+              "ripple_delete",
+              "insert_time",
               "set_links",
               "add_track",
               "rebuild"

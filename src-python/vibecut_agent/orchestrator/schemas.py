@@ -767,6 +767,8 @@ GEMMA_VALIDATION_SCHEMA: dict[str, Any] = {
                             "set_clip_fades",
                             "set_transition",
                             "duck_clip",
+                            "ripple_delete",
+                            "insert_time",
                             "set_links",
                             "add_track",
                             "rebuild",

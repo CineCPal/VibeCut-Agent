@@ -470,11 +470,21 @@ class OrchestratorToolBus:
             return {"error": f"{name} isn't one of the orchestrator's tools"}
         try:
             validate_tool_input(name, args)
+        except SchemaError as e:
+            return {"error": f"The arguments don't fit {name}'s schema", "details": e.errors[:20]}
+        try:
             return fit(handler(args))
         except (ChatError, RequestError):
             raise
         except SchemaError as e:
-            return {"error": f"The arguments don't fit {name}'s schema", "details": e.errors[:20]}
+            # A document the tool made (a validator report, a worker's result) doesn't fit its own schema:
+            # VibeCut's fault, not the arguments' (seen 2026-11-18: a ripple's batch, before its commands were
+            # in vibecut.gemma.validator.v1, read as "the arguments don't fit").
+            return {
+                "error": f"{name} made a result that doesn't fit VibeCut's own schema; this is a VibeCut bug, not "
+                "a problem with the request",
+                "details": e.errors[:20],
+            }
         except GpuLockTimeout:
             return {
                 "error": "The local models are busy (media is being indexed); try again in a minute, "
