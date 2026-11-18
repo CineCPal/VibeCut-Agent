@@ -110,11 +110,18 @@ LONG_TOOLS = frozenset(
         # The first search installs the content-aware packages and loads SigLIP 2.
         "find_broll",
         "build_broll_selects_timeline",
+        # Bin analysis: a bin is scored folder by folder, and its selects are built a timeline per bin.
+        "analyze_bin",
+        "build_bin_selects",
         # Phase 21: a validated OTIO delta's calls, one after another in the editor.
         "commit_otio_delta",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0
+# Bin analysis: the local vision model looks at every shot of every clip in a bin (seconds a shot), so an
+# index_bin_visuals run can outlast a long tool; the app's job goes on either way.
+INGEST_TOOLS = frozenset({"index_bin_visuals"})
+INGEST_TIMEOUT_SECONDS = 90 * 60.0
 # A call waiting for the user's review in the app (Phase 11d: the app writes `replies/<id>.hold`) may
 # wait this long for Apply or Skip.
 HOLD_TIMEOUT_SECONDS = 30 * 60
@@ -147,6 +154,8 @@ def bridge_dir() -> Path:
 
 
 def timeout_for(name: str) -> float:
+    if name in INGEST_TOOLS:
+        return INGEST_TIMEOUT_SECONDS
     return LONG_TIMEOUT_SECONDS if name in LONG_TOOLS else CALL_TIMEOUT_SECONDS
 
 

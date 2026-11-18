@@ -172,10 +172,32 @@ export async function buildSelectsTimeline(chosen: Selects, onProgress?: (text: 
   const blocked = buildBlocked();
   if (blocked) throw new Error(blocked);
   if (!chosen.clips.length) throw new Error("No segments are selected.");
-  const nle = useNleStateStore.getState();
-  const host = selectActiveHost(nle) as NleHost;
-  const current = nle.hosts[host].timeline;
-  const name = nameOf(useBrollStore.getState().sequenceName);
+  const host = selectActiveHost(useNleStateStore.getState()) as NleHost;
+  const built = await buildTimelineFromSegments(host, nameOf(useBrollStore.getState().sequenceName), chosen.clips, "B-roll selects", onProgress);
+  return built.text;
+}
+
+/** One built timeline: its name in the editor, where each segment went, what the editor refused and the
+ * sentence to report. */
+export interface BuiltTimeline {
+  timeline: string;
+  layout: ReturnType<typeof timelineLayout>;
+  refused: string[];
+  seconds: number;
+  text: string;
+}
+
+/** The body of Build timeline (Phase 16e), shared with bin analysis's build_bin_selects: makes a NEW
+ * timeline named `name` in `host` and lays `clips`' segments back to back on whole frames, in batches of
+ * add_clips under one edit-log step. `what` names the source in the step ("B-roll selects"). */
+export async function buildTimelineFromSegments(
+  host: NleHost,
+  name: string,
+  clips: Selects["clips"],
+  what: string,
+  onProgress?: (text: string) => void,
+): Promise<BuiltTimeline> {
+  const current = useNleStateStore.getState().hosts[host].timeline;
   onProgress?.(`Making "${name}" in ${HOST_SHORT[host]}…`);
   const { timeline } = await nleCall<{ timeline: string }>(host, "create_timeline", { ...(current ? { timeline: current } : {}), name });
   useConnectionStore.getState().addMadeTimeline(host, timeline);
@@ -184,8 +206,8 @@ export async function buildSelectsTimeline(chosen: Selects, onProgress?: (text: 
   const fps = await nleCall<{ fps?: number }>(host, "read_timeline", { timeline })
     .then((v) => v.fps)
     .catch(() => undefined);
-  const layout = timelineLayout(chosen.clips, fps);
-  const ctx = { host, timeline, step: `broll-${jobId()}`, stepText: `Build "${timeline}" from B-roll selects` };
+  const layout = timelineLayout(clips, fps);
+  const ctx = { host, timeline, step: `broll-${jobId()}`, stepText: `Build "${timeline}" from ${what}` };
   let placed = 0;
   const refused: string[] = [];
   for (let i = 0; i < layout.length; i += BUILD_BATCH) {
@@ -203,5 +225,5 @@ export async function buildSelectsTimeline(chosen: Selects, onProgress?: (text: 
   const seconds = layout.reduce((sum, s) => sum + (s.sourceOut - s.sourceIn), 0);
   const parts = [`Made "${timeline}" in ${HOST_SHORT[host]} with ${count(layout.length, "segment")} (${clockLength(seconds)}); Revert in the Agent tab takes the clips back`];
   if (refused.length) parts.push(`${HOST_SHORT[host]} refused ${refused.length}: ${refused[0]}`);
-  return `${parts.join(". ")}.`;
+  return { timeline, layout, refused, seconds, text: `${parts.join(". ")}.` };
 }

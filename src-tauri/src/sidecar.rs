@@ -92,6 +92,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "ingest-index", interactive: false, managed: false },
     // Phase 21: the execution mode and the local workers' health, for the About modal.
     CommandSpec { name: "orchestrator-health", interactive: false, managed: false },
+    // Bin analysis: the semantic index searched for the app's own tools, and the VLM's cached shot tags
+    // read (vibecut_agent/workers/vector_search_cmd.py; PLAN.md, "Bin analysis & visual clip selection").
+    CommandSpec { name: "vector-search", interactive: false, managed: false },
+    CommandSpec { name: "vlm-tags", interactive: false, managed: false },
     // Phase 22: the visualizer's telemetry gateway (HTTP / SSE / WebSocket on 127.0.0.1:18765, stdlib only).
     // Long-running; it stops on the job's cancel (SIGTERM). Nothing in the app starts it yet.
     CommandSpec { name: "telemetry-gateway", interactive: false, managed: false },
@@ -197,7 +201,9 @@ pub fn passes_to_child(name: &str) -> bool {
 /// turns content-aware scoring on (and never for a `catalog` read, which decodes nothing);
 /// `broll-spyglass` embeds the query with SigLIP 2 / CLIP, except for a `catalog` listing; `transcribe`
 /// needs mlx-whisper, and pyannote only when it labels speakers (`diarize`); `ingest-index` (Phase 21) needs
-/// the `orchestrator` extra and mlx-whisper, and pyannote the same way.
+/// the `orchestrator` extra and mlx-whisper, and pyannote the same way. `vector-search` needs sqlite-vec (the
+/// `orchestrator` extra); `vlm-tags` reads cache files with the base install, and needs the extra only to
+/// report the models' health.
 pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
     let flag = |key: &str| request.get(key).and_then(Value::as_bool) == Some(true);
     match command {
@@ -209,6 +215,8 @@ pub fn extras_for(command: &str, request: &Value) -> Vec<&'static str> {
         "ingest-index" if flag("diarize") => vec!["orchestrator", "transcribe", "diarize"],
         "ingest-index" => vec!["orchestrator", "transcribe"],
         "media-harmonize" => vec!["harmonize"],
+        "vector-search" => vec!["orchestrator"],
+        "vlm-tags" if flag("health") => vec!["orchestrator"],
         _ => Vec::new(),
     }
 }
@@ -1139,6 +1147,16 @@ mod tests {
         assert_eq!(extras_for("ingest-index", &json!({"paths": ["/a.mov"]})), ["orchestrator", "transcribe"]);
         assert_eq!(extras_for("ingest-index", &json!({"diarize": true})), ["orchestrator", "transcribe", "diarize"]);
         assert!(!needs_llm_key("ingest-index"));
+    }
+
+    #[test]
+    fn bin_analysis_reads_the_index_and_the_shot_tags() {
+        assert!(find_command("vector-search").is_ok());
+        assert!(find_command("vlm-tags").is_ok());
+        assert_eq!(extras_for("vector-search", &json!({"query": "harbor"})), ["orchestrator"]);
+        assert!(extras_for("vlm-tags", &json!({"paths": ["/a.mov"]})).is_empty());
+        assert_eq!(extras_for("vlm-tags", &json!({"paths": [], "health": true})), ["orchestrator"]);
+        assert!(!needs_llm_key("vector-search") && !needs_llm_key("vlm-tags"));
     }
 
     #[test]

@@ -3610,6 +3610,73 @@ None of them is used by current VibeCut code.
 2. 59.94 drop-frame's `videoDisplayFormat` number.
 3. A dead-air pass end to end in an orchestrated chat, using `source_range` deletes and `find_timeline_gaps`.
 
+## Bin analysis & visual clip selection (2026-11-18)
+
+**What the user asked for.** VibeCut Agent runs the B-roll Analyzer on bins in Premiere Pro and DaVinci Resolve, builds the results into new sequences/timelines in the editor, and analyzes clips visually so it can tell what they show and pick clips for edits.
+
+**Decided with the user** (no Gemini review):
+
+- **Both vision stacks, layered.** The Analyzer (OpenCV quality, plus SigLIP 2 energy and brief match when content-aware) scores clips and picks their segments. The Qwen-VL tagger (`vlm_worker`) and the sqlite-vec index (`vector_store`) describe the shots and make them searchable by content.
+- **One new timeline per bin, with markers.** Each is named "<bin> — B-roll selects".
+- **Both execution modes.** The tools are additive, and no existing direct-mode tool changes behaviour.
+
+**The tools** (`src/lib/agent/binTools.ts`, `BIN_INSTRUCTION` in the prompt):
+
+| Tool | What it does | Review (toolKinds.ts) | Orchestrated |
+|---|---|---|---|
+| `analyze_bin` | Scores a bin's video clips, folder by folder, then blends in shot tags where the bin is indexed. | not reviewed (reads) | forwarded (`BIN_TOOLS`), long tool |
+| `build_bin_selects` | Builds a NEW timeline per analyzed bin, with a scored marker per segment. | reviewed | forwarded, long tool |
+| `index_bin_visuals` | Runs the `ingest-index` job on a bin's files (vision + index stages, optionally transcribe). | not reviewed (writes tags beside media and into the index, never the project) | forwarded, 90-min timeout (`INGEST_TOOLS`) |
+| `find_clips_by_content` | Searches the index by what shots show, optionally limited to one bin. | not reviewed | **not forwarded**: `semantic_asset_search` covers it there |
+
+**How it works:**
+
+1. **A bin as files** (`src/lib/binClips.ts`).
+   - It reads `read_media_pool`, which lists up to 2,000 clips. `search_media_pool` stops at 200, so it isn't used.
+   - The bin is matched by exact path, then by name, then by the end of its path, then by part of its path. A tie at any level is an error that names the candidates.
+   - Sub-bins count as part of the bin. Picture clips with a local file are kept; clips with no file and offline clips are named in the result.
+   - The files are grouped by folder, because the Analyzer scores one folder per run, and its `files` field (`broll/commands.py`) limits a run to the bin's clips.
+2. **Analysis** (`src/lib/binAnalysis.ts`).
+   - There is one `broll-analyze` job per folder. If one folder fails, the other folders' scores still stand. Stopping the turn ends the run between folders.
+   - Bin runs live in `useBinRunStore`, in memory only. The Analyze tab's folder, options and selects are never touched.
+3. **Fusion.**
+   - Each clip's selection score = 0.75 × the Analyzer's score + 0.25 × the mean `editorial_usability_score` of the tagged shots its segments overlap, weighted by how long each one overlaps.
+   - With no tags, the score stays the Analyzer's.
+   - The shot that overlaps the clip's best segment most gives its description, tags, shot scale and movement.
+4. **Build.**
+   - `buildTimelineFromSegments` was extracted from `buildSelectsTimeline` (`src/lib/broll.ts`), whose behaviour is unchanged. The build runs `create_timeline`, then `read_timeline` for the rate, then the whole-frame layout, then `add_clips` in batches of 50 under one edit-log step.
+   - After that, `add_markers` puts one marker on each segment:
+     - name: "file · score";
+     - colour: Green from 75, Yellow from 50, Red below;
+     - note: the scores, then what the shot shows, then its tags.
+   - If the editor refuses the markers, the clips are kept and the result says so.
+5. **The snapshot** (`awareness.ts`, `binsContext`) gains one `[BINS: …]` line listing this editor's analyzed and indexed bins. It is read from memory; nothing is called.
+
+**New sidecars** (`src-python/vibecut_agent/workers/vector_search_cmd.py`; registered in `headless.py`, `sidecar.rs` and `src/types/sidecar.ts`):
+
+- **`vector-search`** takes `{query, modality, scope_paths, filters, top_k}` and returns the unchanged `vibecut.vector.v1` payload, validated.
+  - The store is built as `tool_bus.default_workers` builds it, with `GpuLock` from `workers/base.py`.
+  - It needs the `orchestrator` extra.
+- **`vlm-tags`** takes `{paths, health?}` and reads each file's `<file>.vlm-tags.json`. It never asks the model server for a tag.
+  - Any model and sampling strategy are accepted. A cache whose size, mtime or version no longer matches its file counts as none.
+  - With `health: true` it also reports whether the vision and embedding models are on the model server. `index_bin_visuals` checks this first, so it can say which model to pull instead of failing deep in a long ingest. The `orchestrator` extra is needed only for that health check.
+
+**Unchanged:** schemas (`vibecut.vector.v1`, `vibecut.vlm.v1` and the rest), module paths, `ingest_pipeline.py`, `vlm_worker.py`, `vector_store.py`, and every direct-mode tool. `siglip_visual` is still null in vector hits; this work doesn't add pixel embeddings to the index.
+
+**Orchestrated mode:**
+- `tool_bus.BIN_TOOLS` forwards the three app tools. The build makes a new timeline and leaves the user's alone, so like `send_to_*` it needs no delta check.
+- `ORCHESTRATED_INSTRUCTION` gains a paragraph on bins: `scope_paths` = the bin's file paths from `list_media_pool`.
+- The tools are traced in `telemetry/instrument.py`.
+
+**Tests:**
+- vitest: `binClips.test.ts`, `binAnalysis.test.ts`, `agent/binTools.test.ts`.
+- pytest: `tests/workers/test_vector_search_cmd.py`.
+- cargo: `bin_analysis_reads_the_index_and_the_shot_tags`.
+- Live checks owed:
+  - Premiere: index a bin, analyze it and build its selects.
+  - Resolve: the same with a Media Pool folder.
+  - In a direct-mode chat, find a shot by content and place it.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4305,3 +4372,4 @@ None of them is used by current VibeCut code.
 - **2026-11-18 (Claude): Ripple edits on the timeline (Premiere panel 0.20.7).** Orchestrated deltas can ripple in Premiere: take stretches out of every track (by timeline range, or by a clip's source range so silences need no arithmetic), close gaps, open up time, ripple inserts and trims, all in a few editor calls per delta. `find_timeline_gaps` lists the gaps; a split's right piece can be named in the same delta. Resolve refuses ripples for now. Live checks owed. See "Ripple edits on the timeline".
 - **2026-11-18 (Claude): Ripple edits checked live; drop-frame razor fixed.** On a scratch copy of a 29.97 drop-frame sequence (404 clips): a ripple over four stretches in 14.4 s, in sync, reverted exactly; an insert in 12.9 s, reverted exactly. QE's razor reads timecode drop-frame on a drop-frame sequence, so `timecode()` now numbers drop-frame there (this also fixes `split_clip`, 2 frames early a minute on such sequences). See "Ripple edits on the timeline".
 - **2026-11-18 (Claude): Ripple deltas pass the proposal.** `ripple_delete` and `insert_time` added to `vibecut.gemma.validator.v1`'s command enum (the user's decision; additive), which refused every ripple as "the arguments don't fit". A tool result that breaks VibeCut's own schema now says so. See "Ripple edits on the timeline".
+- **2026-11-18 (Claude): Bin analysis & visual clip selection.** `analyze_bin` runs the B-roll Analyzer on a bin of the Premiere project or Resolve Media Pool, folder by folder. `build_bin_selects` builds each analyzed bin's selects as a new "<bin> — B-roll selects" timeline with scored markers. `index_bin_visuals` has the local vision model tag and index a bin's shots; this is the first app caller of `ingest-index`. `find_clips_by_content` searches those shots by what they show. Two new read-only sidecars back them: `vector-search` and `vlm-tags`. Works in both modes; three of the tools are forwarded in orchestrated mode. Live checks owed. See "Bin analysis & visual clip selection".

@@ -174,6 +174,21 @@ def ingest_index(emitter: Emitter, stdin: TextIO) -> int:
     return ingest_pipeline.main(stdin, emitter)
 
 
+def vector_search(emitter: Emitter, stdin: TextIO) -> int:
+    """Bin analysis: a search of the Phase 21 semantic index for the app's own tools (the `orchestrator`
+    extra)."""
+    from vibecut_agent.workers import vector_search_cmd
+
+    return vector_search_cmd.main("search", stdin, emitter)
+
+
+def vlm_tags(emitter: Emitter, stdin: TextIO) -> int:
+    """Bin analysis: the VLM's cached shot tags for some files, read only (no model is called)."""
+    from vibecut_agent.workers import vector_search_cmd
+
+    return vector_search_cmd.main("tags", stdin, emitter)
+
+
 def orchestrator_health(emitter: Emitter, stdin: TextIO) -> int:
     """Phase 21: the execution mode, and the local workers' health in orchestrated mode (the About modal)."""
     from vibecut_agent.workers import health_report
@@ -229,6 +244,8 @@ COMMANDS: dict[str, Command] = {
     "chat-title": chat_title,
     "critique": critique,
     "ingest-index": ingest_index,
+    "vector-search": vector_search,
+    "vlm-tags": vlm_tags,
     "orchestrator-health": orchestrator_health,
     "telemetry-gateway": telemetry_gateway,
     "premiere-watch": premiere_watch,

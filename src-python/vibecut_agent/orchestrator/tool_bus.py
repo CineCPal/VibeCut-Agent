@@ -168,8 +168,20 @@ APP_EDIT_TOOLS = (
 # the user's as it was, so it needs no delta check; discard_draft throws the draft away. The delta's own cuts
 # stay out of the draft.
 DRAFT_TOOLS = ("harmonize_takes", "send_to_resolve", "send_to_premiere", "discard_draft")
+# Bin analysis (PLAN.md, "Bin analysis & visual clip selection", 2026-11-18): the B-roll Analyzer on a bin of
+# the project, the bin's files looked at and indexed by the local workers (the `ingest-index` job, so
+# semantic_asset_search covers them), and each analyzed bin's selects built as a NEW timeline with scored
+# markers. Like send_to_*, the build leaves the user's timeline as it was, so it needs no delta check.
+BIN_TOOLS = ("analyze_bin", "index_bin_visuals", "build_bin_selects")
 FORWARDED_TOOLS = (
-    READ_ONLY_TOOLS + NOTES_TOOLS + LIBRARY_TOOLS + SYNC_TOOLS + MARKER_TOOLS + APP_EDIT_TOOLS + DRAFT_TOOLS
+    READ_ONLY_TOOLS
+    + NOTES_TOOLS
+    + LIBRARY_TOOLS
+    + SYNC_TOOLS
+    + MARKER_TOOLS
+    + APP_EDIT_TOOLS
+    + DRAFT_TOOLS
+    + BIN_TOOLS
 )
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.

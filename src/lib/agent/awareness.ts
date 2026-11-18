@@ -5,6 +5,7 @@
  */
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
+import { runsOf, useBinRunStore } from "../../store/useBinRunStore";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 import type { TranscriptData } from "../../vibecut/types/transcript";
@@ -79,4 +80,22 @@ export function libraryContext(): string {
   const names = scopes.slice(0, 6).map((p) => `"${fileName(p.replace(/[\\/]+$/, ""))}"`);
   const more = scopes.length > 6 ? ` and ${scopes.length - 6} more` : "";
   return `[B-ROLL: find_broll searches the folder(s) ticked in the Library: ${names.join(", ")}${more}]`;
+}
+
+/** Bin analysis (PLAN.md, "Bin analysis & visual clip selection"): which of this editor's bins analyze_bin
+ * scored and index_bin_visuals indexed this session, so build_bin_selects and find_clips_by_content are used
+ * on them without re-running. Null before any. Read from memory only; nothing is called. */
+export function binsContext(host: NleHost): string | null {
+  const leaf = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
+  const runs = runsOf(host).slice(0, 6);
+  const indexed = Object.values(useBinRunStore.getState().indexed).filter((i) => i.host === host);
+  if (!runs.length && !indexed.length) return null;
+  const parts: string[] = [];
+  if (runs.length) {
+    parts.push(`analyzed: ${runs.map((r) => `"${leaf(r.binPath)}" (${r.ranked.length} clips${r.tagged ? `, ${r.tagged} tagged` : ""})`).join(", ")}`);
+  }
+  if (indexed.length) {
+    parts.push(`indexed for find_clips_by_content: ${indexed.slice(0, 6).map((i) => `"${leaf(i.binPath)}" (${i.shots} shots)`).join(", ")}`);
+  }
+  return `[BINS: ${parts.join(" — ")}]`;
 }

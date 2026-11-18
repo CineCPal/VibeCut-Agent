@@ -8,7 +8,7 @@ import { snapshotHeader } from "./snapshot";
 import { poolContext, refreshPool } from "./projectTools";
 import { draftOf } from "./draft";
 import { filesOf, learnFacts, sourcesContext } from "./mediaInfo";
-import { libraryContext, transcriptsContext } from "./awareness";
+import { binsContext, libraryContext, transcriptsContext } from "./awareness";
 import { loadNotes, notesContext } from "../projectNotes";
 import { draftAsTimeline } from "../../vibecut/lib/connect/hostDraft";
 import { useConnectionStore } from "../../store/useConnectionStore";
@@ -80,5 +80,7 @@ async function awarenessFor(host: NleHost, view: HostTimeline | null): Promise<s
     if (transcripts) lines.push(transcripts);
   }
   lines.push(libraryContext());
+  const bins = binsContext(host);
+  if (bins) lines.push(bins);
   return `\n\n${lines.join("\n")}`;
 }

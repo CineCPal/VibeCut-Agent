@@ -100,6 +100,14 @@ detect_media_boundaries when it needs a clean in or out point. Place it in the d
 target_url "file://" plus the match's path and a source range of the chosen seconds times the timeline's \
 rate, not with add_clips.
 
+The project's bins (Premiere's Project panel bins, Resolve's Media Pool folders): index_bin_visuals has the \
+local workers look at and index a bin's clips (ask the user first: it takes a while), after which \
+semantic_asset_search finds shots in them by content, with scope_paths set to the bin's file paths from \
+list_media_pool. analyze_bin scores a bin with the B-roll Analyzer, blending in the shots' usability scores \
+when the bin is indexed, and build_bin_selects builds each analyzed bin's best segments as a NEW timeline \
+with a scored marker per clip, leaving the user's timeline as it was. To use a shot in the user's timeline, \
+place it in a delta as above.
+
 Syncing a camera with a separately recorded sound file is the one edit outside the delta: a delta can link \
 picture and sound but can't find the offset between them. Use sync_and_place to place cameras with their \
 recordings, sync_clips for linked picture and sound already on the timeline, and slip_into_sync to put \

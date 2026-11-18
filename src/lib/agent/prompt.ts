@@ -26,6 +26,7 @@ import { timingInstruction } from "./timingTools";
 import { poolInstruction } from "./poolTools";
 import { storyInstruction } from "./storyTools";
 import { ANALYZER_INSTRUCTION } from "./analyzerTools";
+import { BIN_INSTRUCTION } from "./binTools";
 import { syncInstruction } from "./syncTools";
 import { harmonizeInstruction } from "./harmonizeTools";
 
@@ -109,6 +110,7 @@ ${harmonizeInstruction(host)}
 ${storyInstruction(host)}
 ${BROLL_SCOPE_INSTRUCTION}
 ${ANALYZER_INSTRUCTION}
+${BIN_INSTRUCTION}
 ${VISION_INSTRUCTION}
 ${NOTES_INSTRUCTION}
 ${AUDIO_INSTRUCTION}

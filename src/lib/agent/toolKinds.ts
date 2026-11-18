@@ -50,6 +50,8 @@ export const CHANGING_TOOLS = new Set([
   // Phase 12b-12d.
   "set_clip_speed",
   "build_broll_selects_timeline",
+  // Bin analysis: each analyzed bin's selects built as a new timeline with markers, as Build timeline is.
+  "build_bin_selects",
   "clear_clip_speed",
   "set_transition",
   "add_track",
@@ -127,6 +129,11 @@ export const NOT_REVIEWED = new Set([
   "remove_time_ranges",
   "analyze_broll_folder",
   "export_broll_selects",
+  // Bin analysis: scoring, looking at and searching a bin only read the media (the tags and the index are
+  // written beside the media and in the app's data, never into the project).
+  "analyze_bin",
+  "index_bin_visuals",
+  "find_clips_by_content",
   "set_speed_ramp",
   // Harmonizer: lines takes up in the draft, as set_speed_ramp does.
   "harmonize_takes",
@@ -207,6 +214,7 @@ const VERB: Record<string, string> = {
   set_clip_speed: "Change the speed of",
   clear_clip_speed: "Put back to normal speed",
   build_broll_selects_timeline: "Build a timeline of B-roll selects",
+  build_bin_selects: "Build timelines of a bin's B-roll selects",
   set_transition: "Set the transition after",
   add_track: "Add a track",
   remove_track: "Remove a track",

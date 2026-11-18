@@ -20,6 +20,7 @@ import { draftExecutors, draftToolDeclarations, refuseWhileDrafting } from "./dr
 import { orchestratorExecutors } from "./orchestratorTools";
 import { storyExecutors, storyToolDeclarations } from "./storyTools";
 import { analyzerExecutors, analyzerToolDeclarations } from "./analyzerTools";
+import { binExecutors, binToolDeclarations } from "./binTools";
 import { syncExecutors, syncToolDeclarations } from "./syncTools";
 import { harmonizeExecutors, harmonizeToolDeclarations } from "./harmonizeTools";
 import { timingExecutors, timingToolDeclarations } from "./timingTools";
@@ -73,6 +74,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...storyToolDeclarations(host),
     ...SPYGLASS_TOOLS,
     ...analyzerToolDeclarations(host),
+    ...binToolDeclarations(host),
     ...visionToolDeclarations(host),
     ...notesToolDeclarations(),
     ...audioToolDeclarations(host),
@@ -381,6 +383,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...harmonizeExecutors(context),
     ...storyExecutors(context),
     ...analyzerExecutors(),
+    ...binExecutors(context),
   };
 }
 
