@@ -15,6 +15,12 @@
 //! A request's `caller` is either a running chat job (the app's own Claude Code run, always served) or
 //! `"outside"`, served only while Settings → Outside control → Allow is on (off by default, saved as
 //! `mcp.json` in the app's config folder). Refused requests are answered here and never reach the UI.
+//!
+//! Every answer passes through the main window's webview, which is usually hidden (the app starts at
+//! login and is used from the editor). WebKit suspends a hidden view's tasks by default, so a reply could
+//! sit there for minutes until some other event woke the page (seen 2026-11-18: Premiere answered in
+//! 12 s, the reply was written 110 s later). The main window therefore sets `backgroundThrottling:
+//! "disabled"` in tauri.conf.json (macOS 14+).
 
 use crate::broll_panel::write_atomic;
 use crate::sidecar::{build_args, python_root, uv_binary, uv_environment, SidecarJobs};
@@ -464,6 +470,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         prepare_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_hidden_main_window_keeps_answering() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        let main = windows.iter().find(|w| w["label"] == "main").unwrap();
+        assert_eq!(main["visible"], false);
+        assert_eq!(main["backgroundThrottling"], "disabled");
     }
 
     #[test]

@@ -3564,6 +3564,22 @@ None of them is used by current VibeCut code.
 
 **Live check (2026-11-17): passed for the launch.** Reinstalled with `--orchestrated` and `VIBECUT_TELEMETRY=1`, quit the app, and started it with `launchctl kickstart gui/<uid>/"VibeCut Agent"` (`--at-login`, as at login). The session sidecar had `VIBECUT_EXECUTION_MODE=orchestrated`, `VIBECUT_TELEMETRY=1` and the three model variables. The reinstall replaced the CEP extension under a running Premiere, and the studio panel's renderer died (`NSInvalidSendPortException`, 14:36), so the panels must be reopened (Window → Extensions) after an install. Owed: a new `trc_mcp_*.jsonl` showing in the studio on the next chat turn.
 
+## Premiere timeouts were the hidden window (2026-11-18)
+
+**Symptom (the user, 2026-11-18):** "VibeCut Agent keeps timing out in Premiere Pro." Orchestrated dead-air turns on `20261117_Gratitude_01 (dead air -30dB)` failed at the timeline read before a propose or a commit (`NLE_BRIDGE_TIMEOUT`: "didn't answer list_timeline_clips / list_timelines within 120 s", once "Premiere Pro didn't answer within 35 s"). The same read otherwise took 8-14 s.
+
+**Ruled out:** the timeline's size (324 clips; `read_sequence` 4.5-9 s idle, 0.7-1.3 s mid-commit, 12.3 s at worst) and Premiere's script engine. A passive log of the panel's queue during a failing turn showed every request answered within 12.3 s, none queued behind another.
+
+**Cause:** the app's main window is hidden (`"visible": false`, launched `--at-login`, used from the editor's panels), and every MCP reply passes through its webview (`src/lib/mcp/server.ts`). WebKit's default inactive scheduling policy suspends a hidden view's tasks, so Premiere's answer sat in the webview until another event woke the page. In the failing turn, Premiere answered at 10:02:21 and the app wrote the (successful) reply at 10:04:11, 3 s after the shim gave up and Claude's streaming woke the page; the 09:39 failure was the same (reply 4 s after). Reproduced with no turn running: four outside `list_timeline_clips` calls with the window hidden took 150 s (timed out), 2.4 s, 1.7 s and 93 s, while the panel's reads took 8.2, 1.4, 1.0 and 5.5 s. A commit's steady stream of calls keeps the page awake, which is why the first read after a quiet stretch was the one to fail.
+
+**Fix (decided, Claude):** `"backgroundThrottling": "disabled"` on the main window in `src-tauri/tauri.conf.json` (Tauri's `BackgroundThrottlingPolicy::Disabled`, WebKit `inactiveSchedulingPolicy = none`, macOS 14+). The visualizer window isn't on the reply path and keeps the default. No IPC, schema or sidecar change.
+
+**Tests:** `mcp_bridge.rs` (+1: the main window is hidden and has background throttling disabled). Gate: cargo test 166 passed, 3 ignored; pytest 1385 passed, 2 skipped; vitest 945 passed.
+
+**Owed:** the live check after a reinstall: the same hidden-window probe (outside `list_timeline_clips` after 0, 15, 45 and 90 s idle) answering within a few seconds each time, then a dead-air section. If a hidden window still stalls, keep the app out of App Nap during a chat or an MCP call (`NSProcessInfo.beginActivity`).
+
+**Also seen, not changed:** the three time limits on a read don't agree (app `nle_call` 35 s, MCP shim 120 s, the watcher's bridge up to 205 s for a started request); four stray `vibecut_agent mcp` shims from earlier runs were still running; the in-Premiere studio and chat panels used 14-28% CPU while idle.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4255,3 +4271,4 @@ None of them is used by current VibeCut code.
 - **2026-11-09 (Claude): Harmonizer in the agent.** `harmonize_takes` lines takes of one performance up with a reference recording in the draft (VibeCut's engine as `media-harmonize`, the `harmonize` extra; streamed decode), sorts out files that aren't the piece by confidence, and works in orchestrated mode with the draft tools (`send_to_*`, `discard_draft`). See "Harmonizer in the agent".
 - **2026-11-09 (Claude): Harmonizer: a smooth tempo curve.** Takes are retimed along one bounded, smooth tempo curve by default (no more 27%-400% lurches), with stretches merged, and each take reports where its notes are in sync within a frame, with red "Out of sync" markers elsewhere. `fit: "notes"` keeps the old path. See "Harmonizer: a smooth tempo curve".
 - **2026-11-09 (Claude): The Resolve panel matches (Resolve plugin 0.20.6).** The plugin's version had stayed at 0.20.1 through the 0.20.5 restyle, so Resolve kept VibeCut's navy palette; it now follows the Premiere panel's version, and its title bar is dark. See "The Resolve panel matches".
+- **2026-11-18 (Claude): Premiere timeouts were the hidden window.** The timeline reads that timed out had been answered by Premiere in seconds; the hidden main window's webview, suspended by WebKit, held the replies until something woke it. The main window now sets `backgroundThrottling: "disabled"`. Live check owed after a reinstall. See "Premiere timeouts were the hidden window".
