@@ -3599,12 +3599,14 @@ None of them is used by current VibeCut code.
 
 **Tests:** `test_otio_delta.py` (+14: each ripple form, one call for 150 silences, source ranges in either order, ordering against other calls, link groups across a ripple, locks, Resolve, naming new clips), `test_premiere_ripple.py` (7, on the fake Premiere: stretches, gaps, inserts, refusals, a failure undone, Revert back to the exact sequence), `test_bridge_runner.py` (+2), `tools.test.ts` and `edits.test.ts`. Gate: pytest 1407 passed, 2 skipped; vitest 946; cargo test 166 passed, 3 ignored.
 
-**Owed (live, Premiere 0.20.7 after a Premiere restart):**
-1. On a duplicate of a real sequence: `ripple_delete` over a few silences and a gap; check every track stays in sync, the right pieces are linked picture-to-sound (QE's razor link state is unknown), and Revert gives back the sequence exactly.
-2. QE razor at 29.97 fps: `timecode()` writes non-drop "HH:MM:SS:FF"; check the cuts land on the frame on a 29.97 (and a drop-frame) sequence.
-3. Speed: `shift_items` over ~300 clips (re-fetching `track.clips[i]` per move).
-4. Whether Premiere's `TrackItem.move` takes a transition with its clip; until then a ripple with a transition after its point is refused.
-5. A dead-air pass end to end in an orchestrated chat, using `source_range` deletes and `find_timeline_gaps`.
+**Live check (2026-11-18, Premiere 26.5.3, panel 0.20.7), on a scratch copy of "20261117_Gratitude_01 (dead air -30dB)" (29.97 drop-frame, 404 clips, 509.9 s):**
+- First run: the cuts at 5.5 s and 14.1 s landed, the one at 61 s didn't, and the ripple took its cuts back and changed nothing (the safety net worked). Cause: **QE's razor reads "HH:MM:SS:FF" in the sequence's own timecode, drop-frame here**, and `premiere_timing.timecode()` wrote non-drop numbers, 2 frames early per minute (10 at 5 minutes; checked by razoring a copy at frames 1843 and 9140 both ways). The same function serves `split_clips`, so `split_clip` has cut 2 frames early a minute on drop-frame sequences since Phase 12. **Fixed:** `read_sequence` now reports `displayFormat` (`videoDisplayFormat`; 102 is 29.97 drop-frame, checked live), and `timecode()` numbers drop-frame for it (`DROP_FRAME_FORMATS`); 59.94 drop-frame's number isn't checked, so it stays non-drop. host.jsx only (re-read each request), so the panel stays 0.20.7 and older panels just keep non-drop numbers.
+- Then: `ripple_delete` over 5.5-6.5, 14.1-15.1, 61.0-62.0 s and the 17.7 s gap at 306.4 s took **14.4 s** (6 cuts, 6 clips lifted, 404 moved); every picture clip linked to its sound and in sync; the end moved by the 20.687 s taken out (3 ms off, the stretches rounded to frames). **Revert took 49.8 s and gave back the sequence exactly** (positions, sources and links, compared clip by clip). `insert_time` of 2 s at 6.0 s: **12.9 s**, 400 moved, in sync; reverted exactly. The copy was deleted.
+
+**Owed:**
+1. Whether Premiere's `TrackItem.move` takes a transition with its clip; until then a ripple with a transition after its point is refused.
+2. 59.94 drop-frame's `videoDisplayFormat` number.
+3. A dead-air pass end to end in an orchestrated chat, using `source_range` deletes and `find_timeline_gaps`.
 
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
@@ -4299,3 +4301,4 @@ None of them is used by current VibeCut code.
 - **2026-11-09 (Claude): The Resolve panel matches (Resolve plugin 0.20.6).** The plugin's version had stayed at 0.20.1 through the 0.20.5 restyle, so Resolve kept VibeCut's navy palette; it now follows the Premiere panel's version, and its title bar is dark. See "The Resolve panel matches".
 - **2026-11-18 (Claude): Premiere timeouts were the hidden window.** The timeline reads that timed out had been answered by Premiere in seconds; the hidden main window's webview, suspended by WebKit, held the replies until something woke it. The main window now sets `backgroundThrottling: "disabled"`. Live check owed after a reinstall. See "Premiere timeouts were the hidden window".
 - **2026-11-18 (Claude): Ripple edits on the timeline (Premiere panel 0.20.7).** Orchestrated deltas can ripple in Premiere: take stretches out of every track (by timeline range, or by a clip's source range so silences need no arithmetic), close gaps, open up time, ripple inserts and trims, all in a few editor calls per delta. `find_timeline_gaps` lists the gaps; a split's right piece can be named in the same delta. Resolve refuses ripples for now. Live checks owed. See "Ripple edits on the timeline".
+- **2026-11-18 (Claude): Ripple edits checked live; drop-frame razor fixed.** On a scratch copy of a 29.97 drop-frame sequence (404 clips): a ripple over four stretches in 14.4 s, in sync, reverted exactly; an insert in 12.9 s, reverted exactly. QE's razor reads timecode drop-frame on a drop-frame sequence, so `timecode()` now numbers drop-frame there (this also fixes `split_clip`, 2 frames early a minute on such sequences). See "Ripple edits on the timeline".

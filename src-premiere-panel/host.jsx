@@ -346,6 +346,9 @@ function vcReadSequence(args) {
       var settings = sequence.getSettings();
       size.width = settings.videoFrameWidth;
       size.height = settings.videoFrameHeight;
+      // Ripple edits: how the sequence shows timecode (drop-frame or not), which QE's razor reads its
+      // timecode in (premiere_timing.timecode).
+      size.displayFormat = settings.videoDisplayFormat;
     } catch (e) {
       size = {};
     }
@@ -371,6 +374,7 @@ function vcReadSequence(args) {
       outTicks: where.outTicks,
       frameWidth: size.width,
       frameHeight: size.height,
+      displayFormat: size.displayFormat,
       video: video,
       audio: audio,
       markers: vcMarkers(sequence)

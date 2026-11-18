@@ -94,6 +94,23 @@ def test_timecode_counts_frames_with_the_zero_point(timing):
     assert timecode(seq, seq.ticks(1)) == "01:00:01:00"
 
 
+def test_timecode_is_drop_frame_where_the_sequence_shows_drop_frame():
+    from vibecut_agent.nle.premiere_edit import Sequence
+
+    tb = 8475667200  # 29.97
+    seq = Sequence({"timebase": str(tb), "zeroPoint": "0", "video": [], "audio": []})
+    # Non-drop: what a 29.97 NDF sequence shows.
+    assert timecode(seq, 1843 * tb) == "00:01:01:13"
+    seq.raw["displayFormat"] = 102
+    # Where QE's razor landed on frames 1843 and 9140 of a drop-frame sequence (checked live, 2026-11-18).
+    assert timecode(seq, 1843 * tb) == "00:01:01:15"
+    assert timecode(seq, 9140 * tb) == "00:05:05:00"
+    # The first frames of a minute are skipped, but not at every tenth minute.
+    assert timecode(seq, 1800 * tb) == "00:01:00:02"
+    assert timecode(seq, 17982 * tb) == "00:10:00:00"
+    assert timecode(seq, 0) == "00:00:00:00"
+
+
 # Phase 12b and 12d: VibeCut's speed and track tests.
 
 

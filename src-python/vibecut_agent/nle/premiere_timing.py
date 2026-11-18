@@ -149,11 +149,30 @@ def revert_speed(host: Any, timeline: str, seq: Sequence, change: dict[str, Any]
 # ------------------------------------------------------------------------------- splitting
 
 
+# Premiere's `videoDisplayFormat` for drop-frame timecode, and the frames it drops each minute. 102 is
+# 29.97 drop-frame (checked live 2026-11-18: QE's razor read "HH:MM:SS:FF" as drop-frame on such a
+# sequence, so non-drop numbers landed 2 frames early a minute, 10 at 5 minutes). 59.94 drop-frame's
+# number isn't checked yet, so it isn't listed: it gets non-drop numbers, as before.
+DROP_FRAME_FORMATS = {102: 2}
+
+
+def _drop_frame(frames: int, nominal: int, drop: int) -> int:
+    """A frame count as drop-frame timecode numbers it: `drop` numbers skipped at each minute but every tenth."""
+    per_ten = nominal * 600 - drop * 9
+    per_minute = nominal * 60 - drop
+    tens, rest = divmod(frames, per_ten)
+    skipped = drop * 9 * tens + (drop * ((rest - drop) // per_minute) if rest >= drop else 0)
+    return frames + skipped
+
+
 def timecode(seq: Sequence, ticks: int) -> str:
     """The sequence's own timecode of a point, counting whole frames at its nominal rate (the zero
-    point included, as Premiere shows it)."""
+    point included, as Premiere shows it), drop-frame where the sequence shows drop-frame."""
     frames = (int(seq.raw.get("zeroPoint") or 0) + ticks) // seq.timebase
     nominal = max(1, round(TICKS_PER_SECOND / seq.timebase))
+    drop = DROP_FRAME_FORMATS.get(seq.raw.get("displayFormat"))  # type: ignore[arg-type]
+    if drop:
+        frames = _drop_frame(frames, nominal, drop)
     ff = frames % nominal
     total = frames // nominal
     return f"{total // 3600:02d}:{total // 60 % 60:02d}:{total % 60:02d}:{ff:02d}"
