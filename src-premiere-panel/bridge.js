@@ -14,11 +14,15 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const PANEL_VERSION = "0.20.6";
+const PANEL_VERSION = "0.20.7";
 // At most this many Level keys in one set_fades item (VibeCut 13e: a duck under speech is 4 per dip).
 const MAX_LEVEL_KEYS = 400;
 // At most this many keys on one Motion property in set_motion (Phase 16f; a revert can put back the user's own).
 const MAX_MOTION_KEYS = 400;
+// At most this many clips in one shift_items (a ripple moves every clip after it; checkValue allows 5000 items).
+const MAX_SHIFTS = 5000;
+// At most this many groups in one link_groups (the pieces after each of a ripple's cuts).
+const MAX_LINK_GROUPS = 2000;
 const BRIDGE_DIR =
   process.env.VIBECUT_AGENT_PREMIERE_BRIDGE_DIR ||
   path.join(os.homedir(), "Library", "Application Support", "VibeCut Agent", "host-bridge", "premiere");
@@ -66,6 +70,9 @@ const COMMANDS = {
   nest_range: "vcNestRange",
   set_items: "vcSetItems",
   move_items: "vcMoveItems",
+  // Ripple edits: many clips moved in one call, nothing read back (premiere_edit.shift_clips).
+  shift_items: "vcShiftItems",
+  link_groups: "vcLinkGroups",
   link_items: "vcLinkItems",
   add_tracks: "vcAddTracks",
   remove_tracks: "vcRemoveTracks",
@@ -499,6 +506,27 @@ const CHECKS = {
     }
     checkIds(args.ids, "ids");
     offset(args.offsetTicks, "offsetTicks");
+  },
+  link_groups(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.groups) || !args.groups.length || args.groups.length > MAX_LINK_GROUPS) {
+      throw new Error(`groups must list 1 to ${MAX_LINK_GROUPS} groups`);
+    }
+    args.groups.forEach((group, g) => {
+      if (!Array.isArray(group) || group.length < 2 || group.length > 32) throw new Error(`groups[${g}] must list 2 to 32 clips`);
+      group.forEach((id, i) => checkId(id, `groups[${g}][${i}]`));
+    });
+  },
+  shift_items(args) {
+    checkSequenceName(args.timeline);
+    if (!Array.isArray(args.moves) || !args.moves.length || args.moves.length > MAX_SHIFTS) {
+      throw new Error(`moves must list 1 to ${MAX_SHIFTS} clips`);
+    }
+    args.moves.forEach((m, i) => {
+      if (!isPlainObject(m)) throw new Error(`moves[${i}] must be an object`);
+      checkId(m.id, `moves[${i}].id`);
+      if (typeof m.offsetTicks !== "string" || !/^-?[1-9]\d{0,19}$/.test(m.offsetTicks)) throw new Error(`moves[${i}].offsetTicks must be ticks, not 0`);
+    });
   },
   clone_sequence(args) {
     checkSequenceName(args.timeline);

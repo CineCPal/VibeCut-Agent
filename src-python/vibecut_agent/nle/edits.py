@@ -22,6 +22,7 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         premiere_colour,
         premiere_edit,
         premiere_effects,
+        premiere_ripple,
         premiere_structure,
         premiere_timing,
         premiere_transform,
@@ -45,6 +46,10 @@ def premiere_edits(imports: Path | None = None) -> dict[str, Edit]:
         "match_clip_color": premiere_colour.match_clip_color,
         "read_clip_color": premiere_colour.read_clip_color,
         "reshape_clip": premiere_edit.reshape_clip,
+        # Ripple edits on the timeline.
+        "shift_clips": premiere_edit.shift_clips,
+        "ripple_delete": premiere_ripple.ripple_delete,
+        "insert_time": premiere_ripple.insert_time,
         "set_clip_fades": premiere_effects.set_clip_fades,
         "duck_clip": premiere_effects.duck_clip,
         "split_clips": premiere_timing.split_clips,

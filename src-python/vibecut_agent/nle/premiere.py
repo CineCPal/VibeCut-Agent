@@ -45,6 +45,9 @@ TIMEOUTS = {
     "clone_sequence": 120.0,
     "razor_cuts": 120.0,
     "move_items": 60.0,
+    # Ripple edits: every clip after a ripple, up to 5000, moved in one call.
+    "shift_items": 180.0,
+    "link_groups": 180.0,
     "remove_items": 60.0,
     # Phase 12b: each clip is asked again until its speed holds (up to 12 times).
     "set_speed": 60.0,

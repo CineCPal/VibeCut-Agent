@@ -889,6 +889,74 @@ function vcMoveItems(args) {
   }, args);
 }
 
+// args: {timeline, moves: [{id, offsetTicks}]}. Ripple edits (PLAN.md, "Ripple edits on the timeline"):
+// moves many clips along their own tracks in one call, each by its own amount, and reads nothing back
+// (vcMoveItems reads every clip it moved, and looks each one up across the whole sequence: minutes for
+// the hundreds of clips after a ripple). Every id is found first, so a missing one changes nothing. A
+// move keeps a clip's place in its track's list, so each track's clips are fetched again by index right
+// before they move (a TrackItem read before another on its track moved no longer moves the real clip).
+// On each track, clips moving earlier go earliest first and clips moving later go latest first, so none
+// lands on one still to move; the planner (premiere_edit.shift_clips) sends moves that keep each track's
+// order.
+function vcShiftItems(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var wanted = {};
+    var i;
+    for (i = 0; i < a.moves.length; i++) {
+      wanted[a.moves[i].id] = a.moves[i].offsetTicks;
+    }
+    var plans = [];
+    var found = 0;
+    var kinds = [sequence.videoTracks, sequence.audioTracks];
+    for (var k = 0; k < kinds.length; k++) {
+      for (var t = 0; t < kinds[k].numTracks; t++) {
+        var track = kinds[k][t];
+        var clips = track.clips;
+        var earlier = [];
+        var later = [];
+        for (var c = 0; c < clips.numItems; c++) {
+          var id = clips[c].nodeId;
+          if (wanted.hasOwnProperty(id)) {
+            var move = { index: c, id: id, offsetTicks: wanted[id] };
+            if (String(move.offsetTicks).charAt(0) === "-") {
+              earlier.push(move);
+            } else {
+              later.push(move);
+            }
+            found++;
+          }
+        }
+        later.reverse();
+        if (earlier.length || later.length) {
+          plans.push({ track: track, moves: earlier.concat(later) });
+        }
+      }
+    }
+    if (found !== a.moves.length) {
+      for (i = 0; i < a.moves.length; i++) {
+        if (!vcItems(sequence)[a.moves[i].id]) {
+          vcRefuse("There is no clip " + a.moves[i].id + " on \"" + sequence.name + "\" any more");
+        }
+      }
+      vcRefuse("A clip to move is named twice");
+    }
+    var moved = 0;
+    for (var p = 0; p < plans.length; p++) {
+      for (var m = 0; m < plans[p].moves.length; m++) {
+        var step = plans[p].moves[m];
+        var item = plans[p].track.clips[step.index];
+        if (!item || item.nodeId !== step.id) {
+          vcRefuse("Clip " + step.id + " changed its place on its track while the clips were moving; " + moved + " had moved");
+        }
+        item.move(vcTime(step.offsetTicks));
+        moved++;
+      }
+    }
+    return { moved: moved };
+  }, args);
+}
+
 var VC_AUDIO_TRACK_TYPE = 1;
 
 // The QE sequence for this one, opened first if another is showing. Returns {qe, reopen} where
@@ -1085,6 +1153,44 @@ function vcLinkItems(args) {
     }
     var check = vcItems(sequence)[a.ids[0]];
     return { linked: check ? vcLinkedIds(check.item).length : 0, answer: ok === true || ok === 1 };
+  }, args);
+}
+
+// args: {timeline, groups: [[id, ...]]}. Ripple edits: links each group of clips as one, many groups in
+// one call (the picture and sound pieces a ripple's cuts made; vcLinkItems takes one group a call). The
+// clips are found once: linking changes no clip's place. premiere_ripple.py reads the sequence after to
+// see what linked.
+function vcLinkGroups(args) {
+  return vcAnswer(function (a) {
+    var sequence = vcSequenceNamed(a.timeline);
+    var saved = vcSaveSelection(sequence);
+    var found = vcItems(sequence);
+    var linked = 0;
+    try {
+      for (var g = 0; g < a.groups.length; g++) {
+        vcClearSelection(sequence);
+        var chosen = 0;
+        for (var i = 0; i < a.groups[g].length; i++) {
+          var entry = found[a.groups[g][i]];
+          if (entry) {
+            entry.item.setSelected(true, true);
+            chosen++;
+          }
+        }
+        if (chosen > 1) {
+          if (typeof sequence.unlinkSelection === "function") {
+            sequence.unlinkSelection();
+          }
+          var ok = sequence.linkSelection();
+          if (ok === true || ok === 1) {
+            linked++;
+          }
+        }
+      }
+    } finally {
+      vcRestoreSelection(sequence, saved);
+    }
+    return { linked: linked };
   }, args);
 }
 

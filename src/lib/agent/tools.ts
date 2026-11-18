@@ -31,7 +31,7 @@ import { reviewExecutors, reviewToolDeclarations } from "./reviewTools";
 import { beatExecutors, beatToolDeclarations } from "./beatTools";
 import { multicamExecutors, multicamToolDeclarations } from "./multicamTools";
 import { splitEditExecutors, splitEditToolDeclarations } from "./splitEditTools";
-import { draftEditExecutors, draftEditToolDeclarations } from "./draftEditTools";
+import { draftEditExecutors, draftEditToolDeclarations, gapsBetween } from "./draftEditTools";
 import { shotExecutors, shotToolDeclarations } from "./shotTools";
 import { pacingExecutors, pacingToolDeclarations } from "./pacingTools";
 import { clientNotesExecutors, clientNotesToolDeclarations } from "./clientNotesTools";
@@ -108,6 +108,18 @@ function readToolDeclarations(host: NleHost): ToolDeclaration[] {
       name: "list_timeline_clips",
       description: `Reads the open ${editor} ${timeline}'s tracks and clips: id, name, start/end in seconds. Each message already starts with a snapshot, so only call this when it was abridged or to check a change. detail=true adds each clip's source in/out, speed, file path, level and linked clip ids.`,
       parameters: { type: "OBJECT", properties: { detail: { type: "BOOLEAN", description: "Optional." } } },
+    },
+    {
+      name: "find_timeline_gaps",
+      description: `Finds the gaps on the open ${editor} ${timeline}: each stretch where no track has a clip (a switched-off clip counts as one), on whole frames, latest first, with their total. Only reads.`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          minSeconds: { type: "NUMBER", description: "Leave out gaps shorter than this. Optional; default a frame." },
+          from: { type: "NUMBER", description: "Only gaps from this time (seconds). Optional." },
+          to: { type: "NUMBER", description: "Only gaps up to this time (seconds). Optional." },
+        },
+      },
     },
     {
       name: "list_markers",
@@ -270,6 +282,21 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
       return {
         summary: `Read ${count} clip(s) on ${timeline.tracks.length} track(s) in ${editor}`,
         result: { fps: timeline.fps, duration: timeline.duration, tracks },
+      };
+    },
+
+    find_timeline_gaps: async (args) => {
+      const view = await call<HostTimeline>("read_timeline");
+      const clips = view.tracks.filter((t) => t.type === "video" || t.type === "audio").flatMap((t) => t.clips);
+      // The end of the last clip, not the timeline's own end: a gap after everything closes nothing up.
+      const end = clips.reduce((latest, c) => Math.max(latest, c.end), 0);
+      const gaps = gapsBetween(clips, end, view.fps, { minSeconds: optNum(args, "minSeconds"), from: optNum(args, "from"), to: optNum(args, "to") })
+        .map((g) => ({ start: g.start, end: g.end, seconds: Math.round((g.end - g.start) * 1000) / 1000 }))
+        .reverse();
+      const total = Math.round(gaps.reduce((sum, g) => sum + g.seconds, 0) * 1000) / 1000;
+      return {
+        summary: gaps.length ? `Found ${gaps.length} gap(s) on the ${noun}, ${clock(total)} in all` : `No gaps on the ${noun}`,
+        result: { fps: view.fps, gaps, totalSeconds: total },
       };
     },
 

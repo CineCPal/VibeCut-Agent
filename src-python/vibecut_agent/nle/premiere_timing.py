@@ -259,7 +259,9 @@ def _near(seq: Sequence, clip: dict[str, Any], ticks: dict[str, Any]) -> bool:
 def revert_split(host: Any, timeline: str, seq: Sequence, change: dict[str, Any], current: Any) -> str:
     items = change.get("items", [])
     for entry in items:
-        left, right = current(entry["after"]["id"]), entry["right"]["id"]
+        # The right piece is followed too: a revert may have put it back under a new id (a ripple's cut
+        # piece, lifted and put back before its cut is joined).
+        left, right = current(entry["after"]["id"]), current(entry["right"]["id"])
         if left not in seq.clips or right not in seq.clips:
             return "changed"
         if not (
@@ -267,7 +269,7 @@ def revert_split(host: Any, timeline: str, seq: Sequence, change: dict[str, Any]
             and _near(seq, seq.clips[right], entry["right"]["ticks"])
         ):
             return "changed"
-    host._send("remove_items", {"timeline": timeline, "ids": [e["right"]["id"] for e in items]})
+    host._send("remove_items", {"timeline": timeline, "ids": [current(e["right"]["id"]) for e in items]})
     now = _read(host, timeline)
     _put(
         host,

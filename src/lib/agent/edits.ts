@@ -142,6 +142,8 @@ export function followed(changes: TimelineChange[], restored: Record<string, str
     ...(c.incomingId ? { incomingId: follow(c.incomingId) } : {}),
     ...(c.itemIds ? { itemIds: c.itemIds.map(follow) } : {}),
     ...(c.deletedWith ? { deletedWith: c.deletedWith.map(follow) } : {}),
+    // A ripple's shift names every clip it moved.
+    ...(c.moves ? { moves: c.moves.map((m) => ({ ...m, itemId: follow(m.itemId) })) } : {}),
     // A link change names its groups' clips; a later reshape (Resolve) replaces them.
     ...(c.groupsBefore ? { groupsBefore: c.groupsBefore.map((g) => g.map(follow)) } : {}),
     ...(c.groupsAfter ? { groupsAfter: c.groupsAfter.map((g) => g.map(follow)) } : {}),
@@ -344,6 +346,16 @@ export function describeTimelineChange(change: TimelineChange, fps = 25): string
       return `${name} ducked ${change.duckDb ?? -12} dB in ${change.spans ?? 1} place${change.spans === 1 ? "" : "s"} (Level keyframes)`;
     case "link":
       return `${name} ${change.action === "unlinked" ? "unlinked" : "linked"} with ${Math.max(0, ((change.itemIds as string[] | undefined)?.length ?? 1) - 1)} other clip(s)`;
+    case "shifted": {
+      // A ripple's later clips (premiere_ripple.py): each moved by the time taken out or opened up before it.
+      const offsets = (change.moves ?? []).map((m) => m.offset);
+      if (!offsets.length) return "No clips moved";
+      const earlier = offsets.every((o) => o < 0);
+      const most = Math.max(...offsets.map(Math.abs));
+      const least = Math.min(...offsets.map(Math.abs));
+      const by = most === least ? clock(most) : `${clock(least)}–${clock(most)}`;
+      return `${offsets.length} clip(s) after it moved ${by} ${earlier ? "earlier" : "later"}`;
+    }
     case "split": {
       const tracks = (change.items ?? []).map((i) => trackLabel(i.before.track[0], i.before.track[1]));
       return `${name} split at ${clock(change.cut ?? 0)} on ${tracks.join("+")}${change.notCarried?.length ? ` (not carried: ${change.notCarried.join(", ")})` : ""}`;

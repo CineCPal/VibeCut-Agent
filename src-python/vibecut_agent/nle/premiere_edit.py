@@ -6,6 +6,7 @@ log, Revert and the agent's tools (src/lib/connect/timelineEdits.ts) work unchan
 - `add_clips` puts part of a media file into free space, picture and sound linked; never overwrites.
 - `delete_clips` lifts clips out, leaving a gap (with their linked picture or sound by default).
 - `set_clips_enabled`, `set_clip_levels` (dB).
+- `shift_clips` moves many clips along their tracks in one panel call: the later clips of a ripple edit.
 - `reshape_clip` trims, slips or moves a clip and its linked partners in place. Unlike Resolve,
   Premiere can change a clip's points, so its effects stay on it and its id doesn't change. A picture
   clip moved to another track (phase 4f) is re-placed there from its project item instead, so it's
@@ -1646,6 +1647,138 @@ def _put_back(
     return "reverted", restored
 
 
+# At most this many clips in one shift_clips (the panel's shift_items allows as many).
+MAX_SHIFT_CLIPS = 5000
+
+
+def _plan_shift(seq: Sequence, offsets: dict[str, int]) -> list[dict[str, Any]]:
+    """The panel's moves for `offsets` (clip id -> ticks), or HostError saying why they can't all be made.
+    Every track must keep its order with nothing overlapping once they've moved (a ripple never takes a
+    clip past another; see "Premiere's clip order"), nothing may start before the sequence does, and no
+    clip may be on a locked track or touch a transition (whether Premiere moves a transition with its
+    clip isn't checked yet)."""
+    for item_id, offset in offsets.items():
+        clip = seq.clip(item_id)
+        label = f"{clip.get('name') or item_id} on {_label(clip['kind'], clip['index'])}"
+        if seq.locked(clip["kind"], clip["index"]):
+            raise HostError(f"{label} is on a locked track; unlock it in Premiere, or leave it out")
+        if seq.touches_transition(clip):
+            raise HostError(f"{label} has a transition at an edge, which a shift can't take with it yet")
+        if int(clip["startTicks"]) + offset < 0:
+            raise HostError(f"{label} would start before the sequence does")
+    for kind, tracks in seq.tracks.items():
+        for index, track in enumerate(tracks, start=1):
+            spans = sorted(
+                (int(c["startTicks"]), int(c["endTicks"]), c["id"]) for c in track.get("clips", [])
+            )
+            if not any(item_id in offsets for _s, _e, item_id in spans):
+                continue
+            previous: tuple[int, str] | None = None
+            for start, end, item_id in spans:
+                offset = offsets.get(item_id, 0)
+                if previous is not None and start + offset < previous[0]:
+                    name = seq.clips[item_id].get("name") or item_id
+                    raise HostError(
+                        f"Moving {name} on {_label(kind, index)} would run it into "
+                        f"{seq.clips[previous[1]].get('name') or previous[1]}"
+                    )
+                previous = (end + offset, item_id)
+    return [{"id": item_id, "offsetTicks": str(offset)} for item_id, offset in offsets.items()]
+
+
+def _shift(host: Any, timeline: str, seq: Sequence, offsets: dict[str, int]) -> Sequence:
+    """Moves the clips by `offsets` in one panel call and returns the sequence read after. Any clip that
+    didn't land where it should is moved back and HostError raised, so a failed shift leaves no change."""
+    moves = _plan_shift(seq, offsets)
+    host._send("shift_items", {"timeline": timeline, "moves": moves})
+    after = _read(host, timeline)
+    landed = {
+        item_id
+        for item_id, offset in offsets.items()
+        if item_id in after.clips
+        and int(after.clips[item_id]["startTicks"]) == int(seq.clips[item_id]["startTicks"]) + offset
+    }
+    if len(landed) == len(offsets):
+        return after
+    moved = {
+        item_id: -offsets[item_id]
+        for item_id in offsets
+        if item_id in after.clips
+        and int(after.clips[item_id]["startTicks"]) != int(seq.clips[item_id]["startTicks"])
+    }
+    if moved:
+        try:
+            host._send("shift_items", {"timeline": timeline, "moves": _plan_shift(after, moved)})
+        except HostError:
+            pass
+    raise HostError(
+        f"Premiere moved {len(landed)} of {len(offsets)} clips to their places; VibeCut moved them back"
+    )
+
+
+def shift_clips(host: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """{timeline, moves: [{itemId, offset}]} -> moves each clip along its own track by its own seconds (to
+    the frame), many in one panel call: the later clips of a ripple edit (PLAN.md, "Ripple edits on the
+    timeline"). Linked partners aren't added; name every clip that moves. Refused before anything moves
+    when a clip would run into another, start before the sequence does, is on a locked track or touches a
+    transition. Its change, "shifted", is reverted by moving the clips back."""
+    timeline = host._name(args)
+    moves = args.get("moves")
+    if not isinstance(moves, list) or not moves or len(moves) > MAX_SHIFT_CLIPS:
+        raise HostError(f"moves must list 1 to {MAX_SHIFT_CLIPS} clips")
+    seq = _read(host, timeline)
+    offsets: dict[str, int] = {}
+    for i, move in enumerate(moves):
+        if not isinstance(move, dict):
+            raise HostError(f"moves[{i}] must be an object")
+        item_id = move.get("itemId")
+        if item_id in offsets:
+            raise HostError(f"Clip {item_id} is named twice")
+        seq.clip(item_id)
+        offset = seq.ticks(_number(move.get("offset"), f"moves[{i}].offset"))
+        if offset:
+            offsets[item_id] = offset
+    if not offsets:
+        return {"changes": [], "refused": [], "renamed": {}}
+    after = _shift(host, timeline, seq, offsets)
+    return {
+        "changes": [
+            {
+                "kind": "shifted",
+                "name": f"{len(offsets)} clip(s)",
+                "moves": [
+                    {
+                        "itemId": item_id,
+                        "offset": round(offset / TICKS_PER_SECOND, 6),
+                        "offsetTicks": str(offset),
+                        "startTicks": after.clips[item_id]["startTicks"],
+                    }
+                    for item_id, offset in offsets.items()
+                ],
+            }
+        ],
+        "refused": [],
+        "renamed": {},
+    }
+
+
+def revert_shift(host: Any, timeline: str, seq: Sequence, change: dict[str, Any], current: Any) -> str:
+    """Moves a shift's clips back: "reverted", "changed" (a clip is gone or was moved since) or "failed"."""
+    back: dict[str, int] = {}
+    for move in change.get("moves") or []:
+        item_id = current(move.get("itemId"))
+        if item_id not in seq.clips or seq.clips[item_id]["startTicks"] != move.get("startTicks"):
+            return "changed"
+        back[item_id] = -int(move["offsetTicks"])
+    if not back:
+        return "reverted"
+    try:
+        _shift(host, timeline, seq, back)
+    except HostError:
+        return "failed"
+    return "reverted"
+
+
 def _recording(change: dict[str, Any]) -> tuple:
     """One take of one file at one place: its channels share this."""
     return (
@@ -1670,6 +1803,8 @@ REVERTIBLE = (
     "transform",
     # Phase 19c.
     "color",
+    # Ripple edits: the clips after a ripple, moved back.
+    "shifted",
 )  # fmt: skip
 
 
@@ -1777,6 +1912,14 @@ def revert_timeline_changes(host: Any, args: dict[str, Any], probe: Any = None) 
                     "reason": "Premiere's scripting can't remove a caption track; delete it in Premiere",
                 }
             )
+        elif kind == "shifted":
+            outcome = revert_shift(host, timeline, seq, change, current)
+            if outcome == "reverted":
+                reverted.append({"kind": kind, "name": label})
+            elif outcome == "changed":
+                changed_since.append({"name": label, "reason": "they were moved since"})
+            else:
+                failed.append({"name": label, "reason": "Premiere didn't move them back"})
         elif kind == "split":
             from vibecut_agent.nle import premiere_timing
 

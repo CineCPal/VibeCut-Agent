@@ -39,6 +39,10 @@ def with_v2(snapshot):
     return {**snapshot, "tracks": [*snapshot["tracks"], {"type": "video", "index": 2, "clips": []}]}
 
 
+# A split of c1 at 2 s cuts its linked sound a1 too; the runner learns both right pieces' ids.
+RIGHT_C1 = {"c1": "c1:right", "a1": "a1:right"}
+
+
 def codes(diagnostics):
     return [(d["severity"], d["code"], d["op_id"]) for d in diagnostics]
 
@@ -225,7 +229,7 @@ def test_split_then_delete(snapshot):
         snapshot,
     )
     assert calls(commands)[1:] == [
-        ("split_clips", {"itemIds": ["c1"], "time": 2.0}),
+        ("split_clips", {"itemIds": ["c1"], "time": 2.0, "rightIds": RIGHT_C1}),
         ("delete_clips", {"itemIds": ["c1"], "withLinked": False}),
     ]
     assert codes(diagnostics) == [
@@ -368,23 +372,346 @@ def test_levels_fades_and_ducking(snapshot):
     assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
 
 
-def test_what_the_bridges_cant_do(media, snapshot):
+def without_music(snapshot):
+    """The snapshot with A2 empty: only c1 and c2 with their linked sound."""
+    return {
+        **snapshot,
+        "tracks": [
+            {**t, "clips": []} if (t["type"], t["index"]) == ("audio", 2) else t for t in snapshot["tracks"]
+        ],
+    }
+
+
+def layout(d, snapshot):
+    """Each track's clips as [first, last) frames once the delta has run, from its OTIO."""
+    pytest.importorskip("opentimelineio")
+    timeline = apply_delta_to_otio(d, snapshot, lambda path: 60.0)
+    out = {}
+    for track in timeline.tracks:
+        cursor, spans = 0, []
+        for item in track:
+            length = (
+                int(item.source_range.duration.value)
+                if hasattr(item, "source_range") and item.source_range
+                else 0
+            )
+            if type(item).__name__ == "Clip":
+                spans.append((cursor, cursor + length))
+            if type(item).__name__ != "Transition":
+                cursor += length
+        out[track.name] = spans
+    return out
+
+
+def test_ripples_need_premiere(media, snapshot):
     _, diagnostics = run(
         delta(
             op("op_001", "INSERT_GAP", timeline_range=tr(0, 25)),
             op("op_002", "DELETE_CLIP", clip_id="c2", ripple=True),
+            op("op_003", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(0, 25)),
             op(
-                "op_003",
+                "op_004",
                 "INSERT_CLIP",
                 media_reference=ref(media["c d.mov"]),
                 source_range=tr(0, 25),
                 timeline_range=tr(300, 25),
                 ripple=True,
             ),
+            host="resolve",
         ),
         snapshot,
     )
-    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", f"op_00{i}") for i in (1, 2, 3)]
+    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", f"op_00{i}") for i in (1, 2, 3, 4)]
+
+
+def test_overwrite_and_move_dont_ripple(media, snapshot):
+    _, diagnostics = run(
+        delta(
+            op(
+                "op_001",
+                "OVERWRITE_CLIP",
+                media_reference=ref(media["c d.mov"]),
+                source_range=tr(0, 25),
+                timeline_range=tr(300, 25),
+                ripple=True,
+            ),
+            op("op_002", "MOVE_CLIP", clip_id="c2", timeline_range=tr(250, 100), ripple=True),
+        ),
+        with_v2(snapshot),
+    )
+    assert codes(diagnostics) == [
+        ("ERROR", "TRACK_OVERLAP_COLLISION", "op_001"),
+        ("ERROR", "TRACK_OVERLAP_COLLISION", "op_002"),
+    ]
+
+
+def test_ripple_deleting_a_clip_closes_up_the_time_it_held(snapshot):
+    quiet = without_music(snapshot)
+    d = delta(op("op_001", "DELETE_CLIP", clip_id="c1", ripple=True))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    # c1 and its sound go, and c2 with its sound moves up to 0 s: one call that takes 0-4 s out.
+    assert calls(commands)[1:] == [("ripple_delete", {"ranges": [{"start": 0.0, "end": 4.0}]})]
+    assert commands[1]["source_op_id"] == "op_001"
+    assert layout(d, quiet) == {"V1": [(0, 100)], "A1": [(0, 100)]}
+    # With the music under it on A2, closing up 0-4 s would cut the music: take the stretch out instead.
+    _, diagnostics = run(d, snapshot)
+    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", "op_001")]
+
+
+def test_stretches_taken_out_of_every_track_go_in_one_call(snapshot):
+    # Latest first, or earliest first with the second on the timeline as the first left it: the same edit.
+    for ops in (
+        [tr(125, 25), tr(50, 25)],
+        [tr(50, 25), tr(100, 25)],
+    ):
+        d = delta(
+            *(
+                op(f"op_00{i}", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=r)
+                for i, r in enumerate(ops, 1)
+            )
+        )
+        commands, diagnostics = run(d, snapshot)
+        assert diagnostics == []
+        assert calls(commands)[1:] == [
+            ("ripple_delete", {"ranges": [{"start": 2.0, "end": 3.0}, {"start": 5.0, "end": 6.0}]})
+        ]
+        assert commands[1]["source_op_id"] == "op_001,op_002"
+        # Every track loses 2-3 s and 5-6 s; the music is cut there too, so it stays in sync.
+        assert layout(d, snapshot) == {
+            "V1": [(0, 50), (50, 75), (75, 100), (100, 150)],
+            "A1": [(0, 50), (50, 75), (75, 100), (100, 150)],
+            "A2": [(0, 50), (50, 100), (100, 450)],
+        }
+
+
+def test_a_silence_found_in_a_clips_source_comes_out_without_working_out_its_timeline_time(snapshot):
+    # c1 plays a.mov 10-14 s at 0-4 s. Taking out 11-12 s of its source and then 12.6-13 s (earliest first:
+    # the second is in the piece the first cut off) is 1-2 s and 2.6-3 s of the timeline as it was.
+    d = delta(
+        op("op_001", "DELETE_CLIP", clip_id="c1", ripple=True, source_range=tr(275, 25)),
+        op("op_002", "DELETE_CLIP", clip_id="c1", ripple=True, source_range=tr(315, 10)),
+    )
+    commands, diagnostics = run(d, snapshot)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("ripple_delete", {"ranges": [{"start": 1.0, "end": 2.0}, {"start": 2.6, "end": 3.0}]})
+    ]
+    assert layout(d, snapshot)["V1"] == [(0, 25), (25, 40), (40, 65), (65, 165)]
+    # A part of the source the clip doesn't play.
+    _, diagnostics = run(
+        delta(op("op_001", "DELETE_CLIP", clip_id="c1", ripple=True, source_range=tr(500, 25))), snapshot
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+
+
+def test_hundreds_of_silences_are_one_editor_call(snapshot):
+    # 150 one-frame silences in the music's last stretch, latest first.
+    d = delta(
+        *(
+            op(f"op_{i:03d}", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(490 - 2 * i, 1))
+            for i in range(150)
+        )
+    )
+    commands, diagnostics = run(d, snapshot)
+    assert diagnostics == []
+    assert [c["command"] for c in commands] == ["backup_timeline", "ripple_delete"]
+    assert len(commands[1]["args"]["ranges"]) == 150
+
+
+def test_closing_a_gap(snapshot):
+    quiet = without_music(snapshot)
+    d = delta(
+        op("op_001", "MOVE_CLIP", clip_id="c2", timeline_range=tr(250, 100)),
+        op("op_002", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(100, 150)),
+    )
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("reshape_clip", {"itemId": "c2", "start": 10.0}),
+        ("ripple_delete", {"ranges": [{"start": 4.0, "end": 10.0}]}),
+    ]
+    assert layout(d, quiet)["V1"] == [(0, 100), (100, 200)]
+
+
+def test_a_ripple_goes_before_the_calls_after_it(snapshot):
+    quiet = without_music(snapshot)
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id="c1", ripple=True),
+            op("op_002", "MOVE_CLIP", clip_id="c2", timeline_range=tr(25, 100)),
+        ),
+        quiet,
+    )
+    assert diagnostics == []
+    # c2 is at 0 s once the ripple has run, so it moves to 1 s.
+    assert calls(commands)[1:] == [
+        ("ripple_delete", {"ranges": [{"start": 0.0, "end": 4.0}]}),
+        ("reshape_clip", {"itemId": "c2", "start": 1.0}),
+    ]
+    # A delete after a queued ripple doesn't join a delete call made before it.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id="c1"),
+            op("op_002", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(0, 100)),
+            op("op_003", "DELETE_CLIP", clip_id="a2"),
+        ),
+        quiet,
+    )
+    assert diagnostics == []
+    assert [c["command"] for c in commands[1:]] == ["delete_clips", "ripple_delete", "delete_clips"]
+
+
+def test_opening_up_time(media, snapshot):
+    d = delta(op("op_001", "INSERT_GAP", timeline_range=tr(100, 25)))
+    commands, diagnostics = run(d, snapshot)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [("insert_time", {"at": 4.0, "seconds": 1.0})]
+    # c2 and its sound move to 5 s; the music is cut at 4 s and its rest moves along with them.
+    assert layout(d, snapshot) == {
+        "V1": [(0, 100), (125, 225)],
+        "A1": [(0, 100), (125, 225)],
+        "A2": [(0, 100), (125, 525)],
+    }
+    # Past the last clip a gap moves nothing.
+    _, diagnostics = run(delta(op("op_001", "INSERT_GAP", timeline_range=tr(600, 25))), snapshot)
+    assert codes(diagnostics) == [("ERROR", "NEGATIVE_OR_ZERO_DURATION", "op_001")]
+
+
+def test_an_insert_edit_opens_up_room_once_for_picture_and_sound(media, snapshot):
+    quiet = without_music(snapshot)
+    placed = {
+        "media_reference": ref(media["c d.mov"]),
+        "source_range": tr(0, 25),
+        "timeline_range": tr(100, 25),
+        "link_group_id": "g1",
+        "ripple": True,
+    }
+    d = delta(op("op_001", "INSERT_CLIP", **placed), op("op_002", "INSERT_CLIP", "Audio", 1, **placed))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert [c["command"] for c in commands[1:]] == ["insert_time", "add_clips"]
+    assert calls(commands)[1] == ("insert_time", {"at": 4.0, "seconds": 1.0})
+    assert layout(d, quiet)["V1"] == [(0, 100), (100, 125), (125, 225)]
+    # A ripple between a link group's picture and sound would place them before it.
+    _, diagnostics = run(
+        delta(
+            op("op_001", "INSERT_CLIP", **{**placed, "ripple": False, "timeline_range": tr(300, 25)}),
+            op("op_002", "DELETE_CLIP", clip_id="c1", ripple=True),
+            op(
+                "op_003",
+                "INSERT_CLIP",
+                "Audio",
+                1,
+                **{**placed, "ripple": False, "timeline_range": tr(200, 25)},
+            ),
+        ),
+        quiet,
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_003")]
+
+
+def test_ripple_trims(snapshot):
+    quiet = without_music(snapshot)
+    # c1 (a.mov 10-14 s) ends at 13 s of its source: 3-4 s on the timeline closes up, c2 moves to 3 s.
+    d = delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 75), ripple=True))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("reshape_clip", {"itemId": "c1", "sourceOut": 13.0}),
+        ("ripple_delete", {"ranges": [{"start": 3.0, "end": 4.0}]}),
+    ]
+    assert layout(d, quiet)["V1"] == [(0, 75), (75, 175)]
+    # Starting at 11 s of its source: 0-1 s closes up, so c1 still starts at 0 s.
+    d = delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(275, 75), ripple=True))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("reshape_clip", {"itemId": "c1", "sourceIn": 11.0}),
+        ("ripple_delete", {"ranges": [{"start": 0.0, "end": 1.0}]}),
+    ]
+    assert layout(d, quiet)["V1"] == [(0, 75), (75, 175)]
+    # Running on to 15 s opens up 4-5 s first.
+    d = delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 125), ripple=True))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("insert_time", {"at": 4.0, "seconds": 1.0}),
+        ("reshape_clip", {"itemId": "c1", "sourceOut": 15.0}),
+    ]
+    assert layout(d, quiet)["V1"] == [(0, 125), (125, 225)]
+    # Starting at 9 s opens up 0-1 s, which moves c1 along, then brings its start back to 0 s.
+    d = delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(225, 125), ripple=True))
+    commands, diagnostics = run(d, quiet)
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("insert_time", {"at": 0.0, "seconds": 1.0}),
+        ("reshape_clip", {"itemId": "c1", "sourceIn": 9.0}),
+    ]
+    assert layout(d, quiet)["V1"] == [(0, 125), (125, 225)]
+    # The music under c1 would be cut by closing up 3-4 s.
+    _, diagnostics = run(
+        delta(op("op_001", "TRIM_CLIP", clip_id="c1", source_range=tr(250, 75), ripple=True)), snapshot
+    )
+    assert codes(diagnostics) == [("ERROR", "TRACK_OVERLAP_COLLISION", "op_001")]
+
+
+def test_a_locked_track_after_a_ripple_is_refused(snapshot):
+    locked = {
+        **snapshot,
+        "tracks": [
+            {**t, "locked": True} if (t["type"], t["index"]) == ("audio", 2) else t
+            for t in snapshot["tracks"]
+        ],
+    }
+    _, diagnostics = run(
+        delta(op("op_001", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(50, 25))), locked
+    )
+    assert codes(diagnostics) == [("ERROR", "SOURCE_OUT_OF_BOUNDS", "op_001")]
+
+
+def test_which_new_clips_a_delta_can_name(media, snapshot):
+    # A split's right piece can be named: the runner learns its id from the split.
+    commands, diagnostics = run(
+        delta(
+            op("op_001", "SPLIT_CLIP", clip_id="c1", timeline_range=tr(50, 1)),
+            op("op_002", "DELETE_CLIP", clip_id="c1:right"),
+        ),
+        snapshot,
+    )
+    assert diagnostics == []
+    assert calls(commands)[1:] == [
+        ("split_clips", {"itemIds": ["c1"], "time": 2.0, "rightIds": RIGHT_C1}),
+        ("delete_clips", {"itemIds": ["c1:right"], "withLinked": False}),
+    ]
+    # A piece a ripple cut off, or a clip this delta places, can't be.
+    _, diagnostics = run(
+        delta(
+            op("op_001", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(50, 25)),
+            op("op_002", "DELETE_CLIP", clip_id="c1:right"),
+            op(
+                "op_003",
+                "INSERT_CLIP",
+                index=2,
+                media_reference=ref(media["c d.mov"]),
+                source_range=tr(0, 25),
+                timeline_range=tr(0, 25),
+            ),
+            op("op_004", "SET_AUDIO_GAIN", clip_id="op_003:new", audio_params={"gain_db": -3}),
+        ),
+        with_v2(snapshot),
+    )
+    assert codes(diagnostics) == [
+        ("ERROR", "UNKNOWN_CLIP_ID", "op_002"),
+        ("ERROR", "UNKNOWN_CLIP_ID", "op_004"),
+    ]
+
+
+def test_a_stretch_past_the_end_is_refused(snapshot):
+    _, diagnostics = run(
+        delta(op("op_001", "DELETE_CLIP", clip_id=None, ripple=True, timeline_range=tr(600, 25))), snapshot
+    )
+    assert codes(diagnostics) == [("ERROR", "NEGATIVE_OR_ZERO_DURATION", "op_001")]
 
 
 def test_rates_and_timelines(media, snapshot):
@@ -433,7 +760,7 @@ def test_a_split_divides_the_source_so_a_later_trim_starts_from_the_cut(snapshot
         ),
         snapshot,
     )
-    assert calls(commands)[1:] == [("split_clips", {"itemIds": ["c1"], "time": 2.0})]
+    assert calls(commands)[1:] == [("split_clips", {"itemIds": ["c1"], "time": 2.0, "rightIds": RIGHT_C1})]
     assert codes(diagnostics) == [("WARNING", "NEGATIVE_OR_ZERO_DURATION", "op_002")]
     # Lengthening it would now run into the right piece.
     _, diagnostics = run(
@@ -610,7 +937,7 @@ def test_a_split_cuts_the_linked_sound_too_so_splitting_it_again_does_nothing(sn
         snapshot,
     )
     assert calls(commands)[1:] == [
-        ("split_clips", {"itemIds": ["c1"], "time": 2.0}),
+        ("split_clips", {"itemIds": ["c1"], "time": 2.0, "rightIds": RIGHT_C1}),
         # a1's left piece is 10-12 s now; trimming it to 10-11 s is a real change.
         ("reshape_clip", {"itemId": "a1", "sourceOut": 11.0}),
     ]

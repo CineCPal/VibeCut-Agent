@@ -3,17 +3,39 @@
 `compile_to_nle_commands` checks a `vibecut.otio.delta.v1` payload against the timeline it was planned on
 (a HostTimeline snapshot, as `list_timeline_clips` reads it) and turns it into the ordered bridge calls
 that make it: `backup_timeline` first, then `add_clips`, `delete_clips`, `reshape_clip`, `split_clips`,
-`set_clip_levels`, `set_clip_fades`, `set_transition` and `duck_clip`, with the arguments nle/edits.py takes.
+`set_clip_levels`, `set_clip_fades`, `set_transition`, `duck_clip`, `ripple_delete` and `insert_time`, with
+the arguments nle/edits.py takes.
 It replays the operations on a frame-exact model of each track (at the delta's `timeline_fps`), so an
 operation is checked against the timeline as the earlier operations leave it. `apply_delta_to_otio` lays
 out that same replay's result as an OpenTimelineIO timeline (what the timeline will be once the delta has
 run), and `write_otio` saves one; those two need the `orchestrator` extra.
 
-What the bridges can do bounds what a delta can do. They never overwrite and never ripple, so `ripple`,
-`INSERT_GAP` and an `OVERWRITE_CLIP` that would cut a clip partway are refused, as is a speed change (a
-source and timeline range of different lengths). A clip made by this delta (a split's right piece, a new
-clip) has no id until the delta runs, so later operations can't name it. Picture and sound in one
-`link_group_id` placing the same media at the same time are placed as one linked clip.
+What the bridges can do bounds what a delta can do. They never overwrite, so an `OVERWRITE_CLIP` that would
+cut a clip partway is refused, as is a speed change (a source and timeline range of different lengths).
+Picture and sound in one `link_group_id` placing the same media at the same time are placed as one linked
+clip.
+
+Ripple edits (PLAN.md, "Ripple edits on the timeline"; Premiere only, as Resolve's scripting can't move a
+clip along a track) change the time on every track at once, as Premiere's Ripple Delete does with sync lock
+on, so picture and sound stay in sync:
+- DELETE_CLIP with `ripple` and no `clip_id` takes its timeline_range out of every track: clips across its
+  edges are cut there, what's inside goes, and everything after moves earlier. Over empty time it closes a
+  gap. With a `clip_id` and a `source_range`, the stretch where that clip (or what's left of it) plays that
+  part of its source comes out, so a silence found in its file needs no timeline arithmetic. With just a
+  `clip_id`, the clip and its linked partners go and the time they held closes up; anything else there is
+  refused (take the stretch out instead).
+- INSERT_GAP opens up its timeline_range on every track (clips across its start are cut there);
+  INSERT_CLIP with `ripple` opens up room for the clip first (once for a link group), then places it.
+- TRIM_CLIP with `ripple` moves everything after the trimmed edge with it: time is opened up first where
+  the clip gets longer and taken out after where it gets shorter.
+- MOVE_CLIP and OVERWRITE_CLIP don't ripple.
+A locked track with a clip at or after a ripple is refused (it would fall out of sync). Consecutive
+stretches taken out go to the editor as one `ripple_delete` (each placed on the timeline as it is when
+that call runs), so a delta of hundreds of silences is a few editor calls.
+
+A clip this delta places, or cuts as part of a ripple, has no id until the delta runs, so later operations
+can't name it. A SPLIT_CLIP's right piece can be: it's `<clip id>:right` (`<clip id>:right@<frame>` when
+that's taken), and the split call's `rightIds` lets the batch runner learn its editor id.
 
 The spec's diagnostic codes are a fixed list, so each problem takes the nearest one:
 
@@ -24,7 +46,8 @@ The spec's diagnostic codes are a fixed list, so each problem takes the nearest 
   value the editor doesn't take (a level, a duck floor not 1 to 40 dB below the clip, ducking in Resolve, a
   Premiere track the timeline doesn't have, a locked track, Premiere sound that fills more tracks than there
   are from the one named).
-- TRACK_OVERLAP_COLLISION: clips would overlap, or the operation would ripple other clips.
+- TRACK_OVERLAP_COLLISION: clips would overlap, a ripple would close up time other clips still use, or an
+  operation that can't ripple (MOVE_CLIP, OVERWRITE_CLIP, anything in Resolve) asks to.
 - RATE_MISMATCH: a timeline range not at the timeline's rate, or a speed change.
 - INVALID_TRANSITION_HANDLE: a transition with no clip to go into, or longer than the clips allow.
 - STALE_TIMELINE_HASH: the timeline changed (or isn't the one named) since the delta was planned."""
@@ -145,6 +168,12 @@ class _Clip:
     effects: dict[str, Any] = field(default_factory=dict)
     # The op that made it, for a clip this delta places or splits off (it has no editor id yet).
     made_by: str | None = None
+    # Whether a later operation can name it: an editor clip, or a SPLIT_CLIP's right piece of one (the
+    # batch runner learns its id). Not a clip this delta places, or cuts as part of a ripple.
+    resolvable: bool = True
+    # The editor clip it was cut from, for a piece of one (a split's or a ripple's), so a source range of
+    # that clip can still be found in it.
+    origin: str | None = None
 
 
 class _Compiler:
@@ -166,7 +195,8 @@ class _Compiler:
         self.commands: list[NleCommand] = []
         self.diagnostics: list[Diagnostic] = []
         self.clips: dict[str, _Clip] = {}
-        self.link_groups: dict[str, tuple[NleCommand, dict[str, Any]]] = {}
+        # link group -> (its add_clips call, the clip in it, how many ripples had happened then)
+        self.link_groups: dict[str, tuple[NleCommand, dict[str, Any], int]] = {}
         # (clip id, transition spec as given, total seconds) for each APPLY_TRANSITION that compiles.
         self.transitions: list[tuple[str, dict[str, Any], Fraction]] = []
         self.track_names: dict[tuple[str, int], str] = {}
@@ -179,6 +209,14 @@ class _Compiler:
         self._last_delete_links: set[str] = set()
         # (clip id, frame) for linked clips a split has already cut there (see `split`).
         self._split_with: set[tuple[str, int]] = set()
+        # Stretches taken out by ripples not yet sent, on the timeline as it is when the queued
+        # `ripple_delete` will run (merged, sorted), and the ops they came from (see `_take_out`).
+        self._queued: list[tuple[int, int]] = []
+        self._queued_ops: list[str] = []
+        # Bumped by every ripple, so a link group's second clip can't join a placement made before one.
+        self._ripples = 0
+        # Each link group whose INSERT_CLIP opened up room with `ripple`: [first, last).
+        self._opened: dict[str, tuple[int, int]] = {}
         for track in snapshot.get("tracks", []):
             kind = track.get("type")
             if kind not in ("video", "audio"):
@@ -220,6 +258,8 @@ class _Compiler:
         self._flag("ERROR", code, op_id, message, hint)
 
     def _emit(self, op_id: str, command: str, args: dict[str, Any]) -> NleCommand:
+        if command != "ripple_delete":
+            self._flush_ripple()
         entry: NleCommand = {
             "seq": len(self.commands) + 1,
             "source_op_id": op_id,
@@ -343,6 +383,14 @@ class _Compiler:
                 "Read the timeline's clips again and use their ids; clips this delta makes can't be named yet",
             )
             return None
+        if not clip.resolvable:
+            self._error(
+                "UNKNOWN_CLIP_ID",
+                op_id,
+                f"Clip {clip_id} is one this delta makes (placed, or cut by a ripple); it has no id until the delta runs",
+                "Name it in a later delta, after reading the timeline again",
+            )
+            return None
         if kind is not None and clip.track[0] != kind:
             self._error(
                 "UNKNOWN_CLIP_ID",
@@ -364,16 +412,112 @@ class _Compiler:
             if c.track == track and c.id not in ignore and c.first < last and first < c.last
         ]
 
-    def _no_ripple(self, op: dict[str, Any], op_id: str) -> bool:
+    def _no_ripple(self, op: dict[str, Any], op_id: str, why: str, hint: str) -> bool:
+        """False (flagged) for an operation that asks to ripple and can't."""
         if op.get("ripple"):
-            self._error(
-                "TRACK_OVERLAP_COLLISION",
-                op_id,
-                "Ripple edits would move the clips after it, which the editor bridges don't do",
-                "Set ripple to false and move later clips with MOVE_CLIP if needed",
-            )
+            self._error("TRACK_OVERLAP_COLLISION", op_id, why, hint)
             return False
         return True
+
+    # Ripple edits (see the module docstring).
+
+    def _ripple_supported(self, op_id: str) -> bool:
+        """False (flagged) in Resolve, whose scripting can't move a clip along a track."""
+        if self.host == "premiere":
+            return True
+        self._error(
+            "TRACK_OVERLAP_COLLISION",
+            op_id,
+            "Resolve's scripting can't move clips along a track, so ripple edits and INSERT_GAP work only in Premiere so far",
+            "Set ripple to false and leave the gap (or remove the clips without closing up), or ask the user to ripple in Resolve",
+        )
+        return False
+
+    def _ripple_ready(self, start: int, op_id: str, what: str) -> bool:
+        """False (flagged) when a locked track has a clip at or after `start`: a ripple would leave it out of
+        sync, and both editors refuse an edit on a locked track."""
+        for clip in sorted(self.clips.values(), key=lambda c: (c.track, c.first)):
+            if clip.track in self.locked and clip.last > start:
+                label = ("V" if clip.track[0] == "video" else "A") + str(clip.track[1])
+                self._error(
+                    "SOURCE_OUT_OF_BOUNDS",
+                    op_id,
+                    f"{label} is locked and has clip {clip.id} at or after {self._seconds(start)} s, which {what} "
+                    "would cut or move out of sync",
+                    "Ask the user to unlock the track, or ripple only after its last clip",
+                )
+                return False
+        return True
+
+    def _cut_everywhere(self, cut: int, op_id: str) -> None:
+        """Cuts every clip in the model that runs across frame `cut`, as a ripple's own cuts do in the editor
+        (by time, so the right pieces can't be named). The right pieces are linked as their clips were."""
+        crossing = [clip for clip in self.clips.values() if clip.first < cut < clip.last]
+        links = {clip.id: list(clip.linked) for clip in crossing}
+        rights = {clip.id: self._split_piece(clip, cut, op_id) for clip in crossing}
+        for clip_id, right in rights.items():
+            right.resolvable = False
+            right.linked = [rights[other].id for other in links[clip_id] if other in rights]
+            self.clips[right.id] = right
+
+    def _queued_frame(self, frame: int) -> int:
+        """A frame of the model as it is now, on the timeline as it is when the queued `ripple_delete`
+        runs: past each stretch already queued that's at or before it."""
+        out = frame
+        for start, end in self._queued:
+            if start > out:
+                break
+            out += end - start
+        return out
+
+    def _take_out(self, first: int, last: int, op_id: str) -> None:
+        """Takes frames [first, last) out of every track of the model and queues the editor's part."""
+        start, end = self._queued_frame(first), self._queued_frame(last)
+        self._cut_everywhere(first, op_id)
+        self._cut_everywhere(last, op_id)
+        for clip in [c for c in self.clips.values() if first <= c.first and c.last <= last]:
+            del self.clips[clip.id]
+        for clip in self.clips.values():
+            if clip.first >= last:
+                clip.first -= last - first
+                clip.last -= last - first
+        merged: list[tuple[int, int]] = []
+        for span in sorted([*self._queued, (start, end)]):
+            if merged and span[0] <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], span[1]))
+            else:
+                merged.append(span)
+        self._queued = merged
+        self._queued_ops.append(op_id)
+        self._ripples += 1
+
+    def _flush_ripple(self) -> None:
+        """Sends the queued stretches as one `ripple_delete`, before any other call."""
+        if not self._queued:
+            return
+        ranges = [{"start": self._seconds(start), "end": self._seconds(end)} for start, end in self._queued]
+        ops = ",".join(dict.fromkeys(self._queued_ops))
+        self._queued, self._queued_ops = [], []
+        self._emit(ops, "ripple_delete", {"ranges": ranges})
+
+    def _open_up(self, at: int, length: int, op_id: str) -> None:
+        """Opens up `length` frames at `at` on every track of the model and sends `insert_time`."""
+        self._emit(op_id, "insert_time", {"at": self._seconds(at), "seconds": self._seconds(length)})
+        self._cut_everywhere(at, op_id)
+        for clip in self.clips.values():
+            if clip.first >= at:
+                clip.first += length
+                clip.last += length
+        self._ripples += 1
+
+    def _anything_from(self, frame: int) -> bool:
+        return any(clip.last > frame for clip in self.clips.values())
+
+    def _in_the_way(self, first: int, last: int, ignore: set[str]) -> list[str]:
+        """Clips on any track in frames [first, last), other than `ignore`."""
+        return sorted(
+            c.id for c in self.clips.values() if c.id not in ignore and c.first < last and first < c.last
+        )
 
     @staticmethod
     def _track(op: dict[str, Any]) -> tuple[str, int]:
@@ -446,7 +590,15 @@ class _Compiler:
 
     def place(self, op: dict[str, Any], op_id: str) -> None:
         """INSERT_CLIP and OVERWRITE_CLIP."""
-        if not self._no_ripple(op, op_id):
+        if op["op_type"] == "OVERWRITE_CLIP" and not self._no_ripple(
+            op,
+            op_id,
+            "OVERWRITE_CLIP replaces what's there and moves nothing, so it can't ripple",
+            "Use INSERT_CLIP with ripple to push later clips along, or set ripple to false",
+        ):
+            return
+        ripple = op.get("ripple") is True
+        if ripple and not self._ripple_supported(op_id):
             return
         reference = op.get("media_reference")
         if not reference:
@@ -484,12 +636,37 @@ class _Compiler:
         track = self._track(op)
         if not self._track_exists(track, op_id) or not self._track_unlocked(track, op_id):
             return
+        group = op.get("link_group_id")
+        # An insert edit: room is opened up on every track first, once for a link group's picture and sound.
+        if ripple and (not group or self._opened.get(group) != (first, last)):
+            if self._anything_from(first):
+                if not self._ripple_ready(first, op_id, "inserting here"):
+                    return
+                self._open_up(first, last - first, op_id)
+            if group:
+                self._opened[group] = (first, last)
         if not self._channels_fit(track, first, last, path, op_id):
             return
-        group = op.get("link_group_id")
         partner = self.link_groups.get(group) if group else None
+        if partner is not None and partner[2] != self._ripples:
+            self._error(
+                "SOURCE_OUT_OF_BOUNDS",
+                op_id,
+                f"link group {group}'s picture and sound are placed as one clip, and a ripple between them would place it before the ripple",
+                "Put a link group's operations next to each other, or the ripple before them",
+            )
+            return
         busy = self._collisions(track, first, last, set())
         if busy and op["op_type"] == "OVERWRITE_CLIP":
+            unnamed = [c for c in busy if not self.clips[c].resolvable]
+            if unnamed:
+                self._error(
+                    "TRACK_OVERLAP_COLLISION",
+                    op_id,
+                    f"Overwriting would replace clip(s) {', '.join(unnamed)}, which this delta makes and can't name yet",
+                    "Overwrite them in a later delta, or place this somewhere else",
+                )
+                return
             partial = [c for c in busy if not (first <= self.clips[c].first and self.clips[c].last <= last)]
             if partial:
                 self._error(
@@ -514,7 +691,7 @@ class _Compiler:
         track_arg = "videoTrack" if track[0] == "video" else "audioTrack"
         gain = (op.get("audio_params") or {}).get("gain_db")
         if partner is not None:
-            _, clip = partner
+            _, clip, _ripples = partner
             same = (
                 clip["path"] == path
                 and clip["sourceIn"] == past(source[0])
@@ -547,7 +724,7 @@ class _Compiler:
                 clip["volumeDb"] = gain
             command = self._emit(op_id, "add_clips", {"clips": [clip]})
             if group:
-                self.link_groups[group] = (command, clip)
+                self.link_groups[group] = (command, clip, self._ripples)
         made = _Clip(
             f"{op_id}:new",
             track,
@@ -558,13 +735,15 @@ class _Compiler:
             path,
             name=os.path.basename(path),
             made_by=op_id,
+            resolvable=False,
         )
         if gain is not None and track[0] == "audio":
             made.effects["levelDb"] = gain
         self.clips[made.id] = made
 
     def trim(self, op: dict[str, Any], op_id: str) -> None:
-        if not self._no_ripple(op, op_id):
+        ripple = op.get("ripple") is True
+        if ripple and not self._ripple_supported(op_id):
             return
         clip = self._clip(op, op_id)
         if clip is None:
@@ -592,6 +771,9 @@ class _Compiler:
         shift_first = self._frame(new_in - clip.source_in) if moves_in else 0
         shift_last = self._frame(new_out - clip.source_out) if moves_out else 0
         first, last = clip.first + shift_first, clip.last + shift_last
+        if ripple and shift_first < 0:
+            # A ripple opens up the time first, so the clip's start stays where it is.
+            first, last = first - shift_first, last - shift_first
         if first < 0 or last <= first:
             self._error(
                 "NEGATIVE_OR_ZERO_DURATION",
@@ -602,6 +784,14 @@ class _Compiler:
             return
         group = [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]
         ignore = {member.id for member in group}
+        if ripple and not self._ripple_trim_ready(clip, group, shift_first, shift_last, op_id):
+            return
+        # A ripple trim that lengthens the clip opens up the time first: at its start (which moves it and
+        # everything after along) and at its end.
+        if ripple and shift_first < 0:
+            self._open_up(clip.first, -shift_first, op_id)
+        if ripple and shift_last > 0 and self._anything_from(clip.last):
+            self._open_up(clip.last, shift_last, op_id)
         for member in group:
             busy = self._collisions(
                 member.track, member.first + shift_first, member.last + shift_last, ignore
@@ -628,6 +818,7 @@ class _Compiler:
             )
             return
         delta_in, delta_out = new_in - clip.source_in, new_out - clip.source_out
+        old_first, old_last = clip.first, clip.last
         for member in group:
             member.first += shift_first
             member.last += shift_last
@@ -636,6 +827,48 @@ class _Compiler:
             if member.source_out is not None:
                 member.source_out = round(member.source_out + delta_out, 6)
         clip.source_in, clip.source_out = new_in, new_out
+        # A ripple trim that shortens the clip takes the time it left out: after its end first, so its start
+        # is still where it was, then before its start (which brings it and everything after back).
+        if ripple and shift_last < 0:
+            self._take_out(clip.last, old_last, op_id)
+        if ripple and shift_first > 0:
+            self._take_out(old_first, clip.first, op_id)
+
+    def _ripple_trim_ready(
+        self, clip: _Clip, group: list[_Clip], shift_first: int, shift_last: int, op_id: str
+    ) -> bool:
+        """False (flagged) for a ripple trim that can't keep the timeline in sync: linked clips that don't
+        start and end together (a J or L cut), a locked track after the edit, or other clips in the time a
+        shortening would take out."""
+        if any((m.first, m.last) != (clip.first, clip.last) for m in group):
+            self._error(
+                "TRACK_OVERLAP_COLLISION",
+                op_id,
+                f"Clip {clip.id}'s linked picture or sound doesn't start and end with it, so a ripple trim would pull them apart",
+                "Trim without ripple, or trim each edge so they line up first",
+            )
+            return False
+        edge = clip.first if shift_first else clip.last
+        if not self._ripple_ready(min(edge, clip.last + min(shift_last, 0)), op_id, "this ripple trim"):
+            return False
+        ignore = {m.id for m in group}
+        freed = []
+        if shift_last < 0:
+            freed.append((clip.last + shift_last, clip.last))
+        if shift_first > 0:
+            freed.append((clip.first, clip.first + shift_first))
+        for first, last in freed:
+            others = self._in_the_way(first, last, ignore)
+            if others:
+                self._error(
+                    "TRACK_OVERLAP_COLLISION",
+                    op_id,
+                    f"A ripple trim of clip {clip.id} would close up {self._seconds(first)}-{self._seconds(last)} s, "
+                    f"where clip(s) {', '.join(others)} also are",
+                    "Trim without ripple, or take that stretch out of every track (DELETE_CLIP with ripple, no clip_id)",
+                )
+                return False
+        return True
 
     def split(self, op: dict[str, Any], op_id: str) -> None:
         clip = self._clip(op, op_id)
@@ -677,15 +910,21 @@ class _Compiler:
                 "Cut between the clip's first and last frames",
             )
             return
-        self._emit(op_id, "split_clips", {"itemIds": [clip.id], "time": self._seconds(cut)})
+        command = self._emit(op_id, "split_clips", {"itemIds": [clip.id], "time": self._seconds(cut)})
         # The editors cut the clip's linked picture or sound too, where it runs across the cut, and link
         # the right pieces to each other.
         group = [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]
         group = [member for member in group if member.first < cut < member.last]
         rights = [self._split_piece(member, cut, op_id) for member in group]
-        for right in rights:
+        for member, right in zip(group, rights, strict=True):
             right.linked = [other.id for other in rights if other is not right]
+            right.resolvable = member.resolvable
             self.clips[right.id] = right
+        # The batch runner learns each right piece's editor id from the split's record, so later
+        # operations can name it (bridge_runner._right_pieces).
+        command["args"]["rightIds"] = {
+            member.id: right.id for member, right in zip(group, rights, strict=True)
+        }
         self._split_with.update((member.id, cut) for member in group[1:])
 
     def _split_piece(self, clip: _Clip, cut: int, op_id: str) -> _Clip:
@@ -709,6 +948,7 @@ class _Compiler:
             level_db=clip.level_db,
             effects=dict(clip.effects),
             made_by=op_id,
+            origin=clip.origin or clip.id,
         )
         clip.last = cut
         if at is not None:
@@ -716,8 +956,11 @@ class _Compiler:
         return right
 
     def delete(self, op: dict[str, Any], op_id: str) -> None:
-        if not self._no_ripple(op, op_id):
+        if op.get("ripple") is True:
+            self._ripple_delete(op, op_id)
             return
+        # A queued ripple goes first, so this delete can't join a call made before it.
+        self._flush_ripple()
         clip = self._clip(op, op_id)
         if clip is None:
             return
@@ -734,7 +977,107 @@ class _Compiler:
         self._last_delete_links |= set(clip.linked)
         del self.clips[clip.id]
 
+    def _ripple_delete(self, op: dict[str, Any], op_id: str) -> None:
+        """DELETE_CLIP with ripple: a stretch of the timeline (no clip_id), or a clip and its linked
+        partners, taken out of every track (see the module docstring)."""
+        if not self._ripple_supported(op_id):
+            return
+        if op.get("clip_id") is None:
+            span = self._timeline_range(op, op_id)
+            if span is None:
+                return
+            first, last = span
+            if not self._anything_from(first):
+                self._error(
+                    "NEGATIVE_OR_ZERO_DURATION",
+                    op_id,
+                    f"Nothing on the timeline is at or after {self._seconds(first)} s, so there's nothing to take out or close up",
+                    "Give a stretch the timeline has",
+                )
+                return
+            if self._ripple_ready(first, op_id, "taking out this stretch"):
+                self._take_out(first, last, op_id)
+            return
+        if op.get("source_range") is not None:
+            self._ripple_delete_source(op, op_id)
+            return
+        clip = self._clip(op, op_id)
+        if clip is None:
+            return
+        group = [clip, *(self.clips[i] for i in clip.linked if i in self.clips)]
+        first, last = min(m.first for m in group), max(m.last for m in group)
+        others = self._in_the_way(first, last, {m.id for m in group})
+        if others:
+            self._error(
+                "TRACK_OVERLAP_COLLISION",
+                op_id,
+                f"Ripple-deleting clip {clip.id} would close up {self._seconds(first)}-{self._seconds(last)} s, "
+                f"where clip(s) {', '.join(others)} also are",
+                "Take that stretch out of every track instead (DELETE_CLIP with ripple, clip_id null and that "
+                "timeline_range), or delete those clips first",
+            )
+            return
+        if self._ripple_ready(first, op_id, "ripple-deleting this clip"):
+            self._take_out(first, last, op_id)
+
+    def _ripple_delete_source(self, op: dict[str, Any], op_id: str) -> None:
+        """DELETE_CLIP with ripple, a clip_id and a source_range: the stretch where that clip, or what's left
+        of it after earlier cuts, plays that part of its source, taken out of every track. So a silence found
+        in the clip's file goes without working out where it is on the timeline, in any order."""
+        clip_id = str(op["clip_id"])
+        pieces = [c for c in self.clips.values() if c.id == clip_id or c.origin == clip_id]
+        if not pieces:
+            self._error(
+                "UNKNOWN_CLIP_ID",
+                op_id,
+                f"There's no clip {clip_id} on {self.timeline} (or this delta removed all of it)",
+                "Read the timeline's clips again and use their ids",
+            )
+            return
+        if any(p.source_in is None or p.path is None for p in pieces):
+            self._error(
+                "UNKNOWN_CLIP_ID",
+                op_id,
+                f"Clip {clip_id} has no source media to find that range in",
+                "Give the stretch as a timeline_range instead (clip_id null)",
+            )
+            return
+        source = self._source_range(op, op_id, pieces[0].path)
+        if source is None:
+            return
+        start, end = source
+        spans = []
+        for piece in pieces:
+            piece_in = Fraction(piece.source_in)  # type: ignore[arg-type]
+            piece_out = piece_in + Fraction(piece.last - piece.first) / self.frames
+            low, high = max(piece_in, start), min(piece_out, end)
+            if low < high:
+                first = piece.first + self._frame(low - piece_in)  # type: ignore[arg-type]
+                last = piece.first + self._frame(high - piece_in)  # type: ignore[arg-type]
+                if last > first:
+                    spans.append((first, last))
+        if not spans:
+            self._error(
+                "SOURCE_OUT_OF_BOUNDS",
+                op_id,
+                f"Clip {clip_id} doesn't play {float(start):.3f}-{float(end):.3f} s of its source (any more)",
+                "Check the source times against the clip's sourceIn and sourceOut",
+            )
+            return
+        # Latest first, so each stretch is still where it was found.
+        for first, last in sorted(set(spans), reverse=True):
+            if not self._ripple_ready(first, op_id, "taking out this stretch"):
+                return
+            self._take_out(first, last, op_id)
+
     def move(self, op: dict[str, Any], op_id: str) -> None:
+        if not self._no_ripple(
+            op,
+            op_id,
+            "MOVE_CLIP moves only the clip and its linked partners, so it can't ripple",
+            "Set ripple to false; to close the hole it leaves, follow it with DELETE_CLIP with ripple and no clip_id over that stretch",
+        ):
+            return
         clip = self._clip(op, op_id)
         span = self._timeline_range(op, op_id) if clip is not None else None
         if clip is None or span is None:
@@ -938,12 +1281,23 @@ class _Compiler:
         )
 
     def gap(self, op: dict[str, Any], op_id: str) -> None:
-        self._error(
-            "TRACK_OVERLAP_COLLISION",
-            op_id,
-            "INSERT_GAP pushes later clips along, which the editor bridges don't do",
-            "Move the later clips with MOVE_CLIP instead",
-        )
+        """INSERT_GAP: its timeline_range opened up on every track."""
+        if not self._ripple_supported(op_id):
+            return
+        span = self._timeline_range(op, op_id)
+        if span is None:
+            return
+        at, last = span
+        if not self._anything_from(at):
+            self._error(
+                "NEGATIVE_OR_ZERO_DURATION",
+                op_id,
+                f"Nothing on the timeline is after {self._seconds(at)} s, so a gap there moves nothing",
+                "Leave this operation out, or open up time before the clips it should push along",
+            )
+            return
+        if self._ripple_ready(at, op_id, "opening up time here"):
+            self._open_up(at, last - at, op_id)
 
     def run(self, snapshot: dict[str, Any]) -> None:
         self._emit(BACKUP_OP_ID, "backup_timeline", {})
@@ -992,6 +1346,7 @@ class _Compiler:
                 )
             seen.add(op_id)
             handlers[op["op_type"]](op, op_id)
+        self._flush_ripple()
 
 
 def compile_to_nle_commands(

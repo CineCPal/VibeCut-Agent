@@ -92,6 +92,9 @@ describe("direct edits", () => {
     expect(changes[1].items?.[0]).toMatchObject({ after: { id: "v3" }, right: { id: "a5" } });
     const [link] = followed([{ kind: "link", itemIds: ["a1"], groupsBefore: [["v1"], ["a1"]], groupsAfter: [["v1", "a1"]] }], { v1: "v2", a1: "a5" });
     expect(link).toMatchObject({ itemIds: ["a5"], groupsBefore: [["v2"], ["a5"]], groupsAfter: [["v2", "a5"]] });
+    // A ripple's shift names every clip it moved; a later edit may have replaced them.
+    const [shift] = followed([{ kind: "shifted", moves: [{ itemId: "v1", offset: -2 }, { itemId: "a1", offset: -2 }] }], { v1: "v2" });
+    expect(shift.moves).toEqual([{ itemId: "v2", offset: -2 }, { itemId: "a1", offset: -2 }]);
   });
 
   it("reverts newest first with followed ids, marks entries, and says what was lost", async () => {
@@ -173,6 +176,8 @@ describe("direct edits", () => {
     expect(describeTimelineChange({ kind: "level", name: "M.wav", before: 0, after: -6 })).toBe('"M.wav" level 0 → -6 dB');
     expect(describeTimelineChange({ kind: "fade", name: "A.mov", which: "fadeOut", before: 0, after: 1, clamped: true })).toBe('"A.mov" fade out 0.0s → 1.0s (cut to fit)');
     expect(describeTimelineChange({ kind: "duck", name: "M.wav", duckDb: -12, spans: 2 })).toBe('"M.wav" ducked -12 dB in 2 places (Level keyframes)');
+    expect(describeTimelineChange({ kind: "shifted", moves: [{ itemId: "v1", offset: -2 }, { itemId: "a1", offset: -2 }] })).toBe("2 clip(s) after it moved 2.0s earlier");
+    expect(describeTimelineChange({ kind: "shifted", moves: [{ itemId: "v1", offset: -1 }, { itemId: "v2", offset: -3.5 }] })).toBe("2 clip(s) after it moved 1.0s–3.5s earlier");
     expect(
       describeTimelineChange({ kind: "reshaped", name: "A.mov", how: "moved", items: [{ before: { id: "a", track: ["video", 1], start: 0, end: 2 }, after: { id: "a", track: ["video", 2], start: 4, end: 6 } }] }),
     ).toBe('"A.mov" moved: 0.0s–2.0s on V1 → 4.0s–6.0s on V2');

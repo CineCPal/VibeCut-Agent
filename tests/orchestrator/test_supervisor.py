@@ -310,6 +310,7 @@ def test_each_forwarded_tool_but_the_pointers_has_a_studio_station():
     untraced = {
         "list_timelines",
         "list_timeline_clips",
+        "find_timeline_gaps",
         "list_markers",
         "get_playhead_time",
         "get_edit_log",

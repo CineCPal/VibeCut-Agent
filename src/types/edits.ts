@@ -6,7 +6,7 @@ import type { NleHost } from "./nle";
  * to `revert_timeline_changes`; only the fields the app reads are typed, the rest ride along.
  */
 export interface TimelineChange {
-  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions" | "captions" | "label" | "transform" | "color";
+  kind: "added" | "deleted" | "enabled" | "level" | "reshaped" | "fade" | "transition" | "duck" | "split" | "link" | "speed" | "track" | "trackOptions" | "captions" | "label" | "transform" | "color" | "shifted";
   name?: string;
   itemId?: string;
   itemIds?: string[];
@@ -29,6 +29,8 @@ export interface TimelineChange {
   notCarried?: string[];
   retracked?: boolean;
   items?: { before: { id: string; track: [string, number]; start: number; end: number; sourceStartFrame?: number }; after: { id: string; track: [string, number]; start: number; end: number; sourceStartFrame?: number }; right?: { id: string } }[];
+  /** "shifted" (ripple edits): the clips a ripple moved along their tracks, each by its offset in seconds. */
+  moves?: { itemId: string; offset: number; offsetTicks?: string; startTicks?: string }[];
   /** "link": the clips' link groups before and after (links.py). */
   groupsBefore?: string[][];
   groupsAfter?: string[][];

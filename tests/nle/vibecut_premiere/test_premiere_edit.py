@@ -391,6 +391,54 @@ class FakePremiere:
             ), f"{clip['name']} was moved onto another clip"
         return {"items": []}
 
+    # -------------------------------------------------------------- ripple edits
+
+    shift_fails = False  # as if Premiere refused the shift (a ripple's later clips stay put)
+
+    def razor_cuts(self, a):
+        """QE's razor, a track and a timecode at a time: the right piece is new and unlinked, as `razor`."""
+        for c in a["cuts"]:
+            hh, mm, ss, ff = (int(x) for x in c["timecode"].split(":"))
+            cut = ((hh * 3600 + mm * 60 + ss) * 25 + ff) * TB_25 + self.razor_offset
+            track = (self.video if c["type"] == "video" else self.audio)[c["track"]]
+            for clip in list(track):
+                start, end = int(clip["startTicks"]), int(clip["endTicks"])
+                if start < cut < end:
+                    right = {**copy.deepcopy(clip), "id": next(self.ids), "linkedIds": []}
+                    right["startTicks"], right["inTicks"] = str(cut), str(int(clip["inTicks"]) + cut - start)
+                    clip["endTicks"], clip["outTicks"] = str(cut), str(int(clip["inTicks"]) + cut - start)
+                    track.insert(track.index(clip) + 1, right)
+        return {"cuts": len(a["cuts"])}
+
+    def shift_items(self, a):
+        """As vcShiftItems: every id found first, then each track's clips moved earliest first (moving
+        earlier) or latest first (moving later), refusing one that lands on another."""
+        if self.shift_fails:
+            raise HostError("Premiere didn't move them")
+        wanted = {m["id"]: int(m["offsetTicks"]) for m in a["moves"]}
+        for item_id in wanted:
+            self.find(item_id)
+        for tracks in (self.video, self.audio):
+            for track in tracks:
+                mine = [c for c in track if c["id"] in wanted]
+                earlier = [c for c in mine if wanted[c["id"]] < 0]
+                later = [c for c in mine if wanted[c["id"]] > 0][::-1]
+                for clip in earlier + later:
+                    for key in ("startTicks", "endTicks"):
+                        clip[key] = str(int(clip[key]) + wanted[clip["id"]])
+                    start, end = int(clip["startTicks"]), int(clip["endTicks"])
+                    assert not any(
+                        o is not clip and int(o["startTicks"]) < end and int(o["endTicks"]) > start
+                        for o in track
+                    ), f"{clip['name']} was moved onto another clip"
+        return {"moved": len(wanted)}
+
+    def link_groups(self, a):
+        for group in a["groups"]:
+            present = [i for i in group if any(c["id"] == i for _k, _i, c in self.everything())]
+            self.link(*[self.find(i) for i in present])
+        return {"linked": len(a["groups"])}
+
 
 class FakeProbe:
     def __init__(self, media):

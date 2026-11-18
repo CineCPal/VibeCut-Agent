@@ -15,6 +15,7 @@ describe("agent tools", () => {
     expect(names("premiere")).toEqual([
       "list_timelines",
       "list_timeline_clips",
+      "find_timeline_gaps",
       "list_markers",
       "add_markers",
       "update_marker",
@@ -125,12 +126,40 @@ describe("agent tools", () => {
     expect(names("resolve")).toEqual(names("premiere").flatMap((n) => (n === "send_to_premiere" ? ["send_to_resolve"] : n === "get_clip_color" ? [n, "save_color_template"] : [n])));
     const colors = (host: "premiere" | "resolve") =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (toolDeclarations(host)[4].parameters as any).properties.color.enum as string[];
+      (toolDeclarations(host).find((t) => t.name === "update_marker")!.parameters as any).properties.color.enum as string[];
     expect(colors("premiere")).toContain("Orange");
     expect(colors("resolve")).toContain("Cocoa");
-    expect(toolDeclarations("resolve")[3].description).toContain("Resolve requires one");
+    expect(toolDeclarations("resolve").find((t) => t.name === "add_markers")?.description).toContain("Resolve requires one");
     expect(toolDeclarations("premiere").find((t) => t.name === "duck_music")?.description).toContain("Level keyframes");
     expect(toolDeclarations("resolve").find((t) => t.name === "duck_music")?.description).toContain("crossfaded");
+  });
+
+  it("finds the gaps on the live timeline, latest first, on whole frames", async () => {
+    const clip = (id: string, start: number, end: number) => ({ id, name: id, start, end, enabled: true });
+    ipc.nleCall.mockResolvedValue({
+      fps: 25,
+      duration: 30,
+      tracks: [
+        { type: "video", index: 1, clips: [clip("v1", 0, 2), clip("v2", 5, 6), clip("v3", 9.03, 12)] },
+        { type: "audio", index: 1, clips: [clip("a1", 0, 3)] },
+        { type: "subtitle", index: 1, clips: [clip("s1", 3, 5)] },
+      ],
+    });
+    const run = executorsFor({ host: "premiere", timeline: "Main", ...STEP });
+    const outcome = await run.find_timeline_gaps({});
+    expect(ipc.nleCall).toHaveBeenCalledWith("premiere", "read_timeline", { timeline: "Main" });
+    // A1 covers 2-3 s; subtitles don't count; nothing after the last clip is a gap.
+    expect(outcome.result).toEqual({
+      fps: 25,
+      gaps: [
+        // 9.03 s is snapped to its frame, 9.04 s.
+        { start: 6, end: 9.04, seconds: 3.04 },
+        { start: 3, end: 5, seconds: 2 },
+      ],
+      totalSeconds: 5.04,
+    });
+    expect(outcome.summary).toBe("Found 2 gap(s) on the sequence, 5.0s in all");
+    expect((await run.find_timeline_gaps({ minSeconds: 2.5 })).result).toMatchObject({ gaps: [{ start: 6 }] });
   });
 
   it("declares enums only on strings, as Gemini's parameters require", () => {

@@ -66,6 +66,8 @@ if TYPE_CHECKING:
 READ_ONLY_TOOLS = (
     "list_timelines",
     "list_timeline_clips",
+    # Ripple edits: the empty stretches to close with a ripple DELETE_CLIP (PLAN.md, "Ripple edits on the timeline").
+    "find_timeline_gaps",
     "list_markers",
     "get_playhead_time",
     "get_edit_log",
@@ -341,6 +343,29 @@ def fit(result: Any, limit: int = MAX_RESULT_CHARS) -> Any:
         + ". Ask again for a shorter range of the file for the rest, or for word timings."
     )
     return slim
+
+
+def brief_commit(outcome: Any, limit: int = MAX_RESULT_CHARS // 2) -> Any:
+    """A committed delta's result for Claude, with a long `changes` list cut to a count of each kind: a
+    ripple over hundreds of silences makes hundreds of records, and `fit` would otherwise answer "too long"
+    for an edit that was made. The app's edit log keeps them all, and Revert works from that."""
+    if not isinstance(outcome, dict) or not isinstance(outcome.get("changes"), list):
+        return outcome
+    if len(json.dumps(outcome, ensure_ascii=False, default=str)) <= limit:
+        return outcome
+    kinds: dict[str, int] = {}
+    for change in outcome["changes"]:
+        kind = str(change.get("kind")) if isinstance(change, dict) else "?"
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return {
+        **{k: v for k, v in outcome.items() if k != "changes"},
+        "changeCounts": kinds,
+        "changesNote": (
+            f"{len(outcome['changes'])} change records, too many to show; the app's edit log has them all, "
+            "and revert_timeline_edits with this editId takes the whole delta back. Read the timeline for where "
+            "things are now."
+        ),
+    }
 
 
 def _connected_timeline(status: dict[str, Any]) -> str:
@@ -638,8 +663,8 @@ class OrchestratorToolBus:
         if not (isinstance(outcome, dict) and "error" in outcome):
             del self.proposals[token]
             self._observe("COMMITTED", proposal.delta, token, otio_path)
-        else:
-            self._observe("ROLLED_BACK", proposal.delta, token, otio_path)
+            return brief_commit(outcome)
+        self._observe("ROLLED_BACK", proposal.delta, token, otio_path)
         return outcome
 
     def _observe(

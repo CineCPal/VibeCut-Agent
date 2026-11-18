@@ -43,6 +43,9 @@ BATCH_COMMANDS = (
     "delete_clips",
     "reshape_clip",
     "split_clips",
+    # Ripple edits on the timeline (Premiere): stretches taken out of every track, or time opened up.
+    "ripple_delete",
+    "insert_time",
     "set_clip_levels",
     "set_clip_fades",
     "set_transition",
@@ -63,17 +66,21 @@ def follow(item_id: Any, renamed: Mapping[str, str]) -> Any:
 
 
 def remap(args: dict[str, Any], renamed: Mapping[str, str]) -> dict[str, Any]:
-    """A call's arguments with the clip ids it names followed (itemId, itemIds, levels[].itemId)."""
+    """A call's arguments with the clip ids it names followed (itemId, itemIds, levels[].itemId,
+    moves[].itemId)."""
     out = copy.deepcopy(args)
     if "itemId" in out:
         out["itemId"] = follow(out["itemId"], renamed)
     if isinstance(out.get("itemIds"), list):
         out["itemIds"] = [follow(i, renamed) for i in out["itemIds"]]
-    if isinstance(out.get("levels"), list):
-        out["levels"] = [
-            {**entry, "itemId": follow(entry.get("itemId"), renamed)} if isinstance(entry, dict) else entry
-            for entry in out["levels"]
-        ]
+    for key in ("levels", "moves"):
+        if isinstance(out.get(key), list):
+            out[key] = [
+                {**entry, "itemId": follow(entry.get("itemId"), renamed)}
+                if isinstance(entry, dict)
+                else entry
+                for entry in out[key]
+            ]
     return out
 
 
@@ -95,6 +102,11 @@ def followed(changes: list[dict[str, Any]], renamed: Mapping[str, str]) -> list[
         for key in ("groupsBefore", "groupsAfter"):
             if isinstance(c.get(key), list):
                 c[key] = [ids(group) for group in c[key]]
+        if isinstance(c.get("moves"), list):
+            c["moves"] = [
+                {**m, "itemId": follow(m.get("itemId"), renamed)} if isinstance(m, dict) else m
+                for m in c["moves"]
+            ]
         if isinstance(c.get("items"), list):
             for item in c["items"]:
                 for side in ("after", "right"):
@@ -102,6 +114,25 @@ def followed(changes: list[dict[str, Any]], renamed: Mapping[str, str]) -> list[
                         item[side]["id"] = follow(item[side]["id"], renamed)
         out.append(c)
     return out
+
+
+def _right_pieces(
+    right_ids: Mapping[str, Any], made: list[dict[str, Any]], renamed: Mapping[str, str]
+) -> dict[str, str]:
+    """The delta's names for a split's right pieces (`rightIds`: the clip it named -> its name for the right
+    piece) -> the pieces' editor ids, from the split's change record, so later calls can name them."""
+    by_clip = {follow(clip_id, renamed): str(name) for clip_id, name in right_ids.items()}
+    found: dict[str, str] = {}
+    for change in made:
+        if change.get("kind") != "split":
+            continue
+        for item in change.get("items") or []:
+            before, right = item.get("before") or {}, item.get("right") or {}
+            # Resolve's left piece replaces the clip, so its id may already be followed to the left piece.
+            for clip_id in (before.get("id"), follow(before.get("id"), renamed)):
+                if clip_id in by_clip and right.get("id"):
+                    found[by_clip[clip_id]] = str(right["id"])
+    return found
 
 
 def in_db(change: dict[str, Any]) -> dict[str, Any]:
@@ -208,8 +239,11 @@ def execute_validated_batch(
     for entry in calls:
         command = entry["command"]
         where = f"Call {entry['seq']} of {len(batch)} ({command}, for {entry.get('source_op_id', '?')})"
+        call_args = remap(entry["args"], renamed)
+        # A split's right pieces, as the delta named them before they existed (otio_delta's `<id>:right`).
+        right_ids = call_args.pop("rightIds", None)
         try:
-            result = edits[command](host, {**remap(entry["args"], renamed), "timeline": timeline})
+            result = edits[command](host, {**call_args, "timeline": timeline})
         except (HostError, Unreachable) as e:
             note = _roll_back(host, edits, timeline, changes, renamed, backup, discard)
             raise type(e)(f"{where} failed: {e}. {note}") from None
@@ -217,6 +251,8 @@ def execute_validated_batch(
         made = list(result.get("changes") or [])
         changes += made
         renamed.update({str(k): str(v) for k, v in (result.get("renamed") or {}).items()})
+        if isinstance(right_ids, dict):
+            renamed.update(_right_pieces(right_ids, made, renamed))
         refused = result.get("refused") or []
         if refused:
             note = _roll_back(host, edits, timeline, changes, renamed, backup, discard)

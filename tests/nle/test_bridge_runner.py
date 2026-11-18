@@ -375,3 +375,67 @@ def test_only_a_vibecut_backup_of_the_timeline_is_ever_discarded():
 def test_both_editors_pass_their_discard_to_the_batch():
     # premiere_edits / resolve_edits wire discard_backup in; it isn't an edit command the app can call.
     assert "discard_backup" not in premiere_edits(None) and "discard_backup" not in resolve_edits()
+
+
+def test_a_split_right_piece_named_in_the_delta_is_followed_to_its_editor_id():
+    # Premiere keeps the clip's id on the left piece; Resolve replaces it (renamed), and the right piece is new.
+    for renamed in ({}, {"c1": "c1-left"}):
+        split = {
+            "changes": [
+                {
+                    "kind": "split",
+                    "items": [
+                        {
+                            "before": {"id": "c1"},
+                            "after": {"id": renamed.get("c1", "c1")},
+                            "right": {"id": "r9"},
+                        },
+                        {"before": {"id": "a1"}, "after": {"id": "a1"}, "right": {"id": "r10"}},
+                    ],
+                }
+            ],
+            "refused": [],
+            "renamed": renamed,
+        }
+        editor = Editor(split_clips=split)
+        result = run(
+            editor,
+            batch(
+                call(
+                    2, "split_clips", itemIds=["c1"], time=2.0, rightIds={"c1": "c1:right", "a1": "a1:right"}
+                ),
+                call(3, "delete_clips", "op_002", itemIds=["c1:right", "a1:right"], withLinked=False),
+            ),
+        )
+        # The runner keeps rightIds to itself, and the delete names the pieces' editor ids.
+        assert "rightIds" not in editor.calls[1][1]
+        assert editor.calls[2][1]["itemIds"] == ["r9", "r10"]
+        assert result["renamed"] == {**renamed, "c1:right": "r9", "a1:right": "r10"}
+
+
+def test_a_ripple_runs_in_the_batch_and_its_shift_is_undone_by_id():
+    shifted = {
+        "changes": [
+            {
+                "kind": "shifted",
+                "moves": [{"itemId": "c2", "offset": -1.0, "offsetTicks": "-1", "startTicks": "0"}],
+            }
+        ],
+        "refused": [],
+    }
+    editor = Editor(ripple_delete=shifted, set_clip_levels=HostError("no"))
+    with pytest.raises(HostError):
+        run(
+            editor,
+            batch(
+                call(2, "ripple_delete", ranges=[{"start": 1.0, "end": 2.0}]),
+                call(3, "set_clip_levels", "op_002", levels=[{"itemId": "a1", "volumeDb": -6}]),
+            ),
+        )
+    assert editor.names() == [
+        "backup_timeline",
+        "ripple_delete",
+        "set_clip_levels",
+        "revert_timeline_changes",
+    ]
+    assert editor.calls[-1][1]["changes"] == shifted["changes"]

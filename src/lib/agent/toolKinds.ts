@@ -94,6 +94,7 @@ export const NOT_REVIEWED = new Set([
   "get_edit_log",
   "get_playhead_time",
   "get_transcript",
+  "find_timeline_gaps",
   "list_markers",
   "list_media_pool",
   "list_speakers",

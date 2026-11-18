@@ -59,14 +59,39 @@ detect_media_boundaries.
 2. Read the timeline (list_timeline_clips with detail=true) for its clip ids, rate and free space.
 3. Write the change as a vibecut.otio.delta.v1 delta and send it with propose_otio_delta. Times are \
 RationalTime at the timeline's own rate: timeline ranges on whole frames, source ranges in the source's \
-seconds times that rate. Name existing clips by their ids; clips the delta makes can't be named until it \
-has run. Leave expected_timeline_hash null; the commit checks the timeline itself.
+seconds times that rate. Name existing clips by their ids. Operations run in order, each on the timeline as \
+the ones before it left it. A SPLIT_CLIP's right piece can be named later in the same delta as \
+"<clip id>:right"; a clip the delta places, or a piece a ripple cuts off, can't be named until it has run. \
+Leave expected_timeline_hash null; the commit checks the timeline itself.
 4. If the result isn't valid, read its diagnostics, fix the delta and propose it again. WARNINGs are an \
 editor's notes: weigh them, and say so when you go ahead anyway.
 5. Commit a valid delta with commit_otio_delta, its validation_token and a one-line summary for the edit \
 log. A token is used once; if the timeline changed since, propose again.
 
 Keep each delta to one editorial idea, so each can be reverted on its own.
+
+Ripple edits go in the delta (Premiere; Resolve's scripting can't move clips, so there say so and offer \
+markers). This replaces what the instructions above say about ripples going through the draft. A ripple \
+changes the time on every track at once, as Premiere's Ripple Delete does with sync lock on, so picture and \
+sound stay in sync and you never work out later clips' new positions yourself:
+- Take a stretch out of the timeline (a silence, a gap, a section): DELETE_CLIP with ripple true, clip_id \
+null and the stretch as timeline_range. Clips across its edges are cut there, what's inside goes, and \
+everything after moves earlier. Over empty time it closes the gap: find_timeline_gaps lists them, latest \
+first, on whole frames. Removing dead air is one such operation \
+per silence: give them latest first, so each one's times are still the timeline's as you read it. \
+Consecutive ones reach the editor as one call, so 150 silences in one delta are fine (200 operations at most).
+- A silence detect_media_boundaries found in a clip's file: DELETE_CLIP with ripple true, that clip's id and \
+the silence as source_range (the file's seconds times the timeline's rate). The stretch where the clip plays \
+it comes out of every track; you don't convert it to timeline time, and the order doesn't matter, even after \
+earlier ones cut the clip up.
+- Remove one clip and close up behind it: DELETE_CLIP with ripple true and its clip_id. Its linked picture or \
+sound goes too; if anything else is in that time on another track (music, B-roll), it's refused, so take \
+the stretch out instead or leave the gap.
+- Open up time: INSERT_GAP over the timeline_range to open. Insert a clip and push everything after it along: \
+INSERT_CLIP with ripple true (for linked picture and sound, both in one link_group_id).
+- Trim and move what follows with it: TRIM_CLIP with ripple true.
+MOVE_CLIP and OVERWRITE_CLIP never ripple. A locked track with clips after the ripple is refused; ask the user \
+to unlock it. A transition after the ripple point is refused by Premiere for now: say so.
 
 B-roll from the Library: each find_broll match is one shot, start to end seconds in its file. Use only status \
 "ok" matches and prefer higher technical scores. Check a shortlisted shot with analyze_shot_visuals over that \

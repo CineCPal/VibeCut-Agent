@@ -49,19 +49,25 @@ export interface GapOptions {
 
 /** The stretches where no track has a clip (an off clip still counts as one), the end included. */
 export function findGaps(draft: HostDraft, options: GapOptions = {}): TimeRange[] {
-  const fps = draft.fps;
+  const clips = [...draft.video, ...draft.audio].flatMap((t) => t.clips);
+  if (!clips.length) throw new Error("The draft has no clips");
+  return gapsBetween(clips, draft.duration, draft.fps, options);
+}
+
+/** The stretches between `clips` (on any tracks) where none is, from 0 to `duration`, on whole frames: the
+ * draft's gaps, and the live timeline's (find_timeline_gaps, for a ripple in a delta). */
+export function gapsBetween(clips: { start: number; end: number }[], duration: number, fps: number, options: GapOptions = {}): TimeRange[] {
   const snap = (t: number) => round3(Math.round(t * fps) / fps);
   const half = 0.5 / fps;
-  const spans = [...draft.video, ...draft.audio].flatMap((t) => t.clips.map((c) => ({ start: snap(c.start), end: snap(c.end) }))).sort((a, b) => a.start - b.start);
-  if (!spans.length) throw new Error("The draft has no clips");
+  const spans = clips.map((c) => ({ start: snap(c.start), end: snap(c.end) })).sort((a, b) => a.start - b.start);
   const gaps: TimeRange[] = [];
   let cursor = 0;
   for (const s of spans) {
     if (s.start > cursor + half) gaps.push({ start: cursor, end: s.start });
     cursor = Math.max(cursor, s.end);
   }
-  const duration = snap(draft.duration);
-  if (duration > cursor + half) gaps.push({ start: cursor, end: duration });
+  const end = snap(duration);
+  if (end > cursor + half) gaps.push({ start: cursor, end });
   const min = Math.max(options.minSeconds ?? 0, 1 / fps);
   const from = options.from ?? 0;
   const to = options.to ?? Infinity;
