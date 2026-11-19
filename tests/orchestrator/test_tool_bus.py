@@ -144,12 +144,46 @@ def test_transcribe_passes_the_window_and_reports_progress(config, tmp_path, med
     assert bus.statuses == ["a.mov: half way"]
     backwards = bus.dispatch("transcribe_and_align", {**args, "source_range_seconds": {"start": 5, "end": 2}})
     assert backwards == {"error": "The range ends before it starts"}
+    # Without the token the transcript is still made, without speakers, and the model is told why.
     speakers = bus.dispatch("transcribe_and_align", {**args, "enable_diarization": True})
-    assert "Hugging Face token" in speakers["error"]
+    assert speakers["segments"] == [] and "Hugging Face token" in speakers["note"]
+    assert whisper.calls[-1][2]["enable_diarization"] is False
+    assert whisper.calls[-1][2]["use_cache"] is True
+    bus.dispatch("transcribe_and_align", {**args, "use_cache": False})
+    assert whisper.calls[-1][2]["use_cache"] is False
     missing = bus.dispatch("transcribe_and_align", {"media_path": str(tmp_path / "gone.mov")})
     assert "isn't there" in missing["error"]
     relative = bus.dispatch("transcribe_and_align", {"media_path": "a.mov"})
     assert relative == {"error": "media_path must be an absolute path"}
+
+
+def test_a_long_transcript_comes_back_as_a_summary(config, tmp_path, media):
+    lines = [
+        {
+            "start": i * 2.0,
+            "end": i * 2.0 + 1.5,
+            "text": f"line {i}",
+            "speaker": "Speaker 1" if i % 3 else "Speaker 2",
+            "low_confidence": i in (10, 11, 40),
+            "words": [],
+        }
+        for i in range(200)
+    ]
+    whisper = Worker(
+        {"schema_version": "vibecut.whisper.v2", "name": "a.mov", "speakers": [], "segments": lines}
+    )
+    bus = make_bus(config, tmp_path, whisper=whisper)
+    summary = bus.dispatch("transcribe_and_align", {"media_path": media["a.mov"]})
+    assert "segments" not in summary and summary["segments_omitted"] is True
+    assert summary["segment_count"] == 200 and summary["last_line_seconds"] == 399.5
+    assert summary["lines_by_speaker"] == {"Speaker 1": 133, "Speaker 2": 67}
+    assert summary["low_confidence_ranges_seconds"] == [[20.0, 23.5], [80.0, 81.5]]
+    assert "get_transcript" in summary["how_to_read"]
+    # A window of the same transcript comes back as lines.
+    window = bus.dispatch(
+        "transcribe_and_align", {"media_path": media["a.mov"], "source_range_seconds": {"start": 0}}
+    )
+    assert len(window["segments"]) == 200 or window.get("truncated")
 
 
 def test_shot_analysis_goes_to_the_vlm(config, tmp_path, media):

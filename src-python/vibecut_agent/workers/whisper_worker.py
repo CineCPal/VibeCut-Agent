@@ -25,6 +25,7 @@ A cache from before that is brought up to it once, by `pipeline.upgrade_cache`, 
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import importlib.util
 import json
@@ -47,7 +48,7 @@ from vibecut_agent.core.timecode_math import (
     time_range_from_seconds,
 )
 from vibecut_agent.orchestrator.schemas import WHISPER_VERSION
-from vibecut_agent.transcribe import alignment, pipeline
+from vibecut_agent.transcribe import alignment, audio_cache, pipeline
 from vibecut_agent.workers.base import GpuLock, WorkerHealth
 
 BACKENDS = ("mlx-whisper", "faster-whisper", "whisper.cpp")
@@ -242,20 +243,32 @@ def whisper_cpp_backend(binary: str) -> Backend:
             raise WhisperWorkerError(
                 f"whisper.cpp needs a ggml model file; {model} isn't one (VIBECUT_WHISPER_MODEL)"
             )
-        base = os.path.join(os.path.dirname(wav), "whisper-cpp")
-        command = [binary, "-m", model, "-f", wav, "-ojf", "-of", base, "-np"]
+        # Its output (and, for the kept FLAC, a WAV it can read) goes in a folder of its own, never next to
+        # the kept sound.
+        folder = tempfile.mkdtemp(prefix="vibecut_whisper_cpp_")
         try:
-            done = subprocess.run(command, capture_output=True, timeout=WHISPER_CPP_TIMEOUT_S, check=False)
-        except FileNotFoundError:
-            raise WhisperWorkerError(f"whisper.cpp isn't at {binary} (VIBECUT_WHISPER_CPP_BIN)") from None
-        except subprocess.TimeoutExpired:
-            raise WhisperWorkerError("whisper.cpp took too long") from None
-        if done.returncode != 0:
-            raise WhisperWorkerError(
-                f"whisper.cpp failed: {done.stderr.decode(errors='ignore').strip()[-300:]}"
-            )
-        with open(f"{base}.json", encoding="utf-8") as f:
-            return parse_whisper_cpp(json.load(f))
+            try:
+                source = audio_cache.as_wav(wav, folder)
+            except RuntimeError as e:
+                raise WhisperWorkerError(str(e)) from None
+            base = os.path.join(folder, "whisper-cpp")
+            command = [binary, "-m", model, "-f", source, "-ojf", "-of", base, "-np"]
+            try:
+                done = subprocess.run(
+                    command, capture_output=True, timeout=WHISPER_CPP_TIMEOUT_S, check=False
+                )
+            except FileNotFoundError:
+                raise WhisperWorkerError(f"whisper.cpp isn't at {binary} (VIBECUT_WHISPER_CPP_BIN)") from None
+            except subprocess.TimeoutExpired:
+                raise WhisperWorkerError("whisper.cpp took too long") from None
+            if done.returncode != 0:
+                raise WhisperWorkerError(
+                    f"whisper.cpp failed: {done.stderr.decode(errors='ignore').strip()[-300:]}"
+                )
+            with open(f"{base}.json", encoding="utf-8") as f:
+                return parse_whisper_cpp(json.load(f))
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     return run
 
@@ -457,11 +470,13 @@ class WhisperWorker:
         cached = self.cached(media_path, rate) if use_cache else None
         if cached is not None:
             return in_window(cached, start, end)
-        segments, speakers, aligned = self._run(media_path, model, enable_diarization, hf_token, on_progress)
+        segments, speakers, aligned, language = self._run(
+            media_path, model, enable_diarization, hf_token, on_progress
+        )
         name = os.path.basename(media_path)
         cache_segments = [replace(s, words=pipeline.clean_words(s.words)) for s in segments]
         marker = pipeline.ALIGNMENT_VERSION if aligned else None
-        pipeline.write_cache(media_path, name, cache_segments, speakers, alignment=marker)
+        pipeline.write_cache(media_path, name, cache_segments, speakers, alignment=marker, language=language)
         data = {"name": name, "speakers": speakers, "speaker_labels": {}, "excluded_speakers": []}
         return in_window(to_v2(data, media_path, rate, self.backend, model, segments), start, end)
 
@@ -478,8 +493,21 @@ class WhisperWorker:
         if not pipeline.needs_upgrade(data):
             return
         assert data is not None
+        report = self._extract_report(on_progress)
+        try:
+            # Extracted (and kept) before the GPU lock is taken: reading a long file off a drive needs no GPU.
+            with audio_cache.audio_for(media_path, report):
+                pass
+        except (OSError, RuntimeError):
+            return  # the media can't be read: the old cache stands
         with self.lock:
             pipeline.upgrade_cache(media_path, data, self._clip_backend(model), on_progress)
+
+    @staticmethod
+    def _extract_report(on_progress: Progress | None) -> Callable[[float, str], None] | None:
+        if on_progress is None:
+            return None
+        return lambda fraction, detail: on_progress("extract", fraction, detail)
 
     def _run(
         self,
@@ -488,32 +516,40 @@ class WhisperWorker:
         enable_diarization: bool,
         hf_token: str | None,
         on_progress: Progress | None,
-    ) -> tuple[list[Any], list[str], bool]:
+    ) -> tuple[list[Any], list[str], bool, str | None]:
         def report(phase: str, fraction: float, detail: str) -> None:
             if on_progress is not None:
                 on_progress(phase, fraction, detail)
 
-        folder = tempfile.mkdtemp(prefix="vibecut_whisper_")
         try:
-            wav = os.path.join(folder, "audio.wav")
             report("extract", 0.0, "Extracting the sound")
-            try:
-                pipeline.extract_audio(media_path, wav)
-            except RuntimeError as e:
-                raise WhisperWorkerError(str(e)) from None
-            report("transcribe", 0.0, f"Transcribing with {self.backend}")
-            with self.lock:
-                raw = self.backends[self.backend](wav, model)
-                report("align", 0.0, "Checking the transcript against the sound")
-                aligned = True
+            with contextlib.ExitStack() as stack:
                 try:
-                    raw = pipeline.align_raw(wav, raw, self._clip_backend(model))
-                except Exception:  # noqa: BLE001 - best effort: Whisper's own times are kept, and retried later
-                    aligned = False
-                turns: list[Any] = []
-                if enable_diarization:
-                    report("diarize", 0.0, "Telling speakers apart")
-                    turns = pipeline.diarize_audio(wav, hf_token or "")
+                    audio = stack.enter_context(
+                        audio_cache.audio_for(media_path, self._extract_report(on_progress))
+                    )
+                except RuntimeError as e:
+                    raise WhisperWorkerError(str(e)) from None
+                report("transcribe", 0.0, f"Transcribing with {self.backend}")
+                with self.lock:
+                    raw = self.backends[self.backend](audio, model)
+                    language = next((s.get("language") for s in raw if s.get("language")), None)
+                    report("align", 0.0, "Checking the transcript against the sound")
+                    aligned = True
+                    try:
+                        raw = pipeline.align_raw(
+                            audio,
+                            raw,
+                            self._clip_backend(model),
+                            language,
+                            lambda fraction, detail: report("align", fraction, detail),
+                        )
+                    except Exception:  # noqa: BLE001 - best effort: Whisper's own times are kept, and retried later
+                        aligned = False
+                    turns: list[Any] = []
+                    if enable_diarization:
+                        report("diarize", 0.0, "Telling speakers apart")
+                        turns = pipeline.diarize_audio(audio, hf_token or "")
             segments, order = pipeline.merge_transcript_and_speakers(raw, turns)
             names = pipeline.normalize_speaker_names(order)
             for seg in segments:
@@ -521,7 +557,6 @@ class WhisperWorker:
             if aligned:
                 segments = alignment.shift(segments, pipeline.audio_offset(media_path))
             report("transcribe", 1.0, "Transcribed")
-            return segments, list(names.values()) or ["Speaker 1"], aligned
+            return segments, list(names.values()) or ["Speaker 1"], aligned, language
         finally:
-            shutil.rmtree(folder, ignore_errors=True)
             gc.collect()

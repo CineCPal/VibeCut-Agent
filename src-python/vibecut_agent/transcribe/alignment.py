@@ -22,13 +22,23 @@ From those:
 Without onnxruntime the level alone stands in for the VAD. Where the level barely moves (music, constant
 noise: under 12 dB between the 20th and 90th percentile over +-5 s), no word is moved.
 
+Recovery is held to the transcript's language (pipeline.align_raw finds it), and a recovered line is kept
+only when Whisper scored it (finite, at least RECOVER_MIN_LOGPROB) and it isn't a repetition loop: on room
+noise Whisper otherwise writes "tähän tähän tähän ..." in whatever language it guessed. Scores that aren't
+finite are read as plainly low. Lookups over the speech regions and words are by bisection, so a two-hour
+file's thousands of lines and regions stay quick.
+
 Segments here are Whisper's raw dicts (start, end, text, avg_logprob, no_speech_prob, words), the shape
 pipeline.merge_transcript_and_speakers reads; words are {start, end, text, probability?}."""
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import math
+import re
 import sys
+import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,12 +90,91 @@ RECOVER_MIN_S = 0.3
 RECOVER_COVERAGE = 0.5
 RECOVER_PAD_S = 0.25
 HALLUCINATION_SPEECH = 0.15
+# A recovered line is kept only when Whisper's score for it is finite and at least this (decided; PLAN.md
+# "Long files"), and it isn't a loop: text that compresses past Whisper's own 2.4 gate, one word making up
+# more than half of six or more, or a word said five times running ("no, no, no, no" is speech).
+RECOVER_MIN_LOGPROB = -1.2
+LOOP_COMPRESSION_RATIO = 2.4
+LOOP_SHARE = 0.5
+LOOP_RUN = 5
+NONFINITE_AVG_LOGPROB = -10.0
+NONFINITE_NO_SPEECH_PROB = 1.0
 
 RawSegment = dict[str, Any]
 # Transcribes only `clips` ([(start, end)] seconds) of the WAV, in `language` when known: Whisper's raw
 # segments with times in the whole file's seconds.
 ClipTranscriber = Callable[[list[tuple[float, float]], str | None], list[RawSegment]]
 Region = tuple[float, float]
+Progress = Callable[[float, str], None]
+
+
+def _finite(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _clean(seg: RawSegment) -> RawSegment:
+    """A raw segment with scores that are finite numbers (a NaN never compares as low)."""
+    return {
+        **seg,
+        "avg_logprob": _finite(seg.get("avg_logprob", 0.0), NONFINITE_AVG_LOGPROB),
+        "no_speech_prob": _finite(seg.get("no_speech_prob", 0.0), NONFINITE_NO_SPEECH_PROB),
+    }
+
+
+def is_repetitive(text: str) -> bool:
+    """Whether a line reads as one of Whisper's loops (see LOOP_*)."""
+    words = re.findall(r"\w+(?:'\w+)*", text.lower())  # "don't" is one word
+    if len(words) >= 6 and max(words.count(w) for w in set(words)) / len(words) > LOOP_SHARE:
+        return True
+    run = 1
+    for before, word in itertools.pairwise(words):
+        run = run + 1 if word == before else 1
+        if run >= LOOP_RUN:
+            return True
+    raw = text.encode("utf-8")
+    return len(raw) > 24 and len(raw) / len(zlib.compress(raw)) > LOOP_COMPRESSION_RATIO
+
+
+class _Intervals:
+    """Sorted, merged intervals, for overlap and containment by bisection."""
+
+    def __init__(self, spans: Sequence[Region]) -> None:
+        merged: list[list[float]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        self.starts = [m[0] for m in merged]
+        self.ends = [m[1] for m in merged]
+        self.cumulative = [0.0]
+        for start, end in merged:
+            self.cumulative.append(self.cumulative[-1] + end - start)
+
+    def contains(self, t: float) -> bool:
+        i = bisect.bisect_right(self.starts, t) - 1
+        return i >= 0 and t <= self.ends[i]
+
+    def overlap(self, start: float, end: float) -> float:
+        """Seconds of [start, end) these intervals cover."""
+        if end <= start or not self.starts:
+            return 0.0
+        first = max(0, bisect.bisect_right(self.starts, start) - 1)
+        last = bisect.bisect_left(self.starts, end)
+        total = 0.0
+        if last - first > 2:
+            # Whole intervals in the middle, from the running sum; the two ends measured.
+            total += self.cumulative[last - 1] - self.cumulative[first + 1]
+            ends: tuple[int, ...] = (first, last - 1)
+        else:
+            ends = tuple(range(first, last))
+        for i in ends:
+            total += _overlap(start, end, self.starts[i], self.ends[i])
+        return total
 
 
 def vad_available() -> bool:
@@ -192,10 +281,17 @@ class SpeechMap:
         return active.astype(np.float32), ENERGY_SECONDS
 
 
-def build_speech_map(wav_path: str, use_vad: bool = True) -> SpeechMap:
+def build_speech_map(wav_path: str, use_vad: bool = True, on_progress: Progress | None = None) -> SpeechMap:
     """One pass over a 16 kHz WAV (or any file ffmpeg reads) through a pipe: level every 10 ms and, with
-    onnxruntime, Silero's speech probability every 32 ms."""
+    onnxruntime, Silero's speech probability every 32 ms. `on_progress(fraction, detail)` as it reads."""
     silero = _Silero() if use_vad and vad_available() else None
+    expected = None
+    if on_progress is not None:
+        from vibecut_agent.broll import ffprobe_util
+
+        seconds = ffprobe_util.probe_duration_seconds(wav_path)
+        expected = seconds * SAMPLE_RATE if seconds else None
+    reported = -1
     levels: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
     pending = np.zeros(0, dtype=np.float32)
@@ -211,9 +307,14 @@ def build_speech_map(wav_path: str, use_vad: bool = True) -> SpeechMap:
             probabilities.append(silero(audio))
 
     def take(samples: Any) -> None:
-        nonlocal pending, total
+        nonlocal pending, total, reported
         chunk = np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0
         total += len(chunk)
+        if on_progress is not None and expected:
+            percent = min(100, int(total * 100 / expected))
+            if percent // 5 != reported // 5:
+                reported = percent
+                on_progress(percent / 100 * 0.5, f"Listening for speech… {percent}%")
         pending = np.concatenate([pending, chunk])
         whole = len(pending) - len(pending) % block
         if whole:
@@ -274,16 +375,23 @@ def _spans(segments: Sequence[RawSegment]) -> list[Region]:
 
 def uncovered(segments: Sequence[RawSegment], regions: Sequence[Region]) -> list[Region]:
     """Speech regions of RECOVER_MIN_S or more that the transcript covers less than RECOVER_COVERAGE of."""
-    spans = _spans(segments)
+    covered = _Intervals(_spans(segments))
     missed = []
     for start, end in regions:
         length = end - start
-        if length < RECOVER_MIN_S:
-            continue
-        covered = sum(_overlap(start, end, s, e) for s, e in spans if e > start and s < end)
-        if covered / length < RECOVER_COVERAGE:
+        if length >= RECOVER_MIN_S and covered.overlap(start, end) / length < RECOVER_COVERAGE:
             missed.append((start, end))
     return missed
+
+
+def _trustworthy(seg: RawSegment, text: str) -> bool:
+    """A recovered line Whisper scored, and not one of its loops."""
+    score = seg.get("avg_logprob", 0.0)
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(score) and score >= RECOVER_MIN_LOGPROB and not is_repetitive(text)
 
 
 def recover_missed(
@@ -295,37 +403,43 @@ def recover_missed(
 ) -> list[RawSegment]:
     """`segments` with Whisper's second look at the speech it left out: every missed region (padded by
     RECOVER_PAD_S) in one call. A recovered word is kept when it overlaps a missed region and its middle
-    isn't inside a word already there; a recovered line is its kept words. In time order."""
+    isn't inside a word already there; a recovered line is its kept words, kept only when Whisper scored it
+    and it isn't a loop (`_trustworthy`). In time order."""
     missed = uncovered(segments, regions)
     if not missed:
         return segments
     clips = [(max(0.0, s - RECOVER_PAD_S), min(duration, e + RECOVER_PAD_S)) for s, e in missed]
     found = transcribe_clips(clips, language)
-    existing = _spans(segments)
+    existing = _Intervals(_spans(segments))
+    gaps = _Intervals(missed)
 
     def wanted(start: float, end: float) -> bool:
         # On the missed speech at all (Whisper often stretches a first word back into the padding), and
         # not on a word already there.
-        middle = (start + end) / 2
-        return any(_overlap(start, end, s, e) > 0 for s, e in missed) and not any(
-            s <= middle <= e for s, e in existing
-        )
+        return gaps.overlap(start, end) > 0 and not existing.contains((start + end) / 2)
 
     recovered: list[RawSegment] = []
     for seg in found:
         text = str(seg.get("text") or "").strip()
         words = [w for w in seg.get("words") or [] if wanted(float(w["start"]), float(w["end"]))]
         if words:
-            recovered.append(
-                {
-                    **seg,
-                    "start": float(words[0]["start"]),
-                    "end": float(words[-1]["end"]),
-                    "text": " ".join(str(w["text"]).strip() for w in words),
-                    "words": words,
-                }
-            )
-        elif text and not seg.get("words") and wanted(float(seg["start"]), float(seg["end"])):
+            line = " ".join(str(w["text"]).strip() for w in words)
+            if _trustworthy(seg, line):
+                recovered.append(
+                    {
+                        **seg,
+                        "start": float(words[0]["start"]),
+                        "end": float(words[-1]["end"]),
+                        "text": line,
+                        "words": words,
+                    }
+                )
+        elif (
+            text
+            and not seg.get("words")
+            and wanted(float(seg["start"]), float(seg["end"]))
+            and _trustworthy(seg, text)
+        ):
             recovered.append({**seg, "text": text})
     return sorted([*segments, *recovered], key=lambda s: (float(s["start"]), float(s["end"])))
 
@@ -352,11 +466,12 @@ def drop_hallucinations(
 ) -> list[RawSegment]:
     """`segments` without the lines Whisper made up over silence: low confidence, under
     HALLUCINATION_SPEECH of the line in a speech region, and the sound there mostly silent."""
+    speaking = _Intervals(regions)
     kept = []
     for seg in segments:
         start, end = float(seg["start"]), float(seg["end"])
         length = max(end - start, 1e-6)
-        in_speech = sum(_overlap(start, end, s, e) for s, e in regions) / length
+        in_speech = speaking.overlap(start, end) / length
         if _low_confidence(seg) and in_speech < HALLUCINATION_SPEECH and _quiet(speech, start, end):
             continue
         kept.append(seg)
@@ -487,13 +602,26 @@ def align(
     speech: SpeechMap,
     transcribe_clips: ClipTranscriber | None = None,
     language: str | None = None,
+    on_progress: Progress | None = None,
 ) -> list[RawSegment]:
     """Whisper's raw segments checked against the sound: missed speech recovered (when a clip transcriber
     is given), lines made up over silence dropped, word and line edges put on the sound."""
+
+    def report(fraction: float, detail: str) -> None:
+        if on_progress is not None:
+            on_progress(fraction, detail)
+
     regions = speech_regions(speech)
-    ordered = sorted(segments, key=lambda s: (float(s["start"]), float(s["end"])))
+    ordered = sorted((_clean(s) for s in segments), key=lambda s: (float(s["start"]), float(s["end"])))
     if transcribe_clips is not None:
-        ordered = recover_missed(ordered, regions, transcribe_clips, speech.duration, language)
+        missed = uncovered(ordered, regions)
+        if missed:
+            seconds = sum(e - s for s, e in missed)
+            report(0.55, f"Transcribing {len(missed)} stretch(es) of speech Whisper missed ({seconds:.0f} s)")
+        ordered = [
+            _clean(s) for s in recover_missed(ordered, regions, transcribe_clips, speech.duration, language)
+        ]
+    report(0.9, "Putting line edges on the sound")
     ordered = drop_hallucinations(ordered, speech, regions)
     return refine_words(ordered, speech, regions)
 

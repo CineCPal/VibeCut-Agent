@@ -156,6 +156,12 @@ ORCHESTRATOR_TOOLS: list[dict[str, Any]] = [
                     "default": "large-v3-turbo",
                 },
                 "enable_diarization": {"type": "boolean", "default": False},
+                # Added 2026-11-19 (PLAN.md "Long files"; the user's decision, additive): a re-transcribe.
+                "use_cache": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "true (default) reads the file's saved transcript when it is still valid; false transcribes the file again from scratch and replaces it (what re-transcribe means).",
+                },
                 "source_range_seconds": {
                     "type": "object",
                     "additionalProperties": False,

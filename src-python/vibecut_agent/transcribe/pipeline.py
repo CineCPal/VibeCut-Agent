@@ -7,16 +7,20 @@ previous text; the sound comes from the file's first audio stream; each transcri
 the sound (transcribe/alignment.py: missed speech recovered, lines made up over silence dropped, line edges
 on the sound) and moved by the audio stream's start offset, so its times count from the picture's first
 frame. The cache records that as `"alignment": ALIGNMENT_VERSION`; `upgrade_cache` brings an older cache up
-to it without transcribing the whole file again."""
+to it without transcribing the whole file again.
+
+Long files (PLAN.md, "Long files: transcripts that read back"): the sound is extracted once and kept
+(audio_cache.py), with progress and a time limit that grows with the file; the transcript's language is
+kept in the cache and every second look at missed speech is held to it; no number that isn't finite is ever
+written (a bare `NaN` makes the whole cache unreadable to the app's reader)."""
 
 import gc
 import json
+import math
 import os
-import shutil
-import subprocess
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 CACHE_SUFFIX = ".ivt-cache.json"
 
@@ -47,6 +51,27 @@ RECOVERY_OPTIONS = {
 }
 # Transcribes only some stretches of a WAV: (wav, [(start, end)] seconds, language or None) -> raw segments.
 ClipBackend = Callable[[str, list, "str | None"], list]
+# What a score Whisper couldn't compute (NaN, infinite) is stored as: plainly low confidence.
+NONFINITE_AVG_LOGPROB = -10.0
+NONFINITE_NO_SPEECH_PROB = 1.0
+# How much of a line the language is detected from, when an older cache doesn't record it.
+LANGUAGE_SAMPLE_S = 30.0
+
+
+def finite(value, default: float) -> float:
+    """`value` as a float when it is a finite number, else `default`."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+class TranscribeResult(NamedTuple):
+    segments: list
+    speakers: list
+    aligned: bool  # checked against the sound (alignment.py); False when that failed
+    language: "str | None"
 
 
 @dataclass
@@ -123,31 +148,13 @@ def fmt_vtt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-def extract_audio(video_path: str, out_wav: str) -> None:
-    """Pull only the audio stream to a mono 16kHz WAV (required by both
-    mlx-whisper and pyannote). No copy of the video itself is made."""
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        video_path,
-        "-map",
-        "0:a:0",  # the first audio stream, the one an editor plays (not ffmpeg's pick of the "best")
-        "-vn",  # no video
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        out_wav,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=1800)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"ffmpeg did not finish extracting audio from {video_path} within 30 minutes")
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode(errors='ignore')[-500:]}")
+def extract_audio(video_path: str, out_path: str, on_progress=None) -> None:
+    """Pull only the first audio stream to a mono 16 kHz file (WAV, or FLAC for `.flac`), which
+    mlx-whisper and pyannote both read. No copy of the video itself is made. `on_progress(fraction,
+    detail)` follows ffmpeg; the time limit grows with the file (audio_cache.extract_timeout)."""
+    from vibecut_agent.transcribe import audio_cache
+
+    audio_cache.extract(video_path, out_path, on_progress)
 
 
 def transcribe_audio(audio_path: str, model_repo: str, progress_callback=None) -> list:
@@ -241,25 +248,62 @@ def transcribe_clips(audio_path: str, model_repo: str, clips: list, language: st
             "avg_logprob": seg.get("avg_logprob", 0.0),
             "no_speech_prob": seg.get("no_speech_prob", 0.0),
             "words": clean_words(seg.get("words")),
+            "language": result.get("language"),
         }
         for seg in result.get("segments", [])
     ]
 
 
-def align_raw(audio_path: str, raw_segments: list, clip_backend: ClipBackend | None = None) -> list:
+def detect_language(audio_path: str, segments: list, clip_backend: ClipBackend) -> str | None:
+    """The language of a transcript that doesn't record it: Whisper's detection on up to
+    LANGUAGE_SAMPLE_S of its surest lines that have words (up to three tries), or None."""
+    lines = [
+        s
+        for s in segments
+        if s.get("words") and finite(s.get("end"), 0.0) - finite(s.get("start"), 0.0) >= 1.0
+    ]
+    lines.sort(key=lambda s: -finite(s.get("avg_logprob"), NONFINITE_AVG_LOGPROB))
+    for line in lines[:3]:
+        start = float(line["start"])
+        clip = (start, min(float(line["end"]), start + LANGUAGE_SAMPLE_S))
+        try:
+            found = clip_backend(audio_path, [clip], None)
+        except Exception:
+            continue
+        language = next((f.get("language") for f in found if f.get("language")), None)
+        if language:
+            return language
+    return None
+
+
+def align_raw(
+    audio_path: str,
+    raw_segments: list,
+    clip_backend: ClipBackend | None = None,
+    language: str | None = None,
+    on_progress=None,
+) -> list:
     """Whisper's raw segments checked against the sound of `audio_path` (alignment.align): missed speech
-    recovered with `clip_backend` when given, made-up lines dropped, edges on the sound."""
+    recovered with `clip_backend`, made-up lines dropped, edges on the sound. Missed speech is only
+    transcribed again in the transcript's own language: `language`, else the main pass's, else detected
+    from its lines; when none can be found nothing is recovered (Whisper guessing a language on room
+    noise writes loops in it). `on_progress(fraction, detail)` follows the steps."""
     from vibecut_agent.transcribe import alignment
 
-    language = next((s.get("language") for s in raw_segments if s.get("language")), None)
-    speech = alignment.build_speech_map(audio_path)
+    language = language or next((s.get("language") for s in raw_segments if s.get("language")), None)
     transcribe = None
     if clip_backend is not None:
+        if language is None:
+            if on_progress is not None:
+                on_progress(0.0, "Finding the transcript's language")
+            language = detect_language(audio_path, raw_segments, clip_backend)
+        if language is not None:
 
-        def transcribe(clips, lang):
-            return clip_backend(audio_path, clips, lang)
+            def transcribe(clips, lang):
+                return clip_backend(audio_path, clips, lang)
 
-    return alignment.align(raw_segments, speech, transcribe, language)
+    speech = alignment.build_speech_map(audio_path, on_progress=on_progress)
+    return alignment.align(raw_segments, speech, transcribe, language, on_progress=on_progress)
 
 
 def audio_offset(video_path: str) -> float:
@@ -284,6 +328,8 @@ def clean_words(raw) -> list | None:
             not text
             or not isinstance(start, (int, float))
             or not isinstance(end, (int, float))
+            or not math.isfinite(start)
+            or not math.isfinite(end)
             or end <= start
         ):
             continue
@@ -527,6 +573,7 @@ def write_cache(
     speaker_labels: dict | None = None,
     excluded_speakers=(),
     alignment: int | None = None,
+    language: str | None = None,
 ) -> bool:
     """Persist a finished (or edited) file's results next to the source
     video so a future run can skip re-transcribing it. Best-effort:
@@ -552,19 +599,26 @@ def write_cache(
                 "end": s.end,
                 "text": s.text,
                 "speaker": s.speaker,
-                "avg_logprob": s.avg_logprob,
-                "no_speech_prob": s.no_speech_prob,
-                **({"words": s.words} if s.words else {}),
+                # A score Whisper couldn't compute is stored as plainly low: a bare NaN isn't JSON, and
+                # the app's reader would drop the whole transcript over it.
+                "avg_logprob": finite(s.avg_logprob, NONFINITE_AVG_LOGPROB),
+                "no_speech_prob": finite(s.no_speech_prob, NONFINITE_NO_SPEECH_PROB),
+                **({"words": words} if (words := clean_words(s.words)) else {}),
             }
             for s in segments
+            if math.isfinite(finite(s.start, math.nan)) and math.isfinite(finite(s.end, math.nan))
         ],
         "speaker_labels": speaker_labels or {},
         "excluded_speakers": sorted(excluded_speakers),
         **({"alignment": alignment} if alignment is not None else {}),
+        **({"language": language} if language else {}),
     }
     try:
-        with open(_cache_path(video_path), "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        text = json.dumps(data, allow_nan=False)
+        tmp = _cache_path(video_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, _cache_path(video_path))
         return True
     except Exception:
         return False
@@ -578,11 +632,12 @@ def segments_from_cache(data: dict) -> list:
             end=s["end"],
             text=s["text"],
             speaker=s.get("speaker", "Speaker 0"),
-            avg_logprob=s.get("avg_logprob", 0.0),
-            no_speech_prob=s.get("no_speech_prob", 0.0),
+            avg_logprob=finite(s.get("avg_logprob", 0.0), NONFINITE_AVG_LOGPROB),
+            no_speech_prob=finite(s.get("no_speech_prob", 0.0), NONFINITE_NO_SPEECH_PROB),
             words=clean_words(s.get("words")),
         )
         for s in data.get("segments", [])
+        if math.isfinite(finite(s.get("start"), math.nan)) and math.isfinite(finite(s.get("end"), math.nan))
     ]
 
 
@@ -592,17 +647,18 @@ def transcribe_video(
     enable_diarization: bool,
     hf_token: str,
     on_progress=None,
-):
+) -> TranscribeResult:
     """Run the full pipeline (extract -> transcribe -> align -> diarize -> merge -> offset) for one
-    video and return `(segments, speakers, aligned)`. `aligned` is False when checking the transcript
-    against the sound failed (Whisper's own times are kept; the cache is then written without its
-    `alignment` mark, so `upgrade_cache` tries again). Raises on any other failure. The temporary audio
-    is always removed and memory released, even when a step fails.
+    video. `aligned` is False when checking the transcript against the sound failed (Whisper's own times
+    are kept; the cache is then written without its `alignment` mark, so `upgrade_cache` tries again).
+    Raises on any other failure. The sound is extracted once and kept (audio_cache.audio_for); memory is
+    released even when a step fails.
 
     If given, `on_progress(phase: str, fraction: float, detail: str)` is called as the file moves
     through "extract"/"transcribe"/"align"/"diarize", with `fraction` resetting to 0.0 at the start of each
     phase (there is no single meaningful percentage across phases of very different,
     file-dependent duration). Exceptions raised by the callback are ignored."""
+    from vibecut_agent.transcribe import alignment, audio_cache
 
     def report(phase, fraction, detail):
         if on_progress is not None:
@@ -611,53 +667,55 @@ def transcribe_video(
             except Exception:
                 pass
 
-    tmp_dir = tempfile.mkdtemp(prefix="ivt_")
     try:
-        # 1. Extract audio only, to a temp file
-        report("extract", 0.0, "Extracting audio…")
-        tmp_wav = os.path.join(tmp_dir, "audio.wav")
-        extract_audio(video_path, tmp_wav)
-
-        # 2. Transcribe (Apple Metal via mlx-whisper)
-        report("transcribe", 0.0, "Transcribing… 0%")
-        transcript_segments = transcribe_audio(
-            tmp_wav,
-            model_repo,
-            progress_callback=(lambda frac: report("transcribe", frac, f"Transcribing… {int(frac * 100)}%"))
-            if on_progress is not None
-            else None,
-        )
-
-        # 3. Check it against the sound: missed speech, made-up lines, edges (best effort)
-        report("align", 0.0, "Checking the transcript against the sound…")
-        aligned = True
-        try:
-            transcript_segments = align_raw(
-                tmp_wav,
-                transcript_segments,
-                lambda wav, clips, language: transcribe_clips(wav, model_repo, clips, language),
-            )
-        except Exception:
-            aligned = False
-        report("align", 1.0, "Checked against the sound")
-
-        # 4. Diarize (optional)
-        diarization_turns = []
-        if enable_diarization:
-            report("diarize", 0.0, "Diarizing speakers…")
-            diarization_turns = diarize_audio(
-                tmp_wav,
-                hf_token,
+        # 1. The sound only, extracted once and kept
+        report("extract", 0.0, "Extracting the sound…")
+        with audio_cache.audio_for(video_path, lambda f, d: report("extract", f, d)) as audio:
+            # 2. Transcribe (Apple Metal via mlx-whisper)
+            report("transcribe", 0.0, "Transcribing… 0%")
+            transcript_segments = transcribe_audio(
+                audio,
+                model_repo,
                 progress_callback=(
-                    lambda step, frac: report(
-                        "diarize",
-                        frac,
-                        f"Diarizing speakers ({step})… {int(frac * 100)}%",
-                    )
+                    lambda frac: report("transcribe", frac, f"Transcribing… {int(frac * 100)}%")
                 )
                 if on_progress is not None
                 else None,
             )
+            language = next((s.get("language") for s in transcript_segments if s.get("language")), None)
+
+            # 3. Check it against the sound: missed speech, made-up lines, edges (best effort)
+            report("align", 0.0, "Checking the transcript against the sound…")
+            aligned = True
+            try:
+                transcript_segments = align_raw(
+                    audio,
+                    transcript_segments,
+                    lambda wav, clips, lang: transcribe_clips(wav, model_repo, clips, lang),
+                    language,
+                    lambda f, d: report("align", f, d),
+                )
+            except Exception:
+                aligned = False
+            report("align", 1.0, "Checked against the sound")
+
+            # 4. Diarize (optional)
+            diarization_turns = []
+            if enable_diarization:
+                report("diarize", 0.0, "Diarizing speakers…")
+                diarization_turns = diarize_audio(
+                    audio,
+                    hf_token,
+                    progress_callback=(
+                        lambda step, frac: report(
+                            "diarize",
+                            frac,
+                            f"Diarizing speakers ({step})… {int(frac * 100)}%",
+                        )
+                    )
+                    if on_progress is not None
+                    else None,
+                )
 
         # 5. Merge + friendly speaker names, then times from the picture's first frame
         segments, speaker_order = merge_transcript_and_speakers(transcript_segments, diarization_turns)
@@ -665,14 +723,9 @@ def transcribe_video(
         for seg in segments:
             seg.speaker = name_map.get(seg.speaker, seg.speaker)
         if aligned:
-            from vibecut_agent.transcribe import alignment
-
             segments = alignment.shift(segments, audio_offset(video_path))
-        return segments, list(name_map.values()) or ["Speaker 1"], aligned
+        return TranscribeResult(segments, list(name_map.values()) or ["Speaker 1"], aligned, language)
     finally:
-        # 5. Clean up temp audio dir (even if extraction itself failed
-        # before producing any output) + free Unified Memory
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         gc.collect()
 
 
@@ -691,10 +744,12 @@ def _nearest_speaker(seg: dict, segments: list) -> str:
 
 def upgrade_cache(video_path: str, data: dict, clip_backend: ClipBackend | None = None, on_progress=None):
     """A cache written before ALIGNMENT_VERSION, checked against the sound and moved by the audio offset
-    without transcribing the whole file again (only the speech it missed, with `clip_backend`), written
-    back with its speaker names and switched-off speakers kept. Returns the new cache dict, or None when
-    it couldn't be done (the media can't be read, ...): the old cache stands and is tried again next time.
-    Lines recovered here take the speaker of the nearest line."""
+    without transcribing the whole file again (only the speech it missed, with `clip_backend`, in the
+    transcript's language: recorded, else detected from its lines), written back with its speaker names
+    and switched-off speakers kept. Returns the new cache dict, or None when it couldn't be done (the media
+    can't be read, ...): the old cache stands and is tried again next time. Lines recovered here take the
+    speaker of the nearest line."""
+    from vibecut_agent.transcribe import alignment, audio_cache
 
     def report(phase, fraction, detail):
         if on_progress is not None:
@@ -703,12 +758,9 @@ def upgrade_cache(video_path: str, data: dict, clip_backend: ClipBackend | None 
             except Exception:
                 pass
 
-    tmp_dir = tempfile.mkdtemp(prefix="ivt_")
     try:
         report("align", 0.0, "Checking the transcript against the sound…")
-        tmp_wav = os.path.join(tmp_dir, "audio.wav")
         try:
-            extract_audio(video_path, tmp_wav)
             raw = [
                 {
                     "start": s.start,
@@ -721,11 +773,15 @@ def upgrade_cache(video_path: str, data: dict, clip_backend: ClipBackend | None 
                 }
                 for s in segments_from_cache(data)
             ]
-            checked = align_raw(tmp_wav, raw, clip_backend)
+            with audio_cache.audio_for(video_path, lambda f, d: report("extract", f, d)) as audio:
+                language = data.get("language") if isinstance(data.get("language"), str) else None
+                if clip_backend is not None and language is None:
+                    report("align", 0.0, "Finding the transcript's language")
+                    language = detect_language(audio, raw, clip_backend)
+                checked = align_raw(audio, raw, clip_backend, language, lambda f, d: report("align", f, d))
             offset = audio_offset(video_path)
         except Exception:
             return None
-        from vibecut_agent.transcribe import alignment
 
         segments = [
             Segment(
@@ -753,10 +809,10 @@ def upgrade_cache(video_path: str, data: dict, clip_backend: ClipBackend | None 
             data.get("speaker_labels") or {},
             set(data.get("excluded_speakers") or []),
             alignment=ALIGNMENT_VERSION,
+            language=language,
         ):
             return None
         report("align", 1.0, "Checked against the sound")
         return load_cache(video_path)
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         gc.collect()

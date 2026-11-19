@@ -77,7 +77,7 @@ def test_the_wav_drops_that_offset_so_times_are_moved_by_it(delayed, tmp_path, m
         ],
     )
     monkeypatch.setattr(pipeline, "transcribe_clips", lambda *a, **k: [])
-    segments, speakers, aligned = pipeline.transcribe_video(str(delayed), "tiny", False, "")
+    segments, speakers, aligned, _language = pipeline.transcribe_video(str(delayed), "tiny", False, "")
     offset = ffprobe_util.audio_offset_seconds(str(delayed))
     assert aligned and speakers == ["Speaker 1"]
     # A steady tone gives the level nothing to read: only the offset moves the times.
@@ -198,7 +198,10 @@ def test_real_speech_lines_are_all_found_and_their_edges_land_on_the_sound(tmp_p
         *("-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(video)),
     )
     offset = ffprobe_util.audio_offset_seconds(str(video))
-    segments, _, aligned = pipeline.transcribe_video(str(video), "mlx-community/whisper-tiny-mlx", False, "")
+    segments, _, aligned, language = pipeline.transcribe_video(
+        str(video), "mlx-community/whisper-tiny-mlx", False, ""
+    )
+    assert language == "en"
     assert aligned
     text = " ".join(s.text.lower() for s in segments)
     assert "first line" in text and "second line" in text

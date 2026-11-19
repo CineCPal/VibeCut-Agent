@@ -28,5 +28,7 @@ def recorder() -> Recorder:
 def isolated_index_dir(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """No test touches the real index folder or its GPU lock (~/Library/Application Support/VibeCut
     Agent/vector-index): the workers, the titler, the critic and SigLIP 2 all take that lock. A test that
-    sets VIBECUT_INDEX_DIR itself, or clears it, still can."""
+    sets VIBECUT_INDEX_DIR itself, or clears it, still can. The same for the audio cache."""
     monkeypatch.setenv("VIBECUT_INDEX_DIR", str(tmp_path_factory.mktemp("vector-index")))
+    # Nor the kept sound of transcribed files (transcribe/audio_cache.py).
+    monkeypatch.setenv("VIBECUT_AUDIO_CACHE_DIR", str(tmp_path_factory.mktemp("audio-cache")))

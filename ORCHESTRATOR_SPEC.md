@@ -303,6 +303,11 @@ When `EXECUTION_MODE=orchestrated`, Claude receives six high-level orchestration
             "type": "boolean",
             "default": false
           },
+          "use_cache": {
+            "type": "boolean",
+            "default": true,
+            "description": "true (default) reads the file's saved transcript when it is still valid; false transcribes the file again from scratch and replaces it (what re-transcribe means)."
+          },
           "source_range_seconds": {
             "type": "object",
             "additionalProperties": false,

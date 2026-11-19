@@ -322,6 +322,61 @@ def gemini_tools() -> list[dict[str, Any]]:
     ]
 
 
+# A whole file's transcript longer than this many lines comes back as a summary (PLAN.md, "Long files"):
+# a two-hour interview's thousand lines can't be sent at once, and cutting them to the first few hundred
+# reads as if the rest weren't there. Its text is read in windows.
+INLINE_TRANSCRIPT_SEGMENTS = 150
+SUMMARY_LOW_CONFIDENCE_RANGES = 20
+
+
+def transcript_summary(result: dict[str, Any], limit: int = INLINE_TRANSCRIPT_SEGMENTS) -> dict[str, Any]:
+    """A `vibecut.whisper.v2` result as it is, when it has `limit` lines or fewer; else what it holds
+    (lines, length, speakers, where Whisper was unsure) and how to read it, without the lines."""
+    segments = result.get("segments")
+    if not isinstance(segments, list) or len(segments) <= limit:
+        return result
+    unsure: list[list[float]] = []
+    for seg in segments:
+        if not seg.get("low_confidence"):
+            continue
+        if unsure and seg["start"] - unsure[-1][1] <= 5.0:
+            unsure[-1][1] = seg["end"]
+        else:
+            unsure.append([seg["start"], seg["end"]])
+    keep = (
+        "schema_version",
+        "path",
+        "name",
+        "media_fps",
+        "backend",
+        "model_id",
+        "speakers",
+        "speaker_labels",
+    )
+    return {
+        **{k: result[k] for k in keep if k in result},
+        "excluded_speakers": result.get("excluded_speakers", []),
+        "segment_count": len(segments),
+        "first_line_seconds": segments[0]["start"],
+        "last_line_seconds": segments[-1]["end"],
+        "spoken_seconds": round(sum(s["end"] - s["start"] for s in segments), 1),
+        "lines_by_speaker": {
+            speaker: sum(1 for s in segments if s.get("speaker") == speaker)
+            for speaker in sorted({str(s.get("speaker")) for s in segments})
+        },
+        "low_confidence_ranges_seconds": [
+            [round(a, 2), round(b, 2)] for a, b in unsure[:SUMMARY_LOW_CONFIDENCE_RANGES]
+        ],
+        "segments_omitted": True,
+        "how_to_read": (
+            f"This transcript has {len(segments)} lines, too many to send at once, so they aren't here. It "
+            "is saved: read it in windows with get_transcript (filePath, startTime/endTime in seconds of "
+            "the file, paged with offset), or call transcribe_and_align again with source_range_seconds, "
+            "which reads the saved transcript without transcribing again."
+        ),
+    }
+
+
 def fit(result: Any, limit: int = MAX_RESULT_CHARS) -> Any:
     """`result`, cut down to `limit` characters of JSON when it is longer (see the module docstring)."""
 
@@ -570,20 +625,29 @@ class OrchestratorToolBus:
         start, end = window.get("start"), window.get("end")
         self._window(start, end)
         diarize = args.get("enable_diarization") is True
+        note = None
         if diarize and not self.hf_token:
-            raise ToolBusError(
-                "Telling speakers apart needs the Hugging Face token, which the chat isn't given; leave "
-                "enable_diarization off, or have the user index the file with speakers on"
+            # Not a failure: the transcript is made without speakers, and the model is told why.
+            diarize = False
+            note = (
+                "Speakers weren't told apart: that needs the Hugging Face token, which the chat isn't "
+                "given. The user can index the file with speakers on."
             )
-        return self.worker("whisper").transcribe(
+        result = self.worker("whisper").transcribe(
             path,
             model_tier=args.get("model_tier"),
             enable_diarization=diarize,
             hf_token=self.hf_token,
             start=start,
             end=end,
+            use_cache=args.get("use_cache") is not False,
             on_progress=self._progress(os.path.basename(path)),
         )
+        if window == {} and isinstance(result, dict):
+            result = transcript_summary(result)
+        if note and isinstance(result, dict):
+            result = {**result, "note": note}
+        return result
 
     def analyze_shot_visuals(self, args: dict[str, Any]) -> Any:
         path = self._media(args["media_path"])

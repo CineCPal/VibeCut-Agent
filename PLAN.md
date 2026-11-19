@@ -3734,6 +3734,64 @@ None of them is used by current VibeCut code.
 - Full suites pass: `uv run pytest tests/` (1449 passed, 2 skipped) and `npm run test:run` (970 passed).
 - **Live check owed:** re-transcribe a clip from the report in the installed app, then compare a Story cut in Premiere.
 
+## Long files: transcripts that read back (2026-11-19)
+
+**What the user reported.** Transcribing and reading long video files failed. In the Gratitude project (Gratitude_03 is 54 GB, about two hours), the agent's "re-transcribe" finished after 14 minutes. Then every `get_transcript` on 01, 03 and 04 answered "has no transcript yet", and the transcribe results were "too large to read inline".
+
+**Causes** (from the chat history, the telemetry trace and the caches):
+
+1. **Invalid JSON in the caches.** "Transcription recall + alignment" wrote bare `NaN` scores into `.ivt-cache.json`. That isn't JSON, so the app's reader (`transcript.rs`, serde) dropped the whole cache. Gratitude_02 has none and read fine.
+2. **Recovery guessed the language.** The cache upgrade's recovery pass didn't know the file's language, so Whisper guessed it on each stretch of room noise. It looped in Finnish ("tähän tähän …"), with NaN scores.
+3. **"Re-transcribe" couldn't force a fresh pass.** `transcribe_and_align` had no way to skip a valid cache; the run was only the upgrade.
+4. **The whole transcript came back from the tool**, then was cut by `fit`.
+5. **Every pass re-read the whole video** to pull its sound, under a fixed 30-minute limit, with no progress shown.
+6. **The first four calls failed outright** because speaker labelling was asked for without a token.
+
+**What changed** (all six fixes the user approved):
+
+1. **No number that isn't finite is ever written.**
+   - `write_cache` stores a score Whisper couldn't compute as plainly low: `avg_logprob -10`, `no_speech_prob 1`. It drops words and lines without finite times, and writes strict JSON atomically.
+   - `segments_from_cache` and `alignment.align` read NaN as low too; a NaN never compares as low on its own.
+2. **Recovery is held to the transcript's language.**
+   - The cache records `language`.
+   - `pipeline.align_raw` takes the language from the main pass, else from the cache, else Whisper's detection on up to 30 s of the surest line with words (`detect_language`, up to three tries). If none is found, nothing is recovered.
+   - A recovered line is kept only when its score is finite and at least −1.2 (`RECOVER_MIN_LOGPROB`, decided), and it isn't a loop (`alignment.is_repetitive`):
+     - its text compresses past 2.4;
+     - one word makes up over half of six or more words;
+     - or a word is said five times running ("no, no, no, no" is speech).
+3. **`transcribe_and_align` takes `use_cache`** (default true; false transcribes again and replaces the cache). This is additive to its input schema in `schemas.py` and `ORCHESTRATOR_SPEC.md`, and was the user's decision. Direct mode's `transcribe_clips` already had `force`.
+4. **A whole-file transcript over 150 lines comes back as a summary** (`tool_bus.transcript_summary`):
+   - line count, first and last line, spoken seconds, lines by speaker, and up to 20 low-confidence ranges;
+   - how to read the text: `get_transcript` by `filePath` with `startTime`/`endTime` and `offset`, or `transcribe_and_align` with `source_range_seconds`.
+
+   A request with a window still returns lines.
+5. **The sound is extracted once and kept** (`transcribe/audio_cache.py`).
+   - It is stored as 16 kHz mono FLAC (about 60 MB an hour) in `~/Library/Application Support/VibeCut Agent/audio-cache` (`VIBECUT_AUDIO_CACHE_DIR`), keyed by path, size and mtime.
+   - The folder is trimmed to 4 GB, oldest-used first. A folder that can't be written falls back to a temporary WAV.
+   - Extraction reports ffmpeg's progress. Its limit is the largest of 30 minutes, the file's size at 8 MB/s, and half its duration.
+   - The worker extracts before taking the GPU lock.
+   - Progress also covers recovery: listening for speech, how many missed stretches are being transcribed, and placing edges.
+   - whisper.cpp gets a WAV made from the FLAC, in its own temporary folder.
+6. **Speaker labelling without a token no longer fails the call.** The transcript is made without speakers, with a `note` saying why.
+
+**Also:** speech-region and word lookups use bisection (`alignment._Intervals`), so a two-hour file's thousands of lines and regions stay quick.
+
+**The user's caches repaired.** Gratitude_01, 03 and 04 were backed up first, then repaired:
+- Removed: lines that were unscored or below −1.0 *and* were loops, had no words, or held only a loop's word. That was 5, 43 and 17 lines respectively, all "tähän", "!" or ".".
+- Kept, marked low-confidence: plausible unscored lines such as "And I'm grateful for the", "Yeah." and "Thank you.".
+- All four caches now parse as strict JSON.
+
+The speech that the bad recovery targeted is still untranscribed; a `use_cache: false` re-transcribe with this build recovers it properly.
+
+**Verified.** `tests/transcribe/test_long_files.py` covers:
+- the kept sound, its fallback, trimming and time limit;
+- strict caches and NaN loading;
+- loop detection;
+- recovery filters, and language detection or none;
+- the interval maths against a by-hand count.
+
+`test_tool_bus` covers the summary, `use_cache` and the token note. `uv run pytest tests/`: 1468 passed, 2 skipped. A live check is owed on the Gratitude files after a reinstall.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4431,3 +4489,4 @@ None of them is used by current VibeCut code.
 - **2026-11-18 (Claude): Ripple deltas pass the proposal.** `ripple_delete` and `insert_time` added to `vibecut.gemma.validator.v1`'s command enum (the user's decision; additive), which refused every ripple as "the arguments don't fit". A tool result that breaks VibeCut's own schema now says so. See "Ripple edits on the timeline".
 - **2026-11-18 (Claude): Bin analysis & visual clip selection.** `analyze_bin` runs the B-roll Analyzer on a bin of the Premiere project or Resolve Media Pool, folder by folder. `build_bin_selects` builds each analyzed bin's selects as a new "<bin> — B-roll selects" timeline with scored markers. `index_bin_visuals` has the local vision model tag and index a bin's shots; this is the first app caller of `ingest-index`. `find_clips_by_content` searches those shots by what they show. Two new read-only sidecars back them: `vector-search` and `vlm-tags`. Works in both modes; three of the tools are forwarded in orchestrated mode. Live checks owed. See "Bin analysis & visual clip selection".
 - **2026-11-19 (Claude): Transcription recall + alignment.** Transcripts are checked against the sound (Silero VAD, vendored, on onnxruntime). Speech Whisper skipped is transcribed again in one clip call, lines made up over silence are dropped, and line edges go onto the sound. Times are moved by the audio stream's start offset, and the first audio stream is the one transcribed. Old caches are upgraded once without a full re-transcribe. Story cuts snap trims onto words and get a 0.10/0.15 s pre/post-roll. Live check owed. See "Transcription recall + alignment".
+- **2026-11-19 (Claude): Long files: transcripts that read back.** Fixes the previous entry's NaN scores, which made long files' caches unreadable to the app, and its recovery guessing the language (Finnish loops on room noise). Caches are now strict JSON and record their language. Recovery is held to that language and rejects loops and unscored lines. `transcribe_and_align` gains `use_cache` (additive, the user's decision), returns a summary for transcripts over 150 lines, and drops speaker labelling with a note when there's no token. The sound is extracted once to a kept FLAC, with progress and a size-scaled time limit. The Gratitude caches were repaired. See "Long files: transcripts that read back".

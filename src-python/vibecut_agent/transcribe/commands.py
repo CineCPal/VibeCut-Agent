@@ -122,7 +122,7 @@ def transcribe_one(
         labels = cached.get("speaker_labels") or {}
         excluded = set(cached.get("excluded_speakers") or [])
     else:
-        segments, speakers, aligned = pipeline.transcribe_video(
+        segments, speakers, aligned, language = pipeline.transcribe_video(
             video, request["model"], diarize, hf_token or "", on_progress
         )
         labels, excluded = {}, set()
@@ -131,7 +131,9 @@ def transcribe_one(
                 f"Could not check {name}'s transcript against its sound; its line timings are Whisper's own."
             )
         marker = pipeline.ALIGNMENT_VERSION if aligned else None
-        if not pipeline.write_cache(video, name, segments, speakers, labels, excluded, alignment=marker):
+        if not pipeline.write_cache(
+            video, name, segments, speakers, labels, excluded, alignment=marker, language=language
+        ):
             warnings.append(
                 f"Could not write the cache next to {name}; it will be transcribed again next time."
             )
