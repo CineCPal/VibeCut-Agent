@@ -80,3 +80,26 @@ export function speakerStats(data: TranscriptData): Map<string, SpeakerStats> {
   }
   return out;
 }
+
+/** At least this share of a speaker's lines are questions for them to be guessed as the interviewer. */
+export const INTERVIEWER_QUESTION_SHARE = 0.35;
+/** And at least this many lines, so one stray question doesn't make an interviewer. */
+const INTERVIEWER_MIN_LINES = 3;
+
+/**
+ * The interviewer, guessed, when nobody has a role yet (PLAN.md, "Speaker labels and background
+ * transcription"): with two or more speakers, the one whose lines are most often questions, when at least
+ * INTERVIEWER_QUESTION_SHARE of them are and they ask at least twice as often as anyone else. A transcript
+ * where any speaker already has a role (set, guessed by the agent, or switched off in the transcriber) is
+ * left as it is. Returns the transcript with that speaker marked `interviewer`, `inferred`, and the guess.
+ */
+export function withGuessedInterviewer(data: TranscriptData): { data: TranscriptData; guessed: string | null } {
+  const ids = speakerIds(data);
+  if (ids.length < 2 || ids.some((id) => resolveSpeaker(data, id).role)) return { data, guessed: null };
+  const ranked = [...speakerStats(data)].filter(([, s]) => s.lines >= INTERVIEWER_MIN_LINES).sort((a, b) => b[1].questionShare - a[1].questionShare);
+  const [top, next] = ranked;
+  if (!top || top[1].questionShare < INTERVIEWER_QUESTION_SHARE) return { data, guessed: null };
+  if (next && next[1].questionShare * 2 > top[1].questionShare) return { data, guessed: null };
+  const id = top[0];
+  return { data: { ...data, speakerInfo: { ...data.speakerInfo, [id]: { ...data.speakerInfo?.[id], role: "interviewer", inferred: true } } }, guessed: id };
+}

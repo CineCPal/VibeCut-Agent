@@ -144,9 +144,9 @@ def test_transcribe_passes_the_window_and_reports_progress(config, tmp_path, med
     assert bus.statuses == ["a.mov: half way"]
     backwards = bus.dispatch("transcribe_and_align", {**args, "source_range_seconds": {"start": 5, "end": 2}})
     assert backwards == {"error": "The range ends before it starts"}
-    # Without the token the transcript is still made, without speakers, and the model is told why.
+    # With no app to hand it to, the transcript is still made, without speakers, and the model is told why.
     speakers = bus.dispatch("transcribe_and_align", {**args, "enable_diarization": True})
-    assert speakers["segments"] == [] and "Hugging Face token" in speakers["note"]
+    assert speakers["segments"] == [] and "Transcribe tab" in speakers["note"]
     assert whisper.calls[-1][2]["enable_diarization"] is False
     assert whisper.calls[-1][2]["use_cache"] is True
     bus.dispatch("transcribe_and_align", {**args, "use_cache": False})
@@ -155,6 +155,58 @@ def test_transcribe_passes_the_window_and_reports_progress(config, tmp_path, med
     assert "isn't there" in missing["error"]
     relative = bus.dispatch("transcribe_and_align", {"media_path": "a.mov"})
     assert relative == {"error": "media_path must be an absolute path"}
+
+
+class TranscribingApp(App):
+    """The app's transcribe_clips answered as transcriptTools.ts answers it."""
+
+    def answer(self, name, args):
+        if name == "transcribe_clips":
+            self.calls.append((name, copy.deepcopy(args)))
+            if name in self.fail:
+                return {"error": self.fail[name]}
+            return {
+                "files": [
+                    {"path": args["filePaths"][0], "fromCache": False, "speakers": ["Speaker 1", "Speaker 2"]}
+                ]
+            }
+        return super().answer(name, args)
+
+
+def test_speakers_are_told_apart_by_the_apps_transcription(config, tmp_path, media, snapshot, monkeypatch):
+    from vibecut_agent.broll import ffprobe_util
+
+    whisper = Worker({"segments": []})
+    app = TranscribingApp(snapshot)
+    bus = make_bus(config, tmp_path, app=app, whisper=whisper)
+    monkeypatch.setattr(ffprobe_util, "probe_duration_seconds", lambda path: 120.0)
+    out = bus.dispatch(
+        "transcribe_and_align", {"media_path": media["a.mov"], "enable_diarization": True, "use_cache": False}
+    )
+    assert app.calls[-1] == (
+        "transcribe_clips",
+        {"filePaths": [media["a.mov"]], "speakers": True, "force": True, "background": False},
+    )
+    # The app's fresh transcript is then read from the cache, without speakers asked of Whisper here.
+    keywords = whisper.calls[-1][2]
+    assert (keywords["enable_diarization"], keywords["use_cache"]) == (False, True)
+    assert out == {"segments": []}
+    # A long file: the app runs it in the background and the chat is told to end its turn.
+    monkeypatch.setattr(ffprobe_util, "probe_duration_seconds", lambda path: 7200.0)
+    calls = len(whisper.calls)
+    long = bus.dispatch("transcribe_and_align", {"media_path": media["a.mov"], "enable_diarization": True})
+    assert app.calls[-1][1]["background"] is True and app.calls[-1][1]["force"] is False
+    assert long["background"] is True and "end your turn" in long["note"]
+    assert len(whisper.calls) == calls
+    # The app can't (no token there either): Whisper here, without speakers, and why.
+    app.fail["transcribe_clips"] = "Telling speakers apart needs a Hugging Face token (Settings → API keys)."
+    monkeypatch.setattr(ffprobe_util, "probe_duration_seconds", lambda path: 120.0)
+    plain = bus.dispatch("transcribe_and_align", {"media_path": media["a.mov"], "enable_diarization": True})
+    assert "Hugging Face token" in plain["note"] and whisper.calls[-1][2]["enable_diarization"] is False
+
+
+def test_the_apps_transcription_is_forwarded():
+    assert "transcribe_clips" in tool_bus.FORWARDED_TOOLS
 
 
 def test_a_long_transcript_comes_back_as_a_summary(config, tmp_path, media):

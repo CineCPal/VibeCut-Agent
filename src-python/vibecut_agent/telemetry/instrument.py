@@ -63,6 +63,8 @@ TOOL_AGENTS: dict[str, tuple[str, str, str, str]] = {
     "rename_timeline": ("MASTER_ORCHESTRATOR", "app.project", "NLE_IPC", "Rename a timeline"),
     "make_social_version": ("MASTER_ORCHESTRATOR", "app.project", "NLE_IPC", "Social version"),
     "get_transcript": ("INGEST_TRANSCRIBE", "app.transcripts", "CPU_NEON", "Read the transcript"),
+    "find_soundbites": ("INGEST_TRANSCRIBE", "app.transcripts", "CLOUD_API", "Find soundbites"),
+    "transcribe_clips": ("INGEST_TRANSCRIBE", "app.transcripts", "METAL_MPS", "Transcribe (app)"),
     "search_transcript": ("INGEST_TRANSCRIBE", "app.transcripts", "CPU_NEON", "Search the transcript"),
     "list_speakers": ("INGEST_TRANSCRIBE", "app.transcripts", "CPU_NEON", "Speakers"),
     "find_filler_words": ("INGEST_TRANSCRIBE", "app.transcripts", "CPU_NEON", "Filler words"),

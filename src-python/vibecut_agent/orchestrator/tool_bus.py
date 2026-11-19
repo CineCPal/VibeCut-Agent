@@ -85,6 +85,9 @@ READ_ONLY_TOOLS = (
     "get_clip_transform",
     "get_clip_color",
     "get_transcript",
+    # Long interviews' best lines for a brief, read by the first-pass model (PLAN.md, "Soundbites from long
+    # interviews"): what a chat would otherwise page through get_transcript for.
+    "find_soundbites",
     "search_transcript",
     "list_speakers",
     "find_filler_words",
@@ -173,6 +176,9 @@ DRAFT_TOOLS = ("harmonize_takes", "send_to_resolve", "send_to_premiere", "discar
 # semantic_asset_search covers them), and each analyzed bin's selects built as a NEW timeline with scored
 # markers. Like send_to_*, the build leaves the user's timeline as it was, so it needs no delta check.
 BIN_TOOLS = ("analyze_bin", "index_bin_visuals", "build_bin_selects")
+# The app's transcription (PLAN.md, "Speaker labels and background transcription"): it tells speakers apart
+# (Rust gives it the token) and can run in the background, sending the chat a message when it's done.
+TRANSCRIBE_TOOLS = ("transcribe_clips",)
 FORWARDED_TOOLS = (
     READ_ONLY_TOOLS
     + NOTES_TOOLS
@@ -182,6 +188,7 @@ FORWARDED_TOOLS = (
     + APP_EDIT_TOOLS
     + DRAFT_TOOLS
     + BIN_TOOLS
+    + TRANSCRIBE_TOOLS
 )
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.
@@ -322,6 +329,10 @@ def gemini_tools() -> list[dict[str, Any]]:
     ]
 
 
+# Speaker labels need the app's transcription (it alone is given the Hugging Face token); a file longer than
+# this runs there in the background, so the chat turn isn't held for twenty minutes (PLAN.md, "Speaker labels
+# and background transcription").
+BACKGROUND_TRANSCRIBE_SECONDS = 600.0
 # A whole file's transcript longer than this many lines comes back as a summary (PLAN.md, "Long files"):
 # a two-hour interview's thousand lines can't be sent at once, and cutting them to the first few hundred
 # reads as if the rest weren't there. Its text is read in windows.
@@ -372,7 +383,8 @@ def transcript_summary(result: dict[str, Any], limit: int = INLINE_TRANSCRIPT_SE
             f"This transcript has {len(segments)} lines, too many to send at once, so they aren't here. It "
             "is saved: read it in windows with get_transcript (filePath, startTime/endTime in seconds of "
             "the file, paged with offset), or call transcribe_and_align again with source_range_seconds, "
-            "which reads the saved transcript without transcribing again."
+            "which reads the saved transcript without transcribing again. To find what it says about a "
+            "topic, find_soundbites reads every line for you and returns the best moments with their times."
         ),
     }
 
@@ -625,14 +637,37 @@ class OrchestratorToolBus:
         start, end = window.get("start"), window.get("end")
         self._window(start, end)
         diarize = args.get("enable_diarization") is True
+        use_cache = args.get("use_cache") is not False
         note = None
         if diarize and not self.hf_token:
-            # Not a failure: the transcript is made without speakers, and the model is told why.
+            # The token never comes into this process (Claude Code's own): the app's transcription, which Rust
+            # gives it, tells the speakers apart and saves the transcript this then reads (PLAN.md, "Speaker
+            # labels and background transcription"). A long file runs there in the background.
             diarize = False
-            note = (
-                "Speakers weren't told apart: that needs the Hugging Face token, which the chat isn't "
-                "given. The user can index the file with speakers on."
-            )
+            delegated = self._app_transcribe(path, use_cache)
+            if delegated is None:
+                note = (
+                    "Speakers weren't told apart: that needs the app's own transcription, which isn't "
+                    "reachable here. The user can transcribe the file with speakers on in the Transcribe tab."
+                )
+            else:
+                reply, background = delegated
+                failed = reply.get("error") if isinstance(reply, dict) else "no answer"
+                if failed:
+                    note = f"Speakers weren't told apart: {failed}"
+                elif background:
+                    return {
+                        "media_path": path,
+                        "background": True,
+                        "note": (
+                            "The app is transcribing this long file in the background, telling speakers apart. "
+                            "It sends you a message when it's done; then read it (find_soundbites, "
+                            "get_transcript or transcribe_and_align with source_range_seconds). Tell the user "
+                            "and end your turn now."
+                        ),
+                    }
+                else:
+                    use_cache = True  # the app's fresh transcript, with speakers
         result = self.worker("whisper").transcribe(
             path,
             model_tier=args.get("model_tier"),
@@ -640,7 +675,7 @@ class OrchestratorToolBus:
             hf_token=self.hf_token,
             start=start,
             end=end,
-            use_cache=args.get("use_cache") is not False,
+            use_cache=use_cache,
             on_progress=self._progress(os.path.basename(path)),
         )
         if window == {} and isinstance(result, dict):
@@ -648,6 +683,18 @@ class OrchestratorToolBus:
         if note and isinstance(result, dict):
             result = {**result, "note": note}
         return result
+
+    def _app_transcribe(self, path: str, use_cache: bool) -> tuple[Any, bool] | None:
+        """The app's transcribe_clips on one file with speakers on: (its answer, whether it runs in the
+        background, for a file over BACKGROUND_TRANSCRIBE_SECONDS), or None without an app to ask."""
+        if self.call_app is _no_app:
+            return None
+        from vibecut_agent.broll import ffprobe_util
+
+        background = (ffprobe_util.probe_duration_seconds(path) or 0.0) > BACKGROUND_TRANSCRIBE_SECONDS
+        args = {"filePaths": [path], "speakers": True, "force": not use_cache, "background": background}
+        [reply] = self.call_app([("transcribe_clips", args)])
+        return reply, background
 
     def analyze_shot_visuals(self, args: dict[str, Any]) -> Any:
         path = self._media(args["media_path"])

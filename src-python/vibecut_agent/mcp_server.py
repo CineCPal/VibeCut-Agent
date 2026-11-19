@@ -73,6 +73,8 @@ LONG_TOOLS = frozenset(
         "sync_clips",
         "slip_into_sync",
         "run_story_editor",
+        # Soundbites: a fast model reads every line of hours of transcripts, a few parts at a time.
+        "find_soundbites",
         "send_to_premiere",
         "send_to_resolve",
         "find_silences",

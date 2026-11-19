@@ -190,7 +190,7 @@ def notes_text(themes: list[str], moments: list[dict[str, Any]], kept: list[dict
     return "\n".join(lines)
 
 
-def first_pass(
+def read_parts(
     prompt: str,
     sources: list[dict[str, Any]],
     target_seconds: float | None,
@@ -198,9 +198,9 @@ def first_pass(
     should_abort: Callable[[], bool] = lambda: False,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
     workers: int = WORKERS,
-) -> tuple[list[dict[str, Any]], str]:
-    """Reads every part with `ask`, a few at a time, and returns (shortlisted sources, notes for the
-    story call). A part that fails fails the pass (its error is raised); Stop raises ExtractionStopped."""
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Reads every part with `ask`, a few at a time, and returns (moments, themes). A part that fails
+    fails the pass (its error is raised); Stop raises ExtractionStopped."""
     parts = parts_of(sources)
     total = len(parts)
     answers: list[Any] = [None] * total
@@ -238,6 +238,21 @@ def first_pass(
     for part, answer in zip(parts, answers, strict=True):
         moments += moments_in(answer, part)
         themes += themes_in(answer)
+    return moments, themes
+
+
+def first_pass(
+    prompt: str,
+    sources: list[dict[str, Any]],
+    target_seconds: float | None,
+    ask: Ask,
+    should_abort: Callable[[], bool] = lambda: False,
+    on_progress: Callable[[int, int], None] = lambda done, total: None,
+    workers: int = WORKERS,
+) -> tuple[list[dict[str, Any]], str]:
+    """Reads every part with `ask` (read_parts) and returns (shortlisted sources, notes for the story
+    call). A part that fails fails the pass (its error is raised); Stop raises ExtractionStopped."""
+    moments, themes = read_parts(prompt, sources, target_seconds, ask, should_abort, on_progress, workers)
     kept = shortlist(sources, moments)
     if not kept:
         raise ValueError("The first pass found nothing in the footage that fits the brief.")

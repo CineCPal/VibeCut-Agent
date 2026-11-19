@@ -3792,6 +3792,79 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 
 `test_tool_bus` covers the summary, `use_cache` and the token note. `uv run pytest tests/`: 1468 passed, 2 skipped. A live check is owed on the Gratitude files after a reinstall.
 
+## Soundbites from long interviews (2026-11-19)
+
+**What the user reported.** The agent still struggled with long files and "large context". In the session after "Long files", all four Gratitude files re-transcribed fine (26 minutes; the 2-hour Gratitude_03 took 22). Gratitude_03's transcript then couldn't be read. It has 754 lines, about 68k characters (roughly 17k tokens, a small share of the turn's 360k). Each paged `get_transcript` call (limit 130, offsets 0–650) came back as the whole file, over the per-result limit, so the agent stopped before editing.
+
+**Decided:** this is a tool problem, not a context-window problem. Gemini through Antigravity was considered and not used:
+- Antigravity is a coding IDE, not something the app can call at runtime.
+- The app's Gemini path (`agent/gemini_chat.py`) already exists.
+- A larger window doesn't help when one tool result is the whole file.
+
+**What changed.**
+
+1. **`get_transcript` with `filePath`/`clipId` applies the timeline read's arguments, with times in the file:**
+   - `startTime`/`endTime`, `speaker` and `role`;
+   - `offset`/`limit` (200 by default, at most 500), returning `total` and `nextOffset`;
+   - `includeWords`.
+
+   Before this it ignored them all and returned every line (`transcriptTools.ts`; `DEFAULT_TRANSCRIPT_LIMIT` and `MAX_TRANSCRIPT_LIMIT` are now exported from `contentTools.ts`).
+2. **`find_soundbites`** (`storyTools.ts`; Python `story/soundbites.py`).
+   - **What it does.** It runs the Story Editor's first pass alone over every line of the given transcripts and returns the moments it found, strongest first. Each moment has its file, start/end in seconds of the file, speaker, the line as transcribed, why it fits and a strength from 1 to 5.
+   - **How it reads.** The pass reads parts of at most 1500 lines, three at a time, on the first-pass model (Sonnet at low effort on the subscription, or Gemini Flash; the same `extraction` setting as the Story Editor).
+   - **Inputs.**
+     - The brief is required.
+     - Files come from `filePaths` and/or `clipIds`, else the timeline's files with sound.
+     - The interviewer's lines are left out unless `includeInterviewer`.
+     - `maxResults` defaults to 40, at most 150.
+   - **Plumbing.** It runs as the `assemble` command with `"mode": "soundbites"`, so Rust's credential injection and first-pass key work unchanged; no Rust change was needed.
+   - **Code.** `extract.read_parts` is the loop split out of `first_pass`, which now uses it.
+   - **Where it is available.** It is forwarded in orchestrated mode (`READ_ONLY_TOOLS`), a long MCP tool, traced, and not reviewed. Both the direct and the orchestrated instructions say to use it instead of paging through long transcripts, and `transcribe_and_align`'s long-transcript summary points to it.
+
+**Verified.**
+- `tests/story/test_soundbites.py`: parts, model, ranking, dedupe, limits and the brief check.
+- `storyTools.test.ts`: the request and the result.
+- `transcriptTools.test.ts`: paging and windows for one file.
+- `uv run pytest tests/` (1472 passed, 2 skipped) and `npm run test:run` (972 passed).
+- **Live check owed:** the Gratitude brief end to end after a reinstall.
+
+## Speaker labels and background transcription (2026-11-19)
+
+**What the user asked for.** Fixes 3 and 4 from the "Soundbites" review:
+- tell speakers apart, so the interviewer's lines drop out of soundbites and story cuts;
+- stop a long transcription from holding the chat turn (26 minutes for the Gratitude files).
+
+**Speaker labels.**
+- **The token stays out of the chat.** The orchestrated chat's tools run in the MCP shim that Claude Code starts, a process tree with a shell-capable agent, so the Hugging Face token is never given to it.
+  - `transcribe_and_align` with `enable_diarization` now hands the file to the app's own `transcribe_clips` (`speakers: true`; `force` from `use_cache`). Rust gives that job the token, as before.
+  - Then it reads the app's fresh cache.
+  - A file over `BACKGROUND_TRANSCRIBE_SECONDS` (600, decided) runs in the background (below), and the chat is told to end its turn.
+  - With no app to call, or when the app has no token either, Whisper runs here without speakers and the result says why.
+- **The interviewer is guessed when nobody has a role** (`speakers.ts` `withGuessedInterviewer`):
+  - It needs two or more speakers.
+  - The guess is the speaker whose lines are most often questions, when at least 35% of them are, over at least 3 lines (decided), and they ask at least twice as often as anyone else.
+  - It is marked `inferred`.
+  - It applies only where interviewer lines are left out: `find_soundbites` and `run_story_editor`, which say whom they treated as the interviewer. Other transcript tools are unchanged.
+  - `set_speaker_roles` overrides it.
+
+**Background transcription** (`src/lib/agent/backgroundTranscribe.ts`).
+- `transcribe_clips` takes `background: true`. The job starts (`jobs.startJob`, new) and the tool answers at once.
+- When the job ends, the app:
+  - forgets the files' transcript status;
+  - shows a notification (when notifications are on and the window is away);
+  - posts `[App: background transcription finished] …` into the chat with `submitMessage`. It is queued if a turn is running, so the agent continues its plan. A failure or a stop says why.
+- While the job runs, `get_transcript` on one of its files says it's still being transcribed, with progress, and a second background request for the same file is refused.
+- `transcribe_clips` is now forwarded in orchestrated mode (`TRANSCRIBE_TOOLS`), because the MCP shim lives for one turn and can't hold a job.
+- Both modes' instructions say to use `background: true` for files over about 10 minutes, tell the user, and end the turn.
+
+**Verified.**
+- `backgroundTranscribe.test.ts`: start, progress, the message, and failure.
+- `transcriptTools.test.ts`: background from the tool, and reads meanwhile.
+- `speakers.test.ts` and `storyTools.test.ts`: the guess and its note.
+- `test_tool_bus.py`: diarization handed to the app (short and long files, and the app failing), and the forwarding.
+- `uv run pytest tests/` (1474 passed, 2 skipped) and `npm run test:run` (979 passed).
+- **Live checks owed after a reinstall:** a background transcription finishing and the chat continuing, and speakers told apart through the app in orchestrated mode.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4490,3 +4563,5 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 - **2026-11-18 (Claude): Bin analysis & visual clip selection.** `analyze_bin` runs the B-roll Analyzer on a bin of the Premiere project or Resolve Media Pool, folder by folder. `build_bin_selects` builds each analyzed bin's selects as a new "<bin> — B-roll selects" timeline with scored markers. `index_bin_visuals` has the local vision model tag and index a bin's shots; this is the first app caller of `ingest-index`. `find_clips_by_content` searches those shots by what they show. Two new read-only sidecars back them: `vector-search` and `vlm-tags`. Works in both modes; three of the tools are forwarded in orchestrated mode. Live checks owed. See "Bin analysis & visual clip selection".
 - **2026-11-19 (Claude): Transcription recall + alignment.** Transcripts are checked against the sound (Silero VAD, vendored, on onnxruntime). Speech Whisper skipped is transcribed again in one clip call, lines made up over silence are dropped, and line edges go onto the sound. Times are moved by the audio stream's start offset, and the first audio stream is the one transcribed. Old caches are upgraded once without a full re-transcribe. Story cuts snap trims onto words and get a 0.10/0.15 s pre/post-roll. Live check owed. See "Transcription recall + alignment".
 - **2026-11-19 (Claude): Long files: transcripts that read back.** Fixes the previous entry's NaN scores, which made long files' caches unreadable to the app, and its recovery guessing the language (Finnish loops on room noise). Caches are now strict JSON and record their language. Recovery is held to that language and rejects loops and unscored lines. `transcribe_and_align` gains `use_cache` (additive, the user's decision), returns a summary for transcripts over 150 lines, and drops speaker labelling with a note when there's no token. The sound is extracted once to a kept FLAC, with progress and a size-scaled time limit. The Gratitude caches were repaired. See "Long files: transcripts that read back".
+- **2026-11-19 (Claude): Soundbites from long interviews.** `get_transcript` on one file now pages and filters as documented: it had returned the whole file, so a 2-hour interview was unreadable. `find_soundbites` returns the best moments for a brief across whole transcripts, read by the first-pass model, in both modes. See "Soundbites from long interviews".
+- **2026-11-19 (Claude): Speaker labels and background transcription.** Orchestrated diarization goes through the app's transcription, so the token stays out of Claude Code's process. The interviewer is guessed from question share when no roles are set, for `find_soundbites` and the Story Editor. `transcribe_clips` with `background: true` returns at once; the app notifies you and messages the chat when it's done, so the agent continues. `transcribe_clips` is forwarded in orchestrated mode. See "Speaker labels and background transcription".

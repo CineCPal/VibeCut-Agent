@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptData } from "../types/transcript";
-import { resolveSpeaker, speakerIds, speakerStats, speakerTag } from "./speakers";
+import { resolveSpeaker, speakerIds, speakerStats, speakerTag, withGuessedInterviewer } from "./speakers";
 
 const data = (extra: Partial<TranscriptData> = {}): TranscriptData => ({
   segments: [
@@ -51,5 +51,34 @@ describe("speakerStats", () => {
 
   it("lists speakers from the transcriber's list and the lines", () => {
     expect(speakerIds(data({ speakers: ["Speaker 2"] }))).toEqual(["Speaker 2", "Speaker 1"]);
+  });
+});
+
+describe("withGuessedInterviewer", () => {
+  it("guesses the speaker who asks most of the questions, marked as a guess", () => {
+    const { data: guessed, guessed: id } = withGuessedInterviewer(data());
+    expect(id).toBe("Speaker 1");
+    expect(resolveSpeaker(guessed, "Speaker 1")).toMatchObject({ role: "interviewer", inferred: true });
+    expect(resolveSpeaker(guessed, "Speaker 2").role).toBeUndefined();
+  });
+
+  it("leaves a transcript alone when anyone has a role, there is one speaker, or nobody asks enough", () => {
+    expect(withGuessedInterviewer(data({ speakerInfo: { "Speaker 2": { role: "subject" } } })).guessed).toBeNull();
+    expect(withGuessedInterviewer(data({ excludedSpeakers: ["Speaker 2"] })).guessed).toBeNull();
+    const one = data({ segments: data().segments.map((s) => ({ ...s, speaker: "Speaker 1" })), speakers: ["Speaker 1"] });
+    expect(withGuessedInterviewer(one).guessed).toBeNull();
+    const statements = data({ segments: data().segments.map((s) => ({ ...s, text: s.text.replace("?", ".") })) });
+    expect(withGuessedInterviewer(statements).guessed).toBeNull();
+  });
+
+  it("doesn't guess when two speakers ask about as often", () => {
+    const both = data({
+      segments: [
+        ...data().segments,
+        { start: 25, end: 27, text: "Did you?", speaker: "Speaker 2" },
+        { start: 27, end: 29, text: "Really?", speaker: "Speaker 2" },
+      ],
+    });
+    expect(withGuessedInterviewer(both).guessed).toBeNull();
   });
 });

@@ -126,6 +126,8 @@ export const NOT_REVIEWED = new Set([
   "set_playhead_time",
   "transcribe_clips",
   "run_story_editor",
+  // Reads transcripts and returns lines; nothing in the editor changes.
+  "find_soundbites",
   "remove_time_ranges",
   "analyze_broll_folder",
   "export_broll_selects",

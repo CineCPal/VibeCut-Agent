@@ -31,10 +31,10 @@ import {
   payloadSegments,
   storySourceOf,
   withoutInterviewer,
-  type StoryTranscriptSource,
 } from "../../vibecut/lib/storyEditorContext";
+import { resolveSpeaker, withGuessedInterviewer } from "../../vibecut/lib/speakers";
 import type { StoryBrollCatalogEntry } from "../../vibecut/types/storyEditor";
-import { bool, type Args, type Executor, optNum, optStr } from "./args";
+import { bool, type Args, type Executor, optNum, optStr, strArray } from "./args";
 import { connectedView, draftOf, draftSummary } from "./draft";
 import { TIMELINE_NOUN } from "./edits";
 import { addMusicBed, DEFAULT_BED_DB, musicBeats, snapToMusic, type MusicBeats } from "./musicBed";
@@ -156,7 +156,82 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
     throw new Error(`Which clips? The connected ${noun} has no clips with sound; give clipIds (clips on the ${noun} or project clips like "p3")`);
   };
 
+  /** Each file's transcript as a story source (`s1`, `s2`, …), the names of files with none, and the
+   * interviewers guessed where nobody had a role (speakers.ts `withGuessedInterviewer`). */
+  const gatherSources = async (files: string[]) => {
+    const read = await Promise.all(
+      files.map(async (path, i) => {
+        const data = await readTranscript(path).catch(() => null);
+        if (!data) return null;
+        const { data: named, guessed } = withGuessedInterviewer(withSpeakers(host, path, data));
+        const source = storySourceOf(named, path, `s${i + 1}`);
+        const name = guessed ? resolveSpeaker(named, guessed).name : null;
+        return source ? { source, guess: name ? `${name} in ${fileName(path)}` : null } : null;
+      }),
+    );
+    return {
+      gathered: read.flatMap((r) => (r ? [r.source] : [])),
+      missing: files.filter((_, i) => read[i] === null).map(fileName),
+      guesses: read.flatMap((r) => (r?.guess ? [r.guess] : [])),
+    };
+  };
+  const guessNote = (guesses: string[]) =>
+    guesses.length ? `treated ${guesses.join(", ")} as the interviewer (guessed: they ask most of the questions; set_speaker_roles changes it)` : "";
+
   return {
+    find_soundbites: async (args) => {
+      const brief = optStr(args, "brief")?.trim();
+      if (!brief) throw new Error("brief must say what to look for, in the user's terms");
+      const paths = args.filePaths === undefined ? [] : strArray(args, "filePaths");
+      const relative = paths.find((p) => !p.startsWith("/"));
+      if (relative) throw new Error(`filePaths must be absolute paths; ${relative} isn't`);
+      const files = paths.length || Array.isArray(args.clipIds) ? [...new Set([...paths, ...(Array.isArray(args.clipIds) ? await storyFiles(args) : [])])] : await storyFiles(args);
+      const { gathered, missing, guesses } = await gatherSources(files);
+      if (!gathered.length) throw new Error(`None of these files has a transcript yet: ${missing.join(", ")}. Transcribe them first.`);
+      const answers = bool(args, "includeInterviewer") ? gathered : withoutInterviewer(gathered);
+      const sources = answers.length ? answers : gathered;
+      const choice = AI_CHOICES.find((c) => c.id === useAgentStore.getState().aiChoice) ?? AI_CHOICES[0];
+      const story = storyModel(choice);
+      const maxResults = optNum(args, "maxResults");
+      const stop = cancelOnStop();
+      let job;
+      try {
+        job = await runJob(
+          "assemble",
+          `Soundbites: "${brief.slice(0, 60)}" in ${sources.length} file(s)`,
+          {
+            mode: "soundbites",
+            provider: story.provider,
+            ...(story.model ? { model: story.model } : {}),
+            extraction: story.extraction,
+            sources: sources.map((s) => ({ sourceId: s.sourceId, segments: payloadSegments(s).map(({ words: _words, ...line }) => line) })),
+            media: Object.fromEntries(sources.map((s) => [s.sourceId, s.mediaPath])),
+            prompt: brief,
+            ...(maxResults !== undefined ? { maxResults } : {}),
+          },
+          stop.started,
+        );
+      } finally {
+        stop.done();
+      }
+      if (stop.stopped()) throw new Error("Stopped by the user");
+      if (!job || job.status !== "done") throw new Error(job?.error ?? "The soundbite search didn't finish");
+      const result = (job.result ?? {}) as { soundbites?: Record<string, unknown>[]; themes?: string[]; reader?: string; linesRead?: number };
+      const found = (result.soundbites ?? []).map(({ source_id: _id, ...bite }) => bite);
+      const notes = [
+        missing.length ? `left out ${missing.length} file(s) with no transcript (${missing.join(", ")})` : "",
+        bool(args, "includeInterviewer") ? "" : guessNote(guesses),
+      ].filter(Boolean);
+      return {
+        summary: `Found ${found.length} soundbite(s) in ${result.linesRead ?? 0} transcript line(s) of ${sources.length} file(s), read by ${result.reader ?? "the first-pass model"}${notes.length ? `; ${notes.join("; ")}` : ""}`,
+        result: {
+          soundbites: found,
+          themes: result.themes ?? [],
+          note: "start/end are seconds in each file (sourceIn/sourceOut for add_clips or a delta). An answer can run over the next line: get_transcript with filePath and startTime/endTime reads around one.",
+        },
+      };
+    },
+
     run_story_editor: async (args) => {
       const existing = draftOf(host);
       if (existing) throw new Error(`A draft of "${existing.base}" is already open. Send it (send_to_${host}) or discard it (discard_draft) before a Story Editor cut.`);
@@ -165,14 +240,7 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       if (!prompt) throw new Error("prompt must be the brief: what the piece is about, in the user's terms");
 
       const files = await storyFiles(args);
-      const read = await Promise.all(
-        files.map(async (path, i) => {
-          const data = await readTranscript(path).catch(() => null);
-          return data ? storySourceOf(withSpeakers(host, path, data), path, `s${i + 1}`) : null;
-        }),
-      );
-      const gathered = read.filter((s): s is StoryTranscriptSource => s !== null);
-      const missing = files.filter((_, i) => read[i] === null).map(fileName);
+      const { gathered, missing, guesses } = await gatherSources(files);
       if (!gathered.length) throw new Error(`None of these files has a transcript yet: ${missing.join(", ")}. Ask the user, then transcribe_clips.`);
       const answers = briefWantsInterviewer(prompt) ? gathered : withoutInterviewer(gathered);
       const { sources, truncated } = capTranscripts(answers.length ? answers : gathered, MAX_STORY_LINES);
@@ -231,6 +299,7 @@ export function storyExecutors(context: ToolContext): Record<string, Executor> {
       useConnectionStore.getState().setDraft(host, draft);
       const notes = [
         missing.length ? `left out ${missing.length} file(s) with no transcript (${missing.join(", ")})` : "",
+        answers === gathered ? "" : guessNote(guesses),
         truncated ? `only the first ${MAX_STORY_LINES} transcript lines were read` : "",
         capped.truncated ? `only ${capped.entries.length} of ${broll.length} B-roll clips were offered` : "",
         plan.unreadable ? `${plan.unreadable} cut(s) couldn't be read` : "",
@@ -258,6 +327,21 @@ export function storyToolDeclarations(host: NleHost): ToolDeclaration[] {
   const noun = TIMELINE_NOUN[host];
   return [
     {
+      name: "find_soundbites",
+      description: `Finds the lines in interview transcripts that answer a brief ("what students are grateful for", "every mention of the new building"), however long the interviews: a fast model reads every line, in parts, and returns the best moments, strongest first, each with its file, start/end in seconds of the file, speaker, the words as transcribed, why it fits and a strength from 1 to 5. Use it instead of paging through long transcripts with get_transcript before choosing soundbites. Files: filePaths and/or clipIds (clips on the ${noun} or project clips like "p3"), else every file with sound on the connected ${noun}; files must be transcribed. The interviewer's lines are left out unless includeInterviewer. Takes a minute or so for hours of footage. It only reads.`,
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          brief: { type: "STRING", description: "What to look for, in the user's terms." },
+          filePaths: { type: "ARRAY", items: { type: "STRING" }, description: "Absolute media file paths. Optional." },
+          clipIds: { type: "ARRAY", items: { type: "STRING" }, description: `Clips on the ${noun} or project clips ("p3"). Optional.` },
+          maxResults: { type: "NUMBER", description: "At most this many soundbites (default 40, max 150). Optional." },
+          includeInterviewer: { type: "BOOLEAN", description: "Also consider the interviewer's lines. Optional." },
+        },
+        required: ["brief"],
+      },
+    },
+    {
       name: "run_story_editor",
       description: `Builds a story cut from interview transcripts with the Story Editor (one editorial pass by the chat's model over every interview at once) and puts it in a new draft named sequenceName; then call send_to_${host} to make it a new ${noun}. The connected ${noun} isn't changed. Files: those of clipIds, else every file with sound on the connected ${noun}; files with no transcript are left out (transcribe_clips first). The interviewer's lines are left out unless the brief asks for the questions. B-roll (optional): brollBin (a project bin whose clips' logging describes them), brollClipIds, and/or brollFromLibrary (the shots in the B-roll Library's ticked folders, described by Spyglass).`,
       parameters: {
@@ -282,7 +366,10 @@ export function storyToolDeclarations(host: NleHost): ToolDeclaration[] {
 
 export function storyInstruction(host: NleHost): string {
   const noun = TIMELINE_NOUN[host];
-  return `- For a story cut from interviews ("make a 2-minute piece about how the bakery began"), use
+  return `- To find what interviews say about something (answers to pick from, mentions of a topic), use
+  find_soundbites: it reads every line of every transcript for you, however long, and returns the best
+  moments with their times. Don't page through long transcripts with get_transcript to choose soundbites.
+- For a story cut from interviews ("make a 2-minute piece about how the bakery began"), use
   run_story_editor: it reads the interviews' transcripts (transcribe_clips first if they have none),
   asks the Story Editor for the cut, with B-roll when asked, and puts it in a draft. Tell the user
   what it chose (its narrativeSummary), then send_to_${host} makes the new ${noun}; refine the draft

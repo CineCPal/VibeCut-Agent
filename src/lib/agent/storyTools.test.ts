@@ -206,6 +206,54 @@ describe("run_story_editor", () => {
 });
 
 describe("the B-roll catalog", () => {
+  it("finds soundbites: every answer line sent in soundbites mode, the moments returned with their files", async () => {
+    jobs.runJob.mockResolvedValue({
+      status: "done",
+      result: {
+        soundbites: [{ source_id: "s1", file: "/m/ana.mov", start: 2, end: 9, speaker: "Ana", text: "We opened in 1999.", why: "Origin", strength: 5 }],
+        themes: ["origin"],
+        reader: "Claude Sonnet (subscription)",
+        linesRead: 1,
+      },
+    });
+    const out = await storyExecutors({ ...context }).find_soundbites({ brief: "how it began", filePaths: ["/m/ana.mov", "/m/ben.mov"], maxResults: 10 });
+    const [command, , request] = jobs.runJob.mock.calls[0] as [string, string, Record<string, unknown>];
+    expect(command).toBe("assemble");
+    expect(request).toMatchObject({ mode: "soundbites", provider: "claude-code", prompt: "how it began", maxResults: 10, media: { s1: "/m/ana.mov" } });
+    // The interviewer's question is left out; ben.mov has no transcript.
+    expect((request.sources as { segments: { text: string }[] }[])[0].segments.map((l) => l.text)).toEqual(["We opened in 1999."]);
+    expect(out.summary).toContain("Found 1 soundbite(s) in 1 transcript line(s) of 1 file(s)");
+    expect(out.summary).toContain("ben.mov");
+    expect((out.result as { soundbites: Record<string, unknown>[] }).soundbites[0]).toEqual({ file: "/m/ana.mov", start: 2, end: 9, speaker: "Ana", text: "We opened in 1999.", why: "Origin", strength: 5 });
+    await expect(storyExecutors({ ...context }).find_soundbites({ brief: "x", filePaths: ["m/ana.mov"] })).rejects.toThrow("absolute");
+    await expect(storyExecutors({ ...context }).find_soundbites({})).rejects.toThrow("brief");
+  });
+
+  it("guesses the interviewer when nobody has a role, leaves their questions out and says so", async () => {
+    core.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) =>
+      command === "read_transcript" && args.mediaPath === "/m/ben.mov"
+        ? {
+            segments: [
+              { start: 0, end: 2, speaker: "Speaker 1", text: "What are you grateful for?" },
+              { start: 2, end: 6, speaker: "Speaker 2", text: "My advisor." },
+              { start: 6, end: 8, speaker: "Speaker 1", text: "Anything else?" },
+              { start: 8, end: 12, speaker: "Speaker 2", text: "My friends." },
+              { start: 12, end: 14, speaker: "Speaker 1", text: "And why?" },
+              { start: 14, end: 18, speaker: "Speaker 2", text: "They help." },
+            ],
+            speakers: [],
+            speakerLabels: {},
+            excludedSpeakers: [],
+          }
+        : null,
+    );
+    jobs.runJob.mockResolvedValue({ status: "done", result: { soundbites: [], linesRead: 3, reader: "Gemini Flash" } });
+    const out = await storyExecutors({ ...context }).find_soundbites({ brief: "gratitude", filePaths: ["/m/ben.mov"] });
+    const request = jobs.runJob.mock.calls[0][2] as { sources: { segments: { text: string }[] }[] };
+    expect(request.sources[0].segments.map((l) => l.text)).toEqual(["My advisor.", "My friends.", "They help."]);
+    expect(out.summary).toContain("treated Speaker 1 in ben.mov as the interviewer (guessed");
+  });
+
   it("reads project B-roll from a bin or named clips, with their logging", () => {
     useConnectionStore.setState({
       connections: {

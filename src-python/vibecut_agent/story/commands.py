@@ -22,6 +22,9 @@ request: {
         (optional; no B-roll when empty)
 }
 
+"mode": "soundbites" runs the first pass alone and returns its moments (story/soundbites.py, the chat's
+find_soundbites).
+
 Above extract.SINGLE_PASS_LIMIT transcript lines, a first pass reads every line in parts and shortlists
 the strongest moments before the story call (extract.py, Phase 7e).
 
@@ -143,6 +146,11 @@ def _catalog(raw: Any) -> list[dict[str, Any]]:
 
 
 def run(request: dict[str, Any], emitter: Emitter, cancel: CancelFlag | None = None) -> int:
+    if request.get("mode") == "soundbites":
+        # The chat's find_soundbites: the first pass alone, its moments returned (story/soundbites.py).
+        from vibecut_agent.story import soundbites
+
+        return soundbites.run(request, emitter, cancel)
     register_secret(request.get("apiKey"))
     register_secret(request.get("extractionKey"))
     provider = provider_of(request)

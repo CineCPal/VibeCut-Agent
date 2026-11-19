@@ -4,7 +4,7 @@ const ipc = vi.hoisted(() => ({ nleCall: vi.fn(), startSidecar: vi.fn(), cancelS
 vi.mock("../ipc", () => ipc);
 const core = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ ...core, convertFileSrc: (p: string) => p }));
-const jobs = vi.hoisted(() => ({ runJob: vi.fn() }));
+const jobs = vi.hoisted(() => ({ runJob: vi.fn(), startJob: vi.fn(async () => "bg1"), awaitJob: vi.fn(() => new Promise(() => undefined)) }));
 vi.mock("../jobs", () => jobs);
 
 import { executorsFor, runTool, type ToolContext } from "./tools";
@@ -85,6 +85,30 @@ describe("the agent's transcript and draft tools", () => {
     ]);
     const file = await run(ctx(), "get_transcript", { filePath: CAM });
     expect((file.result as { segments: unknown[] }).segments).toHaveLength(4);
+  });
+
+  it("transcribes in the background on request, and says so when the file is read meanwhile", async () => {
+    const started = await run(ctx(), "transcribe_clips", { filePaths: ["/Volumes/Archive/long.mov"], background: true, force: true });
+    expect(started.summary).toBe("Started transcribing 1 file(s) in the background");
+    expect(jobs.runJob).not.toHaveBeenCalled();
+    expect(jobs.startJob).toHaveBeenCalledWith("transcribe", expect.any(String), expect.objectContaining({ videos: ["/Volumes/Archive/long.mov"], force: true }));
+    const meanwhile = await run(ctx(), "get_transcript", { filePath: "/Volumes/Archive/long.mov" });
+    expect(errorOf(meanwhile)).toContain("still being transcribed in the background");
+    const again = await run(ctx(), "transcribe_clips", { filePaths: ["/Volumes/Archive/long.mov"], background: true });
+    expect(errorOf(again)).toContain("Already transcribing in the background");
+  });
+
+  it("pages and filters one file's transcript, as it does the timeline's", async () => {
+    type Page = { segments: { start: number; text: string }[]; total: number; nextOffset: number | null };
+    const first = await run(ctx(), "get_transcript", { filePath: CAM, limit: 3 });
+    const page = first.result as Page;
+    expect(page.segments.map((l) => l.start)).toEqual([0, 4, 13]);
+    expect([page.total, page.nextOffset]).toEqual([4, 3]);
+    expect(first.summary).toContain("nextOffset 3");
+    const rest = (await run(ctx(), "get_transcript", { filePath: CAM, limit: 3, offset: 3 })).result as Page;
+    expect([rest.segments.map((l) => l.text), rest.nextOffset]).toEqual([["I opened my own."], null]);
+    const window = (await run(ctx(), "get_transcript", { filePath: CAM, startTime: 3, endTime: 14 })).result as Page;
+    expect(window.segments.map((l) => l.start)).toEqual([4, 13]);
   });
 
   it("cuts an interviewer's lines in a draft, then sends it as a new timeline", async () => {

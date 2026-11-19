@@ -26,6 +26,18 @@ export function awaitJob(id: string): Promise<SidecarJob | undefined> {
   });
 }
 
+/** Starts a job without waiting for it, and gives its id (a background job: `awaitJob` waits later). */
+export async function startJob(command: SidecarCommand, label: string, request: Record<string, unknown>): Promise<string> {
+  const id = jobId();
+  useSidecarStore.getState().addJob({ id, command, label });
+  try {
+    await startSidecar(id, command, request);
+  } catch (error) {
+    useSidecarStore.getState().fail(id, error instanceof Error ? error.message : String(error));
+  }
+  return id;
+}
+
 /** Starts a job and waits for it. `onStart` gets its id (to show its progress). */
 export async function runJob(command: SidecarCommand, label: string, request: Record<string, unknown>, onStart?: (id: string) => void): Promise<SidecarJob | undefined> {
   const id = jobId();

@@ -7,6 +7,7 @@
  * agent saves are kept for the connection (useConnectionStore), as VibeCut keeps them.
  */
 import { forgetTranscriptStatus } from "./awareness";
+import { backgroundProgress, transcribeInBackground } from "./backgroundTranscribe";
 import { invoke } from "@tauri-apps/api/core";
 import { runJob } from "../jobs";
 import { useAgentStore } from "../../store/useAgentStore";
@@ -15,7 +16,18 @@ import { useSystemStore } from "../../store/useSystemStore";
 import type { NleHost } from "../../types/nle";
 import type { HostTimeline } from "../../types/timeline";
 import { removeRanges } from "../../vibecut/lib/connect/hostDraft";
-import { lineExecutors, nextSpeakerInfo, silenceOptions, silencesOutcome, speakerEntry, speakerRolesOutcome, type LineTarget } from "../../vibecut/lib/contentTools";
+import {
+  DEFAULT_TRANSCRIPT_LIMIT,
+  lineExecutors,
+  MAX_TRANSCRIPT_LIMIT,
+  nextSpeakerInfo,
+  optRole,
+  silenceOptions,
+  silencesOutcome,
+  speakerEntry,
+  speakerRolesOutcome,
+  type LineTarget,
+} from "../../vibecut/lib/contentTools";
 import type { AudibleClip } from "../../vibecut/lib/silence";
 import { resolveSpeaker, speakerIds, speakerStats } from "../../vibecut/lib/speakers";
 import { withRemapPoints } from "../../vibecut/lib/timeRemap";
@@ -24,7 +36,7 @@ import type { MediaAsset, SpeakerInfo } from "../../vibecut/types/media";
 import type { Clip, Track } from "../../vibecut/types/timeline";
 import type { TranscriptData } from "../../vibecut/types/transcript";
 import type { WaveformPeaks } from "../../vibecut/types/waveform";
-import { type Args, bool, type Executor, optStr, strArray, type ToolOutcome } from "./args";
+import { type Args, bool, type Executor, optNum, optStr, strArray, type ToolOutcome } from "./args";
 import { connectedView, draftOf, draftSummary, openDraft } from "./draft";
 import { TIMELINE_NOUN } from "./edits";
 import { poolClipId } from "./projectTools";
@@ -234,21 +246,48 @@ export function transcriptExecutors(context: ToolContext): Record<string, Execut
     get_transcript: async (args) => {
       const ref = optStr(args, "clipId") ?? optStr(args, "filePath");
       if (!ref) return lines.get_transcript(args);
-      // One file's transcript, in the file's own time.
+      // One file's transcript, in the file's own time: filtered and paged like the timeline's (a two-hour
+      // interview's whole transcript is too big for one result).
       const path = ref.startsWith("/") ? ref : (await filesOf(context, [ref]))[0];
       const data = await readTranscript(path);
-      if (!data || !data.segments.length) throw new Error(`${fileName(path)} has no transcript yet; transcribe_clips makes one`);
+      if (!data || !data.segments.length) {
+        const progress = backgroundProgress(path);
+        if (progress) throw new Error(`${fileName(path)} is still being transcribed in the background (${progress}); the app will send you a message when it's done`);
+        throw new Error(`${fileName(path)} has no transcript yet; transcribe_clips makes one`);
+      }
       const named = withSpeakers(host, path, data);
       const off = new Set(named.excludedSpeakers);
-      const segments = named.segments
-        .filter((s) => !off.has(s.speaker))
-        .map((s) => {
-          const who = resolveSpeaker(named, s.speaker);
-          return { start: round2(s.start), end: round2(s.end), speaker: who.name, ...(who.role ? { role: who.role } : {}), text: s.text };
-        });
+      const from = optNum(args, "startTime") ?? -Infinity;
+      const to = optNum(args, "endTime") ?? Infinity;
+      const speaker = optStr(args, "speaker")?.toLowerCase();
+      const role = optRole(args);
+      const withWords = bool(args, "includeWords");
+      const found = named.segments
+        .filter((s) => !off.has(s.speaker) && s.end > from && s.start < to)
+        .map((s) => ({ s, who: resolveSpeaker(named, s.speaker) }))
+        .filter(({ who }) => (!speaker || who.name.toLowerCase() === speaker) && (!role || (role === "none" ? !who.role : who.role === role)));
+      const offset = Math.max(0, Math.floor(optNum(args, "offset") ?? 0));
+      const limit = Math.min(MAX_TRANSCRIPT_LIMIT, Math.max(1, Math.floor(optNum(args, "limit") ?? DEFAULT_TRANSCRIPT_LIMIT)));
+      const page = found.slice(offset, offset + limit);
+      const nextOffset = offset + page.length < found.length ? offset + page.length : null;
+      const segments = page.map(({ s, who }) => ({
+        start: round2(s.start),
+        end: round2(s.end),
+        speaker: who.name,
+        ...(who.role ? { role: who.role } : {}),
+        text: s.text,
+        ...(withWords && s.words ? { words: s.words.map((w) => ({ start: round2(w.start), end: round2(w.end), text: w.text })) } : {}),
+      }));
+      const more = nextOffset === null ? "" : ` (lines ${offset + 1}-${offset + page.length}; nextOffset ${nextOffset})`;
       return {
-        summary: `Read ${segments.length} line(s) of ${fileName(path)}'s transcript`,
-        result: { file: path, segments, note: "Times are seconds in the file (sourceIn/sourceOut for add_clips), not on the timeline." },
+        summary: `Read ${page.length} of ${found.length} line(s) of ${fileName(path)}'s transcript${more}`,
+        result: {
+          file: path,
+          segments,
+          total: found.length,
+          nextOffset,
+          note: "Times are seconds in the file (sourceIn/sourceOut for add_clips), not on the timeline.",
+        },
       };
     },
 
@@ -262,13 +301,21 @@ export function transcriptExecutors(context: ToolContext): Record<string, Execut
       if (speakers && !haveToken) {
         throw new Error("Telling speakers apart needs a Hugging Face token (Settings → API keys). Transcribe with speakers: false, or ask the user to add the token.");
       }
-      const job = await runJob("transcribe", `Transcribe ${files.length} file(s)`, {
-        videos: files,
-        model: TRANSCRIBE_MODEL,
-        diarize: speakers,
-        format: "txt",
-        force: bool(args, "force"),
-      });
+      const request = { videos: files, model: TRANSCRIBE_MODEL, diarize: speakers, format: "txt", force: bool(args, "force") };
+      if (bool(args, "background")) {
+        const busy = files.filter((f) => backgroundProgress(f));
+        if (busy.length) throw new Error(`Already transcribing in the background: ${busy.map(fileName).join(", ")}. The app will send you a message when it's done.`);
+        await transcribeInBackground(files, request);
+        return {
+          summary: `Started transcribing ${files.length} file(s) in the background${speakers ? ", telling speakers apart" : ""}`,
+          result: {
+            files,
+            background: true,
+            note: "The app sends you a message when it's done; then continue. Tell the user it has started and end your turn now, unless there is other work that doesn't need these transcripts.",
+          },
+        };
+      }
+      const job = await runJob("transcribe", `Transcribe ${files.length} file(s)`, request);
       const result = (job?.result ?? {}) as { files?: TranscribedFile[]; failed?: { path: string; message: string }[] };
       const done = result.files ?? [];
       forgetTranscriptStatus(done.map((f) => f.path));
@@ -380,7 +427,7 @@ export function transcriptToolDeclarations(host: NleHost): ToolDeclaration[] {
   return [
     {
       name: "get_transcript",
-      description: `Without clipId: reads what is said on the connected ${noun} (or the draft): the transcript lines of every sound clip, in ${noun} time order, with speaker, the speaker's role when known (roleGuessed when it is a guess) and a line id for remove_transcript_lines. Filter by time range, speaker and/or role; results are paged (use nextOffset). includeWords adds each word's ${noun} time. Files with no transcript are listed in untranscribedFiles. With clipId (a clip on the ${noun}, or a project clip "p3") or filePath: that file's transcript, in seconds of the file (use them as sourceIn/sourceOut with add_clips), for footage that isn't on the ${noun}.`,
+      description: `Without clipId: reads what is said on the connected ${noun} (or the draft): the transcript lines of every sound clip, in ${noun} time order, with speaker, the speaker's role when known (roleGuessed when it is a guess) and a line id for remove_transcript_lines. Filter by time range, speaker and/or role; results are paged (use nextOffset). includeWords adds each word's ${noun} time. Files with no transcript are listed in untranscribedFiles. With clipId (a clip on the ${noun}, or a project clip "p3") or filePath: that file's transcript, in seconds of the file (use them as sourceIn/sourceOut with add_clips), for footage that isn't on the ${noun}; the same filters and paging apply, with times in the file. For what a long interview says about a topic, find_soundbites reads all of it for you.`,
       parameters: {
         type: "OBJECT",
         properties: {
@@ -406,6 +453,10 @@ export function transcriptToolDeclarations(host: NleHost): ToolDeclaration[] {
           filePaths: { type: "ARRAY", items: { type: "STRING" } },
           speakers: { type: "BOOLEAN", description: "Tell speakers apart. Optional." },
           force: { type: "BOOLEAN", description: "Transcribe again, e.g. to add word timings or tell speakers apart. Optional." },
+          background: {
+            type: "BOOLEAN",
+            description: "Run it in the background and answer at once: the app sends you a message when it's done, and you continue then. Use it for long files (over about 10 minutes in all) or many files, then tell the user and end your turn. Optional.",
+          },
         },
       },
     },
@@ -497,15 +548,17 @@ export function transcriptInstruction(host: NleHost): string {
   draft), in its time, with line ids; with clipId or filePath it reads one file's transcript in the
   file's own time, for footage not on the ${noun} yet. search_transcript finds a topic or phrase.
   Transcripts are saved next to each media file; a file without one is listed in untranscribedFiles,
-  and transcribe_clips makes them (slow: ask first unless the user asked).
+  and transcribe_clips makes them (slow: ask first unless the user asked). For long files (over about 10
+  minutes in all) use transcribe_clips with background: true, tell the user, and end your turn: the app
+  sends you a message when it's done, and you continue then.
 - Tightening ("cut the ums", "remove the dead air"): find_filler_words and find_silences only find;
   pass every range you want gone to ONE remove_time_ranges call (later times shift after a cut).
   remove_transcript_lines cuts whole lines by id. These cuts go into the draft.
 - Interviews: list_speakers tells the interviewer apart (questions, short lines); set_speaker_roles saves
   who is who (as a guess unless the user said so). remove_speaker_lines drops every line of a role,
   e.g. the interviewer's questions, with keepLineIds for ones an answer needs.
-- Building a cut from interviews not yet on a ${noun}: transcribe_clips, read each file's transcript
-  (get_transcript with clipId), choose the soundbites, create_timeline, then add_clips each soundbite
+- Building a cut from interviews not yet on a ${noun}: transcribe_clips, then find_soundbites for the
+  lines that answer the brief (or, for short files, get_transcript with clipId), create_timeline, then add_clips each soundbite
   in order (path, sourceIn/sourceOut from the transcript, at = where the previous one ends).
 - A camera filmed with a separate recorder: transcribe the RECORDER's file (the better sound), and
   sync_and_place them before cutting.`;

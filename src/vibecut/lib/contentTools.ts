@@ -16,8 +16,8 @@ import { DEFAULT_FILLERS, findPhrase, phraseTokens } from "./wordMatch";
 // Lines always have timings; single words only do when the transcriber recorded them (transcripts
 // made before it did need transcribe_media with force to gain them).
 
-const DEFAULT_TRANSCRIPT_LIMIT = 200;
-const MAX_TRANSCRIPT_LIMIT = 500;
+export const DEFAULT_TRANSCRIPT_LIMIT = 200;
+export const MAX_TRANSCRIPT_LIMIT = 500;
 const MAX_SEARCH_MATCHES = 50;
 
 /** The transcript lines on a timeline, plus the names of its media with no transcript. */
