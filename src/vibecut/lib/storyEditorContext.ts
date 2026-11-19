@@ -26,6 +26,8 @@ export interface StorySegment {
   speaker: string;
   /** Set on the interviewer's lines, so they can be left out of the story. */
   interviewer?: boolean;
+  /** [start, end] of each word, when the transcript has them: a trim snaps onto a word (story/assemble.py). */
+  words?: [number, number][];
 }
 
 /** One file's transcript as a Story Editor source: speakers named, the interviewer's lines marked (a
@@ -39,7 +41,14 @@ export function storySourceOf(data: TranscriptData, mediaPath: string, sourceId:
     fileName: mediaPath.split(/[\\/]/).pop() || mediaPath,
     segments: data.segments.map((s) => {
       const who = resolveSpeaker(data, s.speaker);
-      return { start: s.start, end: s.end, text: s.text, speaker: speakerTag(who), ...(who.role === "interviewer" ? { interviewer: true } : {}) };
+      return {
+        start: s.start,
+        end: s.end,
+        text: s.text,
+        speaker: speakerTag(who),
+        ...(who.role === "interviewer" ? { interviewer: true } : {}),
+        ...(s.words?.length ? { words: s.words.map((w): [number, number] => [w.start, w.end]) } : {}),
+      };
     }),
   };
 }
@@ -60,8 +69,10 @@ export function briefWantsInterviewer(brief: string): boolean {
 }
 
 /** A source's segments as the assemble command reads them (no app-only fields). */
-export function payloadSegments(source: StoryTranscriptSource): { start: number; end: number; text: string; speaker: string }[] {
-  return source.segments.map(({ start, end, text, speaker }) => ({ start, end, text, speaker }));
+export function payloadSegments(
+  source: StoryTranscriptSource,
+): { start: number; end: number; text: string; speaker: string; words?: [number, number][] }[] {
+  return source.segments.map(({ start, end, text, speaker, words }) => ({ start, end, text, speaker, ...(words ? { words } : {}) }));
 }
 
 /** How many transcript lines a Story Editor request will send, total across every source. */

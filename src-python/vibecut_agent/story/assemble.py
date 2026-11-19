@@ -9,6 +9,11 @@ Kept from VibeCut, verbatim in behaviour:
   anchored to a main cut and turned into a timeline second, durations clamped to the clip.
 - The `result` event of headless.py's `_finish`, the shape VibeCut's `roughCutPlan` reads.
 
+Changed here (PLAN.md, "Transcription recall + alignment"): a trim snaps outward to the word it lands in
+(when the transcript has word times), and every cut gets a short pre- and post-roll (CUT_PRE_ROLL_SECONDS,
+CUT_POST_ROLL_SECONDS) so a line's first and last sounds aren't clipped; a handle never reaches past halfway
+to the neighbouring line or word, nor past the file's end.
+
 Left out: the Script/XML/FCPXML/OTIO files (the app builds the timeline from `resolvedSegments`, and
 `rebuild` writes the interchange), project history, the generation lock (one run per process here) and
 drop-frame timecode (timecodes only label the lines in the prompt).
@@ -18,10 +23,17 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from vibecut_agent.broll import ffprobe_util
+
 MIN_MODEL_TRIM_SECONDS = 0.3
+# Sound kept before a cut's first word and after its last (decided; PLAN.md, "Transcription recall +
+# alignment"): breath and onset in, the last syllable's decay out. Each is at most half the gap to the
+# neighbouring line (or word, for a trim), so it never takes in a sound that belongs to it.
+CUT_PRE_ROLL_SECONDS = 0.10
+CUT_POST_ROLL_SECONDS = 0.15
 
 
 @dataclass
@@ -33,9 +45,49 @@ class Segment:
     end_tc: str
     speaker: str | None
     text: str
+    # (start, end) of each word, when the transcript has them; not shown to the model.
+    words: list[tuple[float, float]] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        out.pop("words")
+        return out
+
+
+def _words(raw: Any, start: float, end: float) -> list[tuple[float, float]] | None:
+    """A line's word times from {start, end} dicts or [start, end] pairs, inside the line, in order."""
+    if not isinstance(raw, list):
+        return None
+    words = []
+    for w in raw:
+        pair = (w.get("start"), w.get("end")) if isinstance(w, dict) else w
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        a, b = coerce_float(pair[0], None), coerce_float(pair[1], None)
+        if a is None or b is None or b <= a or b <= start or a >= end:
+            continue
+        words.append((max(a, start), min(b, end)))
+    return sorted(words) or None
+
+
+def snap_in(words: list[tuple[float, float]], t: float) -> float:
+    """A trimmed start on a word: the start of the word it lands in, else of the next word."""
+    for a, b in words:
+        if a <= t < b:
+            return a
+        if a >= t:
+            return a
+    return t
+
+
+def snap_out(words: list[tuple[float, float]], t: float) -> float:
+    """A trimmed end on a word: the end of the word it lands in, else of the word before."""
+    for a, b in reversed(words):
+        if a < t <= b:
+            return b
+        if b <= t:
+            return b
+    return t
 
 
 def seconds_to_smpte(total_seconds: float, fps: float) -> str:
@@ -145,6 +197,54 @@ class Story:
         self.fps = fps if isinstance(fps, (int, float)) and not isinstance(fps, bool) and fps > 0 else 25.0
         self.sources: dict[str, dict[str, Any]] = {}
         self.media_paths: dict[str, str] = {}
+        self._durations: dict[str, float | None] = {}
+
+    def media_duration(self, source_id: str) -> float | None:
+        """The source file's length (ffprobe, once per source), or None when unknown."""
+        if source_id not in self._durations:
+            path = self.media_paths.get(source_id)
+            self._durations[source_id] = (
+                ffprobe_util.probe_duration_seconds(path) if path and os.path.isfile(path) else None
+            )
+        return self._durations[source_id]
+
+    def cut_bounds(
+        self, source_id: str, idx: int, in_off: float, out_off: float
+    ) -> tuple[float, float, bool]:
+        """(in, out, fell_back) for line `idx` of a source trimmed by the model's offsets: trims snapped
+        onto words, then the pre- and post-roll. `fell_back` when the trim left too little and the whole
+        line was used."""
+        segments = self.sources[source_id]["segments"]
+        seg = segments[idx]
+        words = seg.words or []
+        in_s, out_s = seg.start_seconds + in_off, seg.end_seconds - out_off
+        if in_off > 0 and words:
+            in_s = snap_in(words, in_s)
+        if out_off > 0 and words:
+            out_s = snap_out(words, out_s)
+        fell_back = out_s - in_s < MIN_MODEL_TRIM_SECONDS
+        if fell_back:
+            in_s, out_s = seg.start_seconds, seg.end_seconds
+        trimmed_in = in_off > 0 and not fell_back
+        trimmed_out = out_off > 0 and not fell_back
+        # What the handle mustn't reach past halfway to: the word before or after a trim (none known for
+        # a trim without word times: no handle), else the line before or after (the file's edge).
+        before: float | None
+        after: float | None
+        if trimmed_in:
+            before = max((b for _, b in words if b <= in_s), default=seg.start_seconds) if words else None
+        else:
+            earlier = [s.end_seconds for s in segments if s.end_seconds <= seg.start_seconds]
+            before = max(earlier) if earlier else -in_s  # nothing before: the file's start
+        if trimmed_out:
+            after = min((a for a, _ in words if a >= out_s), default=seg.end_seconds) if words else None
+        else:
+            later = [s.start_seconds for s in segments if s.start_seconds >= seg.end_seconds]
+            duration = self.media_duration(source_id)
+            after = min(later) if later else (2 * duration - out_s if duration is not None else None)
+        pre = 0.0 if before is None else min(CUT_PRE_ROLL_SECONDS, max(0.0, (in_s - before) / 2))
+        post = 0.0 if after is None else min(CUT_POST_ROLL_SECONDS, max(0.0, (after - out_s) / 2))
+        return max(0.0, in_s - pre), out_s + post, fell_back
 
     def tc(self, seconds: float) -> str:
         return seconds_to_smpte(seconds, self.fps)
@@ -176,6 +276,7 @@ class Story:
                     continue
                 text = raw_seg.get("text")
                 speaker = raw_seg.get("speaker")
+                words = _words(raw_seg.get("words"), start, end)
                 segments.append(
                     Segment(
                         index=i,
@@ -185,6 +286,7 @@ class Story:
                         end_tc=self.tc(end),
                         speaker=speaker if isinstance(speaker, str) and speaker else None,
                         text=text if isinstance(text, str) else "",
+                        words=words,
                     )
                 )
             if segments:
@@ -226,10 +328,8 @@ class Story:
             seg = entry["segments"][idx]
             in_off = max(0.0, _float(item.get("in_offset_seconds"), 0.0))
             out_off = max(0.0, _float(item.get("out_offset_seconds"), 0.0))
-            in_seconds = seg.start_seconds + in_off
-            out_seconds = seg.end_seconds - out_off
-            if out_seconds - in_seconds < MIN_MODEL_TRIM_SECONDS:
-                in_seconds, out_seconds = seg.start_seconds, seg.end_seconds
+            in_seconds, out_seconds, fell_back = self.cut_bounds(source_id, idx, in_off, out_off)
+            if fell_back:
                 problems.append(f"Segment {i}: trim made the clip too short — used the full segment instead.")
             order = coerce_int(item.get("order"))
             model_orders.append(order if order is not None else i)

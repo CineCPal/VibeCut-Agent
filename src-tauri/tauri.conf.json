@@ -50,6 +50,7 @@
       "../src-python/vibecut_agent/nle/*.py": "python/src-python/vibecut_agent/nle/",
       "../src-python/vibecut_agent/nle/interchange/*.py": "python/src-python/vibecut_agent/nle/interchange/",
       "../src-python/vibecut_agent/transcribe/*.py": "python/src-python/vibecut_agent/transcribe/",
+      "../src-python/vibecut_agent/transcribe/assets/silero_vad_v6.onnx": "python/src-python/vibecut_agent/transcribe/assets/silero_vad_v6.onnx",
       "../src-premiere-panel/CSXS/manifest.xml": "premiere-panel/CSXS/manifest.xml",
       "../src-premiere-panel/index.html": "premiere-panel/index.html",
       "../src-premiere-panel/bridge.js": "premiere-panel/bridge.js",

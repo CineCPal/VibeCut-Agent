@@ -3,7 +3,7 @@ rough-cut-studio headless.py `run_assemble`. ``python -u -m vibecut_agent assemb
 on stdin.
 
 request: {
-    "sources": [{"sourceId": str, "segments": [{"start", "end", "text", "speaker"}, ...]}, ...],
+    "sources": [{"sourceId": str, "segments": [{"start", "end", "text", "speaker", "words"?: [[start, end]]}, ...]}, ...],
     "media": {sourceId: absolute video path}   (optional; names each cut after its video),
     "fps": 25,
     "provider": "gemini" | "claude-code"       (optional, "gemini"; the chat's),

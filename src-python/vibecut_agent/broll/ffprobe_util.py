@@ -103,6 +103,33 @@ def probe_duration_seconds(path: str, timeout: float = 15) -> float | None:
         return None
 
 
+def audio_offset_seconds(path: str, timeout: float = 15) -> float:
+    """How far after the picture's first frame the first audio stream's first sample plays, in seconds
+    (negative when the sound starts first). Extracting the sound to a WAV drops this gap, so times read
+    from that WAV are early (or late) against the editor's zero by exactly this much. 0.0 for a file
+    with no picture (cover art doesn't count) or when ffprobe can't say."""
+    try:
+        data = probe_json(
+            path, timeout, show_entries="stream=codec_type,start_time:stream_disposition=attached_pic"
+        )
+    except Exception:
+        return 0.0
+    streams = data.get("streams") or []
+    video = next(
+        (
+            s
+            for s in streams
+            if s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")
+        ),
+        None,
+    )
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    try:
+        return float(audio["start_time"]) - float(video["start_time"]) if audio and video else 0.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
 def probe_video_fps(path: str, timeout: float = 15) -> float | None:
     """Average video frame rate from stream 0 (preferring avg_frame_rate
     over the nominal r_frame_rate for VFR content), or None if

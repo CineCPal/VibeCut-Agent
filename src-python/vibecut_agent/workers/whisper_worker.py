@@ -15,7 +15,13 @@ too), so the next run, here or in the Transcribe tab, skips the work.
 The result is `vibecut.whisper.v2`: every segment carries an exact `TimeRange` and SMPTE timecode at the
 file's frame rate, and every word its first and last frame. A word's `probability` is Whisper's own when
 this run transcribed it; a cached transcript doesn't keep it, so there each word has its segment's mean
-token probability (exp of `avg_logprob`)."""
+token probability (exp of `avg_logprob`).
+
+Each new transcript is checked against the sound before it is cached (transcribe/alignment.py, PLAN.md
+"Transcription recall + alignment"): speech Whisper left out is transcribed again (mlx-whisper and
+faster-whisper, through `clip_backends`; whisper.cpp has none, so it gets the rest only), lines made up over
+silence are dropped, line edges go onto the sound, and times are moved by the audio stream's start offset.
+A cache from before that is brought up to it once, by `pipeline.upgrade_cache`, holding the GPU lock."""
 
 from __future__ import annotations
 
@@ -41,7 +47,7 @@ from vibecut_agent.core.timecode_math import (
     time_range_from_seconds,
 )
 from vibecut_agent.orchestrator.schemas import WHISPER_VERSION
-from vibecut_agent.transcribe import pipeline
+from vibecut_agent.transcribe import alignment, pipeline
 from vibecut_agent.workers.base import GpuLock, WorkerHealth
 
 BACKENDS = ("mlx-whisper", "faster-whisper", "whisper.cpp")
@@ -68,6 +74,8 @@ WHISPER_CPP_TIMEOUT_S = 6 * 3600.0
 # Segments and words as a backend gives them: seconds, text, and Whisper's confidence.
 RawSegment = dict[str, Any]
 Backend = Callable[[str, str], list[RawSegment]]
+# Whisper over only some stretches of the WAV: (wav, model, [(start, end)] seconds, language or None).
+ClipBackend = Callable[[str, str, list[tuple[float, float]], str | None], list[RawSegment]]
 Progress = Callable[[str, float, str], None]
 
 
@@ -85,10 +93,7 @@ def _raw_word(text: Any, start: Any, end: Any, probability: Any = None) -> dict[
     return entry
 
 
-def mlx_backend(wav: str, model: str) -> list[RawSegment]:
-    import mlx_whisper
-
-    result = mlx_whisper.transcribe(wav, path_or_hf_repo=model, word_timestamps=True)
+def _mlx_segments(result: dict[str, Any]) -> list[RawSegment]:
     segments: list[RawSegment] = []
     for seg in result.get("segments", []):
         words = [
@@ -103,9 +108,35 @@ def mlx_backend(wav: str, model: str) -> list[RawSegment]:
                 "avg_logprob": float(seg.get("avg_logprob", 0.0)),
                 "no_speech_prob": float(seg.get("no_speech_prob", 0.0)),
                 "words": [w for w in words if w] or None,
+                "language": result.get("language"),
             }
         )
     return segments
+
+
+def mlx_backend(wav: str, model: str) -> list[RawSegment]:
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        wav, path_or_hf_repo=model, word_timestamps=True, **pipeline.DECODE_OPTIONS
+    )
+    return _mlx_segments(result)
+
+
+def mlx_clip_backend(
+    wav: str, model: str, clips: list[tuple[float, float]], language: str | None
+) -> list[RawSegment]:
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        wav,
+        path_or_hf_repo=model,
+        word_timestamps=True,
+        clip_timestamps=[round(float(t), 3) for clip in clips for t in clip],
+        language=language,
+        **pipeline.RECOVERY_OPTIONS,
+    )
+    return _mlx_segments(result)
 
 
 # faster-whisper models loaded in this process, by name (model migration v2): an ingest of many files
@@ -113,7 +144,7 @@ def mlx_backend(wav: str, model: str) -> list[RawSegment]:
 _FASTER_WHISPER_CACHE: dict[str, Any] = {}
 
 
-def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
+def _faster_whisper_model(model: str) -> Any:
     whisper = _FASTER_WHISPER_CACHE.get(model)
     if whisper is None:
         from faster_whisper import WhisperModel
@@ -121,7 +152,33 @@ def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
         whisper = WhisperModel(model, device="auto", compute_type="auto")
         _FASTER_WHISPER_CACHE.clear()
         _FASTER_WHISPER_CACHE[model] = whisper
-    found, _info = whisper.transcribe(wav, word_timestamps=True)
+    return whisper
+
+
+def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
+    # Its own VAD filter is off: alignment.py's pass does that job for every backend alike.
+    found, info = _faster_whisper_model(model).transcribe(
+        wav, word_timestamps=True, vad_filter=False, **pipeline.DECODE_OPTIONS
+    )
+    return _faster_segments(found, info)
+
+
+def faster_whisper_clip_backend(
+    wav: str, model: str, clips: list[tuple[float, float]], language: str | None
+) -> list[RawSegment]:
+    found, info = _faster_whisper_model(model).transcribe(
+        wav,
+        word_timestamps=True,
+        vad_filter=False,
+        clip_timestamps=[round(float(t), 3) for clip in clips for t in clip],
+        language=language,
+        **pipeline.RECOVERY_OPTIONS,
+    )
+    return _faster_segments(found, info)
+
+
+def _faster_segments(found: Any, info: Any) -> list[RawSegment]:
+    language = getattr(info, "language", None)
     segments: list[RawSegment] = []
     for seg in found:
         words = [_raw_word(w.word, w.start, w.end, w.probability) for w in seg.words or []]
@@ -133,6 +190,7 @@ def faster_whisper_backend(wav: str, model: str) -> list[RawSegment]:
                 "avg_logprob": float(seg.avg_logprob),
                 "no_speech_prob": float(seg.no_speech_prob),
                 "words": [w for w in words if w] or None,
+                "language": language,
             }
         )
     return segments
@@ -299,6 +357,7 @@ class WhisperWorker:
         config: OrchestratorConfig,
         lock: GpuLock | None = None,
         backends: Mapping[str, Backend] | None = None,
+        clip_backends: Mapping[str, ClipBackend] | None = None,
     ) -> None:
         if config.whisper_backend not in BACKENDS:
             raise WhisperWorkerError(f"VIBECUT_WHISPER_BACKEND must be one of {', '.join(BACKENDS)}")
@@ -310,6 +369,12 @@ class WhisperWorker:
             "faster-whisper": faster_whisper_backend,
             "whisper.cpp": whisper_cpp_backend(config.whisper_cpp_bin),
         }
+        # Recovering missed speech needs Whisper on chosen stretches; whisper.cpp isn't wired for that.
+        # Backends given without clip backends (tests) recover nothing.
+        default_clips = {"mlx-whisper": mlx_clip_backend, "faster-whisper": faster_whisper_clip_backend}
+        self.clip_backends: Mapping[str, ClipBackend] = (
+            clip_backends if clip_backends is not None else ({} if backends else default_clips)
+        )
 
     def model_for(self, tier: str | None) -> str:
         """The model this backend loads for a tier (or the configured one): an mlx-community repo for
@@ -386,16 +451,35 @@ class WhisperWorker:
         if enable_diarization and not hf_token:
             raise WhisperWorkerError("Telling speakers apart needs a Hugging Face token")
         rate = rate if rate is not None else frame_rate(media_path)
+        model = self.model_for(model_tier)
+        if use_cache:
+            self._upgrade(media_path, model, on_progress)
         cached = self.cached(media_path, rate) if use_cache else None
         if cached is not None:
             return in_window(cached, start, end)
-        model = self.model_for(model_tier)
-        segments, speakers = self._run(media_path, model, enable_diarization, hf_token, on_progress)
+        segments, speakers, aligned = self._run(media_path, model, enable_diarization, hf_token, on_progress)
         name = os.path.basename(media_path)
         cache_segments = [replace(s, words=pipeline.clean_words(s.words)) for s in segments]
-        pipeline.write_cache(media_path, name, cache_segments, speakers)
+        marker = pipeline.ALIGNMENT_VERSION if aligned else None
+        pipeline.write_cache(media_path, name, cache_segments, speakers, alignment=marker)
         data = {"name": name, "speakers": speakers, "speaker_labels": {}, "excluded_speakers": []}
         return in_window(to_v2(data, media_path, rate, self.backend, model, segments), start, end)
+
+    def _clip_backend(self, model: str) -> pipeline.ClipBackend | None:
+        clips = self.clip_backends.get(self.backend)
+        if clips is None:
+            return None
+        return lambda wav, stretches, language: clips(wav, model, stretches, language)
+
+    def _upgrade(self, media_path: str, model: str, on_progress: Progress | None) -> None:
+        """A cache from before ALIGNMENT_VERSION checked against the sound, once (pipeline.upgrade_cache);
+        when that can't be done the old cache stands."""
+        data = pipeline.load_cache(media_path)
+        if not pipeline.needs_upgrade(data):
+            return
+        assert data is not None
+        with self.lock:
+            pipeline.upgrade_cache(media_path, data, self._clip_backend(model), on_progress)
 
     def _run(
         self,
@@ -404,7 +488,7 @@ class WhisperWorker:
         enable_diarization: bool,
         hf_token: str | None,
         on_progress: Progress | None,
-    ) -> tuple[list[Any], list[str]]:
+    ) -> tuple[list[Any], list[str], bool]:
         def report(phase: str, fraction: float, detail: str) -> None:
             if on_progress is not None:
                 on_progress(phase, fraction, detail)
@@ -420,6 +504,12 @@ class WhisperWorker:
             report("transcribe", 0.0, f"Transcribing with {self.backend}")
             with self.lock:
                 raw = self.backends[self.backend](wav, model)
+                report("align", 0.0, "Checking the transcript against the sound")
+                aligned = True
+                try:
+                    raw = pipeline.align_raw(wav, raw, self._clip_backend(model))
+                except Exception:  # noqa: BLE001 - best effort: Whisper's own times are kept, and retried later
+                    aligned = False
                 turns: list[Any] = []
                 if enable_diarization:
                     report("diarize", 0.0, "Telling speakers apart")
@@ -428,8 +518,10 @@ class WhisperWorker:
             names = pipeline.normalize_speaker_names(order)
             for seg in segments:
                 seg.speaker = names.get(seg.speaker, seg.speaker)
+            if aligned:
+                segments = alignment.shift(segments, pipeline.audio_offset(media_path))
             report("transcribe", 1.0, "Transcribed")
-            return segments, list(names.values()) or ["Speaker 1"]
+            return segments, list(names.values()) or ["Speaker 1"], aligned
         finally:
             shutil.rmtree(folder, ignore_errors=True)
             gc.collect()

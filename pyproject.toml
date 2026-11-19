@@ -29,6 +29,9 @@ energy = [
 transcribe = [
     "mlx-whisper==0.4.3",
     "mlx==0.32.0",
+    # Silero VAD (transcribe/alignment.py, its model vendored in transcribe/assets): finds the speech
+    # Whisper skipped and puts each line's edges on the sound. Without it, the energy envelope alone.
+    "onnxruntime==1.31.1",
 ]
 # Telling speakers apart while transcribing: pyannote, with a Hugging Face token and its accepted
 # licences. Only for a run that asks for it (sidecar.rs, `extras_for`).
@@ -127,7 +130,7 @@ check_untyped_defs = true
 
 # torch, open_clip and transformers come from the optional `energy` extra and ship no stubs.
 [[tool.mypy.overrides]]
-module = ["torch", "torch.*", "open_clip", "transformers", "DaVinciResolveScript", "mlx_whisper", "mlx.*", "pyannote.*", "tqdm", "huggingface_hub.*"]
+module = ["torch", "torch.*", "open_clip", "transformers", "DaVinciResolveScript", "mlx_whisper", "mlx.*", "pyannote.*", "tqdm", "huggingface_hub.*", "onnxruntime"]
 ignore_missing_imports = true
 
 # Phase 21's `orchestrator` extra: OTIO, jsonschema, sqlite-vec and faster-whisper ship no stubs.

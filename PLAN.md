@@ -3677,6 +3677,63 @@ None of them is used by current VibeCut code.
   - Resolve: the same with a Media Pool folder.
   - In a direct-mode chat, find a shot by content and place it.
 
+## Transcription recall + alignment (2026-11-19)
+
+**What the user reported.** Clearly audible dialogue was missing from transcripts. Cuts clipped the starts and ends of lines because the transcript's times were off. The footage was a single mixed track, and clipping happened at both ends.
+
+**Causes found.**
+- **Whisper ran on its defaults.** The only option passed was `word_timestamps`. Conditioning on previous text loops or drops text. The no-speech/logprob gate skips whole 30 s windows of real speech.
+- **Every Story cut used Whisper's segment times as they were.** Those times are coarse, and its word times start late or early and end early. Nothing in the dialogue path added a handle.
+- **`extract_audio` dropped the audio stream's start offset.** An MP4 whose sound starts 0.48 s after its picture gave a WAV starting at the first sample, so every time was 0.48 s early against the editor. It also let ffmpeg pick its "best" audio stream.
+
+**What changed.**
+
+1. **Decoding** (`pipeline.DECODE_OPTIONS`, mlx and faster-whisper): `condition_on_previous_text=False` and `hallucination_silence_threshold=2.0`. faster-whisper's own VAD filter is off, because the pass below does that job for every backend.
+
+2. **The sound, read once more** (`transcribe/alignment.py`). The extracted WAV is streamed through `ffmpeg_ops._audio_pipe` and gives two signals:
+   - Silero VAD v6 probabilities every 32 ms. The model is vendored at `transcribe/assets/silero_vad_v6.onnx` (MIT, from snakers4/silero-vad as shipped in faster-whisper 1.2.1) and runs on onnxruntime's CPU, with its state carried over between chunks.
+   - The level every 10 ms.
+
+   From those, in this order:
+   - **Recover.** Speech regions that words cover less than 50% of are transcribed again, padded by 0.25 s, in **one** `clip_timestamps` call with the skip gates off (`RECOVERY_OPTIONS`) and the language from the main pass. Recovered words that overlap missed speech, and don't fall on a word already there, become new lines.
+   - **Drop hallucinations.** A line is removed only if all three hold: it is low-confidence, less than 15% of it falls in speech, and the sound there is mostly silent.
+   - **Refine.** Words at phrase edges move onto the sound:
+     - a start moves back to the onset (at most 0.4 s);
+     - a start that sits in silence moves forward to the sound (at most 1.0 s, never past the word's end);
+     - an end extends through the decay (at most 0.6 s);
+     - an end is pulled back only when more than 0.5 s of silence follows it, keeping an 80 ms tail.
+
+     Words never cross their neighbours. A line's edges become its first and last word's.
+   - **No movement where the level is flat.** Where the level moves less than 12 dB (music, constant noise), no word moves. Without the VAD, speech counts only where the level moves.
+   - **Offset.** Times are then moved by `ffprobe_util.audio_offset_seconds` (first audio `start_time` minus first video `start_time`). `extract_audio` maps `0:a:0`.
+
+3. **The cache.** A checked transcript is written with `"alignment": 1`; other readers ignore the key.
+   - An older cache is upgraded once by `pipeline.upgrade_cache`, run by the Transcribe tab and `WhisperWorker.transcribe`. It runs the alignment pass and the offset, and Whisper only on the missed speech. Speaker names and switched-off speakers are kept, and a recovered line takes its nearest line's speaker.
+   - If the media can't be read, the old cache stands and is retried next time.
+   - If the alignment pass fails during a fresh transcription, Whisper's times are kept (with a warning) and no marker is written.
+   - Transcripts the app reads directly (Rust `read_transcript`) improve once the file goes through a transcribe or ingest.
+
+4. **Story cuts** (`story/assemble.py`).
+   - The app now sends each line's word times (`payloadSegments`, `words: [[start, end]]`). They are not shown to the model.
+   - A trim snaps outward onto the word it lands in: the next word's start if it lands in a pause, the previous word's end for an out point.
+   - Every cut gets a 0.10 s pre-roll and 0.15 s post-roll, each capped at half the gap to the neighbouring line, or to the neighbouring word for a trim. A trim without word times gets no handle.
+   - At the file's edges the handle may run to the edge (`ffprobe` duration, once per source).
+
+**Boundaries.**
+- `vibecut.whisper.v2` is unchanged: everything fits its existing fields.
+- Nothing in `nle/` changed. The worker's alignment runs under the GPU lock.
+- whisper.cpp gets refinement and the offset but no recovery (no clip call is wired).
+- Injected test backends recover nothing unless `clip_backends` are given.
+
+**Decided** (thresholds above; no Gemini review). `onnxruntime==1.31.1` is added to the `transcribe` extra, and the model is a bundle resource (`tauri.conf.json`).
+
+**Verified.**
+- On real speech (`say`, two lines between silences), raw large-v3-turbo opened line 2 0.41 s early and ended it 0.25 s short. Aligned, both tiny and large-v3-turbo give the same edges on the sound (1.51–3.6 s, 5.81–8.32 s).
+- With line 2 removed from Whisper's output, recovery brought it back whole in one clip call.
+- `tests/transcribe/` covers this, including that real-speech case (skipped without macOS `say`, onnxruntime and the tiny mlx model).
+- Full suites pass: `uv run pytest tests/` (1449 passed, 2 skipped) and `npm run test:run` (970 passed).
+- **Live check owed:** re-transcribe a clip from the report in the installed app, then compare a Story cut in Premiere.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4373,3 +4430,4 @@ None of them is used by current VibeCut code.
 - **2026-11-18 (Claude): Ripple edits checked live; drop-frame razor fixed.** On a scratch copy of a 29.97 drop-frame sequence (404 clips): a ripple over four stretches in 14.4 s, in sync, reverted exactly; an insert in 12.9 s, reverted exactly. QE's razor reads timecode drop-frame on a drop-frame sequence, so `timecode()` now numbers drop-frame there (this also fixes `split_clip`, 2 frames early a minute on such sequences). See "Ripple edits on the timeline".
 - **2026-11-18 (Claude): Ripple deltas pass the proposal.** `ripple_delete` and `insert_time` added to `vibecut.gemma.validator.v1`'s command enum (the user's decision; additive), which refused every ripple as "the arguments don't fit". A tool result that breaks VibeCut's own schema now says so. See "Ripple edits on the timeline".
 - **2026-11-18 (Claude): Bin analysis & visual clip selection.** `analyze_bin` runs the B-roll Analyzer on a bin of the Premiere project or Resolve Media Pool, folder by folder. `build_bin_selects` builds each analyzed bin's selects as a new "<bin> — B-roll selects" timeline with scored markers. `index_bin_visuals` has the local vision model tag and index a bin's shots; this is the first app caller of `ingest-index`. `find_clips_by_content` searches those shots by what they show. Two new read-only sidecars back them: `vector-search` and `vlm-tags`. Works in both modes; three of the tools are forwarded in orchestrated mode. Live checks owed. See "Bin analysis & visual clip selection".
+- **2026-11-19 (Claude): Transcription recall + alignment.** Transcripts are checked against the sound (Silero VAD, vendored, on onnxruntime). Speech Whisper skipped is transcribed again in one clip call, lines made up over silence are dropped, and line edges go onto the sound. Times are moved by the audio stream's start offset, and the first audio stream is the one transcribed. Old caches are upgraded once without a full re-transcribe. Story cuts snap trims onto words and get a 0.10/0.15 s pre/post-roll. Live check owed. See "Transcription recall + alignment".

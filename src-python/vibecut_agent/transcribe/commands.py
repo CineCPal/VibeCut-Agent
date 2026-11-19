@@ -44,8 +44,8 @@ FORMATS = {
 }
 # Rough share of a file's time per phase, so one batch-wide progress value can be shown.
 PHASE_WEIGHTS = {
-    False: {"extract": (0.0, 0.05), "transcribe": (0.05, 1.0)},
-    True: {"extract": (0.0, 0.05), "transcribe": (0.05, 0.70), "diarize": (0.70, 1.0)},
+    False: {"extract": (0.0, 0.05), "transcribe": (0.05, 0.90), "align": (0.90, 1.0)},
+    True: {"extract": (0.0, 0.05), "transcribe": (0.05, 0.62), "align": (0.62, 0.70), "diarize": (0.70, 1.0)},
 }
 
 
@@ -106,17 +106,32 @@ def transcribe_one(
     cached = None if request["force"] else pipeline.load_cache(video)
 
     warnings: list[str] = []
+    if cached is not None and pipeline.needs_upgrade(cached):
+        # Transcribed before its times were checked against the sound: checked now, without
+        # transcribing the whole file again (alignment.py). If that can't be done, the old one stands.
+        upgraded = pipeline.upgrade_cache(
+            video,
+            cached,
+            lambda wav, clips, language: pipeline.transcribe_clips(wav, request["model"], clips, language),
+            on_progress,
+        )
+        cached = upgraded or cached
     if cached is not None:
         segments = pipeline.segments_from_cache(cached)
         speakers = cached.get("speakers") or ["Speaker 1"]
         labels = cached.get("speaker_labels") or {}
         excluded = set(cached.get("excluded_speakers") or [])
     else:
-        segments, speakers = pipeline.transcribe_video(
+        segments, speakers, aligned = pipeline.transcribe_video(
             video, request["model"], diarize, hf_token or "", on_progress
         )
         labels, excluded = {}, set()
-        if not pipeline.write_cache(video, name, segments, speakers, labels, excluded):
+        if not aligned:
+            warnings.append(
+                f"Could not check {name}'s transcript against its sound; its line timings are Whisper's own."
+            )
+        marker = pipeline.ALIGNMENT_VERSION if aligned else None
+        if not pipeline.write_cache(video, name, segments, speakers, labels, excluded, alignment=marker):
             warnings.append(
                 f"Could not write the cache next to {name}; it will be transcribed again next time."
             )

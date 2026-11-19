@@ -84,8 +84,12 @@ def test_main_picks_are_checked_against_the_transcript():
             "junk",
         ]
     )
-    # Sorted by order and renumbered; the over-trimmed line falls back to the whole segment.
-    assert [(s["order"], s["in_seconds"], s["out_seconds"]) for s in kept] == [(0, 1.0, 4.0), (1, 5.5, 9.0)]
+    # Sorted by order and renumbered; the over-trimmed line falls back to the whole segment. The whole
+    # line gets its pre- and post-roll; a trim without word times lands where the model put it.
+    assert [(s["order"], s["in_seconds"], s["out_seconds"]) for s in kept] == [
+        (0, 0.9, 4.15),
+        (1, 5.5, 9.0),
+    ]
     assert (
         kept[0]["source_name"] == "interview.mov" and kept[1]["source_text"] == "Today we talk about editing."
     )
@@ -223,11 +227,12 @@ def test_the_result_combines_main_and_broll_in_the_shape_the_app_reads():
     segs = result["resolvedSegments"]
     main = [s for s in segs if s["track"] == "main"]
     broll = [s for s in segs if s["track"] == "broll"]
-    assert [s["timeline_start_seconds"] for s in main] == [0.0, 3.0]
+    assert [s["timeline_start_seconds"] for s in main] == pytest.approx([0.0, 3.25])
     assert broll[0]["timeline_start_seconds"] == pytest.approx(1.0)
     assert result["sequenceName"] == "Story Cut" and result["narrativeSummary"] == "A quick opener."
     assert result["media"] == {"interview": "/media/interview.mov", "clip-a": "/media/broll/sunset.mp4"}
-    assert result["duration"] == {"main_runtime_seconds": 7.0, "main_runtime_label": "7s"}
+    assert result["duration"]["main_runtime_seconds"] == pytest.approx(7.35)
+    assert result["duration"]["main_runtime_label"] == "7s"
     assert result["files"] == {} and result["warnings"] == []
 
 
@@ -253,7 +258,7 @@ def test_a_repeated_line_is_kept_once_and_broll_follows_the_models_own_order():
     main = [s for s in result["resolvedSegments"] if s["track"] == "main"]
     broll = [s for s in result["resolvedSegments"] if s["track"] == "broll"]
     assert [s["order"] for s in main] == [0, 1]
-    assert broll[0]["timeline_start_seconds"] == pytest.approx(4.0)
+    assert broll[0]["timeline_start_seconds"] == pytest.approx(4.25)
     assert any("already used earlier" in w for w in result["warnings"])
     assert result["sequenceName"] == "Fallback"
 
@@ -307,3 +312,77 @@ def test_an_unreadable_duration_is_an_error():
 def test_timecodes_are_non_drop_frame():
     assert seconds_to_smpte(61.48, 25) == "00:01:01:12"
     assert seconds_to_smpte(-3, 25) == "00:00:00:00"
+
+
+# ------------------------------------------------------------------------------- cut handles
+
+
+WORDED = [
+    {
+        "sourceId": "talk",
+        "segments": [
+            {
+                "start": 1.0,
+                "end": 4.0,
+                "text": "So we went out early.",
+                "words": [
+                    {"start": 1.0, "end": 1.3, "text": "So"},
+                    {"start": 1.35, "end": 1.6, "text": "we"},
+                    {"start": 1.65, "end": 2.0, "text": "went"},
+                    {"start": 2.5, "end": 3.0, "text": "out"},
+                    {"start": 3.05, "end": 4.0, "text": "early."},
+                ],
+            },
+            {"start": 4.1, "end": 6.0, "text": "Right away.", "words": [[4.1, 4.6], [4.7, 6.0]]},
+        ],
+    }
+]
+
+
+def worded() -> Story:
+    story = Story(25.0)
+    story.load_sources(WORDED)
+    return story
+
+
+def test_a_trim_snaps_outward_onto_the_word_it_lands_in():
+    story = worded()
+    # In lands inside "went" (1.65-2.0): its start, then half the 0.05 s gap to "we" as pre-roll.
+    # Out lands inside "out" (2.5-3.0): its end, then half the 0.05 s gap to "early." as post-roll.
+    in_s, out_s, fell_back = story.cut_bounds("talk", 0, 0.8, 1.2)
+    assert not fell_back
+    assert (in_s, out_s) == pytest.approx((1.625, 3.025))
+
+
+def test_a_trim_in_a_pause_goes_to_the_next_word():
+    in_s, out_s, fell_back = worded().cut_bounds("talk", 0, 1.1, 0.0)  # 2.1: the pause after "went"
+    # On to "out" (2.5); pre-roll 0.1 (half the 0.5 s pause would be 0.25). Out: the line's own end,
+    # post-roll half the 0.1 s gap to the next line.
+    assert not fell_back
+    assert (in_s, out_s) == pytest.approx((2.4, 4.05))
+
+
+def test_trims_that_cross_in_a_pause_fall_back_to_the_whole_line():
+    # In snaps on to "out" (2.5), out back to "went" (2.0): nothing left, so the whole line.
+    assert worded().cut_bounds("talk", 0, 1.1, 1.75) == pytest.approx((0.9, 4.05, True))
+
+
+def test_handles_stop_halfway_to_the_next_line_and_at_the_files_start():
+    story = worded()
+    in_s, out_s, _ = story.cut_bounds("talk", 0, 0.0, 0.0)
+    # Pre-roll 0.1 (the file's start is 1 s away); post-roll half the 0.1 s gap to the next line.
+    assert (in_s, out_s) == pytest.approx((0.9, 4.05))
+    in_s, out_s, _ = story.cut_bounds("talk", 1, 0.0, 0.0)
+    # The last line, its file's length unknown: no post-roll past it.
+    assert (in_s, out_s) == pytest.approx((4.05, 6.0))
+
+
+def test_the_last_line_gets_its_post_roll_up_to_the_files_end(monkeypatch):
+    story = worded()
+    monkeypatch.setattr(story, "media_duration", lambda source_id: 6.1)
+    # Up to the file's end (0.1 s away), not halfway to it: there is nothing after to protect.
+    assert story.cut_bounds("talk", 1, 0.0, 0.0)[1] == pytest.approx(6.1)
+
+
+def test_words_are_not_shown_to_the_model():
+    assert "words" not in worded().prompt_sources()[0]["segments"][0]

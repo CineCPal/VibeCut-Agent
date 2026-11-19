@@ -29,6 +29,18 @@ describe("storySourceOf", () => {
     expect(source).toEqual({ sourceId: "s1", mediaPath: "/media/a.mov", fileName: "a.mov", segments: [{ start: 0, end: 2, text: "Hi", speaker: "Ana" }] });
   });
 
+  it("keeps each word's times, which go to the Story Editor so a trim lands on a word", () => {
+    const transcript: TranscriptData = {
+      ...data([]),
+      segments: [{ start: 1, end: 2, text: "Hi there", speaker: "", words: [{ start: 1, end: 1.3, text: "Hi" }, { start: 1.4, end: 2, text: "there" }] }],
+    };
+    const source = storySourceOf(transcript, "/media/a.mov", "s1")!;
+    expect(payloadSegments(source)[0].words).toEqual([
+      [1, 1.3],
+      [1.4, 2],
+    ]);
+  });
+
   it("is null for a transcript with no lines", () => {
     expect(storySourceOf(data([]), "/media/a.mov", "s1")).toBeNull();
   });

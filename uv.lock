@@ -4163,6 +4163,7 @@ orchestrator = [
 transcribe = [
     { name = "mlx" },
     { name = "mlx-whisper" },
+    { name = "onnxruntime" },
 ]
 
 [package.dev-dependencies]
@@ -4183,6 +4184,7 @@ requires-dist = [
     { name = "mlx", marker = "extra == 'transcribe'", specifier = "==0.32.0" },
     { name = "mlx-whisper", marker = "extra == 'transcribe'", specifier = "==0.4.3" },
     { name = "numpy", specifier = "==2.4.6" },
+    { name = "onnxruntime", marker = "extra == 'transcribe'", specifier = "==1.31.1" },
     { name = "open-clip-torch", marker = "extra == 'energy'", specifier = "==3.3.0" },
     { name = "opencv-python-headless", specifier = "==5.0.0.93" },
     { name = "opentimelineio", marker = "extra == 'orchestrator'", specifier = ">=0.17.0,<0.18" },
