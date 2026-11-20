@@ -285,7 +285,9 @@ class TraceEmitter:
             parent=parent,
         )
 
-    def ensure_root(self, model_id: str = "claude-code", agent_id: str = ROOT_AGENT_ID) -> None:
+    def ensure_root(
+        self, model_id: str = "claude-code", agent_id: str = ROOT_AGENT_ID, backend: str = "CLOUD_API"
+    ) -> None:
         # The notes follower's thread (root_chunk) and a tool call may both get here first.
         with self._lock:
             if self._root_spawned or self._root_finished:
@@ -299,7 +301,7 @@ class TraceEmitter:
             subagent="MASTER_ORCHESTRATOR",
             label=self.root_label,
             model_id=model_id,
-            backend="CLOUD_API",
+            backend=backend,
         )
 
     def completed(

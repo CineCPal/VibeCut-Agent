@@ -36,10 +36,16 @@ export const STATIONS: readonly StationConfig[] = [
   { key: "app.project", subagent: "MASTER_ORCHESTRATOR", title: "Project", role: "Timelines, social versions", gear: "monitor" },
   { key: "app.project_notes", subagent: "MASTER_ORCHESTRATOR", title: "Notes", role: "Brief, people, style", gear: "notes" },
   { key: "app.edit_log", subagent: "MASTER_ORCHESTRATOR", title: "Edit log", role: "Revert", gear: "notes" },
+  { key: "orchestrator.transcribe", subagent: "MASTER_ORCHESTRATOR", title: "Transcriber", role: "Runs a transcription job", gear: "deck" },
   // Ingest & transcription.
   { key: "worker.whisper", subagent: "INGEST_TRANSCRIBE", title: "Whisper", role: "Transcribe and align", gear: "deck" },
   { key: "app.transcripts", subagent: "INGEST_TRANSCRIBE", title: "Transcripts", role: "Lines, speakers, fillers", gear: "monitor" },
   { key: "app.ingest", subagent: "INGEST_TRANSCRIBE", title: "Ingest", role: "Import media", gear: "deck" },
+  // The app's transcription job, phase by phase (transcribe/trace.py).
+  { key: "app.sound", subagent: "INGEST_TRANSCRIBE", title: "Sound", role: "Extracts the sound once", gear: "deck" },
+  { key: "app.whisper", subagent: "INGEST_TRANSCRIBE", title: "Whisper (app)", role: "Transcribes long files", gear: "deck" },
+  { key: "app.alignment", subagent: "INGEST_TRANSCRIBE", title: "Alignment", role: "Missed speech, line edges", gear: "deck" },
+  { key: "app.diarizer", subagent: "INGEST_TRANSCRIBE", title: "Speakers", role: "Tells speakers apart", gear: "console" },
   // Vision screening.
   { key: "worker.vlm", subagent: "VISION_TAGGER", title: "Vision model", role: "Shot visuals", gear: "light_table" },
   { key: "app.broll_analyzer", subagent: "VISION_TAGGER", title: "Analyzer", role: "Scores a B-roll folder", gear: "light_table" },

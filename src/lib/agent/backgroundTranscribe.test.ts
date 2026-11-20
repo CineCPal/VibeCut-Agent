@@ -21,7 +21,7 @@ describe("background transcription", () => {
   it("answers at once, reports progress while it runs, and tells the chat when it's done", async () => {
     const delivered: string[] = [];
     const id = await transcribeInBackground([LONG], { model: "m", diarize: true, format: "txt", force: true }, async (t) => delivered.push(t));
-    expect(ipc.startSidecar).toHaveBeenCalledWith(id, "transcribe", { model: "m", diarize: true, format: "txt", force: true, videos: [LONG] });
+    expect(ipc.startSidecar).toHaveBeenCalledWith(id, "transcribe", { model: "m", diarize: true, format: "txt", force: true, videos: [LONG], background: true });
     expect(backgroundProgress(LONG)).toBe("starting");
     const store = useSidecarStore.getState();
     store.applyEvent(id, { type: "progress", done: 0.4, total: 1, fraction: 0.4, phase: "transcribe", detail: "gratitude_03.mp4: Transcribing… 40%" } as never);

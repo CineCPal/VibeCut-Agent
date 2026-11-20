@@ -58,7 +58,8 @@ export async function transcribeInBackground(
   request: Record<string, unknown>,
   deliver?: (text: string) => Promise<unknown>,
 ): Promise<string> {
-  const id = await startJob("transcribe", `Transcribe ${files.length} file(s) in the background`, { ...request, videos: files });
+  // `background` only names the run's trace in the Telemetry Studio (transcribe/trace.py).
+  const id = await startJob("transcribe", `Transcribe ${files.length} file(s) in the background`, { ...request, videos: files, background: true });
   for (const path of files) running.set(path, id);
   void awaitJob(id).then(async (job) => {
     for (const path of files) if (running.get(path) === id) running.delete(path);

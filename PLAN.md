@@ -3865,6 +3865,22 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 - `uv run pytest tests/` (1474 passed, 2 skipped) and `npm run test:run` (979 passed).
 - **Live checks owed after a reinstall:** a background transcription finishing and the chat continuing, and speakers told apart through the app in orchestrated mode.
 
+## Transcription in the Studio (2026-11-19)
+
+**Why.** A background transcription ran for 20+ minutes on the GPU while the Telemetry Studio showed nothing. The shim's `transcribe_clips` task completed as soon as the job started, and the `transcribe` sidecar emitted no telemetry.
+
+**What it does** (`src-python/vibecut_agent/transcribe/trace.py`, hooked into `transcribe/commands.py` `run_transcribe`).
+- Every `transcribe` run traces itself, as `ingest-index` does: a trace of its own, `trc_trn_<random>`, journaled when `VIBECUT_TELEMETRY=1`. With telemetry off, nothing changes. The sidecar already gets `VIBECUT_*` and the app data folder (sidecar.rs), so there is no Rust change.
+- **One trace per job, not a lane in the chat's trace (decided).** A background job outlives the turn, and the shim closes its trace's root when Claude Code ends it. A new root SPAWN makes the Studio follow the job when "follow latest" is on; the dropdown switches back to the chat.
+- Root: `orchestrator.transcribe`, METAL_MPS, labelled "Background transcription: N files" when `backgroundTranscribe.ts` sends `background: true` (new, used only for the label), else "Transcribe N files". It completes with "X of N transcribed, Y failed", or fails with `TASK_CANCELLED` when stopped.
+- Per file, one task per phase, chained by handoffs: extract (`app.sound`, CPU_NEON) → Whisper (`app.whisper`, METAL_MPS) → alignment (`app.alignment`, CPU_NEON) → speakers (`app.diarizer`, CPU_NEON: pyannote isn't moved to the GPU). The last phase completes with a `TRANSCRIPT_SUMMARY` artifact and hands `TRANSCRIPT_SLICES` back to the root. A file read from its cache is one "From the cache" task. A failed file fails its running phase with the mapped error code.
+- A phase is spawned at its second report, or its first with progress. The pipeline announces each phase at 0.0, `upgrade_cache` announces "align" before it extracts, and a kept sound reports no extraction, so none of these makes an empty task (decided).
+- BATCH_PROGRESS on the running phase, at most every 0.5 s, plus each phase's end, with an ETA projected from that phase's own pace.
+- `TraceEmitter.ensure_root` takes a `backend` (default CLOUD_API, so existing callers are unchanged).
+- The Studio has five new desks (`stations.ts`): Transcriber in the bridge, and Sound, Whisper (app), Alignment and Speakers in the transcription room.
+
+**Verified.** `tests/transcribe/test_trace.py`: the phase chain, cache and failure, a replaced announcement making no task, stop, off writes nothing, on journals `trc_trn_`. `uv run pytest tests/` (1479 passed, 2 skipped), `npm run test:run` (979 passed), the visualizer's vitest (127 passed, including the desk-overlap layout test). **Live check owed after a reinstall:** a background transcription showing in the Studio. The job running now started before this change, so it won't appear.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4565,3 +4581,6 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 - **2026-11-19 (Claude): Long files: transcripts that read back.** Fixes the previous entry's NaN scores, which made long files' caches unreadable to the app, and its recovery guessing the language (Finnish loops on room noise). Caches are now strict JSON and record their language. Recovery is held to that language and rejects loops and unscored lines. `transcribe_and_align` gains `use_cache` (additive, the user's decision), returns a summary for transcripts over 150 lines, and drops speaker labelling with a note when there's no token. The sound is extracted once to a kept FLAC, with progress and a size-scaled time limit. The Gratitude caches were repaired. See "Long files: transcripts that read back".
 - **2026-11-19 (Claude): Soundbites from long interviews.** `get_transcript` on one file now pages and filters as documented: it had returned the whole file, so a 2-hour interview was unreadable. `find_soundbites` returns the best moments for a brief across whole transcripts, read by the first-pass model, in both modes. See "Soundbites from long interviews".
 - **2026-11-19 (Claude): Speaker labels and background transcription.** Orchestrated diarization goes through the app's transcription, so the token stays out of Claude Code's process. The interviewer is guessed from question share when no roles are set, for `find_soundbites` and the Story Editor. `transcribe_clips` with `background: true` returns at once; the app notifies you and messages the chat when it's done, so the agent continues. `transcribe_clips` is forwarded in orchestrated mode. See "Speaker labels and background transcription".
+- **2026-11-19 (Gemini): Phase 23 Architectural Blueprint — Agentic Production Kanban System (`vibecut.kanban.v1`).**
+  - Full architectural specification, TypeScript/Rust/Python contracts, sub-agent/bot workstation taxonomy, lifecycle state machine, and 6-phase implementation checklist written to `docs/specs/kanban-spec.md`.
+  - Preserves 100% of `ORCHESTRATOR_SPEC.md` §3 JSON schemas (`tests/orchestrator/test_schemas.py` invariant) while forwarding the 7 `kanban_*` tools across `EXECUTION_MODE=direct` and `EXECUTION_MODE=orchestrated` (`tool_bus.py` `FORWARDED_TOOLS`), synchronizing across the standalone window (`Board` tab `⌘4`), Premiere Pro / DaVinci Resolve in-host panels (`kanban.json`), and the Telemetry Studio (`app.kanban` Command Bridge desk).

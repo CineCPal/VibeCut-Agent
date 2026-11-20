@@ -35,6 +35,7 @@ from vibecut_agent.broll import (
 )
 from vibecut_agent.protocol import CancelFlag, Emitter, RequestError, read_request, require_absolute_paths
 from vibecut_agent.transcribe import pipeline
+from vibecut_agent.transcribe.trace import TranscribeTrace
 
 TOOL = "interview-transcriber"
 FORMATS = {
@@ -214,14 +215,22 @@ def run_transcribe(raw_request: dict[str, Any], emitter: Emitter, cancel: Cancel
     warnings: list[str] = []
     taken: set[str] = set()
     cancelled = False
+    # The Telemetry Studio's trace of this run (trace.py); None when telemetry is off.
+    trace = TranscribeTrace.for_run(raw_request, request)
+    if trace is not None:
+        trace.begin()
 
     try:
         for index, video in enumerate(videos):
             if cancel.is_set():
                 raise Cancelled()
             emitter.emit("file_start", path=video, index=index, total=total)
+            if trace is not None:
+                trace.file_start(video, index)
 
             def on_progress(phase, fraction, detail, video=video, index=index):
+                if trace is not None:
+                    trace.progress(phase, fraction, detail)
                 overall = index + file_fraction(phase, fraction, request["diarize"])
                 emitter.progress(
                     overall,
@@ -243,6 +252,8 @@ def run_transcribe(raw_request: dict[str, Any], emitter: Emitter, cancel: Cancel
                 )
             except Exception as exc:
                 failed.append({"path": video, "message": str(exc)})
+                if trace is not None:
+                    trace.file_failed(str(exc))
                 emitter.emit("file_error", path=video, message=str(exc))
                 emitter.progress(
                     index + 1,
@@ -255,6 +266,8 @@ def run_transcribe(raw_request: dict[str, Any], emitter: Emitter, cancel: Cancel
                 continue
             warnings.extend(payload.pop("warnings"))
             done_files.append(payload)
+            if trace is not None:
+                trace.file_done(payload)
             emitter.emit("file_done", **payload)
             emitter.progress(
                 index + 1,
@@ -266,6 +279,10 @@ def run_transcribe(raw_request: dict[str, Any], emitter: Emitter, cancel: Cancel
             )
     except Cancelled:
         cancelled = True
+        if trace is not None:
+            trace.cancelled()
+    if trace is not None and not cancelled:
+        trace.finish()
 
     emitter.emit(
         "result",
