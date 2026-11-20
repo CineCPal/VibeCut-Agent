@@ -8,6 +8,7 @@ const KIND_TITLE: Record<ChatMention["kind"], string> = {
   media: "Media",
   speaker: "Speaker",
   shot: "Library shot",
+  card: "Kanban card",
 };
 
 /** A user message's text with each @-mention (Phase 11c) shown as a chip naming what it points at. */

@@ -8,6 +8,7 @@ const SHORTCUTS: Record<string, View> = {
   "1": "chat",
   "2": "library",
   "3": "broll",
+  "4": "kanban",
   ",": "settings",
   i: "about",
 };

@@ -13,6 +13,8 @@ pub enum View {
     Library,
     /// The B-roll analyzer (the Analyze tab).
     Broll,
+    /// The project's Kanban board (the Board tab, PLAN.md "Phase 23").
+    Kanban,
     Settings,
     About,
 }
@@ -53,5 +55,6 @@ mod tests {
         assert_eq!(serde_json::to_string(&View::Broll).unwrap(), "\"broll\"");
         assert_eq!(serde_json::to_string(&View::Library).unwrap(), "\"library\"");
         assert_eq!(serde_json::from_str::<View>("\"settings\"").unwrap(), View::Settings);
+        assert_eq!(serde_json::to_string(&View::Kanban).unwrap(), "\"kanban\"");
     }
 }

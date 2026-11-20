@@ -209,6 +209,30 @@ def test_the_apps_transcription_is_forwarded():
     assert "transcribe_clips" in tool_bus.FORWARDED_TOOLS
 
 
+def test_the_kanban_board_is_forwarded_and_traced() -> None:
+    """Phase 23: the seven kanban_* tools reach the app in orchestrated mode, each at a studio desk."""
+    from vibecut_agent.telemetry.instrument import TOOL_AGENTS
+
+    assert tool_bus.KANBAN_TOOLS == (
+        "kanban_list_cards",
+        "kanban_plan_workflow",
+        "kanban_create_card",
+        "kanban_update_card",
+        "kanban_delete_cards",
+        "kanban_seed_from_findings",
+        "kanban_sync_markers",
+    )
+    for name in tool_bus.KANBAN_TOOLS:
+        assert name in tool_bus.FORWARDED_TOOLS
+        assert name not in tool_bus.ORCHESTRATOR_TOOL_NAMES
+        assert name in TOOL_AGENTS
+    assert TOOL_AGENTS["kanban_plan_workflow"][:2] == ("MASTER_ORCHESTRATOR", "app.kanban")
+    assert TOOL_AGENTS["kanban_seed_from_findings"][:2] == ("PACING_CUTTER", "app.review")
+    assert TOOL_AGENTS["kanban_sync_markers"][:2] == ("COLOR_GRADER", "app.markers")
+    # The forwarded list never names a tool twice.
+    assert len(set(tool_bus.FORWARDED_TOOLS)) == len(tool_bus.FORWARDED_TOOLS)
+
+
 def test_a_long_transcript_comes_back_as_a_summary(config, tmp_path, media):
     lines = [
         {

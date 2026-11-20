@@ -43,8 +43,8 @@ export interface PendingImage extends ChatAttachment {
   dataUrl: string;
 }
 
-/** What a user can point at with @ in the composer (Phase 11c). */
-export type MentionKind = "timeline" | "clip" | "marker" | "media" | "speaker" | "shot";
+/** What a user can point at with @ in the composer (Phase 11c); "card": a Kanban card (Phase 23). */
+export type MentionKind = "timeline" | "clip" | "marker" | "media" | "speaker" | "shot" | "card";
 
 /** One @-mention: `label` is what the message shows after the @; `ref` and `detail` are what the model is
  * told exactly (a clip's id and place, a Library shot's file and range). */

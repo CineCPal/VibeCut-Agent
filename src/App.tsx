@@ -10,6 +10,7 @@ import { startChatTitles } from "./lib/agent/chatTitles";
 import { startPlanRefresh } from "./lib/agent/planRefresh";
 import { startBrollPanelBridge } from "./lib/brollPanel";
 import { startHostChatBridge } from "./lib/hostChatBridge";
+import { startKanbanSync } from "./lib/kanban/lifecycleSync";
 import { startMcpBridge } from "./lib/mcp/server";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useKeepOnTop } from "./hooks/useKeepOnTop";
@@ -46,6 +47,9 @@ function App() {
   // Past chats and the edit log, saved and restored across restarts (lib/agent/chatHistory.ts).
   useEffect(() => startChatHistory(), []);
   useEffect(() => startChatTitles(), []);
+
+  // The project's Kanban board kept true to the chat, the jobs and the edit log (lib/kanban/lifecycleSync.ts, Phase 23).
+  useEffect(() => startKanbanSync(), []);
 
   // The MCP bridge: Claude Code calling the agent's tools (lib/mcp/server.ts).
   useEffect(() => startMcpBridge(), []);

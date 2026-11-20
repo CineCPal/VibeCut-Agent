@@ -42,6 +42,7 @@ import { dialogueExecutors, dialogueToolDeclarations } from "./dialogueTools";
 import { titleExecutors, titleToolDeclarations } from "./titleTools";
 import { captionExecutors, captionToolDeclarations } from "./captionTools";
 import { renderExecutors, renderToolDeclarations } from "./renderTools";
+import { kanbanExecutors, kanbanToolDeclarations } from "./kanbanTools";
 
 export interface ToolDeclaration {
   name: string;
@@ -92,6 +93,7 @@ export function toolDeclarations(host: NleHost): ToolDeclaration[] {
     ...titleToolDeclarations(host),
     ...captionToolDeclarations(host),
     ...renderToolDeclarations(host),
+    ...kanbanToolDeclarations(),
   ];
 }
 
@@ -376,6 +378,7 @@ export function executorsFor(context: ToolContext): Record<string, Executor> {
     ...titleExecutors(context),
     ...captionExecutors(context),
     ...renderExecutors(context),
+    ...kanbanExecutors(context),
     ...draftExecutors(context),
     ...timingExecutors(context),
     ...poolExecutors(context),

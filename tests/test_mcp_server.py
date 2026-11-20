@@ -280,6 +280,10 @@ def test_long_tools_get_the_long_timeout() -> None:
     assert mcp_server.timeout_for("transcribe_clips") == mcp_server.LONG_TIMEOUT_SECONDS
     assert mcp_server.timeout_for("send_to_resolve") == mcp_server.LONG_TIMEOUT_SECONDS
     assert mcp_server.timeout_for("add_markers") == mcp_server.CALL_TIMEOUT_SECONDS
+    # Phase 23: seeding reviews the whole timeline; marker sync touches every card's marker.
+    assert mcp_server.timeout_for("kanban_seed_from_findings") == mcp_server.LONG_TIMEOUT_SECONDS
+    assert mcp_server.timeout_for("kanban_sync_markers") == mcp_server.LONG_TIMEOUT_SECONDS
+    assert mcp_server.timeout_for("kanban_update_card") == mcp_server.CALL_TIMEOUT_SECONDS
 
 
 def test_the_caller_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

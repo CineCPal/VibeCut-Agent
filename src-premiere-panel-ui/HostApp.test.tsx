@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PanelBrollFile } from "../src/types/brollPanel";
-import type { HostAnalyzerFile, HostChatAction, HostPanelMessage, HostPanelStateFile } from "../src/types/hostPanel";
+import type { HostAnalyzerFile, HostChatAction, HostKanbanFile, HostPanelMessage, HostPanelStateFile } from "../src/types/hostPanel";
+import { DEFAULT_CATEGORY_ASSIGNEE, emptyExecution, emptyTimelineContext, type KanbanCard } from "../src/types/kanban";
 import { timecodeSeconds } from "./Markdown";
 import { HostApp } from "./HostApp";
 import type { Transport } from "./transport";
@@ -296,6 +297,9 @@ describe("the VibeCut Agent panel in an editor", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Library" }));
     fireEvent.click(screen.getByRole("button", { name: "Window" }));
     expect(withoutId(last())).toEqual({ type: "open_window", view: "library" });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    fireEvent.click(screen.getByRole("button", { name: "Window" }));
+    expect(withoutId(last())).toEqual({ type: "open_window", view: "kanban" });
   });
 
   it("shows each editor's light, the agent's state and model, and the last reply's timing", async () => {
@@ -424,5 +428,122 @@ describe("the VibeCut Agent panel in an editor", () => {
     expect(screen.getByRole("button", { name: "Analyze folder" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel Analyze Day 1" }));
     expect(withoutId(last())).toEqual({ type: "analyzer_cancel" });
+  });
+});
+
+function kanbanCard(id: string, over: Partial<KanbanCard> = {}): KanbanCard {
+  return {
+    id,
+    title: `Card ${id}`,
+    description: "",
+    column: "ready",
+    priority: "medium",
+    category: "cut",
+    assignee: DEFAULT_CATEGORY_ASSIGNEE.cut,
+    timelineContext: emptyTimelineContext(),
+    blockedBy: [],
+    parentCardId: null,
+    checklist: [],
+    execution: emptyExecution(),
+    createdBy: "user",
+    createdAt: 1,
+    updatedAt: 1,
+    completedAt: null,
+    ...over,
+  };
+}
+
+function kanbanFile(over: Partial<HostKanbanFile> = {}): HostKanbanFile {
+  return {
+    version: 2,
+    publishedAt: 3,
+    host: "premiere",
+    project: "Doc",
+    unavailable: null,
+    autoAdvanceWave: false,
+    executableIds: ["kb_1"],
+    cards: [
+      kanbanCard("kb_1", { title: "Tighten pauses", timelineContext: { ...emptyTimelineContext(), startSeconds: 42, endSeconds: 75 } }),
+      kanbanCard("kb_2", { title: "Duck music", blockedBy: ["kb_1"], category: "audio", assignee: DEFAULT_CATEGORY_ASSIGNEE.audio }),
+      kanbanCard("kb_3", { title: "Grade", column: "review", execution: { ...emptyExecution(), reviewCardId: "m9" } }),
+    ],
+    editorBlocked: null,
+    notice: null,
+    ...over,
+  };
+}
+
+describe("the panel's Board tab", () => {
+  beforeEach(() => {
+    sent = [];
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("sits second, after Chat", async () => {
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile()) });
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Chat", "Board", "Library", "Analyze", "History"]);
+  });
+
+  it("shows the board's cards, filters them, and runs a card and the wave", async () => {
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile()) });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.getAllByRole("listitem").filter((li) => li.getAttribute("aria-label")?.startsWith("kb_"))).toHaveLength(3);
+    expect(screen.getByText("Waiting on kb_1")).toBeInTheDocument();
+    expect(screen.getByText("0:42–1:15")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Run wave \(1\)/ }));
+    expect(withoutId(last())).toEqual({ type: "kanban_run_wave" });
+    fireEvent.click(screen.getByRole("button", { name: "Review 1" }));
+    const review = screen.getByRole("listitem", { name: "kb_3 Grade" });
+    fireEvent.click(within(review).getByRole("button", { name: "Apply" }));
+    expect(withoutId(last())).toEqual({ type: "kanban_review", cardId: "kb_3", decision: "apply" });
+    fireEvent.click(screen.getByRole("button", { name: "All 3" }));
+    fireEvent.click(screen.getByText("0:42–1:15"));
+    expect(withoutId(last())).toEqual({ type: "set_playhead", seconds: 42 });
+    fireEvent.click(screen.getByRole("button", { name: "Move kb_2 right" }));
+    expect(withoutId(last())).toEqual({ type: "kanban_move", cardId: "kb_2", column: "in_progress" });
+  });
+
+  it("seeds from QC, syncs markers and adds a card", async () => {
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile()) });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Seed from QC" }), { target: { value: "pacing" } });
+    expect(withoutId(last())).toEqual({ type: "kanban_seed_qc", source: "pacing" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sync markers" }));
+    expect(withoutId(last())).toEqual({ type: "kanban_sync_markers" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "+ Add" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Card title" }), { target: { value: "Fix the logo" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Category" }), { target: { value: "gfx" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(withoutId(last())).toEqual({ type: "kanban_create", title: "Fix the logo", category: "gfx", priority: "medium", column: "ready" });
+  });
+
+  it("says why there's no board, and keeps the editor buttons off without a timeline", async () => {
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile({ project: null, cards: [], unavailable: "Open a project in Premiere to see its board" })) });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.getByText("Open a project in Premiere to see its board")).toBeInTheDocument();
+    cleanup();
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile({ editorBlocked: "Open a timeline in Premiere" })) });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.getByRole("button", { name: "Sync markers" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Seed from QC" })).toBeDisabled();
+  });
+
+  it("shows the board's answer as the tab's notice", async () => {
+    await mount(stateFile(), true, { readKanban: vi.fn(async () => kanbanFile({ notice: { actionId: "x", text: "Added 3 card(s) to ready", failed: false, at: 1 } })) });
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.getAllByRole("status").some((el) => el.textContent === "Added 3 card(s) to ready")).toBe(true);
+    // The chat's notice isn't shown on the Board tab.
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
+    expect(screen.queryByText("Added 3 card(s) to ready")).toBeNull();
   });
 });

@@ -56,6 +56,14 @@ TOOL_AGENTS: dict[str, tuple[str, str, str, str]] = {
     # select_clip only point, so they aren't traced, like the timeline reads.
     "remember_note": ("MASTER_ORCHESTRATOR", "app.project_notes", "CPU_NEON", "Remember a note"),
     "forget_note": ("MASTER_ORCHESTRATOR", "app.project_notes", "CPU_NEON", "Forget a note"),
+    # Phase 23: the project's Kanban board. Seeding is QC work, so it sits at Review's desk.
+    "kanban_list_cards": ("MASTER_ORCHESTRATOR", "app.kanban", "CPU_NEON", "Read Kanban board"),
+    "kanban_plan_workflow": ("MASTER_ORCHESTRATOR", "app.kanban", "CPU_NEON", "Plan Kanban workflow"),
+    "kanban_create_card": ("MASTER_ORCHESTRATOR", "app.kanban", "CPU_NEON", "Create Kanban card"),
+    "kanban_update_card": ("MASTER_ORCHESTRATOR", "app.kanban", "CPU_NEON", "Update Kanban card"),
+    "kanban_delete_cards": ("MASTER_ORCHESTRATOR", "app.kanban", "CPU_NEON", "Delete Kanban cards"),
+    "kanban_seed_from_findings": ("PACING_CUTTER", "app.review", "CPU_NEON", "Seed board from findings"),
+    "kanban_sync_markers": ("COLOR_GRADER", "app.markers", "NLE_IPC", "Sync board markers"),
     "revert_timeline_edits": ("MASTER_ORCHESTRATOR", "app.edit_log", "NLE_IPC", "Revert edits"),
     "create_timeline": ("MASTER_ORCHESTRATOR", "app.project", "NLE_IPC", "Create a timeline"),
     "duplicate_timeline": ("MASTER_ORCHESTRATOR", "app.project", "NLE_IPC", "Duplicate a timeline"),

@@ -33,7 +33,9 @@ vi.mock("./broll", async (original) => ({ ...(await original<typeof import("./br
 const plan = vi.hoisted(() => ({ refreshPlan: vi.fn() }));
 vi.mock("./agent/planRefresh", async (original) => ({ ...(await original<typeof import("./agent/planRefresh")>()), ...plan }));
 
-import { buildHostAnalyzerFile, buildHostBrollFile, buildHostStateFile, handleHostChatAction, MAX_PANEL_MESSAGES } from "./hostChatBridge";
+import { buildHostAnalyzerFile, buildHostBrollFile, buildHostKanbanFile, buildHostStateFile, handleHostChatAction, MAX_PANEL_MESSAGES } from "./hostChatBridge";
+import { resetKanbanStoreForTests, useKanbanStore } from "../store/useKanbanStore";
+import { emptyBoard } from "../types/kanban";
 import { DEFAULT_OPTIONS, useBrollStore } from "../store/useBrollStore";
 import { useConnectionStore } from "../store/useConnectionStore";
 import { useSidecarStore } from "../store/useSidecarStore";
@@ -301,5 +303,80 @@ describe("the panels' Analyze tab", () => {
     await handleHostChatAction("premiere", { id: "a2", type: "analyzer_match", query: "waves" });
     expect(useBrollStore.getState().query).toBe("waves");
     expect(broll.startMatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the panels' Board tab", () => {
+  const kanban = () => useKanbanStore.getState();
+  const loadDoc = () => useKanbanStore.setState({ loaded: true, scope: { host: "resolve", project: "Doc" }, board: emptyBoard("resolve", "Doc", 0), error: null });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetKanbanStoreForTests();
+    useAgentStore.getState().clear();
+    useAgentStore.setState({ status: "idle", statusDetail: null, queue: [], queuePaused: false });
+    useNleStateStore.setState({ hosts: { ...initialHosts(), resolve: nleState("resolve", { timeline: "Edit 1" }) }, preferredHost: "auto" });
+    loadDoc();
+    controller.submitMessage.mockResolvedValue("sent");
+  });
+
+  it("publishes the editor project's board with what can run, and nothing for another project", () => {
+    kanban().planWorkflow([
+      { tempId: "a", title: "Transcribe", category: "transcript" },
+      { title: "Cut", category: "cut", blockedBy: ["a"] },
+    ]);
+    const file = buildHostKanbanFile("resolve", 5);
+    expect(file).toMatchObject({ version: 2, publishedAt: 5, host: "resolve", project: "Doc", unavailable: null, executableIds: ["kb_1"], editorBlocked: null, notice: null });
+    expect(file.cards.map((c) => c.id)).toEqual(["kb_1", "kb_2"]);
+    const premiere = buildHostKanbanFile("premiere", 5);
+    expect(premiere).toMatchObject({ project: null, cards: [], executableIds: [] });
+    expect(premiere.unavailable).toContain("Open a project in Premiere");
+    useNleStateStore.setState({ hosts: { ...initialHosts(), resolve: nleState("resolve", { timeline: null }) } });
+    expect(buildHostKanbanFile("resolve").editorBlocked).toBe("Open a timeline in Resolve");
+  });
+
+  it("adds, moves, ticks and deletes cards on the board, answering in the Board tab only", async () => {
+    await handleHostChatAction("resolve", { id: "k1", type: "kanban_create", title: "Grade B-cam", category: "color", priority: "high", column: "ready" });
+    expect(kanban().board.cards[0]).toMatchObject({ id: "kb_1", category: "color", createdBy: "user" });
+    expect(buildHostKanbanFile("resolve").notice).toMatchObject({ actionId: "k1", text: "Added kb_1 for Colour Grader", failed: false });
+    await handleHostChatAction("resolve", { id: "k2", type: "kanban_move", cardId: "kb_1", column: "blocked" });
+    expect(kanban().board.cards[0].column).toBe("blocked");
+    kanban().updateCard("kb_1", { checklist: [{ id: "c1", text: "A", done: false }] });
+    await handleHostChatAction("resolve", { id: "k3", type: "kanban_toggle_check", cardId: "kb_1", checkId: "c1" });
+    expect(kanban().board.cards[0].checklist[0].done).toBe(true);
+    await handleHostChatAction("resolve", { id: "k4", type: "kanban_toggle_auto_wave" });
+    expect(kanban().board.autoAdvanceWave).toBe(true);
+    await handleHostChatAction("resolve", { id: "k5", type: "kanban_move", cardId: "kb_9", column: "done" });
+    expect(buildHostKanbanFile("resolve").notice).toMatchObject({ actionId: "k5", failed: true });
+    // A Board failure is the tab's notice, never an error in the chat.
+    expect(useAgentStore.getState().messages.filter((m) => m.role === "error")).toEqual([]);
+    await handleHostChatAction("resolve", { id: "k6", type: "kanban_delete", cardId: "kb_1" });
+    expect(kanban().board.cards).toEqual([]);
+  });
+
+  it("runs a card and the wave through the chat, on the panel's editor", async () => {
+    kanban().planWorkflow([
+      { title: "Transcribe", category: "transcript" },
+      { title: "Cut", category: "cut" },
+    ]);
+    await handleHostChatAction("resolve", { id: "k1", type: "kanban_run", cardId: "kb_1" });
+    expect(controller.submitMessage).toHaveBeenCalledWith(expect.stringMatching(/^\[Kanban Task kb_1\]/), [], expect.anything());
+    expect(kanban().board.cards[0].column).toBe("in_progress");
+    await handleHostChatAction("resolve", { id: "k2", type: "kanban_run_wave" });
+    expect(buildHostKanbanFile("resolve").notice).toMatchObject({ actionId: "k2", text: expect.stringContaining("kb_2"), failed: false });
+  });
+
+  it("answers a held review from the card", async () => {
+    review.answerReview.mockReturnValue(true);
+    kanban().createCard({ title: "Cut", category: "cut", column: "review" });
+    kanban().updateCard("kb_1", { execution: { reviewCardId: "m7" } });
+    await handleHostChatAction("resolve", { id: "k1", type: "kanban_review", cardId: "kb_1", decision: "skip" });
+    expect(review.answerReview).toHaveBeenCalledWith("m7", "skip");
+  });
+
+  it("refuses the board of a project the panel's editor doesn't have open", async () => {
+    useNleStateStore.setState({ hosts: { ...initialHosts(), resolve: nleState("resolve", { project: null }) } });
+    await handleHostChatAction("resolve", { id: "k1", type: "kanban_create", title: "A", category: "cut", priority: "low", column: "ready" });
+    expect(buildHostKanbanFile("resolve").notice).toMatchObject({ actionId: "k1", failed: true, text: "Open a project in Resolve to use its board" });
   });
 });

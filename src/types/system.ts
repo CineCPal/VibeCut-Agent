@@ -1,6 +1,6 @@
 /** Mirrors `View` in `src-tauri/src/state.rs`. */
-/** "broll" is the B-roll analyzer (the Analyze tab). */
-export type View = "chat" | "library" | "broll" | "settings" | "about";
+/** "broll" is the B-roll analyzer (the Analyze tab); "kanban" the project's board (the Board tab). */
+export type View = "chat" | "library" | "broll" | "kanban" | "settings" | "about";
 
 /** Where a key was found (`KeySource` in src-tauri/src/secrets.rs): the environment wins over the Keychain. */
 export type KeySource = "environment" | "keychain";

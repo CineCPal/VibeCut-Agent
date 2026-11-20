@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.20.7"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.vibecutagent.connect" ExtensionBundleVersion="0.20.8"
 	ExtensionBundleName="VibeCut Agent Connect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<!-- VibeCut Agent's link to Premiere Pro (PLAN.md, Phase 3), adapted from VibeCut's
 	     com.vibecut.connect. A hidden panel that starts with Premiere, takes one request file at a
@@ -17,12 +17,13 @@
 	     B-roll panel is named VibeCut Agent Library (its extension id is unchanged). Since 0.20.6 the
 	     panels keep React off Node's queueMicrotask, which crashed the CEP renderer on a reload. Since
 	     0.20.6 the Telemetry Studio never reloads its page: Node's timers outlived it and kept reloading it. Since
-	     0.20.7 the bridge can shift many clips in one call (shift_items), for ripple edits. -->
+	     0.20.7 the bridge can shift many clips in one call (shift_items), for ripple edits. Since 0.20.8 the
+	     VibeCut Agent panel has a Board tab: the project's Kanban board (PLAN.md, Phase 23). -->
 	<ExtensionList>
-		<Extension Id="com.vibecutagent.connect.panel" Version="0.20.7" />
-		<Extension Id="com.vibecutagent.connect.broll" Version="0.20.7" />
-		<Extension Id="com.vibecutagent.connect.studio" Version="0.20.7" />
-		<Extension Id="com.vibecutagent.connect.chat" Version="0.20.7" />
+		<Extension Id="com.vibecutagent.connect.panel" Version="0.20.8" />
+		<Extension Id="com.vibecutagent.connect.broll" Version="0.20.8" />
+		<Extension Id="com.vibecutagent.connect.studio" Version="0.20.8" />
+		<Extension Id="com.vibecutagent.connect.chat" Version="0.20.8" />
 	</ExtensionList>
 	<ExecutionEnvironment>
 		<HostList>

@@ -6,7 +6,8 @@
  * answers the panel's actions with the same functions the app's own window uses. The panels and the
  * window show one conversation, so a message sent from any of them appears in all three. Since panel
  * 0.20.0 it also publishes the window's Analyze tab as `analyzer.json`, and `state.json` carries the
- * header's editor lights, the usage tracker and the last reply's timing.
+ * header's editor lights, the usage tracker and the last reply's timing. Since panel 0.20.8 (Phase 23) it
+ * publishes the editor project's Kanban board as `kanban.json` and runs the Board tab's actions.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -33,6 +34,10 @@ import { useConnectionStore } from "../store/useConnectionStore";
 import { lastEditStep, useEditLogStore } from "../store/useEditLogStore";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useMcpStore } from "../store/useMcpStore";
+import { useKanbanStore } from "../store/useKanbanStore";
+import { answerCardReview, seedFromFindings, setColumn, syncBoardMarkers, type SeedSource } from "./kanban/actions";
+import { readyWaveFrontier } from "./kanban/dag";
+import { runKanbanCard, runReadyWave } from "./kanban/runner";
 import { selectActiveHost, useNleStateStore } from "../store/useNleStateStore";
 import { usePromptStore } from "../store/usePromptStore";
 import { AI_CHOICES, type ChatMessage } from "../types/agent";
@@ -44,6 +49,8 @@ import {
   type HostAnalyzerFile,
   type HostAnalyzerList,
   type HostChatAction,
+  type HostKanbanFile,
+  type HostKanbanSeed,
   type HostPanelJob,
   type HostPanelMessage,
   type HostPanelStateFile,
@@ -77,11 +84,24 @@ const HOST_SCOPED = new Set<HostChatAction["type"]>([
   "analyzer_place",
   "analyzer_source",
   "analyzer_build",
+  // Phase 23: the board is the editor project's, so its actions work on the editor that sent them.
+  "kanban_move",
+  "kanban_run",
+  "kanban_delete",
+  "kanban_review",
+  "kanban_toggle_check",
+  "kanban_create",
+  "kanban_seed_qc",
+  "kanban_run_wave",
+  "kanban_clear_done",
+  "kanban_sync_markers",
+  "kanban_toggle_auto_wave",
 ]);
 
 /** Each editor's last answer to its panel, and the thumbnails in its folder. */
 const notices: Partial<Record<NleHost, HostPanelStateFile["notice"]>> = {};
 const analyzerNotices: Partial<Record<NleHost, HostAnalyzerFile["notice"]>> = {};
+const kanbanNotices: Partial<Record<NleHost, HostKanbanFile["notice"]>> = {};
 /** The Analyzer's export job, and the XML it last wrote (Show in Finder names only this). */
 let exportJobId: string | null = null;
 let lastExport: string | null = null;
@@ -417,6 +437,88 @@ async function runAnalyzer(host: NleHost, action: AnalyzerAction): Promise<void>
   }
 }
 
+// ----------------------------------------------------------------------------- the Board tab (Phase 23)
+
+/** `kanban.json` for `host`'s panel: its editor project's board, when that's the board the app has open. */
+export function buildHostKanbanFile(host: NleHost, now = Date.now()): HostKanbanFile {
+  const { board, loaded, scope } = useKanbanStore.getState();
+  const editor = useNleStateStore.getState().hosts[host];
+  const project = editor.project?.trim() || null;
+  const mine = loaded && !!project && scope.host === host && scope.project === project;
+  const unavailable = mine
+    ? null
+    : !project
+      ? `Open a project in ${HOST_SHORT[host]} to see its board`
+      : loaded
+        ? `VibeCut Agent is showing ${scope.host === "global" ? "the global board" : `"${scope.project}"'s board`}; send a message or press Run here to switch to this project`
+        : "Opening the board…";
+  return {
+    version: HOST_PANEL_VERSION,
+    publishedAt: now,
+    host,
+    project: mine ? project : null,
+    unavailable,
+    autoAdvanceWave: mine ? board.autoAdvanceWave : false,
+    executableIds: mine ? readyWaveFrontier(board.cards).map((c) => c.id) : [],
+    cards: mine ? board.cards : [],
+    editorBlocked: editor.status !== "connected" ? `Connect ${HOST_SHORT[host]} first` : !editor.timeline ? `Open a timeline in ${HOST_SHORT[host]}` : null,
+    notice: kanbanNotices[host] ?? null,
+  };
+}
+
+const kanbanSay = (actionId: string | null, host: NleHost, text: string, failed: boolean) => {
+  kanbanNotices[host] = { actionId, text, failed, at: Date.now() };
+};
+
+const SEED_SOURCES: Record<HostKanbanSeed, SeedSource> = { review: "review_edit", pacing: "check_pacing", markers: "client_notes" };
+
+/** The Board tab's actions, with the window's own functions (lib/kanban/). */
+type KanbanAction = Extract<HostChatAction, { type: `kanban_${string}` }>;
+
+async function runKanban(host: NleHost, action: KanbanAction): Promise<void> {
+  // The editor that sent this is the active one now (HOST_SCOPED); its project's board is the one to change.
+  await useKanbanStore.getState().loadForActiveProject();
+  const store = useKanbanStore.getState();
+  const project = useNleStateStore.getState().hosts[host].project?.trim();
+  if (!project || store.scope.host !== host || store.scope.project !== project) {
+    return kanbanSay(action.id, host, `Open a project in ${HOST_SHORT[host]} to use its board`, true);
+  }
+  const answer = (result: { ok: boolean; message: string }) => kanbanSay(action.id, host, result.message, !result.ok);
+  switch (action.type) {
+    case "kanban_move":
+      return answer(setColumn(action.cardId, action.column));
+    case "kanban_run":
+      return answer(await runKanbanCard(action.cardId));
+    case "kanban_run_wave": {
+      const wave = await runReadyWave();
+      return kanbanSay(action.id, host, wave.message, wave.started.length === 0);
+    }
+    case "kanban_delete":
+      store.deleteCards([action.cardId]);
+      return kanbanSay(action.id, host, `Deleted ${action.cardId}`, false);
+    case "kanban_review":
+      return answer(answerCardReview(action.cardId, action.decision));
+    case "kanban_toggle_check":
+      store.toggleChecklistItem(action.cardId, action.checkId);
+      return;
+    case "kanban_create": {
+      const card = store.createCard({ title: action.title, category: action.category, priority: action.priority, column: action.column, createdBy: "user" });
+      return kanbanSay(action.id, host, `Added ${card.id} for ${card.assignee.label}`, false);
+    }
+    case "kanban_seed_qc":
+      kanbanSay(null, host, "Reading the timeline…", false);
+      return answer(await seedFromFindings(SEED_SOURCES[action.source]));
+    case "kanban_sync_markers":
+      return answer(await syncBoardMarkers());
+    case "kanban_clear_done": {
+      const cleared = store.clearDoneCards();
+      return kanbanSay(action.id, host, cleared.length ? `Cleared ${cleared.length} done card(s)` : "No done cards to clear", false);
+    }
+    case "kanban_toggle_auto_wave":
+      return store.setAutoAdvanceWave(!store.board.autoAdvanceWave);
+  }
+}
+
 // ----------------------------------------------------------------------------- the panel's actions
 
 const say = (actionId: string, host: NleHost, text: string, failed: boolean) => {
@@ -506,6 +608,18 @@ async function run(host: NleHost, action: HostChatAction): Promise<void> {
     case "analyzer_source":
     case "analyzer_reveal":
       return runAnalyzer(host, action);
+    case "kanban_move":
+    case "kanban_run":
+    case "kanban_delete":
+    case "kanban_review":
+    case "kanban_toggle_check":
+    case "kanban_create":
+    case "kanban_seed_qc":
+    case "kanban_run_wave":
+    case "kanban_clear_done":
+    case "kanban_sync_markers":
+    case "kanban_toggle_auto_wave":
+      return runKanban(host, action);
     default:
       return handleBrollAction(action, host);
   }
@@ -523,8 +637,10 @@ export async function handleHostChatAction(host: NleHost, action: HostChatAction
     await run(host, action);
   } catch (error) {
     if (action.type.startsWith("analyzer_")) analyzerSay(action.id, host, describe(error), true);
+    else if (action.type.startsWith("kanban_")) kanbanSay(action.id, host, describe(error), true);
     else say(action.id, host, describe(error), true);
-    if (!action.type.startsWith("broll_") && !action.type.startsWith("analyzer_") && action.type !== "usage_refresh") useAgentStore.getState().addMessage({ role: "error", text: describe(error) });
+    const panelOnly = ["broll_", "analyzer_", "kanban_"].some((prefix) => action.type.startsWith(prefix));
+    if (!panelOnly && action.type !== "usage_refresh") useAgentStore.getState().addMessage({ role: "error", text: describe(error) });
   }
 }
 
@@ -536,9 +652,9 @@ export function startHostChatBridge(): () => void {
   let stopped = false;
   const absentUntil: Record<NleHost, number> = { premiere: 0, resolve: 0 };
   /** The last file written for each editor, without its stamp, so an unchanged file isn't rewritten. */
-  const written: Record<NleHost, { state: string; broll: string; analyzer: string }> = {
-    premiere: { state: "", broll: "", analyzer: "" },
-    resolve: { state: "", broll: "", analyzer: "" },
+  const written: Record<NleHost, { state: string; broll: string; analyzer: string; kanban: string }> = {
+    premiere: { state: "", broll: "", analyzer: "", kanban: "" },
+    resolve: { state: "", broll: "", analyzer: "", kanban: "" },
   };
   /** One action at a time per editor, in the order it sent them. */
   const queues: Record<NleHost, Promise<void>> = { premiere: Promise.resolve(), resolve: Promise.resolve() };
@@ -561,6 +677,9 @@ export function startHostChatBridge(): () => void {
     const analyzer = buildHostAnalyzerFile(host, now);
     const analyzerKey = unstamped(analyzer);
     if (analyzerKey !== written[host].analyzer && (await invoke<boolean>("host_chat_analyzer_publish", { host, file: analyzer }))) written[host].analyzer = analyzerKey;
+    const kanban = buildHostKanbanFile(host, now);
+    const kanbanKey = unstamped(kanban);
+    if (kanbanKey !== written[host].kanban && (await invoke<boolean>("host_chat_kanban_publish", { host, file: kanban }))) written[host].kanban = kanbanKey;
     const broll = buildHostBrollFile(host, now);
     const brollKey = unstamped(broll);
     if (brollKey !== written[host].broll && (await invoke<boolean>("host_chat_broll_publish", { host, file: broll }))) {
@@ -600,6 +719,7 @@ export function startHostChatBridge(): () => void {
     useTurnTimingStore.subscribe(publish),
     useBrollStore.subscribe(publish),
     useSidecarStore.subscribe(publish),
+    useKanbanStore.subscribe(publish),
   ];
   const unlisten = listen<{ host: NleHost; action: HostChatAction | null; error: string | null; fileId: string }>("host-chat-action", ({ payload }) => {
     const { host } = payload;
@@ -612,7 +732,7 @@ export function startHostChatBridge(): () => void {
       publish();
       return;
     }
-    if (action.type === "hello") written[host] = { state: "", broll: "", analyzer: "" };
+    if (action.type === "hello") written[host] = { state: "", broll: "", analyzer: "", kanban: "" };
     queues[host] = queues[host].then(() => handleHostChatAction(host, action)).finally(publish);
   });
   publish();

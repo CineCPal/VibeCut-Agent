@@ -18,6 +18,7 @@ import { COLOR_INSTRUCTION } from "./colorTools";
 import { DIALOGUE_INSTRUCTION } from "./dialogueTools";
 import { TITLE_INSTRUCTION } from "./titleTools";
 import { CAPTION_INSTRUCTION } from "./captionTools";
+import { KANBAN_INSTRUCTION } from "./kanbanTools";
 import { RENDER_INSTRUCTION } from "./renderTools";
 import { projectInstruction } from "./projectTools";
 import { transcriptInstruction } from "./transcriptTools";
@@ -129,6 +130,7 @@ ${DIALOGUE_INSTRUCTION}
 ${TITLE_INSTRUCTION}
 ${CAPTION_INSTRUCTION}
 ${RENDER_INSTRUCTION}
+${KANBAN_INSTRUCTION}
 - A tool result with "error" means it didn't happen; read the reason and adjust, or tell the user.
 - Reply with a short, plain-language summary of what you did once you are done. Replies are shown as
   Markdown: use short lists or a small table where they help, not headings for a few lines.

@@ -10,6 +10,7 @@ import { draftOf } from "./draft";
 import { filesOf, learnFacts, sourcesContext } from "./mediaInfo";
 import { binsContext, libraryContext, transcriptsContext } from "./awareness";
 import { loadNotes, notesContext } from "../projectNotes";
+import { kanbanContextFor } from "../kanban/context";
 import { draftAsTimeline } from "../../vibecut/lib/connect/hostDraft";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useNleStateStore } from "../../store/useNleStateStore";
@@ -51,7 +52,7 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     // The tools work on the draft while it's open, so the agent sees the draft (VibeCut's rule).
     view = draftAsTimeline(draft, useNleStateStore.getState().hosts[host].project ?? "");
     const head = `[DRAFT of "${draft.base}", not sent yet: ${draft.changes.length} change(s) (${draft.changes.slice(-3).join("; ")}). Its clip ids are the draft's. send_to_${host} makes it a new ${host === "premiere" ? "sequence" : "timeline"}; discard_draft drops it.]`;
-    return `${await notes}${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
+    return `${await notes}${head}\n${snapshotHeader(host, view)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}${boardFor(host, project)}`;
   }
   if (timeline) {
     try {
@@ -63,7 +64,17 @@ export async function snapshotFor(host: NleHost | null, timeline: string | null)
     }
   }
   await pool;
-  return `${await notes}${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}`;
+  return `${await notes}${snapshotHeader(host, view, problem)}\n\n${poolContext(host, view)}${await awarenessFor(host, view)}${boardFor(host, project)}`;
+}
+
+/** The project's Kanban board after everything else (Phase 23); nothing for an empty or unloaded board. */
+function boardFor(host: NleHost, project: string | null): string {
+  try {
+    const block = kanbanContextFor(host, project);
+    return block ? `\n\n${block}` : "";
+  } catch {
+    return "";
+  }
 }
 
 /** Phase 13a's lines after the pool: the files' formats, their transcripts, and what find_broll searches.

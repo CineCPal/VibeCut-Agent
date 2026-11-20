@@ -1,5 +1,5 @@
 import { BROLL_PANEL_VERSION, type PanelBrollFile } from "../src/types/brollPanel";
-import { HOST_PANEL_VERSION, type HostAnalyzerFile, type HostChatAction, type HostPanelStateFile } from "../src/types/hostPanel";
+import { HOST_PANEL_VERSION, type HostAnalyzerFile, type HostChatAction, type HostKanbanFile, type HostPanelStateFile } from "../src/types/hostPanel";
 
 /**
  * How a panel reaches VibeCut Agent (PLAN.md, "Phase 5b" and "In-host panels"), after VibeCut's
@@ -22,6 +22,8 @@ export interface Transport {
   stateVersion?: () => number | null;
   /** `analyzer.json` (the Analyze tab), or null. */
   readAnalyzer?: () => Promise<HostAnalyzerFile | null>;
+  /** `kanban.json` (the Board tab, Phase 23), or null. */
+  readKanban?: () => Promise<HostKanbanFile | null>;
   /** The editor's own folder picker, or none (the panel then takes a typed path). */
   chooseFolder?: (current: string | null) => Promise<string | null>;
   /** Puts text on the Mac's pasteboard (a message's Copy). */
@@ -81,6 +83,16 @@ export function fileTransport(dir: string, ops: FileOps, extras: Pick<Transport,
       try {
         const file = JSON.parse(text) as HostAnalyzerFile;
         return file && file.version === HOST_PANEL_VERSION && file.options ? file : null;
+      } catch {
+        return null;
+      }
+    },
+    async readKanban() {
+      const text = await ops.readText(`${dir}/kanban.json`);
+      if (!text) return null;
+      try {
+        const file = JSON.parse(text) as HostKanbanFile;
+        return file && file.version === HOST_PANEL_VERSION && Array.isArray(file.cards) ? file : null;
       } catch {
         return null;
       }

@@ -5,6 +5,7 @@ mod chat_store;
 mod claude_code;
 mod commands;
 mod host_chat;
+mod kanban;
 mod launch_env;
 mod login_item;
 mod mcp_bridge;
@@ -150,6 +151,7 @@ pub fn run() {
             host_chat::host_chat_publish,
             host_chat::host_chat_broll_publish,
             host_chat::host_chat_analyzer_publish,
+            host_chat::host_chat_kanban_publish,
             host_chat::host_chat_thumbs,
             host_chat::host_chat_status,
             mcp_bridge::mcp_reply,
@@ -172,6 +174,8 @@ pub fn run() {
             chat_store::edit_log_save,
             project_notes::project_notes_get,
             project_notes::project_notes_set,
+            kanban::kanban_board_get,
+            kanban::kanban_board_set,
             broll_panel::broll_panel_thumbs,
             broll_preview::broll_preview_allow,
             spyglass::find_spyglass_index,

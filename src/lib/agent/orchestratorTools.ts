@@ -10,6 +10,7 @@
  */
 import { nleCall } from "../ipc";
 import { useEditLogStore } from "../../store/useEditLogStore";
+import { useKanbanStore } from "../../store/useKanbanStore";
 import type { EditResult } from "../../types/edits";
 import { NLE_LABELS, type NleHost } from "../../types/nle";
 import type { ExecutedCall, NleBatchCommand, OtioCommitArgs } from "../../types/orchestrator";
@@ -93,6 +94,11 @@ export function orchestratorExecutors(ctx: EditContext): Record<string, Executor
           backup,
           changes: result.changes,
         }).id;
+        // Phase 23: the commit belongs to the turn's Kanban card, or the card its summary names.
+        const cardId = useKanbanStore.getState().activeTurnCardId ?? /\bkb_\d+\b/.exec(commit.commitSummary)?.[0] ?? null;
+        if (cardId) {
+          useKanbanStore.getState().recordCardCommit(cardId, { editId, deltaId: commit.deltaId, validationToken: commit.validationToken, otioPath: commit.otioPath ?? null });
+        }
       }
       return {
         summary: `${summary} (backup: "${backup}")`,

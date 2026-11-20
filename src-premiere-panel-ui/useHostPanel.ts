@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PanelBrollFile } from "../src/types/brollPanel";
-import type { HostAnalyzerFile, HostChatAction, HostPanelStateFile } from "../src/types/hostPanel";
+import type { HostAnalyzerFile, HostChatAction, HostKanbanFile, HostPanelStateFile } from "../src/types/hostPanel";
 import { AGENT_STALE_MS, newActionId, type Transport } from "./transport";
 
 const READ_EVERY_MS = 250;
@@ -20,6 +20,11 @@ const ANSWERED: ReadonlySet<HostChatAction["type"]> = new Set([
   "analyzer_source",
   "analyzer_export",
   "analyzer_build",
+  "kanban_run",
+  "kanban_run_wave",
+  "kanban_seed_qc",
+  "kanban_sync_markers",
+  "kanban_create",
 ]);
 
 /** Distributes Omit over the action union, so each action keeps its own fields. */
@@ -29,6 +34,8 @@ export interface HostPanelView {
   state: HostPanelStateFile | null;
   broll: PanelBrollFile | null;
   analyzer: HostAnalyzerFile | null;
+  /** `kanban.json`: the editor project's Kanban board (Phase 23). */
+  kanban: HostKanbanFile | null;
   /** The app wrote another version's `state.json`: the panel needs updating (or the app does). */
   otherVersion: number | null;
   /** VibeCut Agent stamped its heartbeat recently. */
@@ -46,21 +53,23 @@ export function useHostPanel(transport: Transport): HostPanelView {
   const [state, setState] = useState<HostPanelStateFile | null>(null);
   const [broll, setBroll] = useState<PanelBrollFile | null>(null);
   const [analyzer, setAnalyzer] = useState<HostAnalyzerFile | null>(null);
+  const [kanban, setKanban] = useState<HostKanbanFile | null>(null);
   const [otherVersion, setOtherVersion] = useState<number | null>(null);
   const [aliveAt, setAliveAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [pending, setPending] = useState<string | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
-  const published = useRef({ state: 0, broll: 0, analyzer: 0 });
+  const published = useRef({ state: 0, broll: 0, analyzer: 0, kanban: 0 });
 
   useEffect(() => {
     let stopped = false;
     const read = async () => {
       try {
-        const [nextState, nextBroll, nextAnalyzer, alive] = await Promise.all([
+        const [nextState, nextBroll, nextAnalyzer, nextKanban, alive] = await Promise.all([
           transport.readState(),
           transport.readBroll(),
           transport.readAnalyzer ? transport.readAnalyzer() : Promise.resolve(null),
+          transport.readKanban ? transport.readKanban() : Promise.resolve(null),
           transport.agentAliveAt(),
         ]);
         if (stopped) return;
@@ -69,6 +78,10 @@ export function useHostPanel(transport: Transport): HostPanelView {
         if (nextAnalyzer && nextAnalyzer.publishedAt !== published.current.analyzer) {
           published.current.analyzer = nextAnalyzer.publishedAt;
           setAnalyzer(nextAnalyzer);
+        }
+        if (nextKanban && nextKanban.publishedAt !== published.current.kanban) {
+          published.current.kanban = nextKanban.publishedAt;
+          setKanban(nextKanban);
         }
         setNow(Date.now());
         if (nextState && nextState.publishedAt !== published.current.state) {
@@ -99,8 +112,8 @@ export function useHostPanel(transport: Transport): HostPanelView {
 
   // An action is answered once the app publishes a notice for it, in either file.
   useEffect(() => {
-    if (pending && [state?.notice, broll?.notice, analyzer?.notice].some((n) => n?.actionId === pending)) setPending(null);
-  }, [state, broll, analyzer, pending]);
+    if (pending && [state?.notice, broll?.notice, analyzer?.notice, kanban?.notice].some((n) => n?.actionId === pending)) setPending(null);
+  }, [state, broll, analyzer, kanban, pending]);
   useEffect(() => {
     if (!pending) return;
     const timer = setTimeout(() => setPending(null), PENDING_MS);
@@ -121,5 +134,5 @@ export function useHostPanel(transport: Transport): HostPanelView {
     [transport],
   );
 
-  return { state, broll, analyzer, otherVersion, agentRunning: aliveAt !== null && now - aliveAt < AGENT_STALE_MS, pending, writeError, act };
+  return { state, broll, analyzer, kanban, otherVersion, agentRunning: aliveAt !== null && now - aliveAt < AGENT_STALE_MS, pending, writeError, act };
 }

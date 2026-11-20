@@ -15,6 +15,7 @@ pub const NAVIGATE_EVENT: &str = "navigate";
 const ID_CHAT: &str = "tray-chat";
 const ID_LIBRARY: &str = "tray-library";
 const ID_BROLL: &str = "tray-broll";
+const ID_KANBAN: &str = "tray-kanban";
 const ID_VISUALIZER: &str = "tray-visualizer";
 const ID_SETTINGS: &str = "tray-settings";
 const ID_ABOUT: &str = "tray-about";
@@ -52,6 +53,7 @@ pub fn view_for_menu_id(id: &str) -> Option<View> {
         ID_CHAT => Some(View::Chat),
         ID_LIBRARY => Some(View::Library),
         ID_BROLL => Some(View::Broll),
+        ID_KANBAN => Some(View::Kanban),
         ID_SETTINGS => Some(View::Settings),
         ID_ABOUT => Some(View::About),
         _ => None,
@@ -89,6 +91,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     let chat = MenuItem::with_id(handle, ID_CHAT, "Open Agent Panel", true, None::<&str>)?;
     let library = MenuItem::with_id(handle, ID_LIBRARY, "Open B-Roll Library", true, None::<&str>)?;
     let broll = MenuItem::with_id(handle, ID_BROLL, "Open B-Roll Analyzer", true, None::<&str>)?;
+    let kanban = MenuItem::with_id(handle, ID_KANBAN, "Open Kanban Board", true, None::<&str>)?;
     // A window of its own (visualizer.rs), not a view of the main one.
     let visualizer = MenuItem::with_id(handle, ID_VISUALIZER, "Open Telemetry Studio", true, None::<&str>)?;
     let settings = MenuItem::with_id(handle, ID_SETTINGS, "Settings…", true, None::<&str>)?;
@@ -108,6 +111,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
             &chat,
             &library,
             &broll,
+            &kanban,
             &visualizer,
             &mini,
             &PredefinedMenuItem::separator(handle)?,
@@ -162,6 +166,7 @@ mod tests {
         assert_eq!(view_for_menu_id(ID_CHAT), Some(View::Chat));
         assert_eq!(view_for_menu_id(ID_LIBRARY), Some(View::Library));
         assert_eq!(view_for_menu_id(ID_BROLL), Some(View::Broll));
+        assert_eq!(view_for_menu_id(ID_KANBAN), Some(View::Kanban));
         assert_eq!(view_for_menu_id(ID_SETTINGS), Some(View::Settings));
         assert_eq!(view_for_menu_id(ID_ABOUT), Some(View::About));
         assert_eq!(view_for_menu_id(ID_QUIT), None);

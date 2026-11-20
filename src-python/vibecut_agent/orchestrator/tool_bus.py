@@ -179,6 +179,19 @@ BIN_TOOLS = ("analyze_bin", "index_bin_visuals", "build_bin_selects")
 # The app's transcription (PLAN.md, "Speaker labels and background transcription"): it tells speakers apart
 # (Rust gives it the token) and can run in the background, sending the chat a message when it's done.
 TRANSCRIBE_TOOLS = ("transcribe_clips",)
+# The project's Kanban board (PLAN.md, "Phase 23"; docs/specs/kanban-spec.md): multi-agent task planning, wave
+# dependencies, cards seeded from QC and client notes, and the board mirrored on the timeline's markers. All but
+# kanban_sync_markers change only the app's board; kanban_sync_markers writes markers, which don't change the
+# timeline a validation token was given for.
+KANBAN_TOOLS = (
+    "kanban_list_cards",
+    "kanban_plan_workflow",
+    "kanban_create_card",
+    "kanban_update_card",
+    "kanban_delete_cards",
+    "kanban_seed_from_findings",
+    "kanban_sync_markers",
+)
 FORWARDED_TOOLS = (
     READ_ONLY_TOOLS
     + NOTES_TOOLS
@@ -189,6 +202,7 @@ FORWARDED_TOOLS = (
     + DRAFT_TOOLS
     + BIN_TOOLS
     + TRANSCRIBE_TOOLS
+    + KANBAN_TOOLS
 )
 ORCHESTRATOR_TOOL_NAMES = tuple(tool["name"] for tool in ORCHESTRATOR_TOOLS)
 # What a tool result may be, in characters of JSON, before `fit` cuts it down.

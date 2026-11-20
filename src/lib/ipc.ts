@@ -16,6 +16,7 @@ import type {
   SidecarInfo,
 } from "../types/sidecar";
 import type { NleHost, NleState, PremierePanelStatus, ResolvePluginStatus } from "../types/nle";
+import type { KanbanBoardFile, KanbanHost } from "../types/kanban";
 import type { McpClientSetup, McpReply, McpRequest, McpStatus } from "../types/mcp";
 import type { ClaudeCodeStatus } from "../types/agent";
 import type { ChatSearchHit, ChatSummary, SavedChat, SavedEditLog } from "../types/history";
@@ -36,6 +37,16 @@ export const SESSION_JOB_ID = "agent-session";
 
 export function takePendingView(): Promise<View | null> {
   return invoke<View | null>("take_pending_view");
+}
+
+/** The project's Kanban board (kanban.rs), or null when it has none yet. */
+export function getKanbanBoard(host: KanbanHost, project: string): Promise<KanbanBoardFile | null> {
+  return invoke<KanbanBoardFile | null>("kanban_board_get", { host, project });
+}
+
+/** Saves the project's Kanban board atomically (at most 512 KB). */
+export function setKanbanBoard(host: KanbanHost, project: string, board: KanbanBoardFile): Promise<void> {
+  return invoke<void>("kanban_board_set", { host, project, board });
 }
 
 export function getKeyStatus(): Promise<KeyStatus> {

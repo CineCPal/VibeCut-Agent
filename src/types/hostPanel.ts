@@ -9,9 +9,11 @@ import type { AgentStatus, AiChoiceId, ClaudeFamily, EffortLevel, GeminiEffort, 
 import type { PanelBrollAction } from "./brollPanel";
 import type { NleConnectionStatus, NleHost } from "./nle";
 import type { JobStatus } from "./sidecar";
+import type { KanbanCard, KanbanCategory, KanbanColumnId, KanbanPriority } from "./kanban";
 import type { DayTotals, PlanLimits, UsageTotals } from "./usage";
 
-/** 2: the editors' lights, the usage tracker, the last reply's timing, and `analyzer.json` (panel 0.20.0). */
+/** 2: the editors' lights, the usage tracker, the last reply's timing, and `analyzer.json` (panel 0.20.0).
+ * Phase 23's `kanban.json` (panel 0.20.8) is a new file at the same version: an older panel ignores it. */
 export const HOST_PANEL_VERSION = 2;
 
 export interface HostPanelToolCall {
@@ -217,6 +219,27 @@ export interface HostAnalyzerFile {
   notice: { actionId: string | null; text: string; failed: boolean; at: number; exported: boolean } | null;
 }
 
+/** `kanban.json` (PLAN.md "Phase 23"): the editor project's Kanban board, for the panel's Board tab. */
+export interface HostKanbanFile {
+  version: typeof HOST_PANEL_VERSION;
+  publishedAt: number;
+  host: NleHost;
+  /** The project whose board this is; null when the board on show in the app is another one's. */
+  project: string | null;
+  /** Why there's no board here (no project open, or another editor's board on show); null when there is. */
+  unavailable: string | null;
+  autoAdvanceWave: boolean;
+  /** The cards Run wave would start now, in order. */
+  executableIds: string[];
+  cards: KanbanCard[];
+  /** Why Seed from QC and Sync markers can't run now (null when they can). */
+  editorBlocked: string | null;
+  notice: { actionId: string | null; text: string; failed: boolean; at: number } | null;
+}
+
+/** Seed from QC's sources on the panel: the edit review, the pacing check, or the timeline's markers. */
+export type HostKanbanSeed = "review" | "pacing" | "markers";
+
 /** The Analyzer options a panel may set, and their values. */
 export type HostAnalyzerOption =
   | { key: "windowSec" | "maxSegments" | "minGapSec" | "energyWeight" | "relevanceWeight" | "topN" | "minScore"; value: number }
@@ -242,7 +265,7 @@ export type HostChatAction =
   | { id: string; type: "set_review_edits"; on: boolean }
   | { id: string; type: "queue_remove"; queueId: string }
   | { id: string; type: "set_playhead"; seconds: number }
-  | { id: string; type: "open_window"; view?: "chat" | "library" | "broll" | "visualizer" }
+  | { id: string; type: "open_window"; view?: "chat" | "library" | "broll" | "kanban" | "visualizer" }
   | { id: string; type: "usage_refresh" }
   | { id: string; type: "analyzer_start" | "analyzer_cancel" | "analyzer_reset_options" | "analyzer_export" | "analyzer_build" | "analyzer_reveal_export" }
   | { id: string; type: "analyzer_set_folder"; path: string }
@@ -251,4 +274,11 @@ export type HostChatAction =
   | { id: string; type: "analyzer_toggle_segment"; clip: number; segment: number }
   | { id: string; type: "analyzer_place" | "analyzer_source"; list: HostAnalyzerList; clip: number; segment: number }
   | { id: string; type: "analyzer_reveal"; list: HostAnalyzerList; clip: number }
+  | { id: string; type: "kanban_run_wave" | "kanban_clear_done" | "kanban_sync_markers" | "kanban_toggle_auto_wave" }
+  | { id: string; type: "kanban_move"; cardId: string; column: KanbanColumnId }
+  | { id: string; type: "kanban_run" | "kanban_delete"; cardId: string }
+  | { id: string; type: "kanban_review"; cardId: string; decision: "apply" | "skip" }
+  | { id: string; type: "kanban_toggle_check"; cardId: string; checkId: string }
+  | { id: string; type: "kanban_create"; title: string; category: KanbanCategory; priority: KanbanPriority; column: "backlog" | "ready" }
+  | { id: string; type: "kanban_seed_qc"; source: HostKanbanSeed }
   | PanelBrollAction;

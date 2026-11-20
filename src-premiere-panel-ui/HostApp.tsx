@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { HOST_PANEL_VERSION } from "../src/types/hostPanel";
 import { AnalyzeTab } from "./AnalyzeTab";
+import { BoardTab } from "./BoardTab";
 import { Broll } from "./Broll";
 import { ChatTab } from "./ChatTab";
 import { HistoryTab } from "./HistoryTab";
@@ -11,25 +12,29 @@ import { useHostPanel } from "./useHostPanel";
 
 /**
  * The "VibeCut Agent" panel inside Premiere Pro (Window → Extensions → VibeCut Agent) and DaVinci Resolve
- * (Workspace → Workflow Integrations → VibeCut Agent), `vibecut.host.panels.v1`: Chat · Library · Analyze ·
- * History tabs over the menu-bar app's own conversation, Library and B-Roll Analyzer, and a Window button
+ * (Workspace → Workflow Integrations → VibeCut Agent), `vibecut.host.panels.v1`: Chat · Board · Library ·
+ * Analyze · History tabs over the menu-bar app's own conversation, Library and B-Roll Analyzer, and a Window button
  * that brings up the app's floating window. Since 0.20.0 the window's header and footer too: each editor's
  * light, the usage tracker, and the agent's state and model. One component for both editors; only the
  * transport differs (cepChat.tsx, electron.tsx).
  */
 
-type Tab = "chat" | "broll" | "analyze" | "history";
+type Tab = "chat" | "board" | "broll" | "analyze" | "history";
 
 const TABS: { id: Tab; label: string; title: string }[] = [
   { id: "chat", label: "Chat", title: "The editing agent" },
+  { id: "board", label: "Board", title: "Multi-agent production Kanban board for this project" },
   { id: "broll", label: "Library", title: "Search and browse Spyglass's index of your archive (the B-roll Library)" },
   { id: "analyze", label: "Analyze", title: "Rank the clips in a folder and export or build the best segments (B-Roll Analyzer)" },
   { id: "history", label: "History", title: "Your saved chats" },
 ];
 
+/** The app window's view each tab's Window button opens. */
+const WINDOW_VIEW: Record<Tab, "chat" | "library" | "broll" | "kanban"> = { chat: "chat", board: "kanban", broll: "library", analyze: "broll", history: "chat" };
+
 export function HostApp({ transport, hostName }: { transport: Transport; hostName: string }) {
   const view = useHostPanel(transport);
-  const { state, broll, analyzer, agentRunning, otherVersion } = view;
+  const { state, broll, analyzer, kanban, agentRunning, otherVersion } = view;
   const [tab, setTab] = useState<Tab>("chat");
   const live = !!state && agentRunning;
   const connected = !!state?.editor.connected;
@@ -43,7 +48,7 @@ export function HostApp({ transport, hostName }: { transport: Transport; hostNam
       : connected
         ? [state.editor.project, state.editor.timeline].filter(Boolean).join(" · ") || `Connected to ${hostName}`
         : (state.editor.noEditor ?? `VibeCut Agent isn't connected to ${hostName}`);
-  const notice = tab === "broll" ? broll?.notice : tab === "analyze" ? null : state?.notice;
+  const notice = tab === "broll" ? broll?.notice : tab === "analyze" ? null : tab === "board" ? kanban?.notice : state?.notice;
   return (
     <div className="vc-panel">
       <div className="vc-header vc-slim">
@@ -56,7 +61,7 @@ export function HostApp({ transport, hostName }: { transport: Transport; hostNam
           className="vc-btn"
           disabled={!agentRunning}
           title="Open VibeCut Agent's floating window"
-          onClick={() => view.act({ type: "open_window", view: tab === "broll" ? "library" : tab === "analyze" ? "broll" : "chat" })}
+          onClick={() => view.act({ type: "open_window", view: WINDOW_VIEW[tab] })}
         >
           Window
         </Press>
@@ -84,6 +89,7 @@ export function HostApp({ transport, hostName }: { transport: Transport; hostNam
         </div>
       )}
       {live && tab === "chat" && <ChatTab state={state} view={view} copy={transport.copyText} />}
+      {live && tab === "board" && <BoardTab file={kanban} view={view} />}
       {live && tab === "broll" && (broll ? <Broll file={broll} view={view} transport={transport} /> : <p className="vc-muted vc-empty vc-pad">Loading the B-roll…</p>)}
       {live && tab === "analyze" && <AnalyzeTab file={analyzer} view={view} transport={transport} />}
       {live && tab === "history" && <HistoryTab state={state} view={view} onOpen={() => setTab("chat")} />}

@@ -5,7 +5,7 @@
  *
  * Candidates come from what the app already holds: the editor's timelines, the timeline the last
  * snapshot read (read once when the list opens if there's none), the project's pool, the speakers named
- * this connection, and the Library's results and pool. Nothing new is searched.
+ * this connection, the Library's results and pool, and the project's Kanban cards. Nothing new is searched.
  */
 import { nleCall } from "../ipc";
 import { clock } from "./args";
@@ -15,6 +15,8 @@ import { lastTimelineView, rememberTimelineView } from "./context";
 import { draftAsTimeline } from "../../vibecut/lib/connect/hostDraft";
 import { useConnectionStore } from "../../store/useConnectionStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
+import { useKanbanStore } from "../../store/useKanbanStore";
+import { KANBAN_COLUMN_META } from "../../types/kanban";
 import { selectActiveHost, useNleStateStore } from "../../store/useNleStateStore";
 import type { ChatMention, MentionKind } from "../../types/agent";
 import type { NleHost } from "../../types/nle";
@@ -27,6 +29,7 @@ export const MENTION_GROUPS: { kind: MentionKind; label: string }[] = [
   { kind: "media", label: "Media" },
   { kind: "speaker", label: "Speakers" },
   { kind: "shot", label: "Library" },
+  { kind: "card", label: "Board" },
 ];
 
 const PER_GROUP = 8;
@@ -103,6 +106,13 @@ export function allMentions(): ChatMention[] {
     seen.add(shot.key);
     out.push({ kind: "shot", label: shot.caption ? `${shot.filename} (${shot.caption.slice(0, 40)})` : shot.filename, ref: shot.path, detail: span(shot.start, shot.end) });
   }
+  // The project's Kanban cards (Phase 23), by id: "@kb_3" names one exactly.
+  const kanban = useKanbanStore.getState();
+  if (kanban.loaded) {
+    for (const card of kanban.board.cards) {
+      out.push({ kind: "card", label: card.id, ref: card.id, detail: `${card.title} · ${KANBAN_COLUMN_META[card.column].shortLabel} · ${card.assignee.label}` });
+    }
+  }
   return out;
 }
 
@@ -136,6 +146,7 @@ const KIND_WORD: Record<MentionKind, string> = {
   media: "pool item",
   speaker: "speaker",
   shot: "Library shot, file",
+  card: "kanban card",
 };
 
 /** What the model is told after the snapshot: one exact line per mention. Empty with none. */

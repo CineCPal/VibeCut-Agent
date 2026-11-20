@@ -83,6 +83,8 @@ export const CHANGING_TOOLS = new Set([
   "balance_clip_color",
   // Phase 21: an orchestrated chat's validated OTIO delta, sent to the editor (orchestratorTools.ts).
   "commit_otio_delta",
+  // Phase 23: writes the timeline's markers.
+  "kanban_sync_markers",
 ]);
 
 export const NOT_REVIEWED = new Set([
@@ -167,11 +169,19 @@ export const NOT_REVIEWED = new Set([
   "get_clip_color",
   // Phase 20b: saves VibeCut's own node template file; Resolve's page and playhead are put back.
   "save_color_template",
+  // Phase 23: the app's Kanban board only; seeding reads the timeline.
+  "kanban_list_cards",
+  "kanban_plan_workflow",
+  "kanban_create_card",
+  "kanban_update_card",
+  "kanban_delete_cards",
+  "kanban_seed_from_findings",
 ]);
 
 export const needsReview = (name: string): boolean => CHANGING_TOOLS.has(name);
 
 const VERB: Record<string, string> = {
+  kanban_sync_markers: "Sync Kanban cards with timeline markers",
   add_clips: "Add clips",
   cut_to_beats: "Cut to the beat with shots",
   make_social_version: "Make a social version",

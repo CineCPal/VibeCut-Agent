@@ -39,7 +39,11 @@ const AI_CHOICES: [&str; 4] = ["gemini", "gemini-pro", "claude-code-opus-5-5", "
 /// `EffortLevel` and `GeminiEffort` (src/types/agent.ts).
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const GEMINI_EFFORTS: [&str; 3] = ["low", "medium", "high"];
-const WINDOW_VIEWS: [&str; 4] = ["chat", "library", "broll", "visualizer"];
+const WINDOW_VIEWS: [&str; 5] = ["chat", "library", "broll", "kanban", "visualizer"];
+/** The Kanban board's columns, categories and priorities (src/types/kanban.ts, PLAN.md "Phase 23"). */
+const KANBAN_COLUMNS: [&str; 6] = ["backlog", "ready", "in_progress", "review", "done", "blocked"];
+const KANBAN_CATEGORIES: [&str; 10] = ["ingest", "transcript", "story", "broll", "cut", "audio", "color", "gfx", "qc", "delivery"];
+const KANBAN_PRIORITIES: [&str; 4] = ["critical", "high", "medium", "low"];
 /** The Analyzer's number options and their ranges (`useBrollStore`'s LIMITS; the app clamps again). */
 const ANALYZER_NUMBERS: [(&str, f64, f64); 7] = [
     ("windowSec", 0.5, 120.0),
@@ -247,6 +251,35 @@ pub fn validate_action(value: &Value, file_id: &str) -> Result<Value, String> {
             out.insert("list".into(), Value::String(list_field(action)?));
             out.insert("clip".into(), Value::from(index_field(action, "clip", MAX_CLIP_INDEX)?));
         }
+        "kanban_move" => {
+            out.insert("cardId".into(), Value::String(id_field(action, "cardId")?));
+            out.insert("column".into(), Value::String(one_of(action, "column", &KANBAN_COLUMNS)?));
+        }
+        "kanban_run" | "kanban_delete" => {
+            out.insert("cardId".into(), Value::String(id_field(action, "cardId")?));
+        }
+        "kanban_review" => {
+            out.insert("cardId".into(), Value::String(id_field(action, "cardId")?));
+            out.insert("decision".into(), Value::String(one_of(action, "decision", &["apply", "skip"])?));
+        }
+        "kanban_toggle_check" => {
+            out.insert("cardId".into(), Value::String(id_field(action, "cardId")?));
+            out.insert("checkId".into(), Value::String(id_field(action, "checkId")?));
+        }
+        "kanban_create" => {
+            let title = short_text(action, "title", MAX_OPTION_CHARS)?;
+            if title.trim().is_empty() {
+                return Err("title is empty".into());
+            }
+            out.insert("title".into(), Value::String(title.trim().into()));
+            out.insert("category".into(), Value::String(one_of(action, "category", &KANBAN_CATEGORIES)?));
+            out.insert("priority".into(), Value::String(one_of(action, "priority", &KANBAN_PRIORITIES)?));
+            out.insert("column".into(), Value::String(one_of(action, "column", &["backlog", "ready"])?));
+        }
+        "kanban_seed_qc" => {
+            out.insert("source".into(), Value::String(one_of(action, "source", &["review", "pacing", "markers"])?));
+        }
+        "kanban_run_wave" | "kanban_clear_done" | "kanban_sync_markers" | "kanban_toggle_auto_wave" => {}
         "usage_refresh" | "analyzer_start" | "analyzer_cancel" | "analyzer_reset_options" | "analyzer_export" | "analyzer_build" | "analyzer_reveal_export" => {}
         "hello" | "stop" | "new_chat" | "retry" | "revert" | "queue_clear" | "queue_resume" | "draft_send" | "draft_discard" => {}
         other => return Err(format!("unknown action type {other:?}")),
@@ -293,6 +326,7 @@ fn open_window(app: &AppHandle, view: &str) {
             }
             "library" => View::Library,
             "broll" => View::Broll,
+            "kanban" => View::Kanban,
             _ => View::Chat,
         };
         crate::tray::open_view(&handle, target);
@@ -369,6 +403,12 @@ pub fn host_chat_broll_publish(host: Host, file: Value) -> Result<bool, String> 
 #[tauri::command]
 pub fn host_chat_analyzer_publish(host: Host, file: Value) -> Result<bool, String> {
     publish(&host_dir(host)?, "analyzer.json", &file)
+}
+
+/// Writes this editor's `kanban.json`: the project's Kanban board (PLAN.md "Phase 23").
+#[tauri::command]
+pub fn host_chat_kanban_publish(host: Host, file: Value) -> Result<bool, String> {
+    publish(&host_dir(host)?, "kanban.json", &file)
 }
 
 /// Writes the thumbnails of these shots that this editor's panel doesn't have yet; returns the shots
@@ -479,6 +519,45 @@ mod tests {
         assert_eq!(check(json!({"id": "b1", "type": "analyzer_reveal", "list": "ranked", "clip": 1})).unwrap()["clip"], 1);
         for kind in ["usage_refresh", "analyzer_start", "analyzer_cancel", "analyzer_reset_options", "analyzer_export", "analyzer_build", "analyzer_reveal_export"] {
             assert_eq!(check(json!({"id": "c1", "type": kind, "path": "/etc"})).unwrap(), json!({"id": "c1", "type": kind}));
+        }
+    }
+
+    #[test]
+    fn kanban_actions_keep_only_their_fields() {
+        assert_eq!(
+            check(json!({"id": "k1", "type": "kanban_move", "cardId": "kb_3", "column": "done", "x": 1})).unwrap(),
+            json!({"id": "k1", "type": "kanban_move", "cardId": "kb_3", "column": "done"})
+        );
+        assert_eq!(check(json!({"id": "k2", "type": "kanban_run", "cardId": "kb_1", "text": "rm"})).unwrap(), json!({"id": "k2", "type": "kanban_run", "cardId": "kb_1"}));
+        assert_eq!(check(json!({"id": "k3", "type": "kanban_delete", "cardId": "kb_1"})).unwrap()["cardId"], "kb_1");
+        assert_eq!(check(json!({"id": "k4", "type": "kanban_review", "cardId": "kb_1", "decision": "skip"})).unwrap()["decision"], "skip");
+        assert_eq!(check(json!({"id": "k5", "type": "kanban_toggle_check", "cardId": "kb_1", "checkId": "c2"})).unwrap()["checkId"], "c2");
+        assert_eq!(
+            check(json!({"id": "k6", "type": "kanban_create", "title": "  Grade B-cam ", "category": "color", "priority": "high", "column": "backlog", "assignee": "x"})).unwrap(),
+            json!({"id": "k6", "type": "kanban_create", "title": "Grade B-cam", "category": "color", "priority": "high", "column": "backlog"})
+        );
+        assert_eq!(check(json!({"id": "k7", "type": "kanban_seed_qc", "source": "pacing"})).unwrap()["source"], "pacing");
+        for kind in ["kanban_run_wave", "kanban_clear_done", "kanban_sync_markers", "kanban_toggle_auto_wave"] {
+            assert_eq!(check(json!({"id": "k8", "type": kind, "cardId": "kb_1"})).unwrap(), json!({"id": "k8", "type": kind}));
+        }
+        assert_eq!(check(json!({"id": "k9", "type": "open_window", "view": "kanban"})).unwrap()["view"], "kanban");
+    }
+
+    #[test]
+    fn bad_kanban_actions_are_refused() {
+        for bad in [
+            json!({"id": "a1", "type": "kanban_move", "cardId": "kb_1", "column": "archive"}),
+            json!({"id": "a1", "type": "kanban_move", "cardId": "../kb_1", "column": "done"}),
+            json!({"id": "a1", "type": "kanban_run"}),
+            json!({"id": "a1", "type": "kanban_review", "cardId": "kb_1", "decision": "all"}),
+            json!({"id": "a1", "type": "kanban_toggle_check", "cardId": "kb_1", "checkId": "c 1"}),
+            json!({"id": "a1", "type": "kanban_create", "title": "   ", "category": "cut", "priority": "low", "column": "ready"}),
+            json!({"id": "a1", "type": "kanban_create", "title": "x".repeat(201), "category": "cut", "priority": "low", "column": "ready"}),
+            json!({"id": "a1", "type": "kanban_create", "title": "A", "category": "vfx", "priority": "low", "column": "ready"}),
+            json!({"id": "a1", "type": "kanban_create", "title": "A", "category": "cut", "priority": "low", "column": "done"}),
+            json!({"id": "a1", "type": "kanban_seed_qc", "source": "critic"}),
+        ] {
+            assert!(validate_action(&bad, "a1").is_err(), "{bad} should be refused");
         }
     }
 

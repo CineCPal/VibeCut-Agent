@@ -18,7 +18,20 @@
    uv sync
    ```
 
-3. **API keys** (only Gemini needs one; Claude runs on your Claude subscription through Claude Code and needs none, see **Claude without an API key** below):
+3. **API keys** (only Gemini needs one; Claude runs on your Claude subscription through Claude Code and needs none, see **The production board** (Board tab, ⌘4, or **Open Kanban Board** in the menu-bar menu): a Kanban board for the editor project that's open (a "Global Workspace" board when none is).
+- **Ask the agent to plan:** "put this on the board: transcribe the interviews, pull soundbites, cover the jump cuts with B-roll, duck the music, then QC". It makes dependency-linked cards (`kanban_plan_workflow`), each for a sub-agent: Whisper, Vision, B-Roll, Cutter, Audio, Colour, or you.
+- **Run** sends one card to the agent. **Run wave** sends every Ready card that isn't waiting on another, most urgent first. **Auto-wave** starts the next one when a card finishes.
+- **Cards keep themselves up to date:**
+  - A background transcription's progress and ETA show on its card.
+  - A change held for review puts its card in Needs Review, where **Apply** and **Skip** answer it.
+  - A card's edits are listed on it, and **Revert** undoes them. When all of them are reverted, the card goes back to Ready.
+- **Seed from QC** turns the edit review's automatic check, the pacing check, or the timeline's markers (as client notes) into cards, each for the sub-agent that fixes that kind of problem.
+- **Sync markers** puts a colour-coded `[kb_3] …` marker on the timeline for each card with a time: Yellow for to-do, Cyan for in progress, Purple for review, Red for blocked, Green for done. Rename one to start with `✓ ` and the next sync marks its card done. Markers named `TODO:`, `NOTE:` or `FIX:` become Backlog cards.
+- Type `@kb_3` in the chat to point the agent at a card.
+- Boards are saved per project in `~/Library/Application Support/com.cj.vibecutagent/kanban/`.
+- The panels' **Board** tab needs Premiere panel 0.20.8 or Resolve plugin 0.20.8 (Settings → Editors → Update, then restart the editor).
+
+**Claude without an API key** below):
    - **Any build:** open Settings → Accounts → API keys, paste the key and press Save. It's stored in your macOS login Keychain (service `com.cj.vibecutagent`) and never shown again. Remove deletes it.
    - **Dev builds:** you can also create a `.env` at the root; it's git-ignored and takes precedence over the Keychain:
      ```env
@@ -51,7 +64,7 @@ VibeCut Agent is a menu-bar app. It launches with **no window and no Dock icon**
 
 **Over full-screen editors:** the window stays on top of other apps, and shows over Premiere Pro or DaVinci Resolve in full screen (it follows you to every Space). Turn it off with the pin in the header, Settings → General → Window, or **Keep on Top of Editors** in the menu-bar menu.
 
-In the window: ⌘1 opens Agent, ⌘2 opens B-Roll, ⌘, opens Settings, ⌘I opens About, and Esc closes a dialog.
+In the window: ⌘1 opens Agent, ⌘2 opens the Library, ⌘3 opens Analyze, ⌘4 opens the Board, ⌘, opens Settings, ⌘I opens About, and Esc closes a dialog.
 
 At launch the app also starts the Python agent sidecar with `uv run --locked` (run `uv sync` first). About This App shows whether it's running, with a Restart button beside it. To use a different `uv` binary or Python project, set `VIBECUT_UV` or `VIBECUT_AGENT_PYTHON_ROOT`.
 
@@ -105,8 +118,9 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **Premiere Pro:** Settings → Editors → **Install panel** or **Update panel** (0.20.1), restart Premiere, then **Window → Extensions → VibeCut Agent** and dock it.
 - **DaVinci Resolve Studio:** Settings → Editors → **Install plugin** under **DaVinci Resolve plugin**, restart Resolve, then **Workspace → Workflow Integrations → VibeCut Agent**. It opens as a floating window (Resolve doesn't dock plugins), and it remembers where you put it. It copies `com.vibecutagent.resolve` into `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/`, beside VibeCut's plugin without touching it.
 - **The header and footer** match the window's: the Pr/Re lights, the **usage tracker** (click it for the Claude plan's 5-hour and weekly use, this chat, today and the last 7 days, with **Refresh**), and at the bottom the agent's state, its model and how long the last reply took to start.
-- **Chat · Library · Analyze · History tabs:**
+- **Chat · Board · Library · Analyze · History tabs:**
   - **Chat:** replies are formatted as in the window, each message has **Copy**, and each tool call opens to its arguments and result. Send (Enter; Shift+Enter for a new line), queue while it works, Stop, the open draft's Send and Discard, **Apply / Skip / Apply all** on a change waiting for review, **Retry** and **Edit** (or ↑) on your last message, **Revert n** for the latest request, and `/` for saved prompts. Click a time in a reply to move the editor's playhead. The model, effort and **Review edits** sit above the message box.
+  - **Board:** the project's Kanban board, as in the window: filter by column, **Run** a card or **Run wave**, Apply/Skip a held review, seed from QC, sync markers, add a card. A card's time moves the playhead.
   - **Library:** the B-roll Library, as in the docked VibeCut Agent Library panel. Drag a card into the Project panel, the Media Pool or the timeline.
   - **Analyze:** the B-Roll Analyzer, as in the window. **Choose folder…** opens the editor's own folder dialog. Set the options, **Analyze folder** (with progress and Cancel), search by a sentence with content-aware scoring, tick segments, then **Export XML** (saved beside the footage as "… selects <date time>.xml"; **Show in Finder**) or **Build timeline**. On a clip, **Source** opens the chosen segment in the editor's Source monitor with In and Out marked, and **Place** puts it at the playhead (revertible).
   - **History:** your saved chats, filtered by title; click one to open it.

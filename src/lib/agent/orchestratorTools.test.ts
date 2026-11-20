@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const ipc = vi.hoisted(() => ({ nleCall: vi.fn() }));
+const ipc = vi.hoisted(() => ({ nleCall: vi.fn(), getKanbanBoard: vi.fn(async () => null), setKanbanBoard: vi.fn(async () => undefined) }));
 vi.mock("../ipc", () => ipc);
 
 import { commitArgs, orchestratorExecutors } from "./orchestratorTools";
 import { describeChange, needsReview } from "./toolKinds";
 import type { EditContext } from "./edits";
 import { useEditLogStore } from "../../store/useEditLogStore";
+import { resetKanbanStoreForTests, useKanbanStore } from "../../store/useKanbanStore";
+import { emptyBoard } from "../../types/kanban";
 import type { TimelineChange } from "../../types/edits";
 import type { NleBatchCommand } from "../../types/orchestrator";
 import type { HostTimeline } from "../../types/timeline";
@@ -146,6 +148,32 @@ describe("commit_otio_delta", () => {
     expect(() => commitArgs(commit({ commitSummary: " " }))).toThrow("commitSummary must be non-empty text");
     expect(commitArgs(commit({ otioPath: undefined }))).not.toHaveProperty("otioPath");
     expect(commitArgs(commit({ expectedTimelineHash: undefined }))).not.toHaveProperty("expectedTimelineHash");
+  });
+
+  it("links the commit to the turn's Kanban card, or the card its summary names, and finishes it", async () => {
+    const batch = {
+      read_timeline: view(),
+      execute_otio_batch: { backup: "Cut (before VibeCut 1)", changes: [deleted], refused: [], executed: [{ seq: 2, sourceOpId: "op_001", command: "delete_clips", changes: 1 }] },
+    };
+    resetKanbanStoreForTests();
+    useKanbanStore.setState({ loaded: true, scope: { host: "resolve", project: "Doc" }, board: emptyBoard("resolve", "Doc", 0) });
+    useKanbanStore.getState().createCard({ title: "Drop the second shot", category: "cut", column: "in_progress" });
+    useKanbanStore.getState().createCard({ title: "Tighten the ending", category: "cut", column: "in_progress" });
+    useKanbanStore.getState().setActiveTurnCardId("kb_1");
+    editor(batch);
+    await run(commit());
+    expect(useKanbanStore.getState().board.cards[0]).toMatchObject({
+      column: "done",
+      execution: { editLogIds: ["e1"], deltaId: "delta_0001", validationToken: `vtok_${"a".repeat(32)}`, artifacts: ["/data/otio_deltas/delta_0001.otio"] },
+    });
+    // No card bound: the summary's kb_<n> names it.
+    useKanbanStore.getState().setActiveTurnCardId(null);
+    await run(commit({ commitSummary: "Tighten the ending (kb_2)" }));
+    expect(useKanbanStore.getState().board.cards[1]).toMatchObject({ column: "done", execution: { editLogIds: ["e2"] } });
+    // Neither: nothing on the board changes.
+    await run(commit({ commitSummary: "Something else" }));
+    expect(useKanbanStore.getState().board.cards.flatMap((c) => c.execution.editLogIds)).toEqual(["e1", "e2"]);
+    resetKanbanStoreForTests();
   });
 
   it("waits for Apply when edits are reviewed, and says what it will do", () => {

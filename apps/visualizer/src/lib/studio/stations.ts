@@ -36,6 +36,7 @@ export const STATIONS: readonly StationConfig[] = [
   { key: "app.project", subagent: "MASTER_ORCHESTRATOR", title: "Project", role: "Timelines, social versions", gear: "monitor" },
   { key: "app.project_notes", subagent: "MASTER_ORCHESTRATOR", title: "Notes", role: "Brief, people, style", gear: "notes" },
   { key: "app.edit_log", subagent: "MASTER_ORCHESTRATOR", title: "Edit log", role: "Revert", gear: "notes" },
+  { key: "app.kanban", subagent: "MASTER_ORCHESTRATOR", title: "Kanban Board", role: "Tasks, waves, blockers", gear: "notes" },
   { key: "orchestrator.transcribe", subagent: "MASTER_ORCHESTRATOR", title: "Transcriber", role: "Runs a transcription job", gear: "deck" },
   // Ingest & transcription.
   { key: "worker.whisper", subagent: "INGEST_TRANSCRIBE", title: "Whisper", role: "Transcribe and align", gear: "deck" },

@@ -126,6 +126,13 @@ describe("agent tools", () => {
       "export_video",
       "export_audio",
       "export_clips",
+      "kanban_list_cards",
+      "kanban_plan_workflow",
+      "kanban_create_card",
+      "kanban_update_card",
+      "kanban_delete_cards",
+      "kanban_seed_from_findings",
+      "kanban_sync_markers",
     ]);
     // The same tools, sending the draft to each one's own editor; Resolve also saves VibeCut's node template.
     expect(names("resolve")).toEqual(names("premiere").flatMap((n) => (n === "send_to_premiere" ? ["send_to_resolve"] : n === "get_clip_color" ? [n, "save_color_template"] : [n])));

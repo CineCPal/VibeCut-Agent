@@ -16,9 +16,9 @@ with the chat's own ``claude_schema.to_claude_tool``, so the two can't drift apa
 In orchestrated mode (Phase 21; ``VIBECUT_MCP_ORCHESTRATED=1``, which claude_code_chat sets for the app's
 own Claude Code run when ``EXECUTION_MODE=orchestrated``), this process plays the part
 orchestrator/supervisor.py plays for Claude through the API (`Orchestration`):
-- it offers the six orchestration tools, and of the app's tools only the read-only ones (the B-roll Library
-  and the media pool among them), the B-roll Analyzer, the three sync tools and the three marker tools
-  (tool_bus.FORWARDED_TOOLS);
+- it offers the six orchestration tools, and of the app's tools only the ones in tool_bus.FORWARDED_TOOLS
+  (reads, project notes, the B-roll Library and Analyzer, sync, markers, the app's own edits, the draft,
+  bins, transcription and the Kanban board);
 - it runs the orchestration tools itself, on the tool bus (orchestrator/tool_bus.py), whose reads of the
   timeline and whose commit go to the app through the bridge as this chat's own calls;
 - it refuses any other call;
@@ -117,6 +117,10 @@ LONG_TOOLS = frozenset(
         "build_bin_selects",
         # Phase 21: a validated OTIO delta's calls, one after another in the editor.
         "commit_otio_delta",
+        # Phase 23: seeding runs review_edit or check_pacing over the whole timeline first; marker sync reads
+        # and writes every card's marker.
+        "kanban_seed_from_findings",
+        "kanban_sync_markers",
     }
 )
 LONG_TIMEOUT_SECONDS = 15 * 60.0

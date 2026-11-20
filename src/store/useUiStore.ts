@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import type { View } from "../types/system";
 
-/** The panels: the agent chat, the Spyglass B-roll Library, and the B-roll analyzer ("broll", the Analyze tab). */
-export type Tab = "chat" | "library" | "broll";
+/**
+ * The panels: the agent chat, the Spyglass B-roll Library, the B-roll analyzer ("broll", the Analyze
+ * tab), and the project's Kanban board ("kanban", the Board tab; PLAN.md "Phase 23").
+ */
+export type Tab = "chat" | "library" | "broll" | "kanban";
 /** "notes": the project's notes (Phase 13c, ⌘⇧N); not a tray destination, so not a `View`. */
 export type Overlay = "settings" | "about" | "notes";
 /** Settings' tabs (Phase 11a). */

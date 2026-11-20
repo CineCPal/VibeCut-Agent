@@ -3881,6 +3881,72 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 
 **Verified.** `tests/transcribe/test_trace.py`: the phase chain, cache and failure, a replaced announcement making no task, stop, off writes nothing, on journals `trc_trn_`. `uv run pytest tests/` (1479 passed, 2 skipped), `npm run test:run` (979 passed), the visualizer's vitest (127 passed, including the desk-overlap layout test). **Live check owed after a reinstall:** a background transcription showing in the Studio. The job running now started before this change, so it won't appear.
 
+## Production Kanban Board (Phase 23, panel 0.20.8, 2026-11-19)
+
+**Why.** A multi-step edit (transcribe → soundbites → B-roll → mix → colour → QC) had no place to live between turns. Gemini's blueprint (`docs/specs/kanban-spec.md`, `vibecut.kanban.v1`) gives each editor project a Kanban board that the editing agent, the supervising editor, the background bots and the user share. Each card names its sub-agent and Studio desk, its place on the timeline, and the cards it waits on.
+
+**What it does.**
+- **Storage** (`src-tauri/src/kanban.rs`): one JSON file per editor project in `<appData>/kanban/`, named like project notes (`<host>-<slug>-<fnv1a>.json`). `global-workspace.json` holds the board kept while no project is open. Writes are atomic, the folder is 0o700, and a board is capped at 512 KB. A board that never had a card is removed, not written empty. Commands: `kanban_board_get` and `kanban_board_set`.
+- **Types** (`src/types/kanban.ts`): the spec's §2 contracts, plus `DEFAULT_CATEGORY_ASSIGNEE` and `DEFAULT_ROLE_ASSIGNEE`.
+- **Board operations** (`src/lib/kanban/board.ts`): pure, so they can be tested without the store. `src/store/useKanbanStore.ts` applies them and saves 250 ms later, one save at a time, flushing before it switches project. Links to missing cards are refused, and so are loops (`dag.ts` `detectCycle`).
+- **Runner** (`src/lib/kanban/runner.ts`): **Run** sends a card to the chat as `[Kanban Task kb_n] … @kb_n`. **Run wave** sends every Ready card with nothing left to wait on, most urgent first, as far as the chat's queue has room.
+- **Sync** (`src/lib/kanban/lifecycleSync.ts`, started in `App.tsx`) keeps the cards true to what happens, whatever the model remembers to do. It binds a turn to its card and links that card's edits, background jobs and held reviews. A card whose edits are all reverted goes back to Ready.
+- **Tools** (`src/lib/agent/kanbanTools.ts`): `kanban_list_cards`, `kanban_plan_workflow`, `kanban_create_card`, `kanban_update_card`, `kanban_delete_cards`, `kanban_seed_from_findings` and `kanban_sync_markers`.
+  - The same tools work in both modes. In orchestrated mode they are forwarded (`tool_bus.KANBAN_TOOLS` + `FORWARDED_TOOLS`).
+  - Only `kanban_sync_markers` is reviewed (`CHANGING_TOOLS`).
+  - `kanban_seed_from_findings` and `kanban_sync_markers` are `LONG_TOOLS`.
+  - `KANBAN_INSTRUCTION` (direct mode) and a paragraph in `ORCHESTRATED_INSTRUCTION` tell the agent how to use them.
+- **Orchestrated commits:** a `commit_otio_delta` that logs an edit records it on the card bound to the turn, or on the `kb_<n>` its commit summary names (`recordCardCommit`). That card then moves to Done, with the edit, the delta, the token and the `.otio` snapshot.
+- **Snapshot:** after the timeline's lines, the agent sees a `[KANBAN BOARD …]` block of at most 2,400 characters. It lists the column counts and the cards that matter now.
+- **@-mentions:** `@kb_3` names a card (`MentionKind` gains `"card"`, in the "Board" group).
+- **The main window's Board tab (⌘4)** (`src/components/kanban/`): six columns, Run wave, Auto-wave, Seed from QC (edit review / pacing / timeline markers), Sync markers, Add card (optionally at the playhead), filters by sub-agent and text. Each card has its timecode jump, checklist, live progress with ETA, Apply/Skip for a held review, Revert, Run, Chat @kb_n, move and delete. The tray menu gains **Open Kanban Board**.
+- **The panels' Board tab** (Premiere CEP 0.20.8, Resolve plugin 0.20.8): `kanban.json` is published per editor through `host_chat_kanban_publish`, and the panel's actions go through `kanban_*` inbox actions, checked again by Rust's `validate_action`. The panel's **Window** button opens the main window's Board tab.
+- **Studio:** an `app.kanban` desk ("Kanban Board") in the Command Bridge. `TOOL_AGENTS` gains all seven tools.
+
+**Adjustments to the blueprint (decided, 2026-11-19).** Each one comes from checking the spec against the code.
+1. **`kanban_seed_from_findings` is traced at `("PACING_CUTTER", "app.review")`, not `app.kanban`.** `test_supervisor.py` requires a tool's subagent to be its desk's, and `app.kanban` belongs to `MASTER_ORCHESTRATOR`. Seeding is QC work, which is Review's.
+2. **`HOST_PANEL_VERSION` stays 2.** `kanban.json` is a new, optional file, as `analyzer.json` was. Bumping the version would have made every installed panel say "panel and app don't match".
+3. **Corrected names.**
+   - Host chat: the publish helper is `publish` (there is no `publish_in`). A card's title is read with `short_text(…, "title", 200)`, because `text_field` always reads `"text"`.
+   - Sidecar job status: a failed job is `"failed"`, not `"error"`.
+   - Edit log: the entry type is `EditEntry`, and its `reverted` is an object, tested with `Boolean(…)`.
+4. **Review cards never reach "applied".** Their states are pending → running → done, or declined. A held review moves its card to Needs Review. Skip moves it to Blocked; Apply moves it back to Active.
+5. **A card is bound to a turn when its message starts, not when Run is pressed.** A queued card is Active with the phase "Queued", and goes back to Ready if its message leaves the queue without running. `kanban_update_card` to `in_progress` also binds the turn.
+6. **The runner's mention is labelled `kb_n`, and the message says `@kb_n`.** `keptMentions` drops a mention whose `@label` isn't in the text.
+7. **A card still Active when its turn ends, with nothing running and no review held, goes to Needs Review.** The work happened, but nobody said it was done. Without this a card could stay Active for ever.
+8. **Background jobs are linked by when they start.** No tool returns a job id. A long sidecar job (`BOT_COMMANDS`: transcribe, ingest-index, broll-analyze…) that starts during a card's turn is that card's. If it ends during the turn, the turn decides the card's column. If it ends after the turn, the card is done, or blocked if the job failed. Quick reads (media-info, peaks) are never linked. `transcriptTools.ts` is unchanged.
+9. **An empty board prints nothing in the snapshot** (not the spec's "empty" line). `KANBAN_INSTRUCTION` already explains the tools, and the existing snapshot tests require the notes to be followed directly by the timeline.
+10. **The global board is for the user, in the UI only.** With no editor the agent has no tools and no snapshot (unchanged), so the tools always work on the connected editor project's board.
+11. **`kanban_seed_from_findings` has no `syncMarkers`.** It isn't reviewed, so it must not write markers; the agent calls `kanban_sync_markers` (reviewed) itself.
+    - It runs `review_edit` with `visual: false` (no vision critic) and `read_client_notes` with `fromMarkers: true` when no text is given.
+    - Findings come from each tool's structured result, and duplicates (same title and time) are skipped.
+12. **Marker sync matches board markers by name** (`[kb_n]`, or `✓ [kb_n]` when done) rather than by stored id, because Resolve changes a marker's id when it moves.
+    - Markers named TODO:, NOTE: or FIX: are imported into the Backlog; FIX: ones are high priority.
+    - A card imported from your own marker never has that marker renamed.
+13. **The panel gains a `kanban_review` action** (Apply or Skip on a card), which the spec's list lacked.
+    - Every `kanban_*` action is host-scoped: it makes the editor whose panel sent it the active one, so the board it changes is that editor project's.
+    - A Board failure is the tab's notice, never an error in the chat.
+14. **Progress isn't saved.** It changes on every job tick, so it is kept in memory and stripped before a save.
+
+**Not changed.** `ORCHESTRATOR_SPEC.md` §3 and `schemas.py` (`test_schemas.py` passes unchanged). Direct mode's existing tools and the frozen Python modules. The About modal (no new integration: the board is local).
+
+**Verified** (2026-11-19, branch `feat/kanban-orchestrator-board`):
+- `cargo test`: 175 passed.
+- `npm run test:run`: 1057 passed.
+- The visualizer's vitest: 127 passed.
+- `uv run pytest tests/`: 1480 passed, 2 skipped.
+- `uvx ruff check` and `ruff format --check`: clean.
+- `npm run lint` and `npx tsc --noEmit`: clean.
+- `npm run build:panel` and `npm run build`: both build.
+- `uv run mypy src-python/ tests/`: 4,920 errors, the same count as before this work. `tests/` was never typed, and the project's own `[tool.mypy]` covers `src-python` only. On `src-python` the one error is the existing `nle/premiere_edit.py:1740`, a frozen direct-mode module, left as it is.
+
+**Live checks owed after a reinstall** (`npm run install-app -- --orchestrated`, then copy the CEP panel and restart Premiere):
+- The tray's Open Kanban Board.
+- The Board tab in Premiere and in Resolve, and its round trip with the window.
+- Kanban marker sync on a scratch timeline in both editors.
+- An orchestrated commit landing on its card.
+- A background transcription finishing its card after the turn.
+
 ## Installing and Launching (2026-10-07)
 - **`npm run install-app`** (`scripts/install-app.sh`, `zsh -l`):
   - checks for npm, cargo and uv, then runs `npx tauri build --bundles app`;
@@ -4584,3 +4650,7 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
 - **2026-11-19 (Gemini): Phase 23 Architectural Blueprint — Agentic Production Kanban System (`vibecut.kanban.v1`).**
   - Full architectural specification, TypeScript/Rust/Python contracts, sub-agent/bot workstation taxonomy, lifecycle state machine, and 6-phase implementation checklist written to `docs/specs/kanban-spec.md`.
   - Preserves 100% of `ORCHESTRATOR_SPEC.md` §3 JSON schemas (`tests/orchestrator/test_schemas.py` invariant) while forwarding the 7 `kanban_*` tools across `EXECUTION_MODE=direct` and `EXECUTION_MODE=orchestrated` (`tool_bus.py` `FORWARDED_TOOLS`), synchronizing across the standalone window (`Board` tab `⌘4`), Premiere Pro / DaVinci Resolve in-host panels (`kanban.json`), and the Telemetry Studio (`app.kanban` Command Bridge desk).
+- **2026-11-19 (Claude): Phase 23 implemented: the Production Kanban Board (panel 0.20.8).**
+  - Per-project boards (`kanban.rs`), the main window's Board tab (⌘4), the panels' Board tab, seven `kanban_*` tools (forwarded in orchestrated mode), `@kb_n` mentions, a sync that follows turns, jobs, reviews and reverts, and an `app.kanban` desk in the Studio.
+  - Fourteen adjustments to the blueprint, each decided and listed, among them: `HOST_PANEL_VERSION` stays 2, seeding is traced at Review's desk, cards bind when their message starts, and an empty board prints nothing.
+  - Live checks owed. See "Production Kanban Board".

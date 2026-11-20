@@ -11,8 +11,8 @@ loop in either mode), and is kept, with its tests, for a provider that may super
 Each turn runs gemini_chat's own loop, unchanged, with three differences:
 
 - Gemini is given the six orchestration tools (tool_bus.gemini_tools, as full JSON Schema) and, of the
-  app's tools, only the ones that read, the B-roll Analyzer, the three sync tools and the three marker tools
-  (tool_bus.FORWARDED_TOOLS); every other
+  app's tools, only the ones in tool_bus.FORWARDED_TOOLS (reads, project notes, the B-roll Library and
+  Analyzer, sync, markers, the app's own edits, the draft, bins, transcription and the Kanban board); every other
   edit goes through `propose_otio_delta` and `commit_otio_delta`. ORCHESTRATED_INSTRUCTION is added to the system prompt to
   say how.
 - When Gemini calls tools, `_Router` takes the `tool_calls` event before it reaches the app: the
@@ -127,6 +127,13 @@ Many of the app's own tools work here too, outside the delta, each its own edit 
 These edit the timeline, so propose a delta after them, not before. Cuts, trims, moves, inserts, deletes, gaps, transitions, gain and ducking always go in a delta.
 
 Transcribing: transcribe_and_align runs Whisper here and holds your turn until it's done. For long files (over about 10 minutes in all) or several files, use transcribe_clips with filePaths and background: true instead (force: true to transcribe again, speakers: true to tell speakers apart), tell the user it has started, and end your turn: the app sends you a message when it's done, and you continue then. Speakers are told apart only by the app's transcription, which holds the token: transcribe_and_align with enable_diarization hands the file to it.
+
+Kanban board: the snapshot shows the project's [KANBAN BOARD] once it has cards. For a multi-stage request, plan \
+the work first with kanban_plan_workflow, each card assigned to its sub-agent role and linked to the cards it \
+waits on with blockedBy. Move a card to "in_progress" (kanban_update_card) before you run its tools or propose \
+its delta, put its kb_<n> id in commit_otio_delta's commit_summary so the commit links its edit to the card, and \
+move it to "done" when it's finished (or "blocked" with blockedReason). kanban_seed_from_findings turns \
+review_edit, check_pacing or client notes into cards; kanban_sync_markers mirrors time-ranged cards as markers.
 
 To find what interviews say about something (answers to choose from, every mention of a topic), use find_soundbites with the files' paths and the brief: it reads every line of every transcript, however long, and returns the best moments with their times in each file. Don't page through a long transcript with get_transcript to choose soundbites; use get_transcript (filePath, startTime/endTime) to read around a moment it found.
 

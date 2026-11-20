@@ -4,6 +4,7 @@ import { toggleMiniPlayer } from "../../hooks/useMiniPlayer";
 import { UsageMeter } from "../usage/UsageMeter";
 import { useUiStore } from "../../store/useUiStore";
 import { ChatPanel } from "../chat/ChatPanel";
+import { KanbanPanel } from "../kanban/KanbanPanel";
 import { FolderAnalyzer } from "../broll/FolderAnalyzer";
 import { LibraryPanel } from "../broll/LibraryPanel";
 import { NleStatusPill } from "./NleStatusPill";
@@ -53,7 +54,7 @@ export function AppShell() {
       </header>
       <TabBar />
       <main id={panelId(tab)} role="tabpanel" aria-labelledby={tabId(tab)} className="flex min-h-0 flex-1 flex-col">
-        {tab === "chat" ? <ChatPanel /> : tab === "library" ? <LibraryPanel /> : <FolderAnalyzer />}
+        {tab === "chat" ? <ChatPanel /> : tab === "library" ? <LibraryPanel /> : tab === "broll" ? <FolderAnalyzer /> : <KanbanPanel />}
       </main>
       <StatusBar />
     </div>

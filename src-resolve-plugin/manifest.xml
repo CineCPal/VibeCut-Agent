@@ -6,7 +6,7 @@
     <Plugin>
         <Id>com.vibecutagent.resolve</Id>
         <Name>VibeCut Agent</Name>
-        <Version>0.20.6</Version>
+        <Version>0.20.8</Version>
         <Description>VibeCut Agent chat and B-roll panel for DaVinci Resolve. VibeCut Agent must be running in the menu bar.</Description>
         <FilePath>main.js</FilePath>
     </Plugin>
