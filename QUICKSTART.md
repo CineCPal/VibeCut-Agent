@@ -18,20 +18,7 @@
    uv sync
    ```
 
-3. **API keys** (only Gemini needs one; Claude runs on your Claude subscription through Claude Code and needs none, see **The production board** (Board tab, ⌘4, or **Open Kanban Board** in the menu-bar menu): a Kanban board for the editor project that's open (a "Global Workspace" board when none is).
-- **Ask the agent to plan:** "put this on the board: transcribe the interviews, pull soundbites, cover the jump cuts with B-roll, duck the music, then QC". It makes dependency-linked cards (`kanban_plan_workflow`), each for a sub-agent: Whisper, Vision, B-Roll, Cutter, Audio, Colour, or you.
-- **Run** sends one card to the agent. **Run wave** sends every Ready card that isn't waiting on another, most urgent first. **Auto-wave** starts the next one when a card finishes.
-- **Cards keep themselves up to date:**
-  - A background transcription's progress and ETA show on its card.
-  - A change held for review puts its card in Needs Review, where **Apply** and **Skip** answer it.
-  - A card's edits are listed on it, and **Revert** undoes them. When all of them are reverted, the card goes back to Ready.
-- **Seed from QC** turns the edit review's automatic check, the pacing check, or the timeline's markers (as client notes) into cards, each for the sub-agent that fixes that kind of problem.
-- **Sync markers** puts a colour-coded `[kb_3] …` marker on the timeline for each card with a time: Yellow for to-do, Cyan for in progress, Purple for review, Red for blocked, Green for done. Rename one to start with `✓ ` and the next sync marks its card done. Markers named `TODO:`, `NOTE:` or `FIX:` become Backlog cards.
-- Type `@kb_3` in the chat to point the agent at a card.
-- Boards are saved per project in `~/Library/Application Support/com.cj.vibecutagent/kanban/`.
-- The panels' **Board** tab needs Premiere panel 0.20.8 or Resolve plugin 0.20.8 (Settings → Editors → Update, then restart the editor).
-
-**Claude without an API key** below):
+3. **API keys** (only Gemini needs one; Claude runs on your Claude subscription through Claude Code and needs none, see **Claude without an API key** below):
    - **Any build:** open Settings → Accounts → API keys, paste the key and press Save. It's stored in your macOS login Keychain (service `com.cj.vibecutagent`) and never shown again. Remove deletes it.
    - **Dev builds:** you can also create a `.env` at the root; it's git-ignored and takes precedence over the Keychain:
      ```env
@@ -64,7 +51,7 @@ VibeCut Agent is a menu-bar app. It launches with **no window and no Dock icon**
 
 **Over full-screen editors:** the window stays on top of other apps, and shows over Premiere Pro or DaVinci Resolve in full screen (it follows you to every Space). Turn it off with the pin in the header, Settings → General → Window, or **Keep on Top of Editors** in the menu-bar menu.
 
-In the window: ⌘1 opens Agent, ⌘2 opens the Library, ⌘3 opens Analyze, ⌘4 opens the Board, ⌘, opens Settings, ⌘I opens About, and Esc closes a dialog.
+In the window: ⌘1 opens Agent, ⌘2 opens the Board, ⌘3 opens the Library, ⌘4 opens Analyze, ⌘, opens Settings, ⌘I opens About, and Esc closes a dialog.
 
 At launch the app also starts the Python agent sidecar with `uv run --locked` (run `uv sync` first). About This App shows whether it's running, with a Restart button beside it. To use a different `uv` binary or Python project, set `VIBECUT_UV` or `VIBECUT_AGENT_PYTHON_ROOT`.
 
@@ -93,6 +80,19 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **Notifications:** when an answer finishes, something fails, or a change waits for review while the window is hidden or behind your editor, macOS shows a notification (Settings → General → Notifications; macOS asks once to allow it).
 - **Faster replies:** the agent starts as you begin typing, and on Claude (subscription) the next turn's Claude Code is started as soon as an answer finishes. The status bar's tooltip shows how long the last reply took to start.
 - **Premiere:** these need panel 0.7.0 or later (Settings → Editors → Update panel, then restart Premiere).
+
+**The production board** (Board tab, ⌘2, or **Open Kanban Board** in the menu-bar menu): a Kanban board for the editor project that's open (a "Global Workspace" board when none is).
+- **Ask the agent to plan:** "put this on the board: transcribe the interviews, pull soundbites, cover the jump cuts with B-roll, duck the music, then QC". It makes dependency-linked cards (`kanban_plan_workflow`), each for a sub-agent: Whisper, Vision, B-Roll, Cutter, Audio, Colour, or you.
+- **Run** sends one card to the agent. **Run wave** sends every Ready card that isn't waiting on another, most urgent first. **Auto-wave** starts the next one when a card finishes.
+- **Cards keep themselves up to date:**
+  - A background transcription's progress and ETA show on its card.
+  - A change held for review puts its card in Needs Review, where **Apply** and **Skip** answer it.
+  - A card's edits are listed on it, and **Revert** undoes them. When all of them are reverted, the card goes back to Ready.
+- **Seed from QC** turns the edit review's automatic check, the pacing check, or the timeline's markers (as client notes) into cards, each for the sub-agent that fixes that kind of problem.
+- **Sync markers** puts a colour-coded `[kb_3] …` marker on the timeline for each card with a time: Yellow for to-do, Cyan for in progress, Purple for review, Red for blocked, Green for done. Rename one to start with `✓ ` and the next sync marks its card done. Markers named `TODO:`, `NOTE:` or `FIX:` become Backlog cards.
+- Type `@kb_3` in the chat to point the agent at a card.
+- Boards are saved per project in `~/Library/Application Support/com.cj.vibecutagent/kanban/`.
+- The panels' **Board** tab needs Premiere panel 0.20.8 or Resolve plugin 0.20.8 (Settings → Editors → Update, then restart the editor).
 
 **Claude without an API key** (Settings → Accounts → Claude subscription): the **"Claude Opus 5.5 (subscription)"** and **"Claude Sonnet 5.5 (subscription)"** models run your own Claude Code, signed in with your Claude account, so turns use your Claude plan instead of an API key.
 - **Needs:** Claude Code installed and signed in (run `claude` once in Terminal and sign in). The app looks in `~/.local/bin`, `~/.claude/local`, Homebrew and PATH; **Choose…** picks the program yourself.

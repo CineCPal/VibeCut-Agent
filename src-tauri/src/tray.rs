@@ -109,9 +109,9 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         handle,
         &[
             &chat,
+            &kanban,
             &library,
             &broll,
-            &kanban,
             &visualizer,
             &mini,
             &PredefinedMenuItem::separator(handle)?,

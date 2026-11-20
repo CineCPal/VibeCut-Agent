@@ -37,7 +37,7 @@ const matches = (card: KanbanCard, role: KanbanAssigneeRole | null, text: string
   (!text || `${card.id} ${card.title} ${card.description} ${card.assignee.label}`.toLowerCase().includes(text.toLowerCase()));
 
 /**
- * The project's Kanban board (PLAN.md "Phase 23", docs/specs/kanban-spec.md §6.1; the Board tab, ⌘4): the
+ * The project's Kanban board (PLAN.md "Phase 23", docs/specs/kanban-spec.md §6.1; the Board tab, ⌘2): the
  * cards the agent, the supervising editor, the background bots and the user share, in six columns.
  */
 export function KanbanPanel() {

@@ -987,3 +987,4 @@ Building against the code turned up places where this blueprint's assumptions ab
 | 6.1 | Hex colours | AGENTS.md §3 token classes (`loss`, `warning`, `profit`) |
 | 7 | `npm --prefix apps/visualizer run test:run` | `npm --prefix apps/visualizer run test -- --run` (the visualizer has no `test:run`) |
 | 7 | `uv run mypy src-python/ tests/` gate | `tests/` was never typed (4,920 errors before and after this work); the project's `[tool.mypy]` covers `src-python`, whose one error (`nle/premiere_edit.py:1740`, frozen) is older than this work |
+| 6.1 | Board appended as `⌘4` after Analyze | Board second, `⌘2`, at the user's request (Agent ⌘1 · Board ⌘2 · Library ⌘3 · Analyze ⌘4), as in the panels |
