@@ -82,7 +82,7 @@ At launch the app also starts the Python agent sidecar with `uv run --locked` (r
 - **Premiere:** these need panel 0.7.0 or later (Settings → Editors → Update panel, then restart Premiere).
 
 **The production board** (Board tab, ⌘2, or **Open Kanban Board** in the menu-bar menu): a Kanban board for the editor project that's open (a "Global Workspace" board when none is).
-- **Ask the agent to plan:** "put this on the board: transcribe the interviews, pull soundbites, cover the jump cuts with B-roll, duck the music, then QC". It makes dependency-linked cards (`kanban_plan_workflow`), each for a sub-agent: Whisper, Vision, B-Roll, Cutter, Audio, Colour, or you.
+- **Multi-step requests plan themselves:** ask for something with more than one stage ("transcribe the interviews, pull soundbites, cover the jump cuts with B-roll, duck the music, then QC") and the agent first puts it on the board as dependency-linked cards (`kanban_plan_workflow`), each for a sub-agent: Whisper, Vision, B-Roll, Cutter, Audio, Colour, or you. It then starts the first card. A single-step request ("move the playhead to 1:00") stays off the board. "Put this on the board" asks for a plan outright. The agent decides what counts as a stage, so the occasional borderline request may not be planned.
 - **Run** sends one card to the agent. **Run wave** sends every Ready card that isn't waiting on another, most urgent first. **Auto-wave** starts the next one when a card finishes.
 - **Cards keep themselves up to date:**
   - A background transcription's progress and ETA show on its card.

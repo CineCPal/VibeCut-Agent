@@ -632,10 +632,14 @@ async function syncMarkers(
 }
 
 /** The ground rules the system prompt gains (Phase 23). */
-export const KANBAN_INSTRUCTION = `- The project has a Kanban board; the snapshot shows it once it has cards ([KANBAN BOARD]). When the user
-  asks for a multi-step edit or a production plan, or says "put this on the board", kanban_plan_workflow
-  it into dependency-linked cards (blockedBy) for the right sub-agents (INGEST_TRANSCRIBE, VISION_TAGGER,
-  BROLL_RETRIEVER, PACING_CUTTER, AUDIO_ENGINEER, COLOR_GRADER, or HUMAN_EDITOR for what only the user can do).
+export const KANBAN_INSTRUCTION = `- The project has a Kanban board; the snapshot shows it once it has cards ([KANBAN BOARD]). Plan before you
+  edit: when a request has more than one stage (transcribe then cut, cut then mix, several fixes across the
+  timeline, or anything that waits on a background job or takes several turns), call kanban_plan_workflow
+  before any other tool, one card per stage linked with blockedBy, each for its sub-agent (INGEST_TRANSCRIBE,
+  VISION_TAGGER, BROLL_RETRIEVER, PACING_CUTTER, AUDIO_ENGINEER, COLOR_GRADER, or HUMAN_EDITOR for what only
+  the user can do). Say which cards you made, then start the first one that can run. A single-step request
+  (one change, one question, one read) doesn't go on the board. When the request continues work already on
+  the board, use its cards instead of planning new ones.
 - When you work on a card (a message starting "[Kanban Task kb_<n>]", or the user pointing at @kb_<n>),
   kanban_update_card it to "in_progress" first, and when it's finished to "done" with the editLogIds or
   artifacts it produced, or to "blocked" with blockedReason if something stops it.

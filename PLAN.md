@@ -3927,6 +3927,7 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
     - Every `kanban_*` action is host-scoped: it makes the editor whose panel sent it the active one, so the board it changes is that editor project's.
     - A Board failure is the tab's notice, never an error in the chat.
 14. **Progress isn't saved.** It changes on every job tick, so it is kept in memory and stripped before a save.
+15. **Multi-step requests are planned first (decided 2026-11-20, the user's choice).** In both modes, a request with more than one stage is planned with `kanban_plan_workflow` before any other tool. Single-step requests stay off the board, and a request that continues work already on the board uses its cards. This is a rule in `KANBAN_INSTRUCTION` and `ORCHESTRATED_INSTRUCTION`, not app code, so the model still judges what counts as a stage. The other options were a card made by the app for every message, or an opt-in "Track on board" toggle; neither was chosen.
 
 **Not changed.** `ORCHESTRATOR_SPEC.md` §3 and `schemas.py` (`test_schemas.py` passes unchanged). Direct mode's existing tools and the frozen Python modules. The About modal (no new integration: the board is local).
 
@@ -4655,3 +4656,4 @@ The speech that the bad recovery targeted is still untranscribed; a `use_cache: 
   - Fourteen adjustments to the blueprint, each decided and listed, among them: `HOST_PANEL_VERSION` stays 2, seeding is traced at Review's desk, cards bind when their message starts, and an empty board prints nothing.
   - Live checks owed. See "Production Kanban Board".
 - **2026-11-19 (Claude): Tabs reordered: Agent ⌘1, Board ⌘2, Library ⌘3, Analyze ⌘4** (the user's request), matching the panels' Chat · Board · Library · Analyze · History. Library moved from ⌘2 and Analyze from ⌘3. The menu-bar menu lists Open Kanban Board under Open Agent Panel.
+- **2026-11-20 (Claude): Multi-step requests plan themselves.** In both modes the agent puts a request with more than one stage on the Kanban board (`kanban_plan_workflow`) before any other tool; single-step requests stay off it. This is an instruction, not app code (the user's choice of three options). See "Production Kanban Board", adjustment 15.

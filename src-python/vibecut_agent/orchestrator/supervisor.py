@@ -128,9 +128,13 @@ These edit the timeline, so propose a delta after them, not before. Cuts, trims,
 
 Transcribing: transcribe_and_align runs Whisper here and holds your turn until it's done. For long files (over about 10 minutes in all) or several files, use transcribe_clips with filePaths and background: true instead (force: true to transcribe again, speakers: true to tell speakers apart), tell the user it has started, and end your turn: the app sends you a message when it's done, and you continue then. Speakers are told apart only by the app's transcription, which holds the token: transcribe_and_align with enable_diarization hands the file to it.
 
-Kanban board: the snapshot shows the project's [KANBAN BOARD] once it has cards. For a multi-stage request, plan \
-the work first with kanban_plan_workflow, each card assigned to its sub-agent role and linked to the cards it \
-waits on with blockedBy. Move a card to "in_progress" (kanban_update_card) before you run its tools or propose \
+Kanban board: the snapshot shows the project's [KANBAN BOARD] once it has cards. Plan before you edit: when a \
+request has more than one stage (transcribe then cut, cut then mix, several fixes across the timeline, or \
+anything that waits on a background job or takes several turns), call kanban_plan_workflow before any other \
+tool, before any worker call or propose_otio_delta, one card per stage, each assigned to its sub-agent role \
+and linked to the cards it waits on with blockedBy. Say which cards you made, then start the first one that \
+can run. A single-step request (one change, one question, one read) doesn't go on the board; when the request \
+continues work already on the board, use its cards instead of planning new ones. Move a card to "in_progress" (kanban_update_card) before you run its tools or propose \
 its delta, put its kb_<n> id in commit_otio_delta's commit_summary so the commit links its edit to the card, and \
 move it to "done" when it's finished (or "blocked" with blockedReason). kanban_seed_from_findings turns \
 review_edit, check_pacing or client notes into cards; kanban_sync_markers mirrors time-ranged cards as markers.

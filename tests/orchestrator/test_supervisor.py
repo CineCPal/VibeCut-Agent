@@ -351,3 +351,10 @@ def test_every_traced_agent_has_a_desk_in_its_own_room_in_the_studio():
     assert desks[ROOT_AGENT_ID] == "MASTER_ORCHESTRATOR"
     for name, (subagent, agent_id, _backend, _label) in TOOL_AGENTS.items():
         assert desks.get(agent_id) == subagent, name
+
+
+def test_multi_stage_requests_are_planned_on_the_board_first() -> None:
+    """Phase 23: a request with more than one stage is planned as Kanban cards before any other tool."""
+    assert "more than one stage" in ORCHESTRATED_INSTRUCTION
+    assert "call kanban_plan_workflow before any other tool" in ORCHESTRATED_INSTRUCTION
+    assert "single-step request" in ORCHESTRATED_INSTRUCTION
